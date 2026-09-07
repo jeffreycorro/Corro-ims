@@ -5,7 +5,8 @@
  *
  * window.claude.use(name) returns a Promise synchronously.
  * db is backed by Netlify Functions → Supabase (service role stays on the server).
- * sample and mcp resolve to null (AI hidden; Drive off).
+ * sample (Anthropic) and mcp (Google Drive) are served the same way when
+ * ANTHROPIC_API_KEY / GOOGLE_SERVICE_ACCOUNT_JSON are set. Secrets stay on the server.
  */
 (function () {
   "use strict";
@@ -36,13 +37,16 @@
     return holderId;
   }
 
-  function api(fn, body) {
-    return fetch("/.netlify/functions/" + fn, {
-      method: "POST",
+  function api(fn, body, extra) {
+    extra = extra || {};
+    var opts = {
+      method: extra.method || "POST",
       credentials: "include",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body || {}),
-    }).then(function (res) {
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: extra.method === "GET" ? undefined : JSON.stringify(body || {}),
+    };
+    if (extra.signal) opts.signal = extra.signal;
+    return fetch("/.netlify/functions/" + fn, opts).then(function (res) {
       return res.text().then(function (text) {
         var json = {};
         if (text) {
@@ -56,10 +60,19 @@
           var err = new Error(json.error || json.message || fn + " failed (" + res.status + ")");
           err.status = res.status;
           err.body = json;
+          err.code = json.code;
+          err.text = json.text;
           throw err;
         }
         return json;
       });
+    }).catch(function (err) {
+      if (err && (err.name === "AbortError" || (extra.signal && extra.signal.aborted))) {
+        var cancelled = new Error("cancelled");
+        cancelled.code = "cancelled";
+        throw cancelled;
+      }
+      throw err;
     });
   }
 
@@ -191,19 +204,27 @@
     return list;
   }
 
-  function dbCall(op, extra) {
+  function gatedCall(fn, body, extra) {
+    extra = extra || {};
     return waitForAuth().then(function () {
-      var body = Object.assign({ op: op }, extra || {});
-      return api("db", body).catch(function (err) {
+      return api(fn, body, extra).catch(function (err) {
         if (err.status === 401) {
           authReady = null;
           return waitForAuth().then(function () {
-            return api("db", body);
+            return api(fn, body, extra);
           });
         }
         throw err;
       });
     });
+  }
+
+  function dbCall(op, extra) {
+    return gatedCall("db", Object.assign({ op: op }, extra || {}));
+  }
+
+  function capabilityOn(status, name) {
+    return Boolean(status && status.capabilities && status.capabilities[name]);
   }
 
   function createDb() {
@@ -317,8 +338,238 @@
     });
   }
 
+  function normalizeClientMessages(promptOrMessages) {
+    if (typeof promptOrMessages === "string") {
+      return [{ role: "user", content: promptOrMessages }];
+    }
+    if (Array.isArray(promptOrMessages)) {
+      return promptOrMessages.map(function (m) {
+        if (typeof m === "string") return { role: "user", content: m };
+        return {
+          role: m && m.role === "assistant" ? "assistant" : "user",
+          content: m && m.content != null ? m.content : "",
+        };
+      });
+    }
+    if (promptOrMessages && promptOrMessages.role) {
+      return [promptOrMessages];
+    }
+    return [{ role: "user", content: String(promptOrMessages || "") }];
+  }
+
+  function toolDefs(tools) {
+    if (!tools || !tools.length) return [];
+    return tools.map(function (t) {
+      return {
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema || t.input_schema,
+      };
+    });
+  }
+
+  function runToolCalls(toolCalls, tools, signal) {
+    var byName = Object.create(null);
+    (tools || []).forEach(function (t) {
+      if (t && t.name) byName[t.name] = t;
+    });
+    return Promise.all(
+      (toolCalls || []).map(function (call) {
+        var tool = byName[call.name];
+        if (!tool || typeof tool.execute !== "function") {
+          return Promise.resolve({
+            type: "tool_result",
+            tool_use_id: call.id,
+            content: "Unknown tool: " + call.name,
+            is_error: true,
+          });
+        }
+        return Promise.resolve()
+          .then(function () {
+            return tool.execute(call.input || {}, { signal: signal });
+          })
+          .then(function (result) {
+            return {
+              type: "tool_result",
+              tool_use_id: call.id,
+              content: typeof result === "string" ? result : JSON.stringify(result),
+            };
+          })
+          .catch(function (err) {
+            return {
+              type: "tool_result",
+              tool_use_id: call.id,
+              content: (err && err.message) || "tool failed",
+              is_error: true,
+            };
+          });
+      })
+    );
+  }
+
+  function createSample() {
+    function sample(promptOrMessages, options) {
+      options = options || {};
+      var messages = normalizeClientMessages(promptOrMessages);
+      var tools = options.tools || [];
+      var round = 0;
+
+      function once(msgs) {
+        if (options.signal && options.signal.aborted) {
+          var cancelled = new Error("cancelled");
+          cancelled.code = "cancelled";
+          return Promise.reject(cancelled);
+        }
+        if (round++ > 8) {
+          var loop = new Error("Too many tool rounds");
+          loop.code = "tool_error";
+          return Promise.reject(loop);
+        }
+        return gatedCall(
+          "sample",
+          {
+            messages: msgs,
+            modelTier: options.modelTier || "default",
+            tools: toolDefs(tools),
+            cache: options.cache,
+          },
+          { signal: options.signal }
+        ).then(function (out) {
+          if (out && out.toolCalls && out.toolCalls.length) {
+            var next = msgs.slice();
+            next.push({
+              role: "assistant",
+              content: out.assistantContent || out.toolCalls,
+            });
+            return runToolCalls(out.toolCalls, tools, options.signal).then(function (results) {
+              next.push({ role: "user", content: results });
+              return once(next);
+            });
+          }
+          var text = (out && out.text) || "";
+          if (typeof options.onText === "function") {
+            try {
+              options.onText({ text: text });
+            } catch (e) {}
+          }
+          return { text: text, truncated: Boolean(out && out.truncated) };
+        });
+      }
+
+      return once(messages);
+    }
+
+    sample.json = function (prompt, options) {
+      options = options || {};
+      return gatedCall(
+        "sample",
+        {
+          prompt: typeof prompt === "string" ? prompt : undefined,
+          messages: typeof prompt === "string" ? undefined : normalizeClientMessages(prompt),
+          modelTier: (options && options.modelTier) || "default",
+          mode: "json",
+        },
+        { signal: options && options.signal }
+      ).then(function (out) {
+        if (out && out.json && typeof out.json === "object") return out.json;
+        var err = new Error("The model did not return valid JSON");
+        err.code = "tool_error";
+        throw err;
+      });
+    };
+
+    sample.limits = function () {
+      return Promise.resolve({
+        tools: { maxCount: 8 },
+        modelTiers: ["default", "complex"],
+        maxOutputTokens: 8192,
+      });
+    };
+
+    return sample;
+  }
+
+  var ONESHOT_B64 = 3.2 * 1024 * 1024;
+  var CHUNK_B64 = 4 * Math.floor((256 * 1024) / 3);
+
+  function base64DecodedLength(data) {
+    var s = String(data || "").replace(/\s/g, "");
+    if (!s) return 0;
+    var pad = 0;
+    if (s.slice(-2) === "==") pad = 2;
+    else if (s.slice(-1) === "=") pad = 1;
+    return Math.floor((s.length * 3) / 4) - pad;
+  }
+
+  function createMcp() {
+    function driveCall(payload) {
+      return gatedCall("drive", payload);
+    }
+
+    function createFileMaybeChunked(args) {
+      args = args || {};
+      var mime = args.contentMimeType || "";
+      if (mime === "application/vnd.google-apps.folder" || !args.base64Content) {
+        return driveCall({ tool: "create_file", server: "Google Drive", args: args });
+      }
+      var b64 = String(args.base64Content).replace(/\s/g, "");
+      if (b64.length <= ONESHOT_B64) {
+        return driveCall({ tool: "create_file", server: "Google Drive", args: args });
+      }
+      return driveCall({
+        tool: "create_file_init",
+        server: "Google Drive",
+        args: {
+          title: args.title,
+          parentId: args.parentId,
+          contentMimeType: mime,
+          size: base64DecodedLength(b64),
+          disableConversionToGoogleType: args.disableConversionToGoogleType,
+        },
+      }).then(function (init) {
+        var token = init.uploadToken;
+        function send(offset) {
+          var slice = b64.slice(offset, offset + CHUNK_B64);
+          var next = offset + slice.length;
+          var last = next >= b64.length;
+          return driveCall({
+            tool: "create_file_chunk",
+            server: "Google Drive",
+            args: { uploadToken: token, data: slice, last: last },
+          }).then(function (out) {
+            if (out && out.payload) return out;
+            if (out && out.uploadToken) token = out.uploadToken;
+            if (last) return out;
+            return send(next);
+          });
+        }
+        return send(0);
+      });
+    }
+
+    return Object.freeze({
+      callTool: function (server, toolName, args) {
+        if (String(server) !== "Google Drive") {
+          var missing = new Error("This portal is not set up to reach that connector.");
+          missing.code = "server_not_found";
+          return Promise.reject(missing);
+        }
+        if (toolName === "create_file") {
+          return createFileMaybeChunked(args);
+        }
+        return driveCall({
+          tool: toolName,
+          server: "Google Drive",
+          args: args || {},
+        });
+      },
+    });
+  }
+
   var dbSingleton = null;
   var downloadsSingleton = null;
+  var sampleSingleton = null;
+  var mcpSingleton = null;
 
   function resolveName(name) {
     if (name === "db") {
@@ -331,10 +582,26 @@
       return Promise.resolve(downloadsSingleton);
     }
     if (name === "sample") {
-      return Promise.resolve(null);
+      return waitForAuth()
+        .then(function (status) {
+          if (!capabilityOn(status, "sample")) return null;
+          if (!sampleSingleton) sampleSingleton = createSample();
+          return sampleSingleton;
+        })
+        .catch(function () {
+          return null;
+        });
     }
     if (name === "mcp") {
-      return Promise.resolve(null);
+      return waitForAuth()
+        .then(function (status) {
+          if (!capabilityOn(status, "mcp")) return null;
+          if (!mcpSingleton) mcpSingleton = createMcp();
+          return mcpSingleton;
+        })
+        .catch(function () {
+          return null;
+        });
     }
     return Promise.resolve(null);
   }

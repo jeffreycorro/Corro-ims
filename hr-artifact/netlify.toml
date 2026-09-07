@@ -13,6 +13,12 @@
   directory = "netlify/functions"
   node_bundler = "esbuild"
 
+[functions.sample]
+  timeout = 26
+
+[functions.drive]
+  timeout = 26
+
 # Skip PR / branch preview deploys from this config when Netlify honors ignore.
 # Also turn Deploy Previews off in the Netlify UI (required):
 # Project configuration → Build & deploy → Continuous Deployment →

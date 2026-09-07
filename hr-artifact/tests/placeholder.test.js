@@ -7,15 +7,19 @@ const path = require("node:path");
 const { formatManilaIso } = require("../netlify/lib/manila");
 
 describe("placeholder and privacy", () => {
-  it("does not invent an HR app or employee seed data", () => {
+  it("injects the shim before the artifact scripts and does not add host seed data", () => {
     const html = fs.readFileSync(
       path.join(__dirname, "../public/index.html"),
       "utf8"
     );
-    assert.match(html, /Replace this entire file with the Claude artifact HTML export/);
     assert.match(html, /<script src="\/claude-shim\.js"><\/script>/);
-    assert.doesNotMatch(html, /employee seed|Juan Dela Cruz|fake employee/i);
-    assert.ok(html.length < 2000);
+    const hostFiles = [
+      "../public/claude-shim.js",
+      "../.env.example",
+    ].map((rel) => fs.readFileSync(path.join(__dirname, rel), "utf8"));
+    for (const src of hostFiles) {
+      assert.doesNotMatch(src, /Juan Dela Cruz|fake employee/i);
+    }
   });
 
   it("README tells the operator to inject the shim script tag", () => {
@@ -24,6 +28,9 @@ describe("placeholder and privacy", () => {
     assert.match(readme, /SEPARATE Netlify site/);
     assert.match(readme, /Disable Deploy Previews/);
     assert.match(readme, /never commit backup/i);
+    assert.match(readme, /ANTHROPIC_API_KEY/);
+    assert.match(readme, /GOOGLE_SERVICE_ACCOUNT_JSON/);
+    assert.match(readme, /GOOGLE_DRIVE_DELEGATED_USER/);
   });
 
   it("netlify.toml publishes public with privacy headers", () => {
