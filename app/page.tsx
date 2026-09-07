@@ -74,7 +74,7 @@ export default async function LandingPage() {
                     <span>
                       <span className="block text-sm font-semibold">{department.name}</span>
                       <span className="block text-[11px] leading-snug text-navy-300">
-                        {department.slug === "hr" ? "201 File next" : "Workspace"}
+                        {department.slug === "hr" ? "201 File Register" : "Workspace"}
                       </span>
                     </span>
                   </li>
