@@ -7,6 +7,7 @@ const { handler: authHandler } = require("../netlify/functions/auth");
 const { handler: dbHandler } = require("../netlify/functions/db");
 const { handler: sampleHandler } = require("../netlify/functions/sample");
 const { handler: driveHandler } = require("../netlify/functions/drive");
+const { handler: transcribeHandler } = require("../netlify/functions/transcribe");
 const { parseCookieHeader, COOKIE_NAME, signSession } = require("../netlify/lib/session");
 const { resetTokenCache } = require("../netlify/lib/google-drive");
 
@@ -31,6 +32,8 @@ describe("netlify functions", () => {
     delete process.env.SUPABASE_SERVICE_ROLE;
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_TRANSCRIBE_MODEL;
     resetTokenCache();
   });
 
@@ -106,9 +109,10 @@ describe("netlify functions", () => {
     const body = JSON.parse(res.body);
     assert.equal(body.capabilities.sample, true);
     assert.equal(body.capabilities.mcp, false);
+    assert.equal(body.capabilities.transcribe, false);
   });
 
-  it("rejects sample and drive without a session", async () => {
+  it("rejects sample, drive, and transcribe without a session", async () => {
     const sample = await sampleHandler({
       httpMethod: "POST",
       headers: {},
@@ -121,9 +125,15 @@ describe("netlify functions", () => {
       body: JSON.stringify({ tool: "search_files", args: { query: "parentId = 'x'" } }),
     });
     assert.equal(drive.statusCode, 401);
+    const transcribe = await transcribeHandler({
+      httpMethod: "POST",
+      headers: {},
+      body: JSON.stringify({ audioBase64: "ZmFrZQ==", mimeType: "audio/webm" }),
+    });
+    assert.equal(transcribe.statusCode, 401);
   });
 
-  it("refuses sample/drive when keys are missing even with a session", async () => {
+  it("refuses sample/drive/transcribe when keys are missing even with a session", async () => {
     const token = signSession({ sub: "gate", method: "password" }, SECRET);
     const headers = { cookie: `${COOKIE_NAME}=${encodeURIComponent(token)}` };
     const sample = await sampleHandler({
@@ -140,6 +150,13 @@ describe("netlify functions", () => {
     });
     assert.equal(drive.statusCode, 503);
     assert.equal(JSON.parse(drive.body).code, "server_not_connected");
+    const transcribe = await transcribeHandler({
+      httpMethod: "POST",
+      headers,
+      body: JSON.stringify({ audioBase64: "ZmFrZQ==", mimeType: "audio/webm" }),
+    });
+    assert.equal(transcribe.statusCode, 403);
+    assert.equal(JSON.parse(transcribe.body).code, "not_granted");
   });
 
   it("calls Anthropic with the session cookie and returns { text }", async () => {
@@ -310,6 +327,51 @@ describe("netlify functions", () => {
       const body = JSON.parse(res.body);
       assert.equal(body.payload.id, "folder1");
       assert.equal(body.payload.viewUrl, "https://drive.google.com/drive/folders/folder1");
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it("reports dictation capability when OPENAI_API_KEY is set", async () => {
+    process.env.OPENAI_API_KEY = "sk-test";
+    const res = await authHandler({ httpMethod: "GET", headers: {} });
+    const body = JSON.parse(res.body);
+    assert.equal(body.capabilities.transcribe, true);
+  });
+
+  it("calls OpenAI transcriptions with the session cookie and returns { text }", async () => {
+    process.env.OPENAI_API_KEY = "sk-test";
+    const token = signSession({ sub: "gate", method: "password" }, SECRET);
+    const originalFetch = global.fetch;
+    let captured;
+    global.fetch = async (url, opts) => {
+      captured = { url, opts };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ text: "Site reporting time moves to 7:00 AM." }),
+      };
+    };
+    try {
+      const res = await transcribeHandler({
+        httpMethod: "POST",
+        headers: {
+          cookie: `${COOKIE_NAME}=${encodeURIComponent(token)}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          audioBase64: Buffer.from("fake-audio").toString("base64"),
+          mimeType: "audio/webm",
+          filename: "dictation.webm",
+        }),
+      });
+      assert.equal(res.statusCode, 200);
+      const body = JSON.parse(res.body);
+      assert.equal(body.text, "Site reporting time moves to 7:00 AM.");
+      assert.match(String(captured.url), /api\.openai\.com\/v1\/audio\/transcriptions/);
+      assert.equal(captured.opts.headers.Authorization, "Bearer sk-test");
+      assert.equal(captured.opts.body.get("model"), "gpt-transcribe");
+      assert.ok(captured.opts.body.get("file"));
     } finally {
       global.fetch = originalFetch;
     }

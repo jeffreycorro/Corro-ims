@@ -18,7 +18,7 @@ Inside `<head>` of that real `index.html`, **before any other scripts**, add:
 <script src="/claude-shim.js"></script>
 ```
 
-That is the only edit to the artifact. `window.claude.use(name)` is implemented by `public/claude-shim.js` and must load first.
+That is the only edit to the artifact. `window.claude.use(name)` is implemented by `public/claude-shim.js` and must load first. The shim then loads `hr-dictation.js`, which attaches hold-to-talk when `OPENAI_API_KEY` is set. Do not rewrite the artifact to add mic buttons.
 
 ### 3. Apply the SQL migration
 
@@ -60,6 +60,11 @@ Site settings → Environment variables:
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | Functions **only** | Raw JSON (or base64 of that JSON) for a Google service account. Enables Drive search / read / upload. |
 | `GOOGLE_DRIVE_DELEGATED_USER` | Functions, optional | Workspace user email if the service account uses domain-wide delegation to reach user folders. |
 | `GOOGLE_DRIVE_OCR` | Functions, optional | Set `true` to OCR image/PDF files that have no text layer (uses the Anthropic key; slow on bulk reads). |
+| `OPENAI_API_KEY` | Functions **only** | Enables hold-to-talk dictation (`transcribe`) for memo drafting and Ask the records. Never put this in the shim or `index.html`. |
+| `OPENAI_TRANSCRIBE_MODEL` | Functions, optional | Override the transcription model. Default tries `gpt-transcribe`, then `gpt-4o-transcribe`, then `whisper-1`. |
+| `OPENAI_TRANSCRIBE_LANGUAGES` | Functions, optional | Comma-separated language hints (e.g. `en,tl`). Leave unset so Taglish / mixed speech is auto-detected. |
+| `OPENAI_TRANSCRIBE_PROMPT` | Functions, optional | Override the workplace / Taglish prompt sent with each clip. |
+| `OPENAI_TRANSCRIBE_KEYWORDS` | Functions, optional | Comma-separated name and term hints. |
 
 Copy `.env.example`. Data, AI, and Drive functions **refuse** requests without a valid gate cookie. Do not rely on a front-end-only password check.
 
@@ -71,11 +76,11 @@ Copy `.env.example`. Data, AI, and Drive functions **refuse** requests without a
 4. If those folders are in a Shared Drive, add the service account as a member of that Shared Drive. If they are in a user's My Drive, enable domain-wide delegation for the service account and set `GOOGLE_DRIVE_DELEGATED_USER` to that user's email.
 5. After env vars change, redeploy (or restart) so functions pick them up.
 
-Without `ANTHROPIC_API_KEY` the shim still resolves `sample` to `null` and the memo editor shows “AI drafting is not available in this view”. Without `GOOGLE_SERVICE_ACCOUNT_JSON`, `mcp` is `null` and Drive actions show the artifact’s own unavailable / `not_granted` copy.
+Without `ANTHROPIC_API_KEY` the shim still resolves `sample` to `null` and the memo editor shows “AI drafting is not available in this view”. Without `GOOGLE_SERVICE_ACCOUNT_JSON`, `mcp` is `null` and Drive actions show the artifact’s own unavailable / `not_granted` copy. Without `OPENAI_API_KEY`, `transcribe` is `null` and the hold-to-talk controls are not shown.
 
 ### 6. Access control (two layers)
 
-**App-level gate (required):** `/.netlify/functions/auth` issues an httpOnly cookie after the shared password or Supabase Auth succeeds. `/.netlify/functions/db`, `sample`, and `drive` return 401 without that cookie. The service role key, Anthropic key, and service-account JSON never leave Netlify Functions.
+**App-level gate (required):** `/.netlify/functions/auth` issues an httpOnly cookie after the shared password or Supabase Auth succeeds. `/.netlify/functions/db`, `sample`, `drive`, and `transcribe` return 401 without that cookie. The service role key, Anthropic key, OpenAI key, and service-account JSON never leave Netlify Functions.
 
 **Netlify visitor password / Identity (additional):**
 
@@ -110,6 +115,7 @@ After deploy, open the site, pass the gate, and restore the backup JSON from **S
 | `downloads` | `save({ filename, data })` via object URL + `<a download>`. |
 | `sample` | Anthropic-backed `sample(prompt, { modelTier, onText, tools, signal })` → `{ text, truncated? }`, plus `sample.json` and `sample.limits`. `null` until `ANTHROPIC_API_KEY` is set. Client-side tools (Ask the records) run in the browser; only schemas go to the function. |
 | `mcp` | `callTool("Google Drive", tool, args)` for `search_files`, `read_file_content`, `create_file`. Responses use `{ payload: { files, text/content/fileContent, id, title, viewUrl, nextPageToken } }`. `null` until the service account env is set. Uploads larger than ~3MB are chunked through a resumable Drive session. |
+| `transcribe` | OpenAI-backed `transcribe({ audio, mimeType, language, signal })` → `{ text }`. Hold-to-talk on memo draft / reminder / Ask fields is attached by `hr-dictation.js` (loaded by the shim). `null` until `OPENAI_API_KEY` is set. |
 | anything else | `null` |
 
 `acquire({ holder })` calls the `acquire_doc_lock` RPC. A second holder with an unexpired lock gets `acquired: false`.
@@ -121,7 +127,7 @@ cd hr-artifact
 node --test
 ```
 
-Functions need Netlify (`npx netlify dev --dir .`) plus the env vars above. AI and Drive stay off until their keys are set; the rest of the artifact still loads.
+Functions need Netlify (`npx netlify dev --dir .`) plus the env vars above. AI, Drive, and dictation stay off until their keys are set; the rest of the artifact still loads.
 
 ## Files
 
@@ -130,11 +136,13 @@ hr-artifact/
   netlify.toml
   public/index.html          ← replace with Claude export
   public/claude-shim.js
+  public/hr-dictation.js     ← hold-to-talk UI (loaded by the shim)
   public/robots.txt
   netlify/functions/auth.js
   netlify/functions/db.js
   netlify/functions/sample.js
   netlify/functions/drive.js
-  netlify/lib/               ← session, supabase, locks, collections, Anthropic, Drive
+  netlify/functions/transcribe.js
+  netlify/lib/               ← session, supabase, locks, collections, Anthropic, Drive, OpenAI
   supabase/migrations/       ← docs + locks + RLS
 ```
