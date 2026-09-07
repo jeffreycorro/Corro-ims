@@ -8,7 +8,7 @@ Do **not** rewrite, minify, or modernize the HTML artifact. Paste the Claude exp
 
 ### 1. Paste the real artifact
 
-Replace `public/index.html` with the Claude artifact HTML export (~1.2MB). The file in this repo is a placeholder only.
+`public/index.html` should be the Claude artifact HTML export. If you replace it, keep the shim script tag in `<head>`.
 
 ### 2. Inject the shim (one-line change)
 
@@ -54,12 +54,28 @@ Site settings → Environment variables:
 | `HR_GATE_SECRET` | Functions | Shared staff password **and** HMAC key for the httpOnly session cookie |
 | `HR_GATE_PASSWORD` | Functions, optional | Login password if you want `HR_GATE_SECRET` to be a signing key only |
 | `SUPABASE_AUTH_ENABLED` | Functions, optional | Set to `true` to also accept Supabase email/password (or `access_token`) |
+| `ANTHROPIC_API_KEY` | Functions **only** | Enables memo drafting, Ask the records, and other `sample` calls. Never put this in the shim or `index.html`. |
+| `ANTHROPIC_MODEL` | Functions, optional | Override the default model (`claude-sonnet-4-5`). |
+| `ANTHROPIC_MODEL_COMPLEX` | Functions, optional | Model for `modelTier: "complex"` (role defs, long drafts). Defaults to `ANTHROPIC_MODEL`. |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | Functions **only** | Raw JSON (or base64 of that JSON) for a Google service account. Enables Drive search / read / upload. |
+| `GOOGLE_DRIVE_DELEGATED_USER` | Functions, optional | Workspace user email if the service account uses domain-wide delegation to reach user folders. |
+| `GOOGLE_DRIVE_OCR` | Functions, optional | Set `true` to OCR image/PDF files that have no text layer (uses the Anthropic key; slow on bulk reads). |
 
-Copy `.env.example`. Data functions **refuse** requests without a valid gate cookie. Do not rely on a front-end-only password check.
+Copy `.env.example`. Data, AI, and Drive functions **refuse** requests without a valid gate cookie. Do not rely on a front-end-only password check.
+
+**Drive operator notes**
+
+1. Create a Google Cloud service account and download its JSON key.
+2. Paste the JSON (one line is fine) into `GOOGLE_SERVICE_ACCOUNT_JSON` on this Netlify site. Alternatively paste base64 of the file so newlines in `private_key` survive the env editor.
+3. Share every HR folder the artifact uses (201 ACTIVE / SEPARATED, inbox, memos, attendance, training manuals) with the service account email (`client_email` in the JSON). Viewer is enough to search and read; Content Manager (or Editor) is required to upload or create folders.
+4. If those folders are in a Shared Drive, add the service account as a member of that Shared Drive. If they are in a user's My Drive, enable domain-wide delegation for the service account and set `GOOGLE_DRIVE_DELEGATED_USER` to that user's email.
+5. After env vars change, redeploy (or restart) so functions pick them up.
+
+Without `ANTHROPIC_API_KEY` the shim still resolves `sample` to `null` and the memo editor shows “AI drafting is not available in this view”. Without `GOOGLE_SERVICE_ACCOUNT_JSON`, `mcp` is `null` and Drive actions show the artifact’s own unavailable / `not_granted` copy.
 
 ### 6. Access control (two layers)
 
-**App-level gate (required):** `/.netlify/functions/auth` issues an httpOnly cookie after the shared password or Supabase Auth succeeds. `/.netlify/functions/db` returns 401 without that cookie. The service role key never leaves Netlify Functions.
+**App-level gate (required):** `/.netlify/functions/auth` issues an httpOnly cookie after the shared password or Supabase Auth succeeds. `/.netlify/functions/db`, `sample`, and `drive` return 401 without that cookie. The service role key, Anthropic key, and service-account JSON never leave Netlify Functions.
 
 **Netlify visitor password / Identity (additional):**
 
@@ -92,8 +108,8 @@ After deploy, open the site, pass the gate, and restore the backup JSON from **S
 | --- | --- |
 | `db` | `doc(path).get/set/delete/acquire` and `collection(name).get` / `onSnapshot` (one-shot + unsubscribe). Path: `collection/id`. |
 | `downloads` | `save({ filename, data })` via object URL + `<a download>`. |
-| `sample` | `null` (AI features stay hidden). |
-| `mcp` | `null` (Drive stays off; the artifact should hide or show its own unavailable state). |
+| `sample` | Anthropic-backed `sample(prompt, { modelTier, onText, tools, signal })` → `{ text, truncated? }`, plus `sample.json` and `sample.limits`. `null` until `ANTHROPIC_API_KEY` is set. Client-side tools (Ask the records) run in the browser; only schemas go to the function. |
+| `mcp` | `callTool("Google Drive", tool, args)` for `search_files`, `read_file_content`, `create_file`. Responses use `{ payload: { files, text/content/fileContent, id, title, viewUrl, nextPageToken } }`. `null` until the service account env is set. Uploads larger than ~3MB are chunked through a resumable Drive session. |
 | anything else | `null` |
 
 `acquire({ holder })` calls the `acquire_doc_lock` RPC. A second holder with an unexpired lock gets `acquired: false`.
@@ -105,7 +121,7 @@ cd hr-artifact
 node --test
 ```
 
-Functions need Netlify (`npx netlify dev --dir .`) plus the env vars above. Without `index.html` replaced, you only see the placeholder operator note.
+Functions need Netlify (`npx netlify dev --dir .`) plus the env vars above. AI and Drive stay off until their keys are set; the rest of the artifact still loads.
 
 ## Files
 
@@ -117,6 +133,8 @@ hr-artifact/
   public/robots.txt
   netlify/functions/auth.js
   netlify/functions/db.js
-  netlify/lib/               ← session, supabase, locks, collections
+  netlify/functions/sample.js
+  netlify/functions/drive.js
+  netlify/lib/               ← session, supabase, locks, collections, Anthropic, Drive
   supabase/migrations/       ← docs + locks + RLS
 ```

@@ -12,6 +12,7 @@ const {
 } = require("../lib/session");
 const { verifySupabaseJwt, verifySupabasePassword } = require("../lib/supabase");
 const { formatManilaIso } = require("../lib/manila");
+const { capabilities } = require("../lib/capabilities");
 
 const loginAttempts = new Map();
 
@@ -44,6 +45,7 @@ function methodsPayload() {
     methods: configuredMethods(),
     timezone: "Asia/Manila",
     serverTime: formatManilaIso(),
+    capabilities: capabilities(),
   };
 }
 
