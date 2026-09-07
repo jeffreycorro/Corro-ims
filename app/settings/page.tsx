@@ -1,3 +1,4 @@
+import { ChangePasswordForm } from "@/components/change-password-form";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 import { requireUser } from "@/lib/auth";
@@ -21,7 +22,8 @@ export default async function SettingsPage() {
         <p className="text-xs font-semibold tracking-[0.22em] text-amber-500">ACCOUNT</p>
         <h1 className="mt-2 font-display text-3xl text-navy-950">Profile</h1>
         <p className="mt-2 text-muted">
-          Profile data is managed by administrators. Staff can view their own record.
+          Profile data is managed by administrators. Staff can view their own record and change
+          their sign-in password below.
         </p>
 
         <dl className="mt-8 divide-y divide-navy-100 rounded-xl border border-navy-100 bg-white shadow-sm">
@@ -50,6 +52,18 @@ export default async function SettingsPage() {
             <dd>{formatManilaDateTime()}</dd>
           </div>
         </dl>
+
+        <section id="password" className="mt-10 scroll-mt-36">
+          <p className="text-xs font-semibold tracking-[0.22em] text-amber-500">SECURITY</p>
+          <h2 className="mt-2 font-display text-2xl text-navy-950">Change password</h2>
+          <p className="mt-2 text-muted">
+            Enter your current password, then choose a new one. This updates your Supabase Auth
+            sign-in for every department workspace.
+          </p>
+          <div className="mt-6 rounded-xl border border-navy-100 bg-white p-5 shadow-sm sm:p-6">
+            <ChangePasswordForm isDemo={user.isDemo} />
+          </div>
+        </section>
       </main>
       <SiteFooter />
     </div>

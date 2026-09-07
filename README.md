@@ -37,6 +37,7 @@ Use the **anon / public** key only in the Next.js app. Never put the service rol
 ## Authentication and profiles
 
 - Email/password through Supabase Auth
+- Signed-in staff can change their own password from **Settings** (header link on `/app`, `/app/[department]`, and `/settings`). The form re-checks the current password, then calls `updateUser({ password })`. Demo mode explains that mock sessions cannot update a password.
 - Middleware protects `/app/**` and `/settings`
 - `profiles` is keyed to `auth.users` (`id` FK) with `full_name`, `department`, and `role` (`staff` | `dept_lead` | `hr` | `admin`)
 - Row Level Security: authenticated users can read their own profile; admins can manage all profiles
@@ -67,7 +68,7 @@ Do not commit real emails or passwords. The first admin profile must be inserted
 | `/login` | Email/password (or demo role/department picker) |
 | `/app` | Department hub with gated tiles |
 | `/app/[department]` | Department stub (`admin`, `technical`, `finance`, `procurement`, `motorpool`, `safety`, `site`, `hr`) |
-| `/settings` | Signed-in profile |
+| `/settings` | Signed-in profile and change-password form |
 
 Department stubs show “module coming soon”. HR also notes **201 File Register — next**. Each stub reserves a **Department Assistant — soon** slot.
 
