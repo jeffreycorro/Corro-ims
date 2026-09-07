@@ -2,7 +2,7 @@
 
 Internal operations portal for **CORRO CONSTRUCTION DEVELOPMENT AND TRADE CORPORATION** (Cebu City, Philippines). Office and site staff sign in, then open the department workspace they are assigned to.
 
-This phase covers the company landing page, email/password authentication, a gated department hub, and stub department homes. HR 201 File, Drive, document numbering, and the Department Assistant are **not** implemented yet.
+This phase covers the company landing page, email/password authentication, a gated department hub, and stub department homes. The HR workspace deep-links to the live HR portal. Drive, document numbering, and the Department Assistant are **not** implemented yet.
 
 ## Stack
 
@@ -30,6 +30,8 @@ Copy `.env.example` to `.env.local` and add your project values:
 ```bash
 NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
+# Optional override for the live HR site (defaults to https://corcondev-hr.netlify.app)
+# NEXT_PUBLIC_HR_PORTAL_URL=https://corcondev-hr.netlify.app
 ```
 
 Use the **anon / public** key only in the Next.js app. Never put the service role key, database password, or user passwords in client code or committed files.
@@ -67,10 +69,10 @@ Do not commit real emails or passwords. The first admin profile must be inserted
 | `/` | Company landing + Login CTA |
 | `/login` | Email/password (or demo role/department picker) |
 | `/app` | Department hub with gated tiles |
-| `/app/[department]` | Department stub (`admin`, `technical`, `finance`, `procurement`, `motorpool`, `safety`, `site`, `hr`) |
+| `/app/[department]` | Department home (`admin`, `technical`, `finance`, `procurement`, `motorpool`, `safety`, `site`, `hr`) |
 | `/settings` | Signed-in profile and change-password form |
 
-Department stubs show “module coming soon”. HR also notes **201 File Register — next**. Each stub reserves a **Department Assistant — soon** slot.
+Department stubs show “module coming soon”. The **HR** workspace replaces that stub with a primary CTA to the live HR portal (`NEXT_PUBLIC_HR_PORTAL_URL`, default `https://corcondev-hr.netlify.app`). Each department home still reserves a **Department Assistant — soon** slot.
 
 ## Demo mode
 
@@ -88,7 +90,7 @@ The mock session is an httpOnly cookie. It is for local/UI review only.
 2. Build command: `npm run build` (see `netlify.toml`)
 3. Publish directory: `.next`
 4. Node version: `20`
-5. In **Site settings → Environment variables**, set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+5. In **Site settings → Environment variables**, set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`. Optionally set `NEXT_PUBLIC_HR_PORTAL_URL` if the live HR site is not the default Netlify URL.
 6. Redeploy after env vars change
 
 `@netlify/plugin-nextjs` is declared in `netlify.toml` so the Next.js App Router runtime is used. If you skip env vars on Netlify, the deployed site stays in DEMO MODE.
@@ -114,7 +116,7 @@ The Claude HR single-file app is **not** part of this portal build. Host it from
 
 ## Out of scope (this phase)
 
-- Full HR 201 File Register (the artifact host in `hr-artifact/` is a separate deploy)
+- Rebuilding the HR 201 File Register inside this Next.js app (deep-link to the separate `hr-artifact/` deploy instead)
 - Drive / document storage
 - Document numbering
 - Department Assistant chat (slot only)

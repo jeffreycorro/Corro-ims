@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { DepartmentIcon } from "@/components/department-icons";
 import { requireUser } from "@/lib/auth";
 import { canAccessDepartment, getDepartment, isDepartmentSlug } from "@/lib/departments";
+import { getHrPortalUrl } from "@/lib/env";
 
 type Params = Promise<{ department: string }>;
 
@@ -57,19 +58,34 @@ export default async function DepartmentPage({ params }: { params: Params }) {
           </p>
         ) : (
           <div className="mt-8 space-y-4">
-            <div className="rounded-lg border border-dashed border-navy-200 bg-navy-50 px-5 py-6">
-              <p className="text-xs font-semibold tracking-[0.18em] text-navy-600">MODULE</p>
-              <h2 className="mt-2 font-display text-2xl text-navy-950">Module coming soon</h2>
-              <p className="mt-2 max-w-2xl text-sm text-muted">
-                This department home is a placeholder for the first operations build. Records,
-                registers, and workflows will land here later.
-              </p>
-              {department.slug === "hr" ? (
-                <p className="mt-4 text-sm font-semibold text-navy-900">
-                  201 File Register — next
+            {department.slug === "hr" ? (
+              <div className="rounded-lg border border-navy-200 bg-navy-50 px-5 py-6">
+                <p className="text-xs font-semibold tracking-[0.18em] text-amber-600">LIVE</p>
+                <h2 className="mt-2 font-display text-2xl text-navy-950">
+                  HR 201 File Register
+                </h2>
+                <p className="mt-2 max-w-2xl text-sm text-muted">
+                  People operations and 201 files live on the HR portal — a separate site, not
+                  rebuilt inside this workspace. Open it to continue.
                 </p>
-              ) : null}
-            </div>
+                <a
+                  href={getHrPortalUrl()}
+                  className="mt-5 inline-flex h-11 items-center justify-center rounded-md bg-navy-900 px-5 text-sm font-semibold text-white hover:bg-navy-800"
+                >
+                  Open HR 201 File Register
+                </a>
+                <p className="mt-3 text-xs text-muted">Opens the live HR site in this tab.</p>
+              </div>
+            ) : (
+              <div className="rounded-lg border border-dashed border-navy-200 bg-navy-50 px-5 py-6">
+                <p className="text-xs font-semibold tracking-[0.18em] text-navy-600">MODULE</p>
+                <h2 className="mt-2 font-display text-2xl text-navy-950">Module coming soon</h2>
+                <p className="mt-2 max-w-2xl text-sm text-muted">
+                  This department home is a placeholder for the first operations build. Records,
+                  registers, and workflows will land here later.
+                </p>
+              </div>
+            )}
 
             <aside className="rounded-lg border border-navy-100 bg-white px-5 py-4">
               <p className="text-xs font-semibold tracking-[0.18em] text-amber-600">RESERVED</p>
