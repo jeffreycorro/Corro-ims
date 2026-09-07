@@ -13,7 +13,7 @@ export default async function HubPage() {
   const isAdmin = user.profile?.role === "admin";
 
   return (
-    <main className="mx-auto w-full max-w-6xl px-5 py-10">
+    <main className="mx-auto w-full max-w-6xl px-5 py-10 pb-[max(2.5rem,env(safe-area-inset-bottom))]">
       <div className="mb-8 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="text-xs font-semibold tracking-[0.22em] text-amber-500">PORTAL</p>
@@ -68,7 +68,7 @@ export default async function HubPage() {
               {allowed ? (
                 <Link
                   href={`/app/${department.slug}`}
-                  className="block h-full rounded-xl border border-navy-100 bg-white p-5 shadow-sm transition-colors hover:border-amber-400"
+                  className="block h-full min-h-44 rounded-xl border border-navy-100 bg-white p-5 shadow-sm transition-colors hover:border-amber-400"
                 >
                   {body}
                 </Link>

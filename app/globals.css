@@ -22,11 +22,13 @@
 
 html {
   color-scheme: light;
+  -webkit-text-size-adjust: 100%;
 }
 
 body {
   background: var(--color-navy-50);
   color: var(--color-ink);
+  overflow-x: clip;
 }
 
 .blueprint-grid {

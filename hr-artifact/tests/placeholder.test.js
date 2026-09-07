@@ -13,6 +13,12 @@ describe("placeholder and privacy", () => {
       "utf8"
     );
     assert.match(html, /<script src="\/claude-shim\.js"><\/script>/);
+    assert.match(html, /<script src="\/pwa\.js"><\/script>/);
+    assert.match(html, /<link rel="manifest" href="\/manifest\.json">/);
+    assert.match(html, /<link rel="stylesheet" href="\/pwa\.css">/);
+    const shimIndex = html.indexOf("/claude-shim.js");
+    const pwaIndex = html.indexOf("/pwa.js");
+    assert.ok(shimIndex > -1 && pwaIndex > shimIndex, "pwa.js must load after the shim");
     assert.doesNotMatch(html, /hr-dictation\.js/);
     const hostFiles = [
       "../public/claude-shim.js",
@@ -32,6 +38,8 @@ describe("placeholder and privacy", () => {
     assert.match(readme, /ANTHROPIC_API_KEY/);
     assert.match(readme, /GOOGLE_SERVICE_ACCOUNT_JSON/);
     assert.match(readme, /GOOGLE_DRIVE_DELEGATED_USER/);
+    assert.match(readme, /Add to Home Screen/);
+    assert.match(readme, /<script src="\/pwa\.js"><\/script>/);
     assert.match(readme, /OPENAI_API_KEY/);
     assert.match(readme, /hr-dictation\.js/);
   });
