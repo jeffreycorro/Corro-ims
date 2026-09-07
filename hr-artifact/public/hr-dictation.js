@@ -148,8 +148,27 @@
       return Promise.resolve();
     }
     var mime = pickMime();
+    session = {
+      field: field,
+      row: row,
+      pending: true,
+      stopWhenReady: false,
+      stopping: false,
+      chunks: [],
+      stream: null,
+      recorder: null,
+      mime: mime || "audio/webm",
+      started: Date.now(),
+      timer: null,
+    };
+    setButton(row, "recording", "Recording… release to stop");
+    setStatus(row, "Listening. Release the button to transcribe.", "");
     return navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
-      var chunks = [];
+      if (!session || session.field !== field) {
+        stream.getTracks().forEach(function (t) { t.stop(); });
+        return;
+      }
+      var chunks = session.chunks;
       var rec;
       try {
         rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
@@ -160,26 +179,21 @@
       rec.ondataavailable = function (ev) {
         if (ev && ev.data && ev.data.size) chunks.push(ev.data);
       };
-      session = {
-        field: field,
-        row: row,
-        stream: stream,
-        recorder: rec,
-        chunks: chunks,
-        mime: rec.mimeType || mime || "audio/webm",
-        started: Date.now(),
-        stopping: false,
-        timer: setTimeout(function () {
-          if (session && session.field === field) {
-            setStatus(row, "Stopped at the time limit — transcribing what was captured.", "err");
-            stopRecording(field, row, { timedOut: true });
-          }
-        }, MAX_MS),
-      };
+      session.pending = false;
+      session.stream = stream;
+      session.recorder = rec;
+      session.mime = rec.mimeType || mime || "audio/webm";
+      session.timer = setTimeout(function () {
+        if (session && session.field === field) {
+          setStatus(row, "Stopped at the time limit — transcribing what was captured.", "err");
+          stopRecording(field, row, { timedOut: true });
+        }
+      }, MAX_MS);
       rec.start(250);
-      setButton(row, "recording", "Recording… release to stop");
-      setStatus(row, "Listening. Release the button to transcribe.", "");
+      if (session.stopWhenReady) return stopRecording(field, row);
     }).catch(function (err) {
+      releaseSession();
+      setButton(row, "idle", "Hold to dictate");
       setStatus(row, messageForError(err), "err");
     });
   }
@@ -191,7 +205,12 @@
 
   function stopRecording(field, row, extra) {
     extra = extra || {};
-    if (!session || session.field !== field || session.stopping) return Promise.resolve();
+    if (!session || session.field !== field) return Promise.resolve();
+    if (session.pending) {
+      session.stopWhenReady = true;
+      return Promise.resolve();
+    }
+    if (session.stopping) return Promise.resolve();
     session.stopping = true;
     var rec = session.recorder;
     var chunks = session.chunks;
@@ -239,9 +258,9 @@
         settled = true;
         resolve(finish(blobFromChunks(chunks, mime)));
       }
-      rec.onstop = done;
+      if (rec) rec.onstop = done;
       try {
-        if (rec.state === "recording") rec.stop();
+        if (rec && rec.state === "recording") rec.stop();
         else done();
       } catch (e) {
         done();
@@ -256,31 +275,60 @@
     btn.setAttribute("data-hr-dict-bound", "1");
 
     var activePointer = null;
+    var usedPointer = false;
+    var lastGesture = 0;
+
+    function markGesture() {
+      lastGesture = Date.now();
+    }
 
     function begin(ev) {
       if (session) return;
-      if (ev && ev.pointerType === "mouse" && ev.button !== 0) return;
+      if (ev && ev.button != null && ev.button !== 0) return;
       if (ev) {
         ev.preventDefault();
-        activePointer = ev.pointerId;
-        try {
-          btn.setPointerCapture(ev.pointerId);
-        } catch (e) {}
+        if (ev.pointerId != null) {
+          activePointer = ev.pointerId;
+          try {
+            btn.setPointerCapture(ev.pointerId);
+          } catch (e) {}
+        }
       }
+      markGesture();
       startRecording(field, row);
     }
 
     function end(ev) {
-      if (ev && activePointer != null && ev.pointerId !== activePointer) return;
+      if (ev && activePointer != null && ev.pointerId != null && ev.pointerId !== activePointer) return;
       activePointer = null;
+      markGesture();
       if (session && session.field === field) stopRecording(field, row);
     }
 
-    btn.addEventListener("pointerdown", begin);
+    btn.addEventListener("pointerdown", function (ev) {
+      usedPointer = true;
+      begin(ev);
+    });
     btn.addEventListener("pointerup", end);
     btn.addEventListener("pointercancel", end);
     btn.addEventListener("lostpointercapture", function () {
       if (session && session.field === field && !session.stopping) stopRecording(field, row);
+    });
+    btn.addEventListener("mousedown", function (ev) {
+      if (usedPointer) return;
+      begin(ev);
+    });
+    btn.addEventListener("mouseup", function (ev) {
+      if (usedPointer) return;
+      end(ev);
+    });
+    btn.addEventListener("touchstart", function (ev) {
+      if (usedPointer) return;
+      begin(ev);
+    }, { passive: false });
+    btn.addEventListener("touchend", function (ev) {
+      if (usedPointer) return;
+      end(ev);
     });
     btn.addEventListener("keydown", function (ev) {
       if (ev.key !== " " && ev.key !== "Enter") return;
@@ -291,6 +339,12 @@
       if (ev.key !== " " && ev.key !== "Enter") return;
       ev.preventDefault();
       end();
+    });
+    btn.addEventListener("click", function (ev) {
+      ev.preventDefault();
+      if (Date.now() - lastGesture < 400) return;
+      if (session && session.field === field) stopRecording(field, row);
+      else startRecording(field, row);
     });
     btn.addEventListener("contextmenu", function (ev) {
       ev.preventDefault();
