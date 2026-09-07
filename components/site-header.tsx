@@ -43,6 +43,10 @@ export function SiteHeader({
             <Link href="/settings" className="text-sm text-navy-100 hover:text-white">
               Settings
             </Link>
+            <Link href="/settings#password" className="text-sm text-navy-100 hover:text-white">
+              <span className="sm:hidden">Password</span>
+              <span className="hidden sm:inline">Change password</span>
+            </Link>
             <form action={logoutAction}>
               <SubmitButton
                 pendingLabel="Signing out…"
