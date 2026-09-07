@@ -13,6 +13,7 @@ describe("placeholder and privacy", () => {
       "utf8"
     );
     assert.match(html, /<script src="\/claude-shim\.js"><\/script>/);
+    assert.doesNotMatch(html, /hr-dictation\.js/);
     const hostFiles = [
       "../public/claude-shim.js",
       "../.env.example",
@@ -31,6 +32,8 @@ describe("placeholder and privacy", () => {
     assert.match(readme, /ANTHROPIC_API_KEY/);
     assert.match(readme, /GOOGLE_SERVICE_ACCOUNT_JSON/);
     assert.match(readme, /GOOGLE_DRIVE_DELEGATED_USER/);
+    assert.match(readme, /OPENAI_API_KEY/);
+    assert.match(readme, /hr-dictation\.js/);
   });
 
   it("netlify.toml publishes public with privacy headers", () => {

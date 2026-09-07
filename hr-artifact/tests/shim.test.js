@@ -42,6 +42,7 @@ function fakeWindow() {
             clicks.push(el);
           },
           remove() {},
+          setAttribute() {},
         };
         return el;
       },
@@ -70,6 +71,12 @@ function fakeWindow() {
           JSON.stringify({ authenticated: true, methods: ["password"] }),
       });
     },
+    FileReader: class {
+      readAsDataURL() {
+        this.result = "data:audio/webm;base64,ZmFrZQ==";
+        if (this.onload) this.onload();
+      }
+    },
     setTimeout,
     console,
   };
@@ -89,11 +96,12 @@ describe("claude shim", () => {
     assert.equal(p, again);
   });
 
-  it("returns null for sample and mcp when auth does not advertise them", async () => {
+  it("returns null for sample, mcp, and transcribe when auth does not advertise them", async () => {
     const w = fakeWindow();
     loadShim(w);
     assert.equal(await w.claude.use("sample"), null);
     assert.equal(await w.claude.use("mcp"), null);
+    assert.equal(await w.claude.use("transcribe"), null);
     assert.equal(await w.claude.use("nope"), null);
   });
 
@@ -109,12 +117,12 @@ describe("claude shim", () => {
           json: async () => ({
             authenticated: true,
             methods: ["password"],
-            capabilities: { sample: true, mcp: true },
+            capabilities: { sample: true, mcp: true, transcribe: true },
           }),
           text: async () =>
             JSON.stringify({
               authenticated: true,
-              capabilities: { sample: true, mcp: true },
+              capabilities: { sample: true, mcp: true, transcribe: true },
             }),
         });
       }
@@ -141,6 +149,12 @@ describe("claude shim", () => {
         return Promise.resolve({
           ok: true,
           text: async () => JSON.stringify({ text: "Draft body", truncated: false }),
+        });
+      }
+      if (String(url).includes("/transcribe")) {
+        return Promise.resolve({
+          ok: true,
+          text: async () => JSON.stringify({ text: "Glory Mae was late.", model: "gpt-transcribe" }),
         });
       }
       if (String(url).includes("/drive")) {
@@ -209,6 +223,22 @@ describe("claude shim", () => {
       (err) => err
     );
     assert.equal(unknown.code, "server_not_found");
+
+    w.FileReader = class {
+      readAsDataURL() {
+        this.result = "data:audio/webm;base64,ZmFrZQ==";
+        this.onload();
+      }
+    };
+    const transcribe = await w.claude.use("transcribe");
+    const spoken = await transcribe({
+      audio: { type: "audio/webm" },
+      mimeType: "audio/webm",
+    });
+    assert.equal(spoken.text, "Glory Mae was late.");
+    const transcribeCalls = calls.filter((c) => String(c.url).includes("/transcribe"));
+    assert.equal(transcribeCalls[0].body.mimeType, "audio/webm");
+    assert.ok(transcribeCalls[0].body.audioBase64);
     const driveCalls = calls.filter((c) => String(c.url).includes("/drive"));
     assert.equal(driveCalls[0].body.tool, "search_files");
   });
