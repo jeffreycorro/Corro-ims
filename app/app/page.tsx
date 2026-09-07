@@ -53,7 +53,11 @@ export default async function HubPage() {
               <span className="mt-2 block text-sm leading-relaxed text-muted">
                 {department.summary}
               </span>
-              <span className="mt-5 block text-xs font-semibold tracking-[0.16em] text-amber-600">
+              <span
+                className={`mt-5 block text-xs font-semibold tracking-[0.16em] ${
+                  allowed ? "text-amber-600" : "text-navy-600"
+                }`}
+              >
                 {allowed ? "OPEN WORKSPACE" : "NO ACCESS"}
               </span>
             </>
