@@ -58,7 +58,11 @@ export default async function HubPage() {
                   allowed ? "text-amber-600" : "text-navy-600"
                 }`}
               >
-                {allowed ? "OPEN WORKSPACE" : "NO ACCESS"}
+                {allowed
+                  ? department.slug === "hr"
+                    ? "OPEN 201 FILE REGISTER"
+                    : "OPEN WORKSPACE"
+                  : "NO ACCESS"}
               </span>
             </>
           );
