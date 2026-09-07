@@ -17,7 +17,7 @@ export default async function SettingsPage() {
   return (
     <div className="flex min-h-dvh flex-col bg-navy-50">
       <SiteHeader user={user} variant="portal" />
-      <main className="mx-auto w-full max-w-3xl flex-1 px-5 py-10">
+      <main className="mx-auto w-full max-w-3xl flex-1 px-5 py-10 pb-[max(2.5rem,env(safe-area-inset-bottom))]">
         <p className="text-xs font-semibold tracking-[0.22em] text-amber-500">ACCOUNT</p>
         <h1 className="mt-2 font-display text-3xl text-navy-950">Profile</h1>
         <p className="mt-2 text-muted">

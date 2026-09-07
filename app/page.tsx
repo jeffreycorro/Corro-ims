@@ -18,7 +18,7 @@ export default async function LandingPage() {
       <main>
         <section className="relative overflow-hidden">
           <div className="blueprint-grid pointer-events-none absolute inset-0" />
-          <div className="relative mx-auto grid min-h-[calc(100dvh-8.5rem)] max-w-6xl items-center gap-12 px-5 py-16 lg:grid-cols-[1.15fr_0.85fr] lg:py-20">
+          <div className="relative mx-auto grid min-h-[calc(100dvh-8.5rem)] max-w-6xl items-center gap-12 px-5 py-16 pb-[max(4rem,env(safe-area-inset-bottom))] lg:grid-cols-[1.15fr_0.85fr] lg:py-20">
             <div>
               <p className="mb-5 text-xs font-semibold tracking-[0.28em] text-amber-400">
                 INTERNAL OPERATIONS
@@ -36,7 +36,7 @@ export default async function LandingPage() {
               <div className="mt-8 flex flex-wrap items-center gap-4">
                 <Link
                   href={user ? "/app" : "/login"}
-                  className="inline-flex h-12 items-center rounded-md bg-amber-400 px-6 text-sm font-semibold text-navy-950"
+                  className="inline-flex h-12 min-w-[7.5rem] items-center justify-center rounded-md bg-amber-400 px-6 text-sm font-semibold text-navy-950"
                 >
                   {user ? "Open portal" : "Login"}
                 </Link>
@@ -44,7 +44,7 @@ export default async function LandingPage() {
               </div>
             </div>
 
-            <aside className="rounded-xl border border-white/10 bg-navy-900/80 p-6 shadow-[0_24px_80px_rgb(0_0_0_/_0.28)]">
+            <aside className="min-w-0 rounded-xl border border-white/10 bg-navy-900/80 p-6 shadow-[0_24px_80px_rgb(0_0_0_/_0.28)]">
               <div className="mb-5 flex items-start justify-between gap-4">
                 <div className="flex items-center gap-3">
                   <BrandMark className="h-10 w-10" />
@@ -66,7 +66,7 @@ export default async function LandingPage() {
                 {DEPARTMENTS.map((department) => (
                   <li
                     key={department.slug}
-                    className="flex min-h-[4.5rem] items-center gap-3 rounded-lg border border-white/8 bg-navy-800/70 px-3 py-3"
+                    className="flex min-h-[4.5rem] min-w-0 items-center gap-3 rounded-lg border border-white/8 bg-navy-800/70 px-3 py-3"
                   >
                     <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-navy-950 text-amber-400">
                       <DepartmentIcon slug={department.slug} className="h-5 w-5" />

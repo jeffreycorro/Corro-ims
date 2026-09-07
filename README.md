@@ -92,6 +92,21 @@ The mock session is an httpOnly cookie. It is for local/UI review only.
 
 `@netlify/plugin-nextjs` is declared in `netlify.toml` so the Next.js App Router runtime is used. If you skip env vars on Netlify, the deployed site stays in DEMO MODE.
 
+## Install on iPhone (staff)
+
+The portal is a Progressive Web App. On iPhone it must be added from **Safari** (Chrome’s share sheet does not create a standalone Home Screen app).
+
+1. Open [https://corcondev-portal.netlify.app](https://corcondev-portal.netlify.app) in Safari.
+2. Sign in if you will use the hub from the Home Screen icon (the saved app opens at `/`).
+3. Tap **Share** (the square with an arrow).
+4. Scroll and tap **Add to Home Screen**.
+5. Keep the name **CorConDev** and tap **Add**.
+6. Open the new icon. It should launch full-screen (no Safari address bar) with the navy “C” icon.
+
+If the icon is missing or the page still shows Safari chrome, delete the Home Screen icon, confirm you used Safari, and add it again.
+
+The optional service worker only caches icons. It does not store pages offline and does not change sign-in cookies.
+
 ## HR artifact (separate Netlify site)
 
 The Claude HR single-file app is **not** part of this portal build. Host it from [`hr-artifact/`](hr-artifact/) as its **own** Netlify site (base directory `hr-artifact`). Do not point the company portal at that folder. See `hr-artifact/README.md` for paste-the-export, shim injection, SQL, env, and privacy steps.

@@ -16,9 +16,13 @@ Inside `<head>` of that real `index.html`, **before any other scripts**, add:
 
 ```html
 <script src="/claude-shim.js"></script>
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="/pwa.css">
+<script src="/pwa.js"></script>
 ```
 
-That is the only edit to the artifact. `window.claude.use(name)` is implemented by `public/claude-shim.js` and must load first.
+`window.claude.use(name)` is implemented by `public/claude-shim.js` and must load first. Do not rewrite the rest of the artifact. `pwa.js` / `pwa.css` only add iOS Home Screen tags and a scoped mobile overlay.
 
 ### 3. Apply the SQL migration
 
@@ -123,6 +127,20 @@ node --test
 
 Functions need Netlify (`npx netlify dev --dir .`) plus the env vars above. AI and Drive stay off until their keys are set; the rest of the artifact still loads.
 
+## Install on iPhone (HR staff)
+
+This HR site is a Progressive Web App. Add it from **Safari** only.
+
+1. Open [https://corcondev-hr.netlify.app](https://corcondev-hr.netlify.app) in Safari.
+2. Complete the staff gate (shared password or Supabase login). The Home Screen icon opens `/` and will show the gate again if the session cookie is gone.
+3. Tap **Share** → **Add to Home Screen**.
+4. Keep the name **HR Portal** and tap **Add**.
+5. Open the icon. It should launch full-screen with the navy “C” icon.
+
+If a Netlify visitor password is also enabled, Safari may prompt for that before the in-app gate. That is expected.
+
+The optional service worker caches icons and `pwa.css` only. It does **not** cache `index.html`, `claude-shim.js`, or `/.netlify/functions/*`, so auth, db, sample, and Drive stay on the network.
+
 ## Files
 
 ```
@@ -130,6 +148,11 @@ hr-artifact/
   netlify.toml
   public/index.html          ← replace with Claude export
   public/claude-shim.js
+  public/pwa.js              ← apple / manifest tags + viewport-fit
+  public/pwa.css             ← mobile / safe-area overlay
+  public/manifest.json
+  public/sw.js               ← icon/CSS shell only
+  public/apple-touch-icon.png
   public/robots.txt
   netlify/functions/auth.js
   netlify/functions/db.js

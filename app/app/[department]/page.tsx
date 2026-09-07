@@ -30,7 +30,10 @@ export default async function DepartmentPage({ params }: { params: Params }) {
   return (
     <main className="mx-auto w-full max-w-6xl px-5 py-10">
       <p className="mb-4 text-sm">
-        <Link href="/app" className="text-navy-700 underline-offset-2 hover:underline">
+        <Link
+          href="/app"
+          className="inline-flex min-h-11 items-center text-navy-700 underline-offset-2 hover:underline"
+        >
           ← Department hub
         </Link>
       </p>
