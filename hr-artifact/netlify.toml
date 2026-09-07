@@ -1,0 +1,36 @@
+# CorConDev HR artifact — deploy as a SEPARATE Netlify site.
+# Base directory: hr-artifact
+# Do not point the public company portal at this folder.
+
+[build]
+  command = "node -e \"console.log('static HR artifact — no SPA build')\""
+  publish = "public"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+# Skip PR / branch preview deploys from this config when Netlify honors ignore.
+# Also turn Deploy Previews off in the Netlify UI (required):
+# Project configuration → Build & deploy → Continuous Deployment →
+# Branches and deploy contexts → Disable Deploy Previews.
+# Site configuration → Access & security → Visitor access → password-protect
+# the site as a second layer. This site must not be a casual public crawl target.
+
+[context.deploy-preview]
+  ignore = "exit 0"
+
+[context.branch-deploy]
+  ignore = "exit 0"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Robots-Tag = "noindex, nofollow"
+    X-Frame-Options = "DENY"
+    Referrer-Policy = "no-referrer"
+    X-Content-Type-Options = "nosniff"
+    Cache-Control = "no-store"

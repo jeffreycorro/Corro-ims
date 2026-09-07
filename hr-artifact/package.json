@@ -1,0 +1,13 @@
+{
+  "name": "corcondev-hr-artifact",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Shim host for the existing CorConDev HR Claude artifact. Separate Netlify site — not the company portal.",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "build": "node -e \"console.log('static HR artifact — no SPA build')\""
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

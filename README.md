@@ -92,9 +92,13 @@ The mock session is an httpOnly cookie. It is for local/UI review only.
 
 `@netlify/plugin-nextjs` is declared in `netlify.toml` so the Next.js App Router runtime is used. If you skip env vars on Netlify, the deployed site stays in DEMO MODE.
 
+## HR artifact (separate Netlify site)
+
+The Claude HR single-file app is **not** part of this portal build. Host it from [`hr-artifact/`](hr-artifact/) as its **own** Netlify site (base directory `hr-artifact`). Do not point the company portal at that folder. See `hr-artifact/README.md` for paste-the-export, shim injection, SQL, env, and privacy steps.
+
 ## Out of scope (this phase)
 
-- Full HR 201 File Register
+- Full HR 201 File Register (the artifact host in `hr-artifact/` is a separate deploy)
 - Drive / document storage
 - Document numbering
 - Department Assistant chat (slot only)
