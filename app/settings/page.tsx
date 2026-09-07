@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 import { requireUser } from "@/lib/auth";
@@ -50,6 +51,16 @@ export default async function SettingsPage() {
             <dd>{formatManilaDateTime()}</dd>
           </div>
         </dl>
+
+        {user.profile?.role === "admin" ||
+        user.profile?.role === "hr" ||
+        user.profile?.department === "hr" ? (
+          <p className="mt-6 text-sm">
+            <Link href="/app/hr/settings" className="text-navy-700 underline-offset-2 hover:underline">
+              HR company constants
+            </Link>
+          </p>
+        ) : null}
       </main>
       <SiteFooter />
     </div>
