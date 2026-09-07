@@ -1,0 +1,17 @@
+# Local Netlify CLI
+.netlify
+
+# Env (never commit secrets)
+.env
+.env.*
+!.env.example
+
+# HR backup JSON restored via Settings in the artifact — never commit
+*.backup.json
+*backup*.json
+backups/
+exports/
+
+# Dependencies / OS
+node_modules/
+.DS_Store
