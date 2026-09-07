@@ -62,6 +62,7 @@
       ensureMeta(name, METAS[name]);
     });
     ensureLink("manifest", "/manifest.json");
+    ensureLink("icon", "/favicon.svg", { type: "image/svg+xml" });
     ensureLink("apple-touch-icon", "/apple-touch-icon.png", { sizes: "180x180" });
   }
 
