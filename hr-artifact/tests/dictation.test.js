@@ -47,11 +47,19 @@ function fakeDom() {
         }
         return null;
       },
-      addEventListener() {},
+      listeners: {},
+      addEventListener(type, fn) {
+        this.listeners[type] = this.listeners[type] || [];
+        this.listeners[type].push(fn);
+      },
       focus() {
         window.document.activeElement = this;
       },
-      dispatchEvent() {},
+      dispatchEvent(ev) {
+        const list = this.listeners[ev.type] || [];
+        list.forEach((fn) => fn(ev));
+        return true;
+      },
     };
     node.appendChild = function (child) {
       child.parentNode = node;
@@ -83,7 +91,7 @@ function fakeDom() {
   const created = [];
   const window = {
     document: {
-      readyState: "complete",
+      readyState: "loading",
       activeElement: null,
       body: el("body"),
       documentElement: el("html"),
@@ -190,5 +198,59 @@ describe("hr-dictation companion", () => {
     const ids = Array.from(w.hrDictation.TARGETS).map((t) => String(t.id));
     assert.equal(ids.join(","), "m-brief,m-body,rm-brief,rm-body,ask-q");
     assert.equal(Number(w.hrDictation.MAX_MS), 90 * 1000);
+  });
+
+  it("records, transcribes, and inserts after a short hold even if the mic opens late", async () => {
+    const w = fakeDom();
+    w.Blob = class FakeBlob {
+      constructor(parts, opts) {
+        this.parts = parts;
+        this.type = (opts && opts.type) || "";
+        this.size = (parts || []).reduce((n, p) => n + (p && p.size != null ? p.size : String(p).length), 0);
+      }
+    };
+    w.MediaRecorder = class FakeRecorder {
+      constructor(stream, opts) {
+        this.state = "inactive";
+        this.mimeType = (opts && opts.mimeType) || "audio/webm";
+        this.ondataavailable = null;
+        this.onstop = null;
+      }
+      start() {
+        this.state = "recording";
+      }
+      stop() {
+        this.state = "inactive";
+        if (this.ondataavailable) {
+          this.ondataavailable({ data: { size: 8, type: this.mimeType } });
+        }
+        if (this.onstop) this.onstop();
+      }
+    };
+    w.MediaRecorder.isTypeSupported = () => true;
+    let opened;
+    const micReady = new Promise((resolve) => {
+      opened = resolve;
+    });
+    w.navigator.mediaDevices = {
+      getUserMedia() {
+        return micReady.then(() => ({ getTracks() { return [{ stop() {} }]; } }));
+      },
+    };
+    w.claude.use = (name) => {
+      if (name !== "transcribe") return Promise.resolve(null);
+      return Promise.resolve(() =>
+        Promise.resolve({ text: "Glory Mae was late on August 5." })
+      );
+    };
+    loadDictation(w);
+    w.hrDictation.attach(w.document);
+    const row = w.fields["m-body"].parentNode.children.find((c) => c.className === "hr-dict-row");
+    const btn = row.children.find((c) => String(c.className).includes("hr-dict-btn"));
+    btn.dispatchEvent({ type: "pointerdown", pointerId: 1, pointerType: "mouse", button: 0, preventDefault() {} });
+    btn.dispatchEvent({ type: "pointerup", pointerId: 1, pointerType: "mouse", button: 0, preventDefault() {} });
+    opened();
+    await new Promise((r) => setTimeout(r, 30));
+    assert.match(String(w.fields["m-body"].value), /Glory Mae was late on August 5/);
   });
 });
