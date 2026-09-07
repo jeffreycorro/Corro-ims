@@ -5,8 +5,9 @@
  *
  * window.claude.use(name) returns a Promise synchronously.
  * db is backed by Netlify Functions → Supabase (service role stays on the server).
- * sample (Anthropic) and mcp (Google Drive) are served the same way when
- * ANTHROPIC_API_KEY / GOOGLE_SERVICE_ACCOUNT_JSON are set. Secrets stay on the server.
+ * sample (Anthropic), mcp (Google Drive), and transcribe (OpenAI Whisper /
+ * gpt-transcribe) are served the same way when their keys are set.
+ * Secrets stay on the server.
  */
 (function () {
   "use strict";
@@ -489,6 +490,79 @@
     return sample;
   }
 
+  function blobToBase64(blob) {
+    return new Promise(function (resolve, reject) {
+      if (!blob) {
+        reject(new Error("audio is required"));
+        return;
+      }
+      if (typeof FileReader === "undefined") {
+        reject(new Error("This browser cannot encode audio for dictation."));
+        return;
+      }
+      var reader = new FileReader();
+      reader.onload = function () {
+        var s = String(reader.result || "");
+        var idx = s.indexOf(",");
+        resolve(idx >= 0 ? s.slice(idx + 1) : s);
+      };
+      reader.onerror = function () {
+        reject(new Error("Could not read the recording."));
+      };
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  function filenameForMime(mime) {
+    var type = String(mime || "").toLowerCase();
+    if (type.indexOf("mp4") !== -1 || type.indexOf("m4a") !== -1) return "dictation.m4a";
+    if (type.indexOf("mpeg") !== -1 || type.indexOf("mp3") !== -1) return "dictation.mp3";
+    if (type.indexOf("ogg") !== -1) return "dictation.ogg";
+    if (type.indexOf("wav") !== -1) return "dictation.wav";
+    return "dictation.webm";
+  }
+
+  function createTranscribe() {
+    function transcribe(input, options) {
+      options = options || {};
+      var blob = input && input.audio ? input.audio : input;
+      if (!blob) {
+        return Promise.reject(Object.assign(new Error("audio is required"), { code: "bad_request" }));
+      }
+      var mime = (input && input.mimeType) || blob.type || "audio/webm";
+      var filename = (input && input.filename) || filenameForMime(mime);
+      var language = (input && input.language) || options.language;
+      var signal = (input && input.signal) || options.signal;
+      return blobToBase64(blob).then(function (audioBase64) {
+        return gatedCall(
+          "transcribe",
+          {
+            audioBase64: audioBase64,
+            mimeType: mime,
+            filename: filename,
+            language: language,
+          },
+          { signal: signal }
+        );
+      }).then(function (out) {
+        return {
+          text: (out && out.text) || "",
+          language: out && out.language,
+          model: out && out.model,
+        };
+      });
+    }
+
+    transcribe.limits = function () {
+      return Promise.resolve({
+        maxSeconds: 90,
+        maxBytes: 3.5 * 1024 * 1024,
+      });
+    };
+
+    return transcribe;
+  }
+
   var ONESHOT_B64 = 3.2 * 1024 * 1024;
   var CHUNK_B64 = 4 * Math.floor((256 * 1024) / 3);
 
@@ -570,6 +644,7 @@
   var downloadsSingleton = null;
   var sampleSingleton = null;
   var mcpSingleton = null;
+  var transcribeSingleton = null;
 
   function resolveName(name) {
     if (name === "db") {
@@ -603,7 +678,32 @@
           return null;
         });
     }
+    if (name === "transcribe") {
+      return waitForAuth()
+        .then(function (status) {
+          if (!capabilityOn(status, "transcribe")) return null;
+          if (!transcribeSingleton) transcribeSingleton = createTranscribe();
+          return transcribeSingleton;
+        })
+        .catch(function () {
+          return null;
+        });
+    }
     return Promise.resolve(null);
+  }
+
+  function loadDictationCompanion() {
+    try {
+      if (typeof document === "undefined") return;
+      if (document.querySelector && document.querySelector('script[data-hr-dictation="1"]')) return;
+      var parent = document.head || document.documentElement;
+      if (!parent || !document.createElement) return;
+      var s = document.createElement("script");
+      s.src = "/hr-dictation.js";
+      s.defer = true;
+      if (s.setAttribute) s.setAttribute("data-hr-dictation", "1");
+      parent.appendChild(s);
+    } catch (e) {}
   }
 
   var apiObj = {
@@ -616,4 +716,5 @@
 
   Object.freeze(apiObj);
   window.claude = apiObj;
+  loadDictationCompanion();
 })();
