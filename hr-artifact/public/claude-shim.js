@@ -692,18 +692,23 @@
     return Promise.resolve(null);
   }
 
-  function loadDictationCompanion() {
+  function loadCompanion(src, flag) {
     try {
       if (typeof document === "undefined") return;
-      if (document.querySelector && document.querySelector('script[data-hr-dictation="1"]')) return;
+      if (document.querySelector && document.querySelector('script[' + flag + '="1"]')) return;
       var parent = document.head || document.documentElement;
       if (!parent || !document.createElement) return;
       var s = document.createElement("script");
-      s.src = "/hr-dictation.js";
+      s.src = src;
       s.defer = true;
-      if (s.setAttribute) s.setAttribute("data-hr-dictation", "1");
+      if (s.setAttribute) s.setAttribute(flag, "1");
       parent.appendChild(s);
     } catch (e) {}
+  }
+
+  function loadDictationCompanion() {
+    loadCompanion("/hr-dictation.js", "data-hr-dictation");
+    loadCompanion("/hr-memo.js", "data-hr-memo");
   }
 
   var apiObj = {

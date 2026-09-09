@@ -4020,7 +4020,7 @@ function memoPaper(m, no){
        ["Confirmed by:", st.hrHead||"",    "HR Dept. Head"],
        ["Noted by:",     st.adminHead||"", st.adminTitle||"Administrative Head / Corp. Secretary"],
        ["Conformed:",    st.president||"", st.presidentTitle||"CEO"]])
-   + pfISO("memo");
+   + pfISO("memo", {formNo: no||m.no||""});
   return body;
 }
 function printCompanyMemo(m, no){
@@ -10399,6 +10399,9 @@ async function memoEditor(id){
 }
 async function memoDraw(m){
   const id = S.memos[m.id] ? m.id : null;
+  const kept = id ? S.memos[m.id] : null;
+  if(kept && kept.no && !m.no) m.no = kept.no;
+  const filed = !!(m.no || m.fromDrive || m.status==="Issued");
   const sample = await getSample();
   const draw = ()=>{
     const detail = m.audience==="Department"
@@ -10406,16 +10409,37 @@ async function memoDraw(m){
       : m.audience==="Individual"
       ? empPicker("m-detail", m.audienceDetail)
       : '<input id="m-detail" value="'+esc(m.audienceDetail||"")+'" placeholder="'+(m.audience==="Project"?"Project name":"Describe the recipients")+'">';
+    const showDraft = !filed || m._wantDraft;
+    const scanNote = (m.fromDrive || m.link)
+      ? '<div class="note" style="border-left-color:var(--accent)"><b>This memorandum is already on file'
+        + (m.no?" as "+esc(m.no):"")+'.</b> '
+        + (m.fromDrive?"It was issued on paper before the portal. ":"")
+        + (m.link?'<a href="'+esc(m.link)+'" target="_blank" rel="noopener noreferrer"><b>Open the Drive scan</b></a>'
+          + ' — that scan is the original. ':"")
+        + 'Type a subject when you can so the register is searchable. '
+        + 'The number and date stay as filed. The next step is to upload the signed copy.</div>'
+      : "";
+    const aiCard = sample
+      ? '<div class="card" style="background:var(--surface2)"><div class="card-b stack">'
+        + '<div class="f"><label>What should this memo say?</label>'
+        + '<textarea id="m-brief" placeholder="e.g. site reporting time moves to 7:00 AM starting Monday because of the road closure on the Canduman route; anyone arriving after 7:15 is marked late" style="min-height:56px">'+esc(m.brief||"")+'</textarea>'
+        + '<span class="hint">Describe it plainly. The draft comes back in the company\'s memo voice — review and edit it before issuing.</span></div>'
+        + '<div class="row"><button class="btn pri" id="m-draft">Draft it</button>'
+        + '<button class="btn" id="m-tighten"'+(m.body?"":" disabled")+'>Tighten the current draft</button>'
+        + '<span class="lbl" id="m-ai-status"></span></div>'
+        + '</div></div>'
+      : '<div class="note">AI drafting is not available in this view — write the body directly below.</div>';
     openModal({
       title: m.no ? "Memo "+m.no : "New memorandum", wide:true,
       body:'<div class="stack">'
+        + scanNote
         + '<div class="grid3">'
         + '<div class="f"><label>Number</label><input value="'+esc(m.no||"assigned when you save")+'" disabled></div>'
         + '<div class="f"><label>Date</label><input id="m-date" type="date" value="'+esc(m.date)+'"></div>'
         + '<div class="f"><label>Effective</label><input id="m-eff" type="date" value="'+esc(m.effectivity||"")+'"></div>'
         + '</div>'
         + '<div class="grid3">'
-        + '<div class="f"><label>Subject</label><input id="m-subj" value="'+esc(m.subject)+'" placeholder="e.g. Revised Site Reporting Time"></div>'
+        + '<div class="f"><label>Subject</label><input id="m-subj" value="'+esc(m.subject)+'" placeholder="'+(filed?"optional — from the scan, when you have it":"e.g. Revised Site Reporting Time")+'"></div>'
         + '<div class="f"><label>Category</label><select id="m-cat">'+MEMO_CATS.map(c=>'<option'+(m.cat===c?" selected":"")+'>'+c+'</option>').join("")+'</select></div>'
         + '<div class="f"><label>Status</label><select id="m-status">'+["Draft","Issued","Superseded","Void"].map(s=>'<option'+(m.status===s?" selected":"")+'>'+s+'</option>').join("")+'</select></div>'
         + '</div>'
@@ -10423,30 +10447,22 @@ async function memoDraw(m){
         + '<div class="f"><label>Addressed to</label><select id="m-aud">'+["All","Department","Project","Individual","Custom"].map(a=>'<option'+(m.audience===a?" selected":"")+'>'+a+'</option>').join("")+'</select></div>'
         + '<div class="f"><label>'+(m.audience==="All"?"(all employees)":"Which")+'</label>'+(m.audience==="All"?'<input value="All Employees" disabled>':detail)+'</div>'
         + '</div>'
-        + (sample?'<div class="card" style="background:var(--surface2)"><div class="card-b stack">'
-          + '<div class="f"><label>What should this memo say?</label>'
-          + '<textarea id="m-brief" placeholder="e.g. site reporting time moves to 7:00 AM starting Monday because of the road closure on the Canduman route; anyone arriving after 7:15 is marked late" style="min-height:56px">'+esc(m.brief||"")+'</textarea>'
-          + '<span class="hint">Describe it plainly. The draft comes back in the company\'s memo voice — review and edit it before issuing.</span></div>'
-          + '<div class="row"><button class="btn pri" id="m-draft">Draft it</button>'
-          + '<button class="btn" id="m-tighten"'+(m.body?"":" disabled")+'>Tighten the current draft</button>'
-          + '<span class="lbl" id="m-ai-status"></span></div>'
-          + '</div></div>':'<div class="note">AI drafting is not available in this view — write the body directly below.</div>')
-        + (m.fromDrive
-            ? '<div class="note" style="border-left-color:var(--warn)"><b>This memorandum was issued on paper '
-              + 'before the portal.</b> The scan is the original — '
-              + (m.link?'<a href="'+esc(m.link)+'" target="_blank" rel="noopener noreferrer"><b>open it</b></a>, ':"")
-              + 'read the subject off it and type it above. Its number and date came from the file name and '
-              + 'will not change.</div>'
-            : "")
-        + '<div class="f"><label>Memo body'+(m.fromDrive?" — optional, a summary for the register":"")+'</label>'
-        + '<textarea id="m-body" style="min-height:'+(m.fromDrive?"110":"190")+'px">'+esc(m.body||"")+'</textarea></div>'
+        + (showDraft ? aiCard
+          : (sample && !String(m.body||"").trim()
+            ? '<div class="note">Need a typed body in the portal? '
+              + '<button class="btn sm" id="m-want-draft">Draft a text copy</button> '
+              + 'The paper original stays the record.</div>'
+            : ""))
+        + '<div class="f"><label>Memo body'+(filed?" — optional, a summary for the register":"")+'</label>'
+        + '<textarea id="m-body" style="min-height:'+(filed?"110":"190")+'px">'+esc(m.body||"")+'</textarea></div>'
         + '<div class="f"><label>Tags (comma separated)</label><input id="m-tags" value="'+esc((m.tags||[]).join(", "))+'" placeholder="e.g. attendance, Barili, 2026"></div>'
         + (S.memos[m.id] ? signedBlock("memos", m) : '<div class="note">Save the memo first, then the signed '
             + 'copy can be uploaded against it.</div>')
         + '</div>',
       foot:(id?'<button class="btn danger" id="m-del">Delete</button>':"")
         + '<button class="btn" id="m-preview">Preview &amp; print</button>'
-        + '<button class="btn pri" id="m-save">Save memo</button>'
+        + '<button class="btn'+(filed&&id?"":" pri")+'" id="m-save">Save memo</button>'
+        + (filed&&id&&!m.signedLink?'<button class="btn pri" id="m-upload">Upload the signed copy</button>':"")
     });
     const grab=()=>{
       m.subject=$("#m-subj").value.trim(); m.cat=$("#m-cat").value; m.date=$("#m-date").value;
@@ -10456,7 +10472,11 @@ async function memoDraw(m){
       m.tags=$("#m-tags").value.split(",").map(s=>s.trim()).filter(Boolean);
     };
     $("#m-aud").onchange=()=>{ grab(); m.audienceDetail=""; draw(); };
-    if(sample){
+    const wd=$("#m-want-draft");
+    if(wd) wd.onclick=()=>{ grab(); m._wantDraft=true; draw(); };
+    const up=$("#m-upload");
+    if(up) up.onclick=()=>{ const b=document.querySelector('[data-signed="memos"]'); if(b) b.click(); };
+    if(sample && $("#m-draft")){
       const run = async (mode)=>{
         grab();
         if(mode==="draft" && !m.brief.trim()){ toast("Say what the memo should cover first.","err"); return; }
@@ -10493,7 +10513,12 @@ async function memoDraw(m){
     $("#m-preview").onclick=()=>{ grab(); previewMemo(m); };
     $("#m-save").onclick=async()=>{
       grab();
-      if(!m.subject){ toast("Give the memo a subject.","err"); return; }
+      /* An issued / Drive-imported memo already has its number. Re-read it
+         from the store so Save cannot blank it or mint a second C.M. number. */
+      const stored=S.memos[m.id];
+      if(stored&&stored.no) m.no=stored.no;
+      const already=!!(m.no||m.fromDrive||m.status==="Issued"||(stored&&stored.status==="Issued"));
+      if(!m.subject && !already){ toast("Give the memo a subject.","err"); return; }
       /* A memo read off a filed scan already has its number — it must not draw
          a fresh one and create a second entry for the same sheet. */
       if(!m.no && !m.fromDrive){
@@ -10529,7 +10554,7 @@ function previewMemo(m){
   const body = memoPaper(view, no) ;
   const warn = [];
   if(!m.subject) warn.push("no subject");
-  if(!String(m.body||"").trim()) warn.push("no body");
+  if(!String(m.body||"").trim() && !(m.no||m.fromDrive||m.status==="Issued")) warn.push("no body");
   openModal({ title:"Memo preview — "+(m.no||"not yet numbered"), wide:true,
     body:(warn.length?'<div class="note" style="border-left-color:var(--warn);margin-bottom:12px">'
             + 'This memo still has <b>'+esc(warn.join(" and "))+'</b>. Go back and fill it in — '

@@ -112,6 +112,7 @@ describe("HR PWA bootstrap", () => {
     assert.match(sw, /\/pwa\.css/);
     assert.doesNotMatch(sw, /index\.html/);
     assert.doesNotMatch(sw, /claude-shim/);
+    assert.doesNotMatch(sw, /hr-memo/);
     assert.match(sw, /\/\.netlify\//);
   });
 });
