@@ -56,7 +56,14 @@
   }
 
   function textOf(el) {
-    return el && el.textContent != null ? String(el.textContent) : "";
+    if (!el) return "";
+    var own = el.textContent != null ? String(el.textContent) : "";
+    if (own) return own;
+    var bits = [];
+    var kids = el.children || [];
+    var i;
+    for (i = 0; i < kids.length; i += 1) bits.push(textOf(kids[i]));
+    return bits.join(" ");
   }
 
   function findEditor(root) {
@@ -159,6 +166,7 @@
 
   function insertScanBanner(editor, m) {
     if (!m.link || editor.querySelector("#hr-memo-scan")) return null;
+    if (/Open the Drive scan|already on file/i.test(textOf(editor))) return null;
     var stack = editor.querySelector(".stack") || editor;
     var note = document.createElement("div");
     note.id = "hr-memo-scan";
@@ -189,7 +197,7 @@
   }
 
   function offerDraftToggle(editor, m) {
-    if (!shouldOfferDraft(m) || editor.querySelector("#hr-memo-draft")) return null;
+    if (!shouldOfferDraft(m) || editor.querySelector("#hr-memo-draft") || editor.querySelector("#m-want-draft")) return null;
     var brief = editor.querySelector("#m-brief");
     var host = brief
       ? closestClass(brief, "card") || brief.parentNode
@@ -228,7 +236,7 @@
         })
         .join(" ");
     }
-    if (!foot || !upload || editor.querySelector("#m-upload-signed")) return null;
+    if (!foot || !upload || editor.querySelector("#m-upload-signed") || editor.querySelector("#m-upload")) return null;
     if (/Replace/i.test(textOf(upload))) return null;
     var btn = document.createElement("button");
     btn.type = "button";

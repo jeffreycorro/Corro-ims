@@ -309,6 +309,27 @@ describe("hr-memo companion", () => {
     assert.match(String(upload.className), /\bpri\b/);
   });
 
+  it("does not duplicate Drive banner or upload when the editor already has them", () => {
+    const w = fakeDom();
+    loadMemo(w);
+    const modal = issuedEditor(w);
+    const stack = modal.querySelector(".stack");
+    const existing = el("div", { class: "note" });
+    existing.innerHTML = '<b>This memorandum is already on file.</b> <a href="https://drive.google.com/file/d/abc/view"><b>Open the Drive scan</b></a>';
+    existing.textContent = "This memorandum is already on file. Open the Drive scan";
+    stack.insertBefore(existing, stack.children[0]);
+    const foot = modal.querySelector(".modal-f");
+    const upload = el("button", { id: "m-upload" });
+    upload.attrs.id = "m-upload";
+    upload.className = "btn pri";
+    upload.textContent = "Upload the signed copy";
+    foot.appendChild(upload);
+    w.hrMemo.enhance(w.document);
+    assert.equal(modal.querySelector("#hr-memo-scan"), null);
+    assert.equal(modal.querySelector("#m-upload-signed"), null);
+    assert.ok(modal.querySelector("#m-upload"));
+  });
+
   it("leaves a new untitled draft alone", () => {
     const w = fakeDom();
     loadMemo(w);
