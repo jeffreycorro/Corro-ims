@@ -20,6 +20,7 @@ describe("placeholder and privacy", () => {
     const pwaIndex = html.indexOf("/pwa.js");
     assert.ok(shimIndex > -1 && pwaIndex > shimIndex, "pwa.js must load after the shim");
     assert.doesNotMatch(html, /hr-dictation\.js/);
+    assert.doesNotMatch(html, /hr-memo\.js/);
     const hostFiles = [
       "../public/claude-shim.js",
       "../.env.example",
@@ -42,6 +43,7 @@ describe("placeholder and privacy", () => {
     assert.match(readme, /<script src="\/pwa\.js"><\/script>/);
     assert.match(readme, /OPENAI_API_KEY/);
     assert.match(readme, /hr-dictation\.js/);
+    assert.match(readme, /hr-memo\.js/);
   });
 
   it("netlify.toml publishes public with privacy headers", () => {

@@ -22,7 +22,7 @@ Inside `<head>` of that real `index.html`, **before any other scripts**, add:
 <script src="/pwa.js"></script>
 ```
 
-`window.claude.use(name)` is implemented by `public/claude-shim.js` and must load first. Do not rewrite the rest of the artifact. `pwa.js` / `pwa.css` only add iOS Home Screen tags and a scoped mobile overlay. The shim then loads `hr-dictation.js`, which attaches hold-to-talk when `OPENAI_API_KEY` is set. Do not rewrite the artifact to add mic buttons.
+`window.claude.use(name)` is implemented by `public/claude-shim.js` and must load first. Do not rewrite the rest of the artifact. `pwa.js` / `pwa.css` only add iOS Home Screen tags and a scoped mobile overlay. The shim then loads `hr-dictation.js` (hold-to-talk when `OPENAI_API_KEY` is set) and `hr-memo.js` (issued / on-paper memoranda open as saved records, not blank drafts). Do not rewrite the artifact to add mic buttons or memo chrome.
 
 ### 3. Apply the SQL migration
 
@@ -119,7 +119,7 @@ After deploy, open the site, pass the gate, and restore the backup JSON from **S
 | `downloads` | `save({ filename, data })` via object URL + `<a download>`. |
 | `sample` | Anthropic-backed `sample(prompt, { modelTier, onText, tools, signal })` → `{ text, truncated? }`, plus `sample.json` and `sample.limits`. `null` until `ANTHROPIC_API_KEY` is set. Client-side tools (Ask the records) run in the browser; only schemas go to the function. |
 | `mcp` | `callTool("Google Drive", tool, args)` for `search_files`, `read_file_content`, `create_file`. Responses use `{ payload: { files, text/content/fileContent, id, title, viewUrl, nextPageToken } }`. `null` until the service account env is set. Uploads larger than ~3MB are chunked through a resumable Drive session. |
-| `transcribe` | OpenAI-backed `transcribe({ audio, mimeType, language, signal })` → `{ text }`. Hold-to-talk on memo draft / reminder / Ask fields is attached by `hr-dictation.js` (loaded by the shim). `null` until `OPENAI_API_KEY` is set. |
+| `transcribe` | OpenAI-backed `transcribe({ audio, mimeType, language, signal })` → `{ text }`. Hold-to-talk on memo draft / reminder / Ask fields is attached by `hr-dictation.js` (loaded by the shim). `null` until `OPENAI_API_KEY` is set. Issued / Drive-imported memos are treated as saved records by `hr-memo.js` (also loaded by the shim). |
 | anything else | `null` |
 
 `acquire({ holder })` calls the `acquire_doc_lock` RPC. A second holder with an unexpired lock gets `acquired: false`.
@@ -145,7 +145,7 @@ This HR site is a Progressive Web App. Add it from **Safari** only.
 
 If a Netlify visitor password is also enabled, Safari may prompt for that before the in-app gate. That is expected.
 
-The optional service worker caches icons and `pwa.css` only. It does **not** cache `index.html`, `claude-shim.js`, `hr-dictation.js`, or `/.netlify/functions/*`, so auth, db, sample, Drive, and dictation stay on the network.
+The optional service worker caches icons and `pwa.css` only. It does **not** cache `index.html`, `claude-shim.js`, `hr-dictation.js`, `hr-memo.js`, or `/.netlify/functions/*`, so auth, db, sample, Drive, dictation, and memo chrome stay on the network.
 
 ## Files
 
@@ -155,6 +155,7 @@ hr-artifact/
   public/index.html          ← replace with Claude export
   public/claude-shim.js
   public/hr-dictation.js     ← hold-to-talk UI (loaded by the shim)
+  public/hr-memo.js          ← issued / on-paper memo editor (loaded by the shim)
   public/pwa.js              ← apple / manifest tags + viewport-fit
   public/pwa.css             ← mobile / safe-area overlay
   public/manifest.json
