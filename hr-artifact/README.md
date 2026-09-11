@@ -22,7 +22,7 @@ Inside `<head>` of that real `index.html`, **before any other scripts**, add:
 <script src="/pwa.js"></script>
 ```
 
-`window.claude.use(name)` is implemented by `public/claude-shim.js` and must load first. Do not rewrite the rest of the artifact. `pwa.js` / `pwa.css` only add iOS Home Screen tags and a scoped mobile overlay. The shim then loads `hr-dictation.js` (hold-to-talk when `OPENAI_API_KEY` is set) and `hr-memo.js` (issued / on-paper memoranda open as saved records, not blank drafts). Do not rewrite the artifact to add mic buttons or memo chrome.
+`window.claude.use(name)` is implemented by `public/claude-shim.js` and must load first. Do not rewrite the rest of the artifact. `pwa.js` / `pwa.css` only add iOS Home Screen tags and a scoped mobile overlay. The shim then loads `hr-dictation.js` (hold-to-talk when `OPENAI_API_KEY` is set), `hr-memo.js` (issued / on-paper memoranda open as saved records, not blank drafts), and `hr-attendance.js` (manpower tally leave rule, JSON paste/import door, per-person summary). Do not rewrite the artifact to add mic buttons, memo chrome, or a second attendance system.
 
 ### 3. Apply the SQL migration
 
@@ -145,7 +145,7 @@ This HR site is a Progressive Web App. Add it from **Safari** only.
 
 If a Netlify visitor password is also enabled, Safari may prompt for that before the in-app gate. That is expected.
 
-The optional service worker caches icons and `pwa.css` only. It does **not** cache `index.html`, `claude-shim.js`, `hr-dictation.js`, `hr-memo.js`, or `/.netlify/functions/*`, so auth, db, sample, Drive, dictation, and memo chrome stay on the network.
+The optional service worker caches icons and `pwa.css` only. It does **not** cache `index.html`, `claude-shim.js`, `hr-dictation.js`, `hr-memo.js`, `hr-attendance.js`, or `/.netlify/functions/*`, so auth, db, sample, Drive, dictation, memo chrome, and attendance import stay on the network.
 
 ## Files
 
@@ -156,6 +156,7 @@ hr-artifact/
   public/claude-shim.js
   public/hr-dictation.js     ← hold-to-talk UI (loaded by the shim)
   public/hr-memo.js          ← issued / on-paper memo editor (loaded by the shim)
+  public/hr-attendance.js    ← manpower summary + Claude JSON paste door (loaded by the shim)
   public/pwa.js              ← apple / manifest tags + viewport-fit
   public/pwa.css             ← mobile / safe-area overlay
   public/manifest.json

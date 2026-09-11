@@ -709,6 +709,7 @@
   function loadDictationCompanion() {
     loadCompanion("/hr-dictation.js", "data-hr-dictation");
     loadCompanion("/hr-memo.js", "data-hr-memo");
+    loadCompanion("/hr-attendance.js", "data-hr-attendance");
   }
 
   var apiObj = {
