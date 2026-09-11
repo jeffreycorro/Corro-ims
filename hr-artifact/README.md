@@ -124,6 +124,24 @@ After deploy, open the site, pass the gate, and restore the backup JSON from **S
 
 `acquire({ holder })` calls the `acquire_doc_lock` RPC. A second holder with an unexpired lock gets `acquired: false`.
 
+## Manpower attendance (Claude JSON paste)
+
+Daily manpower PDFs live in Drive. OCR is weaker than Claude.ai, so the intended path is: Claude extracts the rows, HR pastes or uploads the JSON array on **Daily Manpower** or **HR Analytics** (`Paste Claude JSON`).
+
+```json
+[
+  { "date": "2026-08-29",
+    "preparedBy": "Timekeeper", "approvedBy": "PIC", "source": "08.29.2026.pdf",
+    "rows": [
+      { "empNo": "1250", "status": "Present", "reason": "", "site": "CTU BARILI" },
+      { "empNo": "1348", "status": "Absent", "reason": "Approved Leave (LRF2026 - 0123)", "site": "ADMINS" },
+      { "empNo": "1353", "status": "Present/Late", "reason": "traffic", "site": "TAWASON" }
+    ] }
+]
+```
+
+Matching is on the four-digit employee number only. Status is normalised to the closed list. The same leave rule (`effectiveStatus` / `absenceExcuse`) feeds the per-person summary, charts, and Notice to Explain suggestions: an approved leave on file beats a timekeeper Absent; an LRF citation on the report (including a wrapped `0123)` line, employee-scoped) is next; otherwise the absence is unexcused.
+
 ## Local checks
 
 ```bash
