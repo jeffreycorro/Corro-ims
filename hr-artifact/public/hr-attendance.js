@@ -191,12 +191,39 @@
     return rows;
   }
 
+  /* Artifact state is `const S` — a global lexical binding, not window.S. */
+  function bindArtifactStore() {
+    if (root.__hrS && root.__hrS.employees) return root.__hrS;
+    if (root.S && root.S.employees) return root.S;
+    try {
+      if (typeof document !== "undefined" && document.createElement) {
+        var s = document.createElement("script");
+        s.textContent = "window.__hrS=S;window.S=S;";
+        (document.documentElement || document.head || document.body).appendChild(s);
+        if (s.parentNode) s.parentNode.removeChild(s);
+      }
+    } catch (e) {}
+    return root.__hrS || root.S || {};
+  }
+
+  function employeesMap(S) {
+    if (S && S.employees && Object.keys(S.employees).length) return S.employees;
+    if (typeof root.empList === "function") {
+      var map = {};
+      root.empList().forEach(function (e) {
+        if (e && e.id) map[e.id] = e;
+      });
+      if (Object.keys(map).length) return map;
+    }
+    return (S && S.employees) || {};
+  }
+
   function defaultCtx(extra) {
-    var S = (root.S || {});
+    var S = bindArtifactStore();
     var ctx = {
-      daily: S.daily || {},
-      leaves: S.leaves || {},
-      employees: S.employees || {},
+      daily: (S && S.daily) || {},
+      leaves: (S && S.leaves) || {},
+      employees: employeesMap(S),
       today: (typeof root.TODAY === "string" && root.TODAY) || manilaToday(),
       put: typeof root.put === "function" ? root.put : null,
     };
@@ -795,6 +822,13 @@
       }
       if (result.warnings && result.warnings.length) {
         stats.warnings = stats.warnings.concat(result.warnings);
+      }
+      if (!result.used) {
+        stats.errors.push(days[i].date + " (no employee matched — check the 201 numbers)");
+        Object.keys(result.unknown).forEach(function (n) {
+          stats.unknown[n] = (stats.unknown[n] || 0) + result.unknown[n];
+        });
+        continue;
       }
       if (ctx.put) await ctx.put("daily", result.rec.id, result.rec);
       else ctx.daily[result.rec.id] = result.rec;
@@ -1507,6 +1541,7 @@
 
   function attach() {
     if (api.attached) return api;
+    bindArtifactStore();
     wrapArtifact();
     if (typeof root.render === "function" && !root.render.__hrAtt) {
       var origRender = root.render;

@@ -379,6 +379,38 @@ describe("manpower attendance core", () => {
     assert.equal(hr.nameMatches(e, "Pedrano"), false);
   });
 
+  it("matches employees through empList when S is not on window", async () => {
+    const employees = {
+      e1250: emp("e1250", "1250", "Armenio, Toribio D."),
+      e1348: emp("e1348", "1348", "Manolong, Raffy"),
+      e1353: emp("e1353", "1353", "Pedrano, Jaica M."),
+    };
+    const daily = {};
+    const windowLike = {
+      empList() {
+        return Object.values(employees);
+      },
+      async put(coll, id, obj) {
+        if (coll === "daily") daily[id] = obj;
+      },
+    };
+    windowLike.window = windowLike;
+    const live = loadAttendance(windowLike);
+    const stats = await live.importAttendanceJson(sampleJson());
+    assert.equal(stats.rows, 3);
+    assert.equal(stats.days, 1);
+    assert.equal(daily.d20260829.rows.e1348.s, "Absent");
+    assert.equal(
+      live.effectiveStatus("e1348", "2026-08-29", "Absent", "Approved Leave (LRF2026 - 0123)", {
+        employees,
+        leaves: {},
+        daily,
+        today: "2026-08-31",
+      }),
+      "Leave"
+    );
+  });
+
   it("rejects invalid JSON paste payloads", () => {
     assert.throws(() => hr.normalizeImportPayload("not json"), /not valid JSON/);
     assert.throws(() => hr.normalizeImportPayload({ foo: 1 }), /array of daily reports/);
