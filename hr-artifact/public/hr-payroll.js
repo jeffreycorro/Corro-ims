@@ -1925,7 +1925,14 @@
     var view = document.getElementById("view");
     if (!view) return;
     if (!document.getElementById("ia-start") && !view.querySelector("[data-imonths]")) return;
-    if (document.getElementById("hr-pay-edits")) return;
+    var existingEdits = document.getElementById("hr-pay-edits");
+    if (existingEdits) {
+      var afterAtt = document.getElementById("hr-att-summary");
+      if (afterAtt && afterAtt.parentNode && existingEdits.previousSibling !== afterAtt) {
+        afterAtt.parentNode.insertBefore(existingEdits, afterAtt.nextSibling);
+      }
+      return;
+    }
     var S = store();
     var edited = Object.keys(S.daily || {})
       .map(function (id) { return S.daily[id]; })

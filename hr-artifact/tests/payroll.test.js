@@ -407,3 +407,17 @@ describe("acceptance helpers", () => {
     assert.ok(miss.indexOf("2026-08-23") < 0);
   });
 });
+
+describe("hr-payroll companion wiring", () => {
+  it("is loaded by the shim after attendance and not referenced from the artifact HTML", () => {
+    const shim = fs.readFileSync(path.join(__dirname, "../public/claude-shim.js"), "utf8");
+    const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
+    assert.match(shim, /hr-payroll\.js/);
+    assert.match(shim, /data-hr-payroll/);
+    assert.ok(
+      shim.indexOf("hr-attendance.js") < shim.indexOf("hr-payroll.js"),
+      "attendance leave rules must bind before payroll reads them"
+    );
+    assert.doesNotMatch(html, /hr-payroll\.js/);
+  });
+});

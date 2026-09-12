@@ -22,7 +22,7 @@ Inside `<head>` of that real `index.html`, **before any other scripts**, add:
 <script src="/pwa.js"></script>
 ```
 
-`window.claude.use(name)` is implemented by `public/claude-shim.js` and must load first. Do not rewrite the rest of the artifact. `pwa.js` / `pwa.css` only add iOS Home Screen tags and a scoped mobile overlay. The shim then loads `hr-dictation.js` (hold-to-talk when `OPENAI_API_KEY` is set), `hr-memo.js` (issued / on-paper memoranda open as saved records, not blank drafts), and `hr-payroll.js` (Payroll Maker, contributions, holiday calendar, Daily Manpower Hol/OT + change history). Do not rewrite the artifact to add mic buttons, memo chrome, or a parallel payroll app.
+`window.claude.use(name)` is implemented by `public/claude-shim.js` and must load first. Do not rewrite the rest of the artifact. `pwa.js` / `pwa.css` only add iOS Home Screen tags and a scoped mobile overlay. The shim then loads `hr-dictation.js` (hold-to-talk when `OPENAI_API_KEY` is set), `hr-memo.js` (issued / on-paper memoranda open as saved records, not blank drafts), `hr-attendance.js` (manpower tally leave rule, JSON paste/import door, per-person summary), and `hr-payroll.js` (Payroll Maker, contributions, holiday calendar, Daily Manpower Hol/OT + change history). Do not rewrite the artifact to add mic buttons, memo chrome, a second attendance system, or a parallel payroll app.
 
 ### 3. Apply the SQL migration
 
@@ -119,10 +119,28 @@ After deploy, open the site, pass the gate, and restore the backup JSON from **S
 | `downloads` | `save({ filename, data })` via object URL + `<a download>`. |
 | `sample` | Anthropic-backed `sample(prompt, { modelTier, onText, tools, signal })` → `{ text, truncated? }`, plus `sample.json` and `sample.limits`. `null` until `ANTHROPIC_API_KEY` is set. Client-side tools (Ask the records) run in the browser; only schemas go to the function. |
 | `mcp` | `callTool("Google Drive", tool, args)` for `search_files`, `read_file_content`, `create_file`. Responses use `{ payload: { files, text/content/fileContent, id, title, viewUrl, nextPageToken } }`. `null` until the service account env is set. Uploads larger than ~3MB are chunked through a resumable Drive session. |
-| `transcribe` | OpenAI-backed `transcribe({ audio, mimeType, language, signal })` → `{ text }`. Hold-to-talk on memo draft / reminder / Ask fields is attached by `hr-dictation.js` (loaded by the shim). `null` until `OPENAI_API_KEY` is set. Issued / Drive-imported memos are treated as saved records by `hr-memo.js` (also loaded by the shim). Payroll Maker, contributions, the holiday calendar, and the attendance edit log are attached by `hr-payroll.js` (also loaded by the shim). |
+| `transcribe` | OpenAI-backed `transcribe({ audio, mimeType, language, signal })` → `{ text }`. Hold-to-talk on memo draft / reminder / Ask fields is attached by `hr-dictation.js` (loaded by the shim). `null` until `OPENAI_API_KEY` is set. Issued / Drive-imported memos are treated as saved records by `hr-memo.js` (also loaded by the shim). The manpower leave rule, Claude JSON paste door, and per-person summary are attached by `hr-attendance.js`. Payroll Maker, contributions, the holiday calendar, and the attendance edit log are attached by `hr-payroll.js`. |
 | anything else | `null` |
 
 `acquire({ holder })` calls the `acquire_doc_lock` RPC. A second holder with an unexpired lock gets `acquired: false`.
+
+## Manpower attendance (Claude JSON paste)
+
+Daily manpower PDFs live in Drive. OCR is weaker than Claude.ai, so the intended path is: Claude extracts the rows, HR pastes or uploads the JSON array on **Daily Manpower** or **HR Analytics** (`Paste Claude JSON`).
+
+```json
+[
+  { "date": "2026-08-29",
+    "preparedBy": "Timekeeper", "approvedBy": "PIC", "source": "08.29.2026.pdf",
+    "rows": [
+      { "empNo": "1250", "status": "Present", "reason": "", "site": "CTU BARILI" },
+      { "empNo": "1348", "status": "Absent", "reason": "Approved Leave (LRF2026 - 0123)", "site": "ADMINS" },
+      { "empNo": "1353", "status": "Present/Late", "reason": "traffic", "site": "TAWASON" }
+    ] }
+]
+```
+
+Matching is on the four-digit employee number only. Status is normalised to the closed list. The same leave rule (`effectiveStatus` / `absenceExcuse`) feeds the per-person summary, charts, and Notice to Explain suggestions: an approved leave on file beats a timekeeper Absent; an LRF citation on the report (including a wrapped `0123)` line, employee-scoped) is next; otherwise the absence is unexcused.
 
 ## Local checks
 
@@ -145,7 +163,7 @@ This HR site is a Progressive Web App. Add it from **Safari** only.
 
 If a Netlify visitor password is also enabled, Safari may prompt for that before the in-app gate. That is expected.
 
-The optional service worker caches icons and `pwa.css` only. It does **not** cache `index.html`, `claude-shim.js`, `hr-dictation.js`, `hr-memo.js`, `hr-payroll.js`, or `/.netlify/functions/*`, so auth, db, sample, Drive, dictation, memo chrome, and payroll stay on the network.
+The optional service worker caches icons and `pwa.css` only. It does **not** cache `index.html`, `claude-shim.js`, `hr-dictation.js`, `hr-memo.js`, `hr-attendance.js`, `hr-payroll.js`, or `/.netlify/functions/*`, so auth, db, sample, Drive, dictation, memo chrome, attendance import, and payroll stay on the network.
 
 ## Files
 
@@ -156,6 +174,7 @@ hr-artifact/
   public/claude-shim.js
   public/hr-dictation.js     ← hold-to-talk UI (loaded by the shim)
   public/hr-memo.js          ← issued / on-paper memo editor (loaded by the shim)
+  public/hr-attendance.js    ← manpower summary + Claude JSON paste door (loaded by the shim)
   public/hr-payroll.js       ← Payroll Maker, contributions, holiday calendar, attendance edit log
   public/pwa.js              ← apple / manifest tags + viewport-fit
   public/pwa.css             ← mobile / safe-area overlay
