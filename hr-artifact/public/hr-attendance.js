@@ -1418,7 +1418,7 @@
       table.querySelectorAll("[data-dms]").forEach(function (sel) {
         var id = sel.getAttribute("data-dms");
         var tr = sel.closest("tr");
-        if (!tr || tr.querySelector('[data-dmhol="' + id + '"]')) return;
+        if (!tr) return;
         CLOSED_STATUSES.forEach(function (st) {
           var exists = false;
           var i;
@@ -1432,6 +1432,7 @@
             sel.appendChild(opt);
           }
         });
+        if (tr.querySelector('[data-dmhol="' + id + '"]')) return;
         var rec = typeof root.dailyGet === "function" ? root.dailyGet((root.S && root.S.ui && root.S.ui.dailyDate) || root.TODAY) : null;
         var row = rec && rec.rows && rec.rows[id];
         var td = document.createElement("td");
@@ -1461,13 +1462,22 @@
       }
       Object.keys(rec.rows).forEach(function (id) {
         var old = (prev && prev.rows && prev.rows[id]) || {};
+        var cur = rec.rows[id] || {};
         rec.rows[id] = mergeDayRow(old, {
-          status: rec.rows[id].s,
-          reason: rec.rows[id].r,
-          site: rec.rows[id].site,
+          status: cur.s,
+          reason: cur.r,
+          site: cur.site,
+          in: cur.in,
+          out: cur.out,
+          ot: cur.ot,
+          hol: cur.hol,
+          day: cur.day,
+          fromPayroll: cur.fromPayroll,
         });
         var hol = document.querySelector('[data-dmhol="' + id + '"]');
         if (hol) rec.rows[id].hol = !!hol.checked;
+        var ot = document.querySelector('[data-dmot="' + id + '"]');
+        if (ot) rec.rows[id].ot = ot.value === "" ? 0 : Number(ot.value) || 0;
       });
       return rec;
     };

@@ -52,6 +52,7 @@ function el(tag, attrs) {
       if (data) return this.attrs["data-signed"] === data[1];
       if (sel === "a[href]" || sel === "a[href]") return this.tagName === "A" && this.attrs.href;
       if (sel === "input") return this.tagName === "INPUT";
+      if (sel === ".ep-q") return String(this.className || "").split(/\s+/).includes("ep-q");
       if (sel === ".note") return String(this.className || "").split(/\s+/).includes("note");
       if (sel === ".stack") return String(this.className || "").split(/\s+/).includes("stack");
       if (sel === ".modal") return String(this.className || "").split(/\s+/).includes("modal");
@@ -174,9 +175,23 @@ function issuedEditor(w, extra) {
   const num = el("input");
   num.disabled = true;
   num.value = extra.no || "C.M. 2026 - 15";
+  const date = el("input", { id: "m-date", type: "date" });
+  date.attrs.id = "m-date";
+  date.attrs.type = "date";
+  date.value = extra.date || "2026-07-09";
+  const eff = el("input", { id: "m-eff", type: "date" });
+  eff.attrs.id = "m-eff";
+  eff.attrs.type = "date";
+  eff.value = extra.effectivity || extra.date || "2026-07-09";
+  const cat = el("select", { id: "m-cat" });
+  cat.attrs.id = "m-cat";
+  cat.value = extra.cat || "Announcement";
   const status = el("select", { id: "m-status" });
   status.attrs.id = "m-status";
   status.value = extra.status || "Issued";
+  const aud = el("select", { id: "m-aud" });
+  aud.attrs.id = "m-aud";
+  aud.value = extra.audience || "All";
   const subj = el("input", { id: "m-subj" });
   subj.attrs.id = "m-subj";
   subj.value = extra.subject || "";
@@ -191,17 +206,23 @@ function issuedEditor(w, extra) {
   signed.attrs["data-signed"] = "memos";
   signed.attrs["data-signedid"] = extra.id || "m15";
   signed.textContent = "Upload the signed copy";
-  const drive = el("a");
-  drive.attrs.href = extra.link || "https://drive.google.com/file/d/abc/view";
-  drive.textContent = "open it";
-  const paper = el("div", { class: "note" });
-  paper.textContent = "This memorandum was issued on paper before the portal.";
-  paper.appendChild(drive);
+  if (extra.fromDrive !== false) {
+    const drive = el("a");
+    drive.attrs.href = extra.link || "https://drive.google.com/file/d/abc/view";
+    drive.textContent = "open it";
+    const paper = el("div", { class: "note" });
+    paper.textContent = "This memorandum was issued on paper before the portal.";
+    paper.appendChild(drive);
+    stack.appendChild(paper);
+  }
   stack.appendChild(num);
+  stack.appendChild(date);
+  stack.appendChild(eff);
+  stack.appendChild(cat);
   stack.appendChild(status);
+  stack.appendChild(aud);
   stack.appendChild(subj);
   stack.appendChild(briefCard);
-  stack.appendChild(paper);
   stack.appendChild(bodyTa);
   stack.appendChild(signed);
   body.appendChild(stack);
@@ -219,6 +240,10 @@ function issuedEditor(w, extra) {
     id: extra.id || "m15",
     no: extra.no || "C.M. 2026 - 15",
     status: extra.status || "Issued",
+    date: extra.date || "2026-07-09",
+    effectivity: extra.effectivity || extra.date || "2026-07-09",
+    cat: extra.cat || "Announcement",
+    audience: extra.audience || "All",
     fromDrive: extra.fromDrive !== false,
     link: extra.link || "https://drive.google.com/file/d/abc/view",
     subject: extra.subject || "",
@@ -237,6 +262,10 @@ describe("hr-memo companion", () => {
     assert.equal(w.hrMemo.isFiledMemo({ status: "Draft", no: "", body: "" }), false);
     assert.equal(w.hrMemo.shouldOfferDraft({ no: "C.M. 2026 - 15", body: "" }), true);
     assert.equal(w.hrMemo.shouldOfferDraft({ no: "C.M. 2026 - 15", body: "Hello" }), false);
+    assert.equal(w.hrMemo.shouldLockIdentity({ fromDrive: true, no: "C.M. 2026 - 15" }), true);
+    assert.equal(w.hrMemo.shouldLockIdentity({ status: "Issued", no: "C.M. 2026 - 15" }), true);
+    assert.equal(w.hrMemo.shouldLockIdentity({ status: "Draft", no: "C.M. 2026 - 16" }), false);
+    assert.equal(w.hrMemo.shouldLockIdentity({ status: "Draft", no: "", body: "" }), false);
   });
 
   it("passes the memo series number into pfISO formNo and never invents an R-number", () => {
@@ -270,10 +299,29 @@ describe("hr-memo companion", () => {
     assert.equal(w.pfISO("memo", {}), "FOOT:unassigned");
   });
 
+  it("preserveOnSave keeps filed date and effective on an issued memo, not a draft", () => {
+    const w = fakeDom();
+    loadMemo(w);
+    const issued = w.hrMemo.preserveOnSave(
+      { no: "C.M. 2026 - 15", status: "Issued", fromDrive: true, date: "2026-07-09", effectivity: "2026-07-09" },
+      { no: "C.M. 2026 - 99", date: "2026-12-01", effectivity: "2026-12-25", subject: "typed" }
+    );
+    assert.equal(issued.no, "C.M. 2026 - 15");
+    assert.equal(issued.date, "2026-07-09");
+    assert.equal(issued.effectivity, "2026-07-09");
+    assert.equal(issued.subject, "typed");
+    const draft = w.hrMemo.preserveOnSave(
+      { no: "C.M. 2026 - 16", status: "Draft", date: "2026-08-01", effectivity: "2026-08-01" },
+      { no: "C.M. 2026 - 16", date: "2026-08-15", effectivity: "2026-09-01", subject: "hours" }
+    );
+    assert.equal(draft.date, "2026-08-15");
+    assert.equal(draft.effectivity, "2026-09-01");
+  });
+
   it("does not clear an Issued memo number on save or mint a new CM number", async () => {
     const w = fakeDom();
     const allocated = [];
-    w.S.memos.m15 = { id: "m15", no: "C.M. 2026 - 15", status: "Issued", fromDrive: true };
+    w.S.memos.m15 = { id: "m15", no: "C.M. 2026 - 15", status: "Issued", fromDrive: true, date: "2026-07-09", effectivity: "2026-07-09" };
     w.put = function (coll, id, obj) {
       return { coll, id, obj };
     };
@@ -283,8 +331,10 @@ describe("hr-memo companion", () => {
     };
     loadMemo(w);
     w.hrMemo.patchGlobals();
-    const saved = w.put("memos", "m15", { id: "m15", no: "", subject: "", status: "Issued" });
+    const saved = w.put("memos", "m15", { id: "m15", no: "", subject: "", status: "Issued", date: "2026-12-01", effectivity: "2026-12-25" });
     assert.equal(saved.obj.no, "C.M. 2026 - 15");
+    assert.equal(saved.obj.date, "2026-07-09");
+    assert.equal(saved.obj.effectivity, "2026-07-09");
     const reused = await w.allocate("CM", { refId: "m15", title: "" });
     assert.equal(reused.no, "C.M. 2026 - 15");
     assert.equal(allocated.length, 0);
@@ -307,6 +357,38 @@ describe("hr-memo companion", () => {
     const upload = modal.querySelector("#m-upload-signed");
     assert.ok(upload);
     assert.match(String(upload.className), /\bpri\b/);
+    assert.equal(modal.querySelector("#m-date").disabled, true);
+    assert.equal(modal.querySelector("#m-eff").disabled, true);
+    assert.equal(modal.querySelector("#m-cat").disabled, true);
+    assert.equal(modal.querySelector("#m-status").disabled, true);
+    assert.equal(modal.querySelector("#m-aud").disabled, true);
+    assert.equal(modal.querySelector("#m-subj").disabled, false);
+    assert.match(String(modal.className), /hr-memo-locked/);
+  });
+
+  it("does not lock date or classification on a numbered draft", () => {
+    const w = fakeDom();
+    loadMemo(w);
+    const modal = issuedEditor(w, { status: "Draft", fromDrive: false, no: "C.M. 2026 - 16", id: "m16" });
+    w.S.memos.m16 = {
+      id: "m16",
+      no: "C.M. 2026 - 16",
+      status: "Draft",
+      fromDrive: false,
+      date: "2026-08-01",
+      effectivity: "2026-08-01",
+      subject: "Site hours",
+      body: "Draft body",
+    };
+    const result = w.hrMemo.enhance(w.document);
+    assert.equal(result.no, "C.M. 2026 - 16");
+    assert.equal(w.hrMemo.shouldLockIdentity(result), false);
+    assert.equal(modal.querySelector("#m-date").disabled, false);
+    assert.equal(modal.querySelector("#m-eff").disabled, false);
+    assert.equal(modal.querySelector("#m-cat").disabled, false);
+    assert.equal(modal.querySelector("#m-status").disabled, false);
+    assert.equal(modal.querySelector("#m-subj").disabled, false);
+    assert.doesNotMatch(String(modal.className), /hr-memo-locked/);
   });
 
   it("does not duplicate Drive banner or upload when the editor already has them", () => {
@@ -377,5 +459,12 @@ describe("issued memo artifact lines", () => {
     assert.match(html, /Upload the signed copy/);
     assert.match(html, /Open the Drive scan/);
     assert.match(html, /if\(stored&&stored\.no\) m\.no=stored\.no/);
+    assert.match(html, /const lockIdentity = !!\(m\.fromDrive \|\| m\.status==="Issued"\)/);
+    assert.match(html, /id="m-date" type="date"[\s\S]*?\+lockAttr/);
+    assert.match(html, /id="m-eff" type="date"[\s\S]*?\+lockAttr/);
+    assert.match(html, /id="m-cat"'\+lockAttr/);
+    assert.match(html, /id="m-status"'\+lockAttr/);
+    assert.match(html, /id="m-aud"'\+lockAttr/);
+    assert.match(html, /if\(stored&&\(stored\.fromDrive\|\|stored\.status==="Issued"\)\)/);
   });
 });

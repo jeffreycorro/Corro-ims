@@ -22,6 +22,13 @@ describe("placeholder and privacy", () => {
     assert.doesNotMatch(html, /hr-dictation\.js/);
     assert.doesNotMatch(html, /hr-memo\.js/);
     assert.doesNotMatch(html, /hr-attendance\.js/);
+    assert.doesNotMatch(html, /hr-payroll\.js/);
+    const shim = fs.readFileSync(
+      path.join(__dirname, "../public/claude-shim.js"),
+      "utf8"
+    );
+    assert.match(shim, /hr-attendance\.js/);
+    assert.match(shim, /hr-payroll\.js/);
     const hostFiles = [
       "../public/claude-shim.js",
       "../.env.example",
@@ -46,6 +53,7 @@ describe("placeholder and privacy", () => {
     assert.match(readme, /hr-dictation\.js/);
     assert.match(readme, /hr-memo\.js/);
     assert.match(readme, /hr-attendance\.js/);
+    assert.match(readme, /hr-payroll\.js/);
   });
 
   it("netlify.toml publishes public with privacy headers", () => {
