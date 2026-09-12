@@ -5,6 +5,9 @@
  * Opening a memo that already has a number (or status Issued, or fromDrive)
  * must not look like a new draft. Print footer Form No. uses that number,
  * never "unassigned". Saving must not clear m.no.
+ *
+ * Issued / Drive-imported paper memos also lock number, date and effective
+ * date in the editor — the remaining action is upload the signed copy.
  */
 (function () {
   "use strict";
@@ -14,6 +17,13 @@
   function isFiledMemo(m) {
     if (!m || typeof m !== "object") return false;
     return !!(String(m.no || "").trim() || m.fromDrive || m.status === "Issued");
+  }
+
+  /* Numbered drafts stay editable. Only issued / on-paper / Drive-scan
+     records lock their filed identity fields. */
+  function shouldLockIdentity(m) {
+    if (!m || typeof m !== "object") return false;
+    return !!(m.fromDrive || m.status === "Issued");
   }
 
   function formNoFor(m, no) {
@@ -38,6 +48,11 @@
     if (prev.fromDrive && next.fromDrive == null) next.fromDrive = prev.fromDrive;
     if (prev.link && !next.link) next.link = prev.link;
     if (prev.fileTitle && !next.fileTitle) next.fileTitle = prev.fileTitle;
+    if (shouldLockIdentity(prev)) {
+      if (prev.no) next.no = prev.no;
+      if (prev.date) next.date = prev.date;
+      if (prev.effectivity) next.effectivity = prev.effectivity;
+    }
     return next;
   }
 
@@ -142,7 +157,8 @@
       ".hr-memo-filed .hr-memo-ai{display:none}" +
       ".hr-memo-filed.hr-memo-drafting .hr-memo-ai{display:block}" +
       ".hr-memo-scan{border-left-color:var(--accent,#2aa0c0)}" +
-      ".hr-memo-offer{margin:0}";
+      ".hr-memo-offer{margin:0}" +
+      ".hr-memo-locked input,.hr-memo-locked select{background:var(--surface2,#f4f1ea);color:var(--ink2,#5c584f)}";
     (document.head || document.documentElement).appendChild(style);
   }
 
@@ -221,6 +237,24 @@
     return offer;
   }
 
+  function lockIdentityFields(editor) {
+    var ids = ["m-date", "m-eff", "m-cat", "m-status", "m-aud", "m-detail"];
+    var i;
+    for (i = 0; i < ids.length; i += 1) {
+      var el = editor.querySelector ? editor.querySelector("#" + ids[i]) : null;
+      if (el) el.disabled = true;
+    }
+    var inputs = editor.querySelectorAll ? editor.querySelectorAll("input") : [];
+    for (i = 0; i < inputs.length; i += 1) {
+      var typ = String(inputs[i].getAttribute ? inputs[i].getAttribute("type") || "" : "").toLowerCase();
+      if (typ === "date") inputs[i].disabled = true;
+    }
+    var picks = editor.querySelectorAll ? editor.querySelectorAll(".ep-q") : [];
+    for (i = 0; i < picks.length; i += 1) picks[i].disabled = true;
+    editor.className = String(editor.className || "") + " hr-memo-locked";
+    return editor;
+  }
+
   function promoteSigned(editor) {
     var foot =
       editor.querySelector(".modal-f") ||
@@ -285,6 +319,7 @@
     insertScanBanner(editor, m);
     offerDraftToggle(editor, m);
     promoteSigned(editor);
+    if (shouldLockIdentity(m)) lockIdentityFields(editor);
     return m;
   }
 
@@ -402,6 +437,8 @@
 
   var api = {
     isFiledMemo: isFiledMemo,
+    shouldLockIdentity: shouldLockIdentity,
+    lockIdentityFields: lockIdentityFields,
     formNoFor: formNoFor,
     pfISOOpts: pfISOOpts,
     preserveOnSave: preserveOnSave,

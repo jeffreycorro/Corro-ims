@@ -147,7 +147,7 @@ td.mono{font-family:var(--f-mono);font-size:11.5px}
 .f>label{font-family:var(--f-mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink3)}
 .f input,.f select,.f textarea{padding:6px 8px;border:1px solid var(--line2);border-radius:5px;background:var(--surface);font-size:13px;width:100%;min-width:0}
 .f textarea{resize:vertical;min-height:64px;line-height:1.5}
-.f input:disabled{background:var(--surface2);color:var(--ink2)}
+.f input:disabled,.f select:disabled,.f textarea:disabled{background:var(--surface2);color:var(--ink2)}
 .f .hint{font-size:10.5px;color:var(--ink3)}
 .f.mono input{font-family:var(--f-mono);font-size:12.5px}
 
@@ -10402,13 +10402,20 @@ async function memoDraw(m){
   const kept = id ? S.memos[m.id] : null;
   if(kept && kept.no && !m.no) m.no = kept.no;
   const filed = !!(m.no || m.fromDrive || m.status==="Issued");
+  /* Numbered drafts stay editable. Issued / Drive-imported paper memos keep
+     the filed identity — number, date and effective date cannot be retouched. */
+  const lockIdentity = !!(m.fromDrive || m.status==="Issued");
+  const lockAttr = lockIdentity ? " disabled" : "";
   const sample = await getSample();
   const draw = ()=>{
     const detail = m.audience==="Department"
-      ? '<select id="m-detail">'+DEPTS.map(d=>'<option'+(m.audienceDetail===d?" selected":"")+'>'+esc(d)+'</option>').join("")+'</select>'
+      ? '<select id="m-detail"'+lockAttr+'>'+DEPTS.map(d=>'<option'+(m.audienceDetail===d?" selected":"")+'>'+esc(d)+'</option>').join("")+'</select>'
       : m.audience==="Individual"
-      ? empPicker("m-detail", m.audienceDetail)
-      : '<input id="m-detail" value="'+esc(m.audienceDetail||"")+'" placeholder="'+(m.audience==="Project"?"Project name":"Describe the recipients")+'">';
+      ? (lockIdentity
+          ? '<input value="'+esc(empLabel(m.audienceDetail))+'" disabled>'
+            + '<input type="hidden" id="m-detail" value="'+esc(m.audienceDetail||"")+'">'
+          : empPicker("m-detail", m.audienceDetail))
+      : '<input id="m-detail" value="'+esc(m.audienceDetail||"")+'" placeholder="'+(m.audience==="Project"?"Project name":"Describe the recipients")+'"'+lockAttr+'>';
     const showDraft = !filed || m._wantDraft;
     const scanNote = (m.fromDrive || m.link)
       ? '<div class="note" style="border-left-color:var(--accent)"><b>This memorandum is already on file'
@@ -10435,16 +10442,16 @@ async function memoDraw(m){
         + scanNote
         + '<div class="grid3">'
         + '<div class="f"><label>Number</label><input value="'+esc(m.no||"assigned when you save")+'" disabled></div>'
-        + '<div class="f"><label>Date</label><input id="m-date" type="date" value="'+esc(m.date)+'"></div>'
-        + '<div class="f"><label>Effective</label><input id="m-eff" type="date" value="'+esc(m.effectivity||"")+'"></div>'
+        + '<div class="f"><label>Date</label><input id="m-date" type="date" value="'+esc(m.date)+'"'+lockAttr+'></div>'
+        + '<div class="f"><label>Effective</label><input id="m-eff" type="date" value="'+esc(m.effectivity||"")+'"'+lockAttr+'></div>'
         + '</div>'
         + '<div class="grid3">'
         + '<div class="f"><label>Subject</label><input id="m-subj" value="'+esc(m.subject)+'" placeholder="'+(filed?"optional — from the scan, when you have it":"e.g. Revised Site Reporting Time")+'"></div>'
-        + '<div class="f"><label>Category</label><select id="m-cat">'+MEMO_CATS.map(c=>'<option'+(m.cat===c?" selected":"")+'>'+c+'</option>').join("")+'</select></div>'
-        + '<div class="f"><label>Status</label><select id="m-status">'+["Draft","Issued","Superseded","Void"].map(s=>'<option'+(m.status===s?" selected":"")+'>'+s+'</option>').join("")+'</select></div>'
+        + '<div class="f"><label>Category</label><select id="m-cat"'+lockAttr+'>'+MEMO_CATS.map(c=>'<option'+(m.cat===c?" selected":"")+'>'+c+'</option>').join("")+'</select></div>'
+        + '<div class="f"><label>Status</label><select id="m-status"'+lockAttr+'>'+["Draft","Issued","Superseded","Void"].map(s=>'<option'+(m.status===s?" selected":"")+'>'+s+'</option>').join("")+'</select></div>'
         + '</div>'
         + '<div class="grid2">'
-        + '<div class="f"><label>Addressed to</label><select id="m-aud">'+["All","Department","Project","Individual","Custom"].map(a=>'<option'+(m.audience===a?" selected":"")+'>'+a+'</option>').join("")+'</select></div>'
+        + '<div class="f"><label>Addressed to</label><select id="m-aud"'+lockAttr+'>'+["All","Department","Project","Individual","Custom"].map(a=>'<option'+(m.audience===a?" selected":"")+'>'+a+'</option>').join("")+'</select></div>'
         + '<div class="f"><label>'+(m.audience==="All"?"(all employees)":"Which")+'</label>'+(m.audience==="All"?'<input value="All Employees" disabled>':detail)+'</div>'
         + '</div>'
         + (showDraft ? aiCard
@@ -10465,11 +10472,13 @@ async function memoDraw(m){
         + (filed&&id&&!m.signedLink?'<button class="btn pri" id="m-upload">Upload the signed copy</button>':"")
     });
     const grab=()=>{
-      m.subject=$("#m-subj").value.trim(); m.cat=$("#m-cat").value; m.date=$("#m-date").value;
-      m.effectivity=$("#m-eff").value; m.status=$("#m-status").value; m.audience=$("#m-aud").value;
-      const d=$("#m-detail"); m.audienceDetail=d?d.value:"";
+      m.subject=$("#m-subj").value.trim();
       m.body=$("#m-body").value; const b=$("#m-brief"); if(b) m.brief=b.value;
       m.tags=$("#m-tags").value.split(",").map(s=>s.trim()).filter(Boolean);
+      if(lockIdentity) return;
+      m.cat=$("#m-cat").value; m.date=$("#m-date").value;
+      m.effectivity=$("#m-eff").value; m.status=$("#m-status").value; m.audience=$("#m-aud").value;
+      const d=$("#m-detail"); m.audienceDetail=d?d.value:"";
     };
     $("#m-aud").onchange=()=>{ grab(); m.audienceDetail=""; draw(); };
     const wd=$("#m-want-draft");
@@ -10517,6 +10526,14 @@ async function memoDraw(m){
          from the store so Save cannot blank it or mint a second C.M. number. */
       const stored=S.memos[m.id];
       if(stored&&stored.no) m.no=stored.no;
+      if(stored&&(stored.fromDrive||stored.status==="Issued")){
+        if(stored.date) m.date=stored.date;
+        if(stored.effectivity) m.effectivity=stored.effectivity;
+        if(stored.cat) m.cat=stored.cat;
+        if(stored.status) m.status=stored.status;
+        if(stored.audience) m.audience=stored.audience;
+        if(stored.audienceDetail!=null) m.audienceDetail=stored.audienceDetail;
+      }
       const already=!!(m.no||m.fromDrive||m.status==="Issued"||(stored&&stored.status==="Issued"));
       if(!m.subject && !already){ toast("Give the memo a subject.","err"); return; }
       /* A memo read off a filed scan already has its number — it must not draw
