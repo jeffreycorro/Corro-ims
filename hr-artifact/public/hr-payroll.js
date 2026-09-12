@@ -829,6 +829,7 @@
     payDayCredit: payDayCredit,
     holEligible: holEligible,
     holidayGranted: holidayGranted,
+    applyHolOtFromUi: applyHolOtFromUi,
     tallyPersonPeriod: tallyPersonPeriod,
     missingReportDays: missingReportDays,
     caDueForPeriod: caDueForPeriod,
@@ -1054,7 +1055,7 @@
 
   function setCrumb(t, s) {
     if (typeof root.setCrumb === "function") root.setCrumb(t, s);
-    else {
+    else if (typeof document !== "undefined" && document.getElementById) {
       var c = document.getElementById("crumb");
       if (c) c.innerHTML = esc(t) + (s ? "<small>" + esc(s) + "</small>" : "");
     }
@@ -1161,18 +1162,18 @@
     }
     h +=
       '<div class="strip">' +
-      '<div class="tile acc"><div class="n">' +
+      '<div class="tile acc"><div class="v">' +
       run.lines.length +
-      '</div><div class="lbl">People on this kind</div></div>' +
-      '<div class="tile acc"><div class="n">' +
+      '</div><div class="k">People on this kind</div></div>' +
+      '<div class="tile acc"><div class="v">' +
       peso(totG) +
-      '</div><div class="lbl">Gross</div></div>' +
-      '<div class="tile acc"><div class="n">' +
+      '</div><div class="k">Gross</div></div>' +
+      '<div class="tile acc"><div class="v">' +
       peso(totN) +
-      '</div><div class="lbl">Net (peso ceiling)</div></div>' +
-      '<div class="tile"><div class="n">' +
+      '</div><div class="k">Net (peso ceiling)</div></div>' +
+      '<div class="tile"><div class="v">' +
       esc(run.release || "—") +
-      '</div><div class="lbl">Release date</div></div></div>';
+      '</div><div class="k">Release date</div></div></div>';
     h += '<div class="card hr-pay-wrap"><div class="tw"><table><thead><tr>' +
       "<th>No.</th><th>ID</th><th>Name</th><th>Project</th>" +
       '<th class="num">Days</th><th class="num">OT</th><th class="num">Hol</th>' +
@@ -1623,21 +1624,20 @@
     );
   }
 
-  function injectSettingsHolidays() {
-    var view = document.getElementById("view");
-    if (!view || !document.querySelector("[data-set], [data-ded]")) return;
-    if (document.getElementById("hr-pay-holidays")) return;
+  function refreshHolidayCard() {
     var S = store();
-    var host = document.createElement("div");
-    host.innerHTML = holidayCardHTML(S);
-    view.appendChild(host.firstChild);
+    var card = document.getElementById("hr-pay-holidays");
+    if (card) card.outerHTML = holidayCardHTML(S);
+    wireHolidayCard();
+  }
+
+  function wireHolidayCard() {
+    var S = store();
     var add = $("#hr-hol-add");
     if (add) {
       add.onclick = function () {
         ensureHolidayCalendar(S.settings).push({ d: "", n: "", t: "Special" });
-        var card = document.getElementById("hr-pay-holidays");
-        if (card) card.outerHTML = holidayCardHTML(S);
-        injectSettingsHolidays();
+        refreshHolidayCard();
       };
     }
     var save = $("#hr-hol-save");
@@ -1669,11 +1669,34 @@
       b.onclick = function () {
         var i = +b.getAttribute("data-hr-hol-del");
         S.settings.holidays.splice(i, 1);
-        var card = document.getElementById("hr-pay-holidays");
-        if (card) card.outerHTML = holidayCardHTML(S);
-        injectSettingsHolidays();
+        refreshHolidayCard();
       };
     });
+  }
+
+  function injectSettingsHolidays() {
+    var view = document.getElementById("view");
+    if (!view || !document.querySelector("[data-set], [data-ded]")) return;
+    var S = store();
+    if (!document.getElementById("hr-pay-holidays")) {
+      var host = document.createElement("div");
+      host.innerHTML = holidayCardHTML(S);
+      view.appendChild(host.firstChild);
+    }
+    if (!document.querySelector(".hr-pay-ded-note")) {
+      var ded = document.querySelector("[data-ded]");
+      var dedCard = ded && ded.closest ? ded.closest(".card") : null;
+      var dedBody = dedCard && dedCard.querySelector(".card-b");
+      if (dedBody) {
+        var note = document.createElement("div");
+        note.className = "note hr-pay-ded-note";
+        note.innerHTML =
+          "These company defaults are the <b>semi-monthly</b> starting point (SSS 325 / PhilHealth 131.25 / Pag-IBIG 100). " +
+          "Weekly payroll takes half and drops the leftover centavo. A person can override them on Contributions or their 201.";
+        dedBody.appendChild(note);
+      }
+    }
+    wireHolidayCard();
   }
 
   function injectDailyExtras() {
@@ -1768,6 +1791,7 @@
           t: ($("#hr-hol-type") && $("#hr-hol-type").value) || "Special",
         });
         if (typeof root.putSettings === "function") await root.putSettings();
+        else if (typeof root.put === "function") await root.put("meta", "settings", S.settings);
         if (root.closeModal) root.closeModal();
         if (root.toast) root.toast("Holiday declared — tick Hol on anyone who should receive the premium.", "ok");
         if (typeof root.render === "function") root.render();
@@ -1952,41 +1976,75 @@
     });
   }
 
+  function applyHolOtFromUi(rec, prev, query) {
+    rec = rec || {};
+    rec.rows = rec.rows || {};
+    prev = prev || {};
+    query = query || (typeof document !== "undefined" && document.querySelector
+      ? function (sel) { return document.querySelector(sel); }
+      : function () { return null; });
+    Object.keys(rec.rows).forEach(function (id) {
+      var hol = query('[data-dmhol="' + id + '"]');
+      var ot = query('[data-dmot="' + id + '"]');
+      var old = (prev.rows || {})[id] || {};
+      if (hol) rec.rows[id].hol = hol.checked ? 1 : 0;
+      else if (old.hol != null) rec.rows[id].hol = old.hol;
+      if (ot) rec.rows[id].ot = ot.value === "" ? 0 : Number(ot.value) || 0;
+      else if (old.ot != null) rec.rows[id].ot = old.ot;
+    });
+    return rec;
+  }
+
   function wrapDailyCollect() {
     if (typeof root.dailyCollect !== "function" || root.dailyCollect.__hrPay) return;
     var orig = root.dailyCollect;
     root.dailyCollect = function () {
       var rec = orig.apply(this, arguments);
-      rec.rows = rec.rows || {};
-      Object.keys(rec.rows).forEach(function (id) {
-        var hol = document.querySelector('[data-dmhol="' + id + '"]');
-        if (hol) rec.rows[id].hol = hol.checked ? 1 : 0;
-        var ot = document.querySelector('[data-dmot="' + id + '"]');
-        if (ot) rec.rows[id].ot = ot.value === "" ? 0 : Number(ot.value) || 0;
-      });
-      return rec;
+      var prev = null;
+      if (typeof root.dailyGet === "function") prev = root.dailyGet(rec && rec.date);
+      else {
+        var S = store();
+        prev = (S.daily || {})[dailyId((rec && rec.date) || (S.ui && S.ui.dailyDate) || "")];
+      }
+      return applyHolOtFromUi(rec, prev);
     };
     root.dailyCollect.__hrPay = true;
   }
 
+  function stampDailyLog(obj, id) {
+    if (!obj) return obj;
+    var S = store();
+    var prev = (S.daily && S.daily[obj.id || id]) || null;
+    if (prev === obj) prev = JSON.parse(JSON.stringify(prev));
+    attachDailyLog(prev, obj, {
+      by: editorName(S),
+      import: !!(obj.source || obj.fromImport || obj.fixed),
+      nameOf: function (empId) { return nameOfEmp(empId, S); },
+    });
+    return obj;
+  }
+
   function wrapPut() {
-    if (typeof root.put !== "function" || root.put.__hrPay) return;
-    var orig = root.put;
-    root.put = function (coll, id, obj) {
-      if (coll === "daily" && obj) {
-        var S = store();
-        var prev = (S.daily && S.daily[obj.id || id]) || null;
-        var sameRef = prev === obj;
-        if (sameRef) prev = JSON.parse(JSON.stringify(prev));
-        attachDailyLog(prev, obj, {
-          by: editorName(S),
-          import: !!(obj.source || obj.fromImport || obj.fixed),
-          nameOf: function (empId) { return nameOfEmp(empId, S); },
-        });
-      }
-      return orig.apply(this, arguments);
-    };
-    root.put.__hrPay = true;
+    if (typeof root.put === "function" && !root.put.__hrPay) {
+      var orig = root.put;
+      root.put = function (coll, id, obj) {
+        if (coll === "daily" && obj) stampDailyLog(obj, id);
+        return orig.apply(this, arguments);
+      };
+      root.put.__hrPay = true;
+    }
+    if (typeof root.putMany === "function" && !root.putMany.__hrPay) {
+      var origMany = root.putMany;
+      root.putMany = function (coll, entries, onProgress) {
+        if (coll === "daily" && entries) {
+          entries.forEach(function (pair) {
+            if (pair && pair[1]) stampDailyLog(pair[1], pair[0]);
+          });
+        }
+        return origMany.apply(this, arguments);
+      };
+      root.putMany.__hrPay = true;
+    }
   }
 
   function wrapDailySaveWarn() {
@@ -2009,12 +2067,53 @@
     };
   }
 
+  function injectEmpDed() {
+    if (typeof document === "undefined") return;
+    if (document.getElementById("hr-pay-empded")) return;
+    var rate = document.querySelector('[data-ef="dailyRate"], [data-ef="allowance"]');
+    if (!rate) return;
+    var S = store();
+    var e = S.employees && S.ui && S.employees[S.ui.emp];
+    if (!e) return;
+    var d = e.ded || {};
+    var box = document.createElement("div");
+    box.id = "hr-pay-empded";
+    box.className = "grid3";
+    box.style.marginTop = "8px";
+    box.innerHTML =
+      '<div class="f"><label>SSS / semi</label><input data-emp-ded="sss" type="number" step="0.01" min="0" value="' +
+      esc(d.sss == null ? "" : d.sss) +
+      '" style="min-height:40px"><span class="hint">Starting point for Payroll Maker. Weekly takes half.</span></div>' +
+      '<div class="f"><label>PhilHealth / semi</label><input data-emp-ded="phic" type="number" step="0.01" min="0" value="' +
+      esc(d.phic == null ? "" : d.phic) +
+      '" style="min-height:40px"></div>' +
+      '<div class="f"><label>Pag-IBIG / semi</label><input data-emp-ded="hdmf" type="number" step="0.01" min="0" value="' +
+      esc(d.hdmf == null ? "" : d.hdmf) +
+      '" style="min-height:40px"></div>';
+    var grid = rate.closest ? rate.closest(".grid2") : rate.parentNode;
+    if (grid && grid.parentNode) grid.parentNode.insertBefore(box, grid.nextSibling);
+    else (rate.parentNode || document.getElementById("view")).appendChild(box);
+    box.querySelectorAll("[data-emp-ded]").forEach(function (inp) {
+      inp.addEventListener("change", async function () {
+        var emp = store().employees[store().ui.emp];
+        if (!emp) return;
+        var c = JSON.parse(JSON.stringify(emp));
+        c.ded = Object.assign({}, c.ded || {});
+        c.ded[inp.getAttribute("data-emp-ded")] = inp.value === "" ? "" : Number(inp.value);
+        store().employees[c.id] = c;
+        if (typeof root.put === "function") await root.put("employees", c.id, c);
+        if (root.toast) root.toast("Contribution saved", "ok");
+      });
+    });
+  }
+
   function injectChrome() {
     if (typeof document === "undefined") return;
     injectStyles();
     injectNav();
     highlightNav();
     injectSettingsHolidays();
+    injectEmpDed();
     injectDailyExtras();
     injectAnalyticsEdits();
     wrapDailySaveWarn();

@@ -364,6 +364,40 @@ describe("acceptance helpers", () => {
     assert.equal(show.sssLoan, undefined);
   });
 
+  it("keeps Hol/OT when Daily Manpower collect drops them and the UI is not mounted", () => {
+    const rec = {
+      date: "2026-08-20",
+      rows: { e1: { s: "Present", r: "", site: "Tawason" } },
+    };
+    const prev = {
+      rows: { e1: { s: "Present", r: "", site: "Tawason", hol: 1, ot: 2.5 } },
+    };
+    const out = P.applyHolOtFromUi(rec, prev, function () { return null; });
+    assert.equal(out.rows.e1.hol, 1);
+    assert.equal(out.rows.e1.ot, 2.5);
+  });
+
+  it("reads Hol/OT from the Daily Manpower inputs when they are on the page", () => {
+    const rec = { rows: { e1: { s: "Present" } } };
+    const q = function (sel) {
+      if (sel.indexOf("data-dmhol") >= 0) return { checked: true };
+      if (sel.indexOf("data-dmot") >= 0) return { value: "3.5" };
+      return null;
+    };
+    const out = P.applyHolOtFromUi(rec, { rows: { e1: { hol: 0, ot: 1 } } }, q);
+    assert.equal(out.rows.e1.hol, 1);
+    assert.equal(out.rows.e1.ot, 3.5);
+  });
+
+  it("Payroll Maker HTML locks days/OT and names a missing weekday", () => {
+    const html = P.viewPayMaker();
+    assert.doesNotMatch(html, /data-pay-k="days"/);
+    assert.doesNotMatch(html, /data-pay-k="ot"/);
+    assert.match(html, /Open Daily Manpower/);
+    assert.match(html, /No report filed/);
+    assert.match(html, /cannot be typed here/);
+  });
+
   it("names missing weekday reports in a period", () => {
     const miss = P.missingReportDays("2026-08-20", "2026-08-26", {
       d20260820: { date: "2026-08-20" },
