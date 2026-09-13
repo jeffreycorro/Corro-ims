@@ -3,6 +3,7 @@
 const {
   configuredMethods,
   gatePassword,
+  gateRequired,
   json,
   readSession,
   safeEqual,
@@ -10,7 +11,8 @@ const {
   signSession,
   supabaseAuthEnabled,
 } = require("../lib/session");
-const { verifySupabaseJwt, verifySupabasePassword } = require("../lib/supabase");
+const { getProfile, verifySupabaseJwt, verifySupabasePassword } = require("../lib/supabase");
+const { canAccessHr, deniedMessage } = require("../lib/hr-access");
 const { formatManilaIso } = require("../lib/manila");
 const { capabilities } = require("../lib/capabilities");
 
@@ -43,9 +45,23 @@ function rateLimitLogin(event) {
 function methodsPayload() {
   return {
     methods: configuredMethods(),
+    gateRequired: gateRequired() && Boolean(gatePassword()),
     timezone: "Asia/Manila",
     serverTime: formatManilaIso(),
     capabilities: capabilities(),
+  };
+}
+
+function sessionPublicFields(session) {
+  if (!session) {
+    return { sub: null, method: null, email: null, role: null, department: null };
+  }
+  return {
+    sub: session.sub || null,
+    method: session.method || null,
+    email: session.email || null,
+    role: session.role || null,
+    department: session.department || null,
   };
 }
 
@@ -53,9 +69,26 @@ function statusBody(event) {
   const session = readSession(event);
   return {
     authenticated: Boolean(session),
-    sub: session ? session.sub : null,
-    method: session ? session.method : null,
+    ...sessionPublicFields(session),
     ...methodsPayload(),
+  };
+}
+
+async function sessionFromSupabaseUser(user, accessToken) {
+  if (!user || !user.id) return null;
+  const profile = await getProfile(user.id, accessToken);
+  if (!canAccessHr(profile)) {
+    const err = new Error(deniedMessage());
+    err.statusCode = 403;
+    throw err;
+  }
+  return {
+    sub: user.id,
+    method: "supabase",
+    email: user.email || (profile && profile.email) || null,
+    role: profile.role,
+    department: profile.department,
+    name: profile.full_name || null,
   };
 }
 
@@ -96,7 +129,7 @@ exports.handler = async (event) => {
     if (methods.length === 0) {
       return json(503, {
         error:
-          "No access gate configured. Set HR_GATE_SECRET (and optionally SUPABASE_AUTH_ENABLED) on this Netlify site.",
+          "HR login is not configured. Set SUPABASE_URL and SUPABASE_ANON_KEY on this Netlify site (same project as the company portal).",
       });
     }
 
@@ -104,24 +137,19 @@ exports.handler = async (event) => {
 
     let sessionPayload = null;
 
-    if (body.password != null && gatePassword()) {
-      if (safeEqual(body.password, gatePassword())) {
-        sessionPayload = { sub: "gate", method: "password" };
+    if (supabaseAuthEnabled()) {
+      if (body.email && body.password) {
+        const token = await verifySupabasePassword(body.email, body.password);
+        sessionPayload = await sessionFromSupabaseUser(token.user, token.access_token);
+      } else if (body.access_token) {
+        const user = await verifySupabaseJwt(body.access_token);
+        sessionPayload = await sessionFromSupabaseUser(user, body.access_token);
       }
     }
 
-    if (!sessionPayload && supabaseAuthEnabled()) {
-      if (body.email && body.password) {
-        const token = await verifySupabasePassword(body.email, body.password);
-        sessionPayload = {
-          sub: (token.user && token.user.id) || "supabase",
-          method: "supabase",
-        };
-      } else if (body.access_token) {
-        const user = await verifySupabaseJwt(body.access_token);
-        if (user && user.id) {
-          sessionPayload = { sub: user.id, method: "supabase" };
-        }
+    if (!sessionPayload && gatePassword() && body.password != null && !body.email && !body.access_token) {
+      if (safeEqual(body.password, gatePassword())) {
+        sessionPayload = { sub: "gate", method: "password" };
       }
     }
 
@@ -134,14 +162,13 @@ exports.handler = async (event) => {
       200,
       {
         authenticated: true,
-        sub: sessionPayload.sub,
-        method: sessionPayload.method,
+        ...sessionPublicFields(sessionPayload),
         ...methodsPayload(),
       },
       { "set-cookie": sessionCookie(token, event) }
     );
   } catch (err) {
     const status = err.statusCode || 500;
-    return json(status, { error: err.message || "Auth error" });
+    return json(status, { error: err.message || "Auth error", ...methodsPayload() });
   }
 };

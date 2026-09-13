@@ -2,7 +2,13 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { DepartmentIcon } from "@/components/department-icons";
 import { requireUser } from "@/lib/auth";
-import { canAccessDepartment, getDepartment, isDepartmentSlug } from "@/lib/departments";
+import { HrPortalLink } from "@/components/hr-portal-link";
+import {
+  canAccessDepartment,
+  canAccessHrPortal,
+  getDepartment,
+  isDepartmentSlug,
+} from "@/lib/departments";
 import { getHrPortalUrl } from "@/lib/env";
 
 type Params = Promise<{ department: string }>;
@@ -26,7 +32,10 @@ export default async function DepartmentPage({ params }: { params: Params }) {
   const department = getDepartment(slug);
   if (!department) notFound();
 
-  const allowed = canAccessDepartment(user.profile, slug);
+  const allowed =
+    slug === "hr"
+      ? canAccessHrPortal(user.profile)
+      : canAccessDepartment(user.profile, slug);
 
   return (
     <main className="mx-auto w-full max-w-6xl px-5 py-10">
@@ -66,15 +75,20 @@ export default async function DepartmentPage({ params }: { params: Params }) {
                 </h2>
                 <p className="mt-2 max-w-2xl text-sm text-muted">
                   People operations and 201 files live on the HR portal — a separate site, not
-                  rebuilt inside this workspace. Open it to continue.
+                  rebuilt inside this workspace. Use the same company portal email and password.
+                  There is no second HR site password.
                 </p>
-                <a
+                <HrPortalLink
                   href={getHrPortalUrl()}
                   className="mt-5 inline-flex h-11 items-center justify-center rounded-md bg-navy-900 px-5 text-sm font-semibold text-white hover:bg-navy-800"
                 >
                   Open HR 201 File Register
-                </a>
-                <p className="mt-3 text-xs text-muted">Opens the live HR site in this tab.</p>
+                </HrPortalLink>
+                <p className="mt-3 text-xs text-muted">
+                  Opens the live HR site in this tab. If you are already signed in here, a
+                  short-lived session token is passed in the URL hash so you should not need to
+                  type your password again.
+                </p>
               </div>
             ) : (
               <div className="rounded-lg border border-dashed border-navy-200 bg-navy-50 px-5 py-6">
