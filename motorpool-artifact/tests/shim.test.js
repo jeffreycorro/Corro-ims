@@ -158,6 +158,28 @@ describe("claude shim", () => {
     assert.ok(ops.includes("list"));
   });
 
+  it("treats a missing auth function as an open local yard", async () => {
+    const w = fakeWindow();
+    const appended = [];
+    w.document.documentElement.appendChild = (el) => appended.push(el);
+    w.fetch = () =>
+      Promise.resolve({
+        ok: false,
+        status: 404,
+        json: async () => {
+          throw new Error("not json");
+        },
+        text: async () => "Not Found",
+      });
+    loadShim(w);
+    const db = await w.claude.use("db");
+    assert.equal(db, null);
+    assert.equal(
+      appended.some((el) => el && el.id === "mp-shim-gate-host"),
+      false
+    );
+  });
+
   it("downloads.save uses an object URL and anchor click", async () => {
     const w = fakeWindow();
     loadShim(w);

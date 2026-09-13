@@ -73,8 +73,13 @@
       credentials: "include",
       headers: { accept: "application/json" },
     }).then(function (res) {
+      // Static preview (`npx serve public`, python http.server) has no functions.
+      // A 404 HTML body is not a closed gate — open the yard on the local store.
+      if (!res.ok) {
+        return { open: true, local: true, offline: true };
+      }
       return res.json().catch(function () {
-        return {};
+        return { open: true, local: true };
       });
     });
   }
@@ -162,6 +167,9 @@
     if (authReady) return authReady;
     authReady = authStatus()
       .then(function (status) {
+        if (status && status.offline) {
+          return { authenticated: true, method: "open", local: true, offline: true };
+        }
         if (status && status.authenticated) return status;
         if (status && (status.open || (status.methods && status.methods.length === 0))) {
           return { authenticated: true, method: "open", local: true };
@@ -320,8 +328,10 @@
 
   function resolveName(name) {
     if (name === "db") {
-      waitForAuth();
-      return Promise.resolve(createDb());
+      return waitForAuth().then(function (status) {
+        if (status && status.offline) return null;
+        return createDb();
+      });
     }
     if (name === "downloads") {
       return Promise.resolve(createDownloads());
