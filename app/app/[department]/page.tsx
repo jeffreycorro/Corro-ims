@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { DepartmentIcon } from "@/components/department-icons";
 import { requireUser } from "@/lib/auth";
 import { canAccessDepartment, getDepartment, isDepartmentSlug } from "@/lib/departments";
-import { getHrPortalUrl } from "@/lib/env";
+import { getHrPortalUrl, getMotorpoolPortalUrl } from "@/lib/env";
 
 type Params = Promise<{ department: string }>;
 
@@ -75,6 +75,24 @@ export default async function DepartmentPage({ params }: { params: Params }) {
                   Open HR 201 File Register
                 </a>
                 <p className="mt-3 text-xs text-muted">Opens the live HR site in this tab.</p>
+              </div>
+            ) : department.slug === "motorpool" ? (
+              <div className="rounded-lg border border-navy-200 bg-navy-50 px-5 py-6">
+                <p className="text-xs font-semibold tracking-[0.18em] text-amber-600">LIVE</p>
+                <h2 className="mt-2 font-display text-2xl text-navy-950">
+                  Motorpool Portal
+                </h2>
+                <p className="mt-2 max-w-2xl text-sm text-muted">
+                  Yard boards and office VRF analytics live on the Motorpool portal — a separate
+                  site, not rebuilt inside this workspace. Open it to continue.
+                </p>
+                <a
+                  href={getMotorpoolPortalUrl()}
+                  className="mt-5 inline-flex h-11 items-center justify-center rounded-md bg-navy-900 px-5 text-sm font-semibold text-white hover:bg-navy-800"
+                >
+                  Open Motorpool Portal
+                </a>
+                <p className="mt-3 text-xs text-muted">Opens the live Motorpool site in this tab.</p>
               </div>
             ) : (
               <div className="rounded-lg border border-dashed border-navy-200 bg-navy-50 px-5 py-6">

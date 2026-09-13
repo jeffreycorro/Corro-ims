@@ -1,0 +1,17 @@
+# Local Netlify CLI
+.netlify
+
+# Env (never commit secrets)
+.env
+.env.*
+!.env.example
+
+# Backup / export dumps — never commit
+*.backup.json
+*backup*.json
+backups/
+exports/
+
+# Dependencies / OS
+node_modules/
+.DS_Store

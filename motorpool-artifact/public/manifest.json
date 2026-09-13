@@ -1,0 +1,21 @@
+{
+  "id": "/",
+  "name": "CorConDev Motorpool",
+  "short_name": "Motorpool",
+  "description": "Internal motorpool yard and office portal for Corro Const. Development and Trade Corp.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f2f2f3",
+  "theme_color": "#2aa0c0",
+  "lang": "en",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
