@@ -54,6 +54,8 @@ describe("placeholder and privacy", () => {
     assert.match(readme, /hr-memo\.js/);
     assert.match(readme, /hr-attendance\.js/);
     assert.match(readme, /hr-payroll\.js/);
+    assert.match(readme, /same Supabase email \+ password/);
+    assert.match(readme, /HR_GATE_REQUIRED/);
   });
 
   it("netlify.toml publishes public with privacy headers", () => {

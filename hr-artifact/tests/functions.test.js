@@ -8,7 +8,7 @@ const { handler: dbHandler } = require("../netlify/functions/db");
 const { handler: sampleHandler } = require("../netlify/functions/sample");
 const { handler: driveHandler } = require("../netlify/functions/drive");
 const { handler: transcribeHandler } = require("../netlify/functions/transcribe");
-const { parseCookieHeader, COOKIE_NAME, signSession } = require("../netlify/lib/session");
+const { COOKIE_NAME, signSession } = require("../netlify/lib/session");
 const { resetTokenCache } = require("../netlify/lib/google-drive");
 
 function testServiceAccountJson() {
@@ -27,8 +27,11 @@ describe("netlify functions", () => {
   beforeEach(() => {
     env = { ...process.env };
     process.env.HR_GATE_SECRET = SECRET;
+    delete process.env.HR_GATE_REQUIRED;
+    delete process.env.HR_GATE_PASSWORD;
     delete process.env.SUPABASE_AUTH_ENABLED;
     delete process.env.SUPABASE_URL;
+    delete process.env.SUPABASE_ANON_KEY;
     delete process.env.SUPABASE_SERVICE_ROLE;
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
@@ -52,7 +55,19 @@ describe("netlify functions", () => {
     assert.match(body.error, /auth/i);
   });
 
-  it("logs in with the gate password and sets an httpOnly cookie", async () => {
+  it("does not accept the deprecated gate password unless HR_GATE_REQUIRED is set", async () => {
+    const res = await authHandler({
+      httpMethod: "POST",
+      headers: { "x-forwarded-proto": "https" },
+      body: JSON.stringify({ action: "login", password: SECRET }),
+    });
+    assert.equal(res.statusCode, 503);
+    const body = JSON.parse(res.body);
+    assert.match(body.error, /SUPABASE_URL/i);
+  });
+
+  it("optionally logs in with the gate password when HR_GATE_REQUIRED=true", async () => {
+    process.env.HR_GATE_REQUIRED = "true";
     const res = await authHandler({
       httpMethod: "POST",
       headers: { "x-forwarded-proto": "https" },
@@ -61,12 +76,14 @@ describe("netlify functions", () => {
     assert.equal(res.statusCode, 200);
     const body = JSON.parse(res.body);
     assert.equal(body.authenticated, true);
+    assert.equal(body.method, "password");
     assert.match(res.headers["set-cookie"], new RegExp(`${COOKIE_NAME}=`));
     assert.match(res.headers["set-cookie"], /HttpOnly/);
     assert.match(res.headers["set-cookie"], /Secure/);
   });
 
-  it("rejects the wrong password", async () => {
+  it("rejects the wrong optional gate password", async () => {
+    process.env.HR_GATE_REQUIRED = "true";
     const res = await authHandler({
       httpMethod: "POST",
       headers: {},
@@ -75,27 +92,29 @@ describe("netlify functions", () => {
     assert.equal(res.statusCode, 401);
   });
 
-  it("reports unauthenticated status and password method", async () => {
+  it("reports unauthenticated status without a mandatory password method", async () => {
     const res = await authHandler({ httpMethod: "GET", headers: {} });
     assert.equal(res.statusCode, 200);
     const body = JSON.parse(res.body);
     assert.equal(body.authenticated, false);
-    assert.deepEqual(body.methods, ["password"]);
+    assert.deepEqual(body.methods, []);
+    assert.equal(body.gateRequired, false);
     assert.equal(body.timezone, "Asia/Manila");
   });
 
+  it("advertises supabase when URL + anon key are set", async () => {
+    process.env.SUPABASE_URL = "https://example.supabase.co";
+    process.env.SUPABASE_ANON_KEY = "anon-test";
+    const res = await authHandler({ httpMethod: "GET", headers: {} });
+    const body = JSON.parse(res.body);
+    assert.deepEqual(body.methods, ["supabase"]);
+  });
+
   it("does not treat acquire as always true when holder is missing", async () => {
-    const login = await authHandler({
-      httpMethod: "POST",
-      headers: {},
-      body: JSON.stringify({ action: "login", password: SECRET }),
-    });
-    const cookie = parseCookieHeader(
-      login.headers["set-cookie"].split(";")[0]
-    );
+    const token = signSession({ sub: "gate", method: "password" }, SECRET);
     const res = await dbHandler({
       httpMethod: "POST",
-      headers: { cookie: `${COOKIE_NAME}=${encodeURIComponent(cookie[COOKIE_NAME])}` },
+      headers: { cookie: `${COOKIE_NAME}=${encodeURIComponent(token)}` },
       body: JSON.stringify({ op: "acquire", path: "employees/1" }),
     });
     assert.equal(res.statusCode, 400);

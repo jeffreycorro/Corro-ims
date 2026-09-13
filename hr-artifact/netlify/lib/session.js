@@ -1,27 +1,59 @@
 "use strict";
 
 const crypto = require("crypto");
+const { envFlag } = require("./hr-access");
 
 const COOKIE_NAME = "hr_session";
-const MAX_AGE_MS = 12 * 60 * 60 * 1000;
+const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 function gateSecret() {
   return process.env.HR_GATE_SECRET || "";
 }
 
+function sessionSecret() {
+  const explicit =
+    process.env.HR_SESSION_SECRET || process.env.HR_GATE_SECRET || "";
+  if (explicit) return explicit;
+  const role =
+    process.env.SUPABASE_SERVICE_ROLE ||
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    "";
+  if (!role) return "";
+  return crypto.createHash("sha256").update(`hr-session:${role}`).digest("hex");
+}
+
+function gateRequired() {
+  return envFlag("HR_GATE_REQUIRED", false);
+}
+
 function gatePassword() {
+  if (!gateRequired()) return "";
   return process.env.HR_GATE_PASSWORD || process.env.HR_GATE_SECRET || "";
 }
 
+function supabaseConfigured() {
+  const url = (
+    process.env.SUPABASE_URL ||
+    process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    ""
+  ).trim();
+  const anon = (
+    process.env.SUPABASE_ANON_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    ""
+  ).trim();
+  return Boolean(url && anon);
+}
+
 function supabaseAuthEnabled() {
-  const flag = String(process.env.SUPABASE_AUTH_ENABLED || "").toLowerCase();
-  return flag === "true" || flag === "1" || flag === "yes";
+  if (!supabaseConfigured()) return false;
+  return envFlag("SUPABASE_AUTH_ENABLED", true);
 }
 
 function configuredMethods() {
   const methods = [];
-  if (gatePassword()) methods.push("password");
   if (supabaseAuthEnabled()) methods.push("supabase");
+  if (gatePassword()) methods.push("password");
   return methods;
 }
 
@@ -36,9 +68,9 @@ function safeEqual(a, b) {
   return crypto.timingSafeEqual(left, right);
 }
 
-function signSession(payload, secret = gateSecret()) {
+function signSession(payload, secret = sessionSecret()) {
   if (!secret) {
-    throw new Error("HR_GATE_SECRET is not configured");
+    throw new Error("HR session signing secret is not configured");
   }
   const body = Buffer.from(
     JSON.stringify({
@@ -51,7 +83,7 @@ function signSession(payload, secret = gateSecret()) {
   return `${body}.${sig}`;
 }
 
-function verifySession(token, secret = gateSecret()) {
+function verifySession(token, secret = sessionSecret()) {
   if (!token || !secret) return null;
   const parts = String(token).split(".");
   if (parts.length !== 2) return null;
@@ -87,10 +119,7 @@ function parseCookieHeader(header) {
 
 function readSession(event) {
   const headers = event.headers || {};
-  const cookie =
-    headers.cookie ||
-    headers.Cookie ||
-    "";
+  const cookie = headers.cookie || headers.Cookie || "";
   const parsed = parseCookieHeader(cookie);
   return verifySession(parsed[COOKIE_NAME]);
 }
@@ -145,6 +174,7 @@ module.exports = {
   configuredMethods,
   cookieSecure,
   gatePassword,
+  gateRequired,
   gateSecret,
   json,
   parseCookieHeader,
@@ -152,8 +182,10 @@ module.exports = {
   requireSession,
   safeEqual,
   sessionCookie,
+  sessionSecret,
   signSession,
   supabaseAuthEnabled,
+  supabaseConfigured,
   unauthorized,
   verifySession,
 };

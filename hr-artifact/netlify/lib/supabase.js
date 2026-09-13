@@ -178,11 +178,47 @@ async function verifySupabaseJwt(accessToken) {
   return res.json();
 }
 
+async function fetchProfileWithUserJwt(userId, accessToken) {
+  const url = supabaseUrl();
+  const key = anonKey();
+  if (!url || !key || !userId || !accessToken) return null;
+  const res = await fetch(
+    `${url}/rest/v1/profiles?id=eq.${encodeURIComponent(userId)}&select=id,full_name,department,role`,
+    {
+      headers: {
+        apikey: key,
+        authorization: `Bearer ${accessToken}`,
+        accept: "application/json",
+      },
+    }
+  );
+  if (!res.ok) return null;
+  const rows = await res.json().catch(() => []);
+  return Array.isArray(rows) && rows[0] ? rows[0] : null;
+}
+
+async function getProfile(userId, accessToken) {
+  if (!userId) return null;
+  try {
+    const rows = await rest({
+      method: "GET",
+      path: "/rest/v1/profiles",
+      query: `id=eq.${encodeURIComponent(userId)}&select=id,full_name,department,role`,
+    });
+    if (Array.isArray(rows) && rows[0]) return rows[0];
+  } catch {
+    // Service role may be missing in Auth-only local tests; fall back to the user JWT.
+  }
+  return fetchProfileWithUserJwt(userId, accessToken);
+}
+
 module.exports = {
   acquireLock,
   anonKey,
   deleteDoc,
+  fetchProfileWithUserJwt,
   getDoc,
+  getProfile,
   listCollection,
   rest,
   serviceRole,

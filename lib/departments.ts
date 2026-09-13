@@ -95,3 +95,11 @@ export function canAccessDepartment(
   if (!profile) return false;
   return profile.role === "admin" || profile.department === slug;
 }
+
+/** Full HR artifact (corcondev-hr): admins, HR-role staff, or department HR. */
+export function canAccessHrPortal(
+  profile: { department: DepartmentSlug; role: Role } | null,
+): boolean {
+  if (!profile) return false;
+  return profile.role === "admin" || profile.role === "hr" || profile.department === "hr";
+}

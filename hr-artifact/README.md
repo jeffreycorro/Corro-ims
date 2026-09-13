@@ -52,12 +52,14 @@ Site settings → Environment variables:
 
 | Variable | Where | Purpose |
 | --- | --- | --- |
-| `SUPABASE_URL` | Functions | Supabase project URL |
-| `SUPABASE_ANON_KEY` | Functions | Anon key (Auth login only, if enabled) |
-| `SUPABASE_SERVICE_ROLE` | Functions **only** | Data plane. Never put this in the shim, `index.html`, or any public env. |
-| `HR_GATE_SECRET` | Functions | Shared staff password **and** HMAC key for the httpOnly session cookie |
-| `HR_GATE_PASSWORD` | Functions, optional | Login password if you want `HR_GATE_SECRET` to be a signing key only |
-| `SUPABASE_AUTH_ENABLED` | Functions, optional | Set to `true` to also accept Supabase email/password (or `access_token`) |
+| `SUPABASE_URL` | Functions | Same Supabase project as the company portal |
+| `SUPABASE_ANON_KEY` | Functions | Anon key for staff email/password (and portal handoff JWT). Never the service role. |
+| `SUPABASE_SERVICE_ROLE` | Functions **only** | Data plane + server-side profile lookup. Never put this in the shim, `index.html`, or any public env. |
+| `HR_SESSION_SECRET` | Functions, optional | HMAC key for the httpOnly session cookie. If unset, `HR_GATE_SECRET` or a hash of `SUPABASE_SERVICE_ROLE` is used. |
+| `HR_GATE_SECRET` | Functions, **deprecated** | No longer a login password. Kept only as a fallback cookie HMAC key. Ignored as a door unless `HR_GATE_REQUIRED=true`. |
+| `HR_GATE_REQUIRED` | Functions, optional | Default **off**. Set `true` only if you still want the old shared-password wall as an extra method. |
+| `HR_GATE_PASSWORD` | Functions, optional | Shared password used only when `HR_GATE_REQUIRED=true`. |
+| `SUPABASE_AUTH_ENABLED` | Functions, optional | Default **on** when URL + anon key are set. Set `false` only to disable Auth. |
 | `ANTHROPIC_API_KEY` | Functions **only** | Enables memo drafting, Ask the records, and other `sample` calls. Never put this in the shim or `index.html`. |
 | `ANTHROPIC_MODEL` | Functions, optional | Override the default model (`claude-sonnet-4-5`). |
 | `ANTHROPIC_MODEL_COMPLEX` | Functions, optional | Model for `modelTier: "complex"` (role defs, long drafts). Defaults to `ANTHROPIC_MODEL`. |
@@ -70,7 +72,11 @@ Site settings → Environment variables:
 | `OPENAI_TRANSCRIBE_PROMPT` | Functions, optional | Override the workplace / Taglish prompt sent with each clip. |
 | `OPENAI_TRANSCRIBE_KEYWORDS` | Functions, optional | Comma-separated name and term hints. |
 
-Copy `.env.example`. Data, AI, and Drive functions **refuse** requests without a valid gate cookie. Do not rely on a front-end-only password check.
+Copy `.env.example`. Data, AI, and Drive functions **refuse** requests without a valid session cookie (issued after Supabase Auth). Do not rely on a front-end-only password check.
+
+**One staff password.** HR uses the same Supabase email + password as [https://corcondev-portal.netlify.app](https://corcondev-portal.netlify.app). There is no separate HR site password in the default flow. After login, an httpOnly cookie keeps the PWA signed in (7 days, or until Sign out).
+
+**Who can enter.** After Auth succeeds, the function reads `public.profiles` (same table as the portal). Only `role = admin`, `role = hr`, or `department = hr` receive a session. Other department logins get 403 — they can use the company portal, not this HR site.
 
 **Drive operator notes**
 
@@ -82,14 +88,18 @@ Copy `.env.example`. Data, AI, and Drive functions **refuse** requests without a
 
 Without `ANTHROPIC_API_KEY` the shim still resolves `sample` to `null` and the memo editor shows “AI drafting is not available in this view”. Without `GOOGLE_SERVICE_ACCOUNT_JSON`, `mcp` is `null` and Drive actions show the artifact’s own unavailable / `not_granted` copy. Without `OPENAI_API_KEY`, `transcribe` is `null` and the hold-to-talk controls are not shown.
 
-### 6. Access control (two layers)
+### 6. Access control
 
-**App-level gate (required):** `/.netlify/functions/auth` issues an httpOnly cookie after the shared password or Supabase Auth succeeds. `/.netlify/functions/db`, `sample`, `drive`, and `transcribe` return 401 without that cookie. The service role key, Anthropic key, OpenAI key, and service-account JSON never leave Netlify Functions.
+**App-level login (required):** `/.netlify/functions/auth` accepts the company-portal Supabase email/password, or a short-lived `access_token` from the portal HR deeplink (URL hash only). It then checks `profiles` and issues an httpOnly cookie. `/.netlify/functions/db`, `sample`, `drive`, and `transcribe` return 401 without that cookie. The service role key, Anthropic key, OpenAI key, and service-account JSON never leave Netlify Functions.
 
-**Netlify visitor password / Identity (additional):**
+**Portal handoff (`/app/hr`):** The company portal is a different Netlify host, so the Supabase cookie is not shared. If the staff member is already signed in on the portal, the HR CTA reads the browser session and navigates to `https://corcondev-hr.netlify.app/#access_token=…`. The hash is not sent to Netlify request logs. The shim posts that JWT to `auth`, then `history.replaceState` strips the hash. If handoff fails, the same email + password form works — there is no second gate password.
+
+**Deprecated shared gate:** `HR_GATE_SECRET` is not a staff password anymore. Leave `HR_GATE_REQUIRED` unset. Only set `HR_GATE_REQUIRED=true` if you deliberately want the old shared-password method as an extra wall.
+
+**Netlify visitor password / Identity (optional extra, not the staff login):**
 
 - Site configuration → Access & security → Visitor access → **Password protection** (or Identity).
-- This stops casual URL guessing before the app gate runs.
+- This is an operator-only layer for casual URL guessing. Do not give staff a second password here if you can avoid it.
 
 ### 7. Turn off Deploy Previews
 
@@ -105,7 +115,7 @@ Privacy headers (`X-Robots-Tag: noindex, nofollow`, `X-Frame-Options: DENY`, `Re
 
 ### 8. Restore data
 
-After deploy, open the site, pass the gate, and restore the backup JSON from **Settings in the artifact**. Never commit backup JSON.
+After deploy, open the site, sign in with a portal HR/admin account, and restore the backup JSON from **Settings in the artifact**. Never commit backup JSON.
 
 ---
 
@@ -156,12 +166,12 @@ Functions need Netlify (`npx netlify dev --dir .`) plus the env vars above. AI, 
 This HR site is a Progressive Web App. Add it from **Safari** only.
 
 1. Open [https://corcondev-hr.netlify.app](https://corcondev-hr.netlify.app) in Safari.
-2. Complete the staff gate (shared password or Supabase login). The Home Screen icon opens `/` and will show the gate again if the session cookie is gone.
+2. Sign in with your company portal email and password. The Home Screen icon opens `/` and stays signed in while the session cookie is valid (Sign out clears it).
 3. Tap **Share** → **Add to Home Screen**.
 4. Keep the name **HR Portal** and tap **Add**.
 5. Open the icon. It should launch full-screen with the navy “C” icon.
 
-If a Netlify visitor password is also enabled, Safari may prompt for that before the in-app gate. That is expected.
+If a Netlify visitor password is also enabled, Safari may prompt for that before the in-app login. Avoid that extra prompt for staff; the in-app form is the real door.
 
 The optional service worker caches icons and `pwa.css` only. It does **not** cache `index.html`, `claude-shim.js`, `hr-dictation.js`, `hr-memo.js`, `hr-attendance.js`, `hr-payroll.js`, or `/.netlify/functions/*`, so auth, db, sample, Drive, dictation, memo chrome, attendance import, and payroll stay on the network.
 

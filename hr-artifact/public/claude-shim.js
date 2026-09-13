@@ -89,6 +89,24 @@
     });
   }
 
+  function consumeHandoffToken() {
+    try {
+      var loc = window.location;
+      if (!loc) return null;
+      var hash = String(loc.hash || "").replace(/^#/, "");
+      if (!hash) return null;
+      var params = new URLSearchParams(hash);
+      var token = params.get("access_token") || params.get("hr_access_token");
+      if (!token) return null;
+      if (window.history && window.history.replaceState) {
+        window.history.replaceState(null, "", (loc.pathname || "/") + (loc.search || ""));
+      }
+      return token;
+    } catch (e) {
+      return null;
+    }
+  }
+
   function ensureGateStyles(shadow) {
     var style = document.createElement("style");
     style.textContent =
@@ -102,7 +120,7 @@
       "p{margin:0 0 16px;color:#c5c0b5;font-size:0.95rem;line-height:1.45}" +
       "label{display:block;font-size:0.8rem;margin:10px 0 4px;color:#ddd8cc}" +
       "input{width:100%;min-height:44px;padding:10px 12px;border-radius:8px;border:1px solid #4a5c78;" +
-      "background:#1b2430;color:#f4f1ea;font-size:16px}" +
+      "background:#1b2430;color:#f4f1ea;font-size:16px;-webkit-text-size-adjust:100%}" +
       "button{margin-top:16px;width:100%;min-height:44px;padding:10px 12px;border:0;border-radius:8px;" +
       "background:#c45c26;color:#fff;font-weight:650;cursor:pointer;font-size:16px}" +
       "button:disabled{opacity:0.6;cursor:not-allowed}" +
@@ -111,7 +129,42 @@
     shadow.appendChild(style);
   }
 
-  function showLoginGate(methods) {
+  function showSessionChrome() {
+    try {
+      var existing = document.getElementById("hr-shim-session-host");
+      if (existing) existing.remove();
+      var host = document.createElement("div");
+      host.id = "hr-shim-session-host";
+      var shadow = host.attachShadow({ mode: "closed" });
+      var style = document.createElement("style");
+      style.textContent =
+        ":host{all:initial;position:fixed;top:max(8px,env(safe-area-inset-top,0px));" +
+        "right:max(8px,env(safe-area-inset-right,0px));z-index:2147483646;font-family:system-ui,sans-serif}" +
+        "button{min-height:44px;min-width:44px;padding:8px 14px;border:1px solid #3a4a63;border-radius:8px;" +
+        "background:#243044;color:#f4f1ea;font-size:14px;font-weight:650;cursor:pointer}" +
+        "button:disabled{opacity:0.6}";
+      shadow.appendChild(style);
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = "Sign out";
+      btn.addEventListener("click", function () {
+        btn.disabled = true;
+        api("auth", { action: "logout" })
+          .catch(function () {})
+          .then(function () {
+            authReady = null;
+            try {
+              sessionStorage.removeItem("hr-shim-holder");
+            } catch (e) {}
+            window.location.reload();
+          });
+      });
+      shadow.appendChild(btn);
+      (document.documentElement || document.body).appendChild(host);
+    } catch (e) {}
+  }
+
+  function showLoginGate(methods, presetError) {
     return new Promise(function (resolve) {
       function mount() {
         var host = document.getElementById("hr-shim-gate-host");
@@ -122,27 +175,33 @@
         ensureGateStyles(shadow);
         var wrap = document.createElement("div");
         wrap.className = "wrap";
-        var usePassword = !methods || methods.indexOf("password") !== -1;
-        var useSupabase = methods && methods.indexOf("supabase") !== -1;
+        var useSupabase = !methods || methods.length === 0 || methods.indexOf("supabase") !== -1;
+        var usePassword = methods && methods.indexOf("password") !== -1;
         wrap.innerHTML =
           '<form class="card" autocomplete="on">' +
           "<h1>CorConDev HR</h1>" +
-          "<p>This site is private. Sign in to open the HR artifact. " +
-          "The access check runs on the server; the page cannot bypass it.</p>" +
+          "<p>Sign in with the same email and password you use for the company portal. " +
+          "HR is limited to HR and admin staff.</p>" +
           (useSupabase
             ? '<label for="hr-shim-email">Email</label>' +
-              '<input id="hr-shim-email" name="email" type="email" autocomplete="username">'
+              '<input id="hr-shim-email" name="email" type="email" inputmode="email" ' +
+              'autocomplete="username" autocapitalize="none" autocorrect="off" ' +
+              'spellcheck="false" enterkeyhint="next"' +
+              (usePassword ? ">" : " required>")
             : "") +
           '<label for="hr-shim-password">Password</label>' +
-          '<input id="hr-shim-password" name="password" type="password" autocomplete="current-password" required>' +
-          "<button type=\"submit\">Continue</button>" +
+          '<input id="hr-shim-password" name="password" type="password" ' +
+          'autocomplete="current-password" enterkeyhint="go" required>' +
+          '<button type="submit">Sign in</button>' +
           '<div class="err" id="hr-shim-err"></div>' +
-          '<p class="note">Netlify visitor password protection, if enabled, is an extra layer in front of this gate.</p>' +
+          '<p class="note">Your session stays on this device until you sign out.</p>' +
           "</form>";
         shadow.appendChild(wrap);
         document.documentElement.appendChild(host);
         var form = shadow.querySelector("form");
         var errEl = shadow.getElementById("hr-shim-err");
+        if (errEl && presetError) errEl.textContent = presetError;
+        if (!form) return;
         form.addEventListener("submit", function (ev) {
           ev.preventDefault();
           var btn = form.querySelector("button");
@@ -153,12 +212,19 @@
           payload.password = pw;
           if (useSupabase) {
             var emailEl = shadow.getElementById("hr-shim-email");
-            if (emailEl && emailEl.value) payload.email = emailEl.value;
+            var email = emailEl && emailEl.value ? String(emailEl.value).trim() : "";
+            if (email) payload.email = email;
+            else if (!usePassword) {
+              errEl.textContent = "Enter your company portal email.";
+              btn.disabled = false;
+              return;
+            }
           }
           api("auth", payload)
             .then(function (out) {
               if (!out.authenticated) throw new Error("Sign-in failed");
               host.remove();
+              showSessionChrome();
               resolve(out);
             })
             .catch(function (err) {
@@ -176,11 +242,26 @@
     if (authReady) return authReady;
     authReady = authStatus()
       .then(function (status) {
-        if (status && status.authenticated) return status;
+        if (status && status.authenticated) {
+          showSessionChrome();
+          return status;
+        }
+        var token = consumeHandoffToken();
+        if (token) {
+          return api("auth", { action: "login", access_token: token })
+            .then(function (out) {
+              if (!out.authenticated) throw new Error("Sign-in failed");
+              showSessionChrome();
+              return out;
+            })
+            .catch(function (err) {
+              return showLoginGate(status && status.methods, err && err.message);
+            });
+        }
         return showLoginGate(status && status.methods);
       })
       .catch(function () {
-        return showLoginGate(["password"]);
+        return showLoginGate(["supabase"]);
       });
     return authReady;
   }
