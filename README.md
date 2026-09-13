@@ -46,6 +46,7 @@ Use the **anon / public** key only in the Next.js app. Never put the service rol
 - `profiles` is keyed to `auth.users` (`id` FK) with `full_name`, `department`, and `role` (`staff` | `dept_lead` | `hr` | `admin`)
 - Row Level Security: authenticated users can read their own profile; admins can manage all profiles
 - **Admin role** sees every department tile. Other roles see only their assigned department
+- The separate HR site (`corcondev-hr`) accepts the **same** email/password. Only `admin`, `hr` role, or department `hr` may enter that site. Other department accounts are signed in on this portal only.
 - If a user can sign in but has no `profiles` row, the hub explains that an administrator must provision the account
 
 Apply the schema from `supabase/migrations/20260907000001_create_profiles.sql` in the Supabase SQL editor (or `supabase db push`).
@@ -74,7 +75,7 @@ Do not commit real emails or passwords. The first admin profile must be inserted
 | `/app/[department]` | Department home (`admin`, `technical`, `finance`, `procurement`, `motorpool`, `safety`, `site`, `hr`) |
 | `/settings` | Signed-in profile and change-password form |
 
-Department stubs show “module coming soon”. The **HR** workspace deep-links to the live HR portal (`NEXT_PUBLIC_HR_PORTAL_URL`, default `https://corcondev-hr.netlify.app`). The **Motorpool** workspace deep-links to the live Motorpool portal (`NEXT_PUBLIC_MOTORPOOL_PORTAL_URL`, default `https://corcondev-motorpool.netlify.app`). Each department home still reserves a **Department Assistant — soon** slot.
+Department stubs show “module coming soon”. The **HR** workspace replaces that stub with a primary CTA to the live HR portal (`NEXT_PUBLIC_HR_PORTAL_URL`, default `https://corcondev-hr.netlify.app`). Staff use the same Supabase login; if they are already signed in here, the CTA hands off a short-lived access token in the URL hash so they should not need to type the password again. The **Motorpool** workspace deep-links to the live Motorpool portal (`NEXT_PUBLIC_MOTORPOOL_PORTAL_URL`, default `https://corcondev-motorpool.netlify.app`). Each department home still reserves a **Department Assistant — soon** slot.
 
 ## Demo mode
 
@@ -115,6 +116,8 @@ The optional service worker only caches icons. It does not store pages offline a
 ## HR artifact (separate Netlify site)
 
 The Claude HR single-file app is **not** part of this portal build. Host it from [`hr-artifact/`](hr-artifact/) as its **own** Netlify site (base directory `hr-artifact`). Do not point the company portal at that folder. See `hr-artifact/README.md` for paste-the-export, shim injection, SQL, env, and privacy steps.
+
+HR login is the same Supabase Auth used here. Do **not** set a second staff password (`HR_GATE_SECRET` is deprecated / ignored unless `HR_GATE_REQUIRED=true`). The HR Netlify site needs `SUPABASE_URL` and `SUPABASE_ANON_KEY` from this project, plus `SUPABASE_SERVICE_ROLE` for data.
 
 ## Motorpool artifact (separate Netlify site)
 

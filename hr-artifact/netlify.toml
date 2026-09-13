@@ -26,8 +26,9 @@
 # Also turn Deploy Previews off in the Netlify UI (required):
 # Project configuration → Build & deploy → Continuous Deployment →
 # Branches and deploy contexts → Disable Deploy Previews.
-# Site configuration → Access & security → Visitor access → password-protect
-# the site as a second layer. This site must not be a casual public crawl target.
+# Optional: Site configuration → Access & security → Visitor access can still
+# add Netlify password protection, but staff login is Supabase Auth only.
+# This site must not be a casual public crawl target.
 
 [context.deploy-preview]
   ignore = "exit 0"
