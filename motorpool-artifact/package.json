@@ -1,0 +1,13 @@
+{
+  "name": "corcondev-motorpool-artifact",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Corcondev Motorpool Portal — separate Netlify site, not the company portal.",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "build": "node -e \"console.log('static Motorpool artifact — no SPA build')\""
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

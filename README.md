@@ -32,6 +32,8 @@ NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
 # Optional override for the live HR site (defaults to https://corcondev-hr.netlify.app)
 # NEXT_PUBLIC_HR_PORTAL_URL=https://corcondev-hr.netlify.app
+# Optional override for the live Motorpool site (defaults to https://corcondev-motorpool.netlify.app)
+# NEXT_PUBLIC_MOTORPOOL_PORTAL_URL=https://corcondev-motorpool.netlify.app
 ```
 
 Use the **anon / public** key only in the Next.js app. Never put the service role key, database password, or user passwords in client code or committed files.
@@ -73,7 +75,7 @@ Do not commit real emails or passwords. The first admin profile must be inserted
 | `/app/[department]` | Department home (`admin`, `technical`, `finance`, `procurement`, `motorpool`, `safety`, `site`, `hr`) |
 | `/settings` | Signed-in profile and change-password form |
 
-Department stubs show “module coming soon”. The **HR** workspace replaces that stub with a primary CTA to the live HR portal (`NEXT_PUBLIC_HR_PORTAL_URL`, default `https://corcondev-hr.netlify.app`). Staff use the same Supabase login; if they are already signed in here, the CTA hands off a short-lived access token in the URL hash so they should not need to type the password again. Each department home still reserves a **Department Assistant — soon** slot.
+Department stubs show “module coming soon”. The **HR** workspace replaces that stub with a primary CTA to the live HR portal (`NEXT_PUBLIC_HR_PORTAL_URL`, default `https://corcondev-hr.netlify.app`). Staff use the same Supabase login; if they are already signed in here, the CTA hands off a short-lived access token in the URL hash so they should not need to type the password again. The **Motorpool** workspace deep-links to the live Motorpool portal (`NEXT_PUBLIC_MOTORPOOL_PORTAL_URL`, default `https://corcondev-motorpool.netlify.app`). Each department home still reserves a **Department Assistant — soon** slot.
 
 ## Demo mode
 
@@ -91,7 +93,7 @@ The mock session is an httpOnly cookie. It is for local/UI review only.
 2. Build command: `npm run build` (see `netlify.toml`)
 3. Publish directory: `.next`
 4. Node version: `20`
-5. In **Site settings → Environment variables**, set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`. Optionally set `NEXT_PUBLIC_HR_PORTAL_URL` if the live HR site is not the default Netlify URL.
+5. In **Site settings → Environment variables**, set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`. Optionally set `NEXT_PUBLIC_HR_PORTAL_URL` or `NEXT_PUBLIC_MOTORPOOL_PORTAL_URL` if those sites are not the default Netlify URLs.
 6. Redeploy after env vars change
 
 `@netlify/plugin-nextjs` is declared in `netlify.toml` so the Next.js App Router runtime is used. If you skip env vars on Netlify, the deployed site stays in DEMO MODE.
@@ -116,6 +118,10 @@ The optional service worker only caches icons. It does not store pages offline a
 The Claude HR single-file app is **not** part of this portal build. Host it from [`hr-artifact/`](hr-artifact/) as its **own** Netlify site (base directory `hr-artifact`). Do not point the company portal at that folder. See `hr-artifact/README.md` for paste-the-export, shim injection, SQL, env, and privacy steps.
 
 HR login is the same Supabase Auth used here. Do **not** set a second staff password (`HR_GATE_SECRET` is deprecated / ignored unless `HR_GATE_REQUIRED=true`). The HR Netlify site needs `SUPABASE_URL` and `SUPABASE_ANON_KEY` from this project, plus `SUPABASE_SERVICE_ROLE` for data.
+
+## Motorpool artifact (separate Netlify site)
+
+The Claude Motorpool single-file app is **not** part of this portal build. Host it from [`motorpool-artifact/`](motorpool-artifact/) as its **own** Netlify site (base directory `motorpool-artifact`, publish `public`, proposed name `corcondev-motorpool`). `public/index.html` is the Claude export (title Corcondev Motorpool). When that HTML is updated, replace the file, keep the shim tags, and push — see `motorpool-artifact/README.md` (“Redeploy when the artifact HTML is updated”). Do not point the company portal at that folder. Env is hash only — never the office pass plaintext.
 
 ## Out of scope (this phase)
 
