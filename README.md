@@ -118,7 +118,7 @@ The Claude HR single-file app is **not** part of this portal build. Host it from
 
 ## Motorpool artifact (separate Netlify site)
 
-The Motorpool yard / office app is **not** part of this portal build. Host it from [`motorpool-artifact/`](motorpool-artifact/) as its **own** Netlify site (base directory `motorpool-artifact`, proposed name `corcondev-motorpool`). Do not point the company portal at that folder. See `motorpool-artifact/README.md` for deploy, env (hash only — never the office pass plaintext), Drive folder convention, and data-import notes.
+The Claude Motorpool single-file app is **not** part of this portal build. Host it from [`motorpool-artifact/`](motorpool-artifact/) as its **own** Netlify site (base directory `motorpool-artifact`, publish `public`, proposed name `corcondev-motorpool`). `public/index.html` is the Claude export (title Corcondev Motorpool). When that HTML is updated, replace the file, keep the shim tags, and push — see `motorpool-artifact/README.md` (“Redeploy when the artifact HTML is updated”). Do not point the company portal at that folder. Env is hash only — never the office pass plaintext.
 
 ## Out of scope (this phase)
 

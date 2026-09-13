@@ -329,6 +329,20 @@
     return Promise.resolve(null);
   }
 
+  function loadCompanion(src, flag) {
+    try {
+      if (typeof document === "undefined") return;
+      if (document.querySelector && document.querySelector("script[" + flag + '="1"]')) return;
+      var parent = document.head || document.documentElement;
+      if (!parent || !document.createElement) return;
+      var s = document.createElement("script");
+      s.src = src;
+      s.defer = true;
+      if (s.setAttribute) s.setAttribute(flag, "1");
+      parent.appendChild(s);
+    } catch (e) {}
+  }
+
   window.claude = Object.freeze({
     use: function (name) {
       var key = String(name || "");
@@ -336,4 +350,6 @@
       return cache[key];
     },
   });
+  loadCompanion("/motorpool-host.js", "data-mp-host");
 })();
+

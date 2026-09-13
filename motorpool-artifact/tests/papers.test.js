@@ -7,11 +7,13 @@ const {
   papersNeeded,
   papersToChase,
   excludeFromPapersChase,
-} = require("../public/js/rules.js");
-const { DEMO_UNITS } = require("../public/js/seed.js");
+} = require("./lib/rules");
+const { DEMO_UNITS } = require("./lib/seed");
 
 describe("plant papers rule", () => {
-  it("BH- / RR- / blank / NA plate are plant → deed only", () => {
+  it("BH- / RR- code or blank / NA plate are plant → deed only", () => {
+    assert.equal(isPlantUnit({ code: "BH-07", plate: "XYZ 1" }), true);
+    assert.equal(isPlantUnit({ code: "RR-02", plate: "XYZ 2" }), true);
     assert.equal(isPlantUnit({ plate: "BH-07" }), true);
     assert.equal(isPlantUnit({ plate: "RR-02" }), true);
     assert.equal(isPlantUnit({ plate: "NA" }), true);

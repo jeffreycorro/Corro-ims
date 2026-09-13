@@ -23,15 +23,15 @@ function assertCollection(name) {
 
 /**
  * Path format: collection/id (id may contain additional slashes).
- * Documented layout:
- *   master/units | master/worktypes | master/projects | master/suppliers
- *   master/staff | master/checklists | master/papers
- *   ledger/{vrfNo} | ledger/counter
- *   ops/jo-{id} | ops/task-{id} | ops/reminder-{id} | ops/activity-{id}
- *   reserves/{id}
- *   fuel/{id}
- *   photos/{id}
- *   config/app | config/vrf-counter
+ * Artifact paths (do not invent others):
+ *   master/vehicles | master/parts | master/items | master/worktypes
+ *   master/suppliers | master/projects | master/drivers
+ *   ledger/<YYYY-MM> | ledger/index
+ *   ops/mechanic | ops/tasks | ops/breakdowns | ops/papers | ops/photoindex
+ *   reserves/<YYYY> | reserves/index
+ *   fuel/purchases | fuel/withdrawals
+ *   photos/<key>
+ *   config/app | config/counter | config/rsvcounter
  */
 function parsePath(path, maybeId) {
   if (path && typeof path === "object" && path.collection && path.id) {

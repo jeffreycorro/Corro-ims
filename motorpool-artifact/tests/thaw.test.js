@@ -2,8 +2,8 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { freezeRead, thaw, isFrozenDeep } = require("../public/js/rules.js");
-const { createStore } = require("../public/js/db.js");
+const { freezeRead, thaw, isFrozenDeep } = require("./lib/rules");
+const { createStore } = require("./lib/store");
 
 describe("frozen reads → thaw before mutate", () => {
   it("freezes nested objects and arrays", () => {

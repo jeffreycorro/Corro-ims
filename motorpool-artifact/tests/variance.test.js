@@ -2,7 +2,7 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { varianceFlag, varianceNotice } = require("../public/js/rules.js");
+const { varianceFlag, varianceNotice } = require("./lib/rules");
 
 describe("variance flag (>10% over approved)", () => {
   it("is a notice, not a block, when spent is more than 10% over", () => {

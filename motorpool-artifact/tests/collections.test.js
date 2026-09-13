@@ -13,12 +13,12 @@ const {
 describe("motorpool collections", () => {
   it("parses documented paths", () => {
     assert.deepEqual(parsePath("config/app"), { collection: "config", id: "app" });
-    assert.deepEqual(parsePath("master/units"), { collection: "master", id: "units" });
-    assert.deepEqual(parsePath("ledger/VRF-2026-0001"), {
+    assert.deepEqual(parsePath("master/vehicles"), { collection: "master", id: "vehicles" });
+    assert.deepEqual(parsePath("ledger/2026-09"), {
       collection: "ledger",
-      id: "VRF-2026-0001",
+      id: "2026-09",
     });
-    assert.deepEqual(parsePath("ops/jo-abc"), { collection: "ops", id: "jo-abc" });
+    assert.deepEqual(parsePath("ops/mechanic"), { collection: "ops", id: "mechanic" });
   });
 
   it("keeps extra slashes in the id", () => {
@@ -37,7 +37,7 @@ describe("motorpool collections", () => {
 
   it("requires a full-field write for config/app", () => {
     assert.equal(requiresFullWrite("config", "app"), true);
-    assert.equal(requiresFullWrite("master", "units"), false);
+    assert.equal(requiresFullWrite("master", "vehicles"), false);
   });
 
   it("lists the documented collections", () => {

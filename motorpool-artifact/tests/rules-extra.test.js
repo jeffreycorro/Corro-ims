@@ -10,8 +10,8 @@ const {
   workRefStates,
   checkOfficeHash,
   sha256hexSync,
-} = require("../public/js/rules.js");
-const { TYPES } = require("../public/js/worktypes.js");
+} = require("./lib/rules");
+const { TYPES } = require("./lib/worktypes");
 
 describe("infer job and gates", () => {
   it("labels the longest phrase as the key category (score 3) and labour as 0", () => {

@@ -61,18 +61,12 @@
   }
 
   /**
-   * Fuel commodity — requires a dash so "fuel filter" is never fuel.
-   * Matches DIESEL-BULK, Gasoline - 91, FUEL-DIESEL, etc.
+   * Artifact rule: isFuel requires a dash after "fuel"
+   *   /^\s*fuel\s*[—–-]/i
+   * so "Fuel Filter" is never fuel. "Fuel — Diesel" is.
    */
   function isFuel(text) {
-    var raw = String(text == null ? "" : text).trim();
-    if (!raw.includes("-")) return false;
-    var s = raw.toLowerCase();
-    if (/\b(diesel|gasoline|petrol|gasoil|unleaded)\b/.test(s)) return true;
-    if (/(?:^|[\s/,])fuel\s*-/.test(s) || /(?:^|[\s/,])fuel-/.test(s) || /^fuel-/.test(s)) {
-      return !/\b(filter|hose|cap|pump|sender|tank|gauge)\b/.test(s);
-    }
-    return false;
+    return /^\s*fuel\s*[—–-]/i.test(text == null ? "" : text);
   }
 
   function unitCodePrefix(unit) {
@@ -96,8 +90,10 @@
       .toUpperCase();
   }
 
-  /** Plant: BH- / RR- plate prefix, or blank / NA plate. Deed only. */
+  /** Plant: code starting BH- / RR-, or blank / NA plate. Deed only. */
   function isPlantUnit(unit) {
+    var code = String((unit && (unit.code || unit.id)) || "").toUpperCase();
+    if (code.indexOf("BH-") === 0 || code.indexOf("RR-") === 0) return true;
     var plate = normalizePlate(unit && unit.plate);
     if (!plate || plate === "NA" || plate === "N/A" || plate === "-" || plate === "NONE") {
       return true;
