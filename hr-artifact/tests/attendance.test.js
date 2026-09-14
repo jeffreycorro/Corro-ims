@@ -94,6 +94,28 @@ describe("manpower attendance core", () => {
     assert.equal(hr.normStatus("not a status"), "");
     assert.ok(hr.CLOSED_STATUSES.includes("Special Holiday"));
     assert.ok(hr.CLOSED_STATUSES.includes("Leave with Pay"));
+    assert.ok(hr.CLOSED_STATUSES.includes("Undertime"));
+    assert.equal(hr.normStatus("Present (Late)"), "Present/Late");
+    assert.equal(hr.normStatus("undertime"), "Undertime");
+    assert.equal(hr.normStatus("left early"), "Undertime");
+  });
+
+  it("Present/Late requires Time In; Undertime requires Time Out", () => {
+    const lateNeed = hr.validateDayRowTimes({ s: "Present/Late", in: "", out: "17:00" });
+    assert.equal(lateNeed.length, 1);
+    assert.match(lateNeed[0], /Time In is required for Present\/Late/);
+    assert.equal(hr.validateDayRowTimes({ s: "Present/Late", in: "08:12" }).length, 0);
+    const utNeed = hr.validateDayRowTimes({ s: "Undertime", in: "08:00", out: "" });
+    assert.equal(utNeed.length, 1);
+    assert.match(utNeed[0], /Time Out is required for Undertime/);
+    assert.equal(hr.validateDayRowTimes({ s: "Undertime", out: "15:30" }).length, 0);
+    assert.equal(hr.validateDayRowTimes({ s: "Present", in: "", out: "" }).length, 0);
+    assert.equal(hr.validateDayRowTimes({ s: "Absent", in: "", out: "" }).length, 0);
+    assert.equal(hr.dayCredit("Undertime"), 1);
+    assert.equal(hr.holidayGranted({ hol: 2 }), true);
+    assert.equal(hr.holidayPremiumCode({ hol: 2 }), 2);
+    assert.equal(hr.holidayPremiumCode({ hol: 1 }), 1);
+    assert.equal(hr.holidayPremiumCode({}), 0);
   });
 
   it("reads the report date from dotted, dashed and underscored filenames", () => {

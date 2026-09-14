@@ -215,6 +215,108 @@ describe("attendance is the only source of days / OT / premium", () => {
     assert.equal(P.dayCredit("Present/Late"), 1);
     assert.equal(P.payDayCredit({ s: "Present/Late" }, "e", "2026-08-20", {}), 1);
   });
+
+  it("undertime is a full day of credit", () => {
+    assert.equal(P.dayCredit("Undertime"), 1);
+    assert.equal(P.payDayCredit({ s: "Undertime" }, "e", "2026-08-20", {}), 1);
+  });
+});
+
+describe("holiday premium rates: as is / +30% / +100%", () => {
+  it("reads stored hol 1 as +30% and hol 2 as +100%", () => {
+    assert.equal(P.holidayPremiumRate({ hol: 1 }), 0.3);
+    assert.equal(P.holidayPremiumRate({ hol: true }), 0.3);
+    assert.equal(P.holidayPremiumRate({ hol: 2 }), 1);
+    assert.equal(P.holidayPremiumRate({ hol: 0 }), 0);
+    assert.equal(P.holidayGranted({ hol: 2 }), true);
+    assert.equal(P.holidayGranted({ hol: 0 }), false);
+    assert.equal(P.holLabel(2), "+100%");
+    assert.equal(P.holLabel(1), "+30%");
+    assert.equal(P.holLabel(0), "as is");
+  });
+
+  it("tally sums mixed day rates; computeLine keeps paper 30% when holFactor is omitted", () => {
+    const ctx = {
+      daily: {
+        d20260820: {
+          id: "d20260820",
+          date: "2026-08-20",
+          rows: { e1: { s: "Present", hol: 1 } },
+        },
+        d20260821: {
+          id: "d20260821",
+          date: "2026-08-21",
+          rows: { e1: { s: "Present", hol: 2 } },
+        },
+      },
+      holidays: [{ d: "2026-08-20", n: "Test", t: "Special" }, { d: "2026-08-21", n: "Test 2", t: "Regular" }],
+    };
+    const t = P.tallyPersonPeriod("e1", "2026-08-20", "2026-08-21", ctx);
+    assert.equal(t.hol, 2);
+    assert.equal(t.hol30, 1);
+    assert.equal(t.hol100, 1);
+    assert.equal(t.holFactor, 1.3);
+    const paper = line({ days: 1, hol: 1, daily: 570 });
+    assert.equal(paper.holPay, 570 * 0.3);
+    const doubled = P.computeLine({ days: 1, hol: 1, holFactor: 1, daily: 570, otMultiplier: 1 });
+    assert.equal(doubled.holPay, 570);
+    assert.ok(doubled.gross > paper.gross);
+  });
+
+  it("payslip workings name 30% and 100% days", () => {
+    const run = { kind: "weekly", from: "2026-08-20", to: "2026-08-26", release: "2026-08-29" };
+    const L = P.computeLine({
+      name: "Arsua, Jonard A.", empNo: "1251", days: 5, hol: 2, holFactor: 1.3,
+      hol30: 1, hol100: 1, daily: 570, otMultiplier: 1,
+    });
+    const slip = P.payslipHTML(L, run);
+    assert.match(slip, /30%/);
+    assert.match(slip, /100%/);
+    assert.match(slip, /Holiday premium/);
+  });
+});
+
+describe("opening Payroll Maker shows period attendance or a load CTA", () => {
+  it("empty window names the blank and how to load it", () => {
+    const html = P.viewPayMaker();
+    assert.match(html, /Period attendance/);
+    assert.match(html, /Paste Claude JSON/);
+    assert.match(html, /Open Daily Manpower/);
+    assert.match(html, /No Daily Manpower report|No report filed/);
+  });
+
+  it("snaps to the latest filed period when this week has no reports", () => {
+    const S = {
+      ui: {},
+      daily: {
+        d20260820: { id: "d20260820", date: "2026-08-20", rows: { e1: { s: "Present" } } },
+      },
+      employees: {},
+    };
+    const snapped = P.maybeSnapPayWindow(S);
+    assert.ok(snapped);
+    assert.equal(snapped.from, "2026-08-20");
+    assert.equal(snapped.to, "2026-08-26");
+    assert.equal(S.ui.payFrom, "2026-08-20");
+    assert.equal(P.maybeSnapPayWindow(S), null, "does not snap again once a window is chosen");
+  });
+
+  it("does not snap when the current window already has a report", () => {
+    const today = P.isoDate(new Date());
+    const std = P.payPeriod("weekly", today);
+    const S = {
+      ui: {},
+      daily: {
+        ["d" + std.from.replace(/-/g, "")]: {
+          id: "d" + std.from.replace(/-/g, ""),
+          date: std.from,
+          rows: { e1: { s: "Present" } },
+        },
+      },
+      employees: {},
+    };
+    assert.equal(P.maybeSnapPayWindow(S), null);
+  });
 });
 
 describe("holiday premium: eligible is not granted", () => {
@@ -396,6 +498,11 @@ describe("acceptance helpers", () => {
     assert.match(html, /Open Daily Manpower/);
     assert.match(html, /No report filed/);
     assert.match(html, /cannot be typed here/);
+    assert.match(html, /Period attendance/);
+    assert.match(html, /Paste Claude JSON/);
+    assert.match(html, /\+30%/);
+    assert.match(html, /\+100%/);
+    assert.match(html, /As is/);
   });
 
   it("names missing weekday reports in a period", () => {

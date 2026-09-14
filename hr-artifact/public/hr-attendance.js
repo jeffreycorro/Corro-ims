@@ -17,6 +17,7 @@
   var CLOSED_STATUSES = [
     "Present",
     "Present/Late",
+    "Undertime",
     "Absent",
     "Leave",
     "Leave with Pay",
@@ -27,7 +28,7 @@
   ];
 
   var DAY_STATUS_RX =
-    /(Present\s*\/\s*Late|Present|Absent|Regular\s+Holiday|Special\s+Holiday|Half\s*Day|Rest\s*Day|Leave\s+with\s+Pay|Leave)/i;
+    /(Present\s*\/\s*Late|Present\s*\(\s*Late\s*\)|Present|Undertime|Absent|Regular\s+Holiday|Special\s+Holiday|Half\s*Day|Rest\s*Day|Leave\s+with\s+Pay|Leave)/i;
 
   var LRF_FULL = /LRF\s*[-–]?\s*(20\d\d)\s*[-–]?\s*(\d{3,4})/i;
   var LRF_TAIL = /(?:^|[^\d-])(\d{3,4})\s*\\?\)/;
@@ -119,7 +120,10 @@
   function normStatus(t) {
     var x = String(t || "").toLowerCase().replace(/\s+/g, " ").trim();
     if (!x) return "";
-    if (/present\s*\/\s*late/.test(x) || x === "late" || x === "tardy") return "Present/Late";
+    if (/present\s*\/\s*late/.test(x) || /present\s*\(\s*late\s*\)/.test(x) || x === "late" || x === "tardy") {
+      return "Present/Late";
+    }
+    if (/undertime|under\s*time|left\s+early|leaving\s+post/.test(x)) return "Undertime";
     if (/leave\s+with\s+pay|lw\/?p\b|paid leave/.test(x)) return "Leave with Pay";
     if (/^present/.test(x)) return "Present";
     if (/^absent/.test(x)) return "Absent";
@@ -394,7 +398,7 @@
     if (row && (empId || date)) {
       st = effectiveStatus(empId, date, row.s || row.status || status, row.r || row.reason, ctx);
     }
-    if (st === "Present" || st === "Present/Late") return 1;
+    if (st === "Present" || st === "Present/Late" || st === "Undertime") return 1;
     if (st === "Leave with Pay") return 1;
     if (st === "Regular Holiday") return 1;
     if (st === "Half Day") return 0.5;
@@ -415,8 +419,35 @@
     return dayCredit(row && (row.s || row.status), row, empId, date, ctx);
   }
 
+  function holidayPremiumCode(row) {
+    if (!row) return 0;
+    var h = row.hol;
+    if (h === 2 || h === "2" || h === 100 || h === "100") return 2;
+    if (h === 1 || h === true || h === "1" || h === 0.3 || h === "0.3" || h === "30") return 1;
+    return 0;
+  }
+
   function holidayGranted(row) {
-    return !!(row && row.hol);
+    return holidayPremiumCode(row) > 0;
+  }
+
+  function requiredTimesForStatus(status) {
+    if (status === "Present/Late") return { in: true };
+    if (status === "Undertime") return { out: true };
+    return {};
+  }
+
+  function validateDayRowTimes(row) {
+    var st = (row && (row.s || row.status)) || "";
+    var need = requiredTimesForStatus(st);
+    var errors = [];
+    if (need.in && !String((row && row.in) || "").trim()) {
+      errors.push("Time In is required for Present/Late.");
+    }
+    if (need.out && !String((row && row.out) || "").trim()) {
+      errors.push("Time Out is required for Undertime.");
+    }
+    return errors;
   }
 
   function dailyCoverage(year, ctx) {
@@ -491,6 +522,7 @@
     return {
       present: 0,
       late: 0,
+      undertime: 0,
       absent: 0,
       leave: 0,
       holiday: 0,
@@ -502,7 +534,7 @@
       premiumDays: 0,
       dayCredit: 0,
       holEligible: 0,
-      dates: { present: [], late: [], absent: [], leave: [], holiday: [], premium: [] },
+      dates: { present: [], late: [], undertime: [], absent: [], leave: [], holiday: [], premium: [] },
     };
   }
 
@@ -520,6 +552,11 @@
       t.late++;
       t.dates.present.push(rec.date);
       t.dates.late.push(rec.date);
+    } else if (st === "Undertime") {
+      t.present++;
+      t.undertime++;
+      t.dates.present.push(rec.date);
+      t.dates.undertime.push(rec.date);
     } else if (st === "Absent") {
       t.absent++;
       t.dates.absent.push(rec.date);
@@ -585,6 +622,8 @@
       else if (st === "Present/Late") {
         t.present++;
         t.late++;
+      } else if (st === "Undertime") {
+        t.present++;
       } else if (st === "Absent") t.absent++;
       else if (st === "Leave" || st === "Leave with Pay") t.leave++;
       else if (st === "Regular Holiday" || st === "Special Holiday") t.holiday++;
@@ -875,6 +914,9 @@
     holEligible: holEligible,
     dayVal: dayVal,
     holidayGranted: holidayGranted,
+    holidayPremiumCode: holidayPremiumCode,
+    requiredTimesForStatus: requiredTimesForStatus,
+    validateDayRowTimes: validateDayRowTimes,
     dailyCoverage: dailyCoverage,
     coverageForMonths: coverageForMonths,
     personSummaries: personSummaries,
@@ -914,8 +956,11 @@
     var style = document.createElement("style");
     style.id = "hr-attendance-styles";
     style.textContent =
-      ".hr-att-hol{width:44px;min-height:40px;display:inline-flex;align-items:center;justify-content:center}" +
+      ".hr-att-hol{min-height:40px;display:inline-flex;align-items:center;justify-content:center}" +
       ".hr-att-hol input{width:20px;height:20px}" +
+      ".hr-att-hol select{min-height:40px;max-width:92px}" +
+      ".hr-att-time{width:92px;min-height:40px}" +
+      ".hr-att-need{outline:2px solid var(--warn,#c48a2a)}" +
       ".hr-att-paste textarea{min-height:220px;font-family:var(--f-mono,ui-monospace,monospace);font-size:12px}" +
       ".hr-att-q{min-height:40px;min-width:180px}" +
       ".hr-att-door .btn{min-height:40px}" +
@@ -1410,10 +1455,30 @@
         th.className = "hr-att-hol-h";
         th.style.width = "52px";
         th.textContent = "Hol";
-        th.title = "Grant holiday premium for this day. Eligible is not the same as granted.";
+        th.title = "Holiday treatment for this day: as is, +30%, or +100%.";
         var reasonH = head.querySelector("th:nth-child(7)") || head.lastElementChild;
         if (reasonH && reasonH.parentNode) reasonH.parentNode.insertBefore(th, reasonH.nextSibling);
         else head.appendChild(th);
+      }
+      if (head && !head.querySelector(".hr-pay-time-h") && !head.querySelector(".hr-att-time-h")) {
+        var thi = document.createElement("th");
+        thi.className = "hr-att-time-h hr-pay-time-h";
+        thi.style.width = "88px";
+        thi.textContent = "Time in";
+        thi.title = "Required when status is Present/Late.";
+        var tho = document.createElement("th");
+        tho.className = "hr-att-timeout-h";
+        tho.style.width = "88px";
+        tho.textContent = "Time out";
+        tho.title = "Required when status is Undertime.";
+        var statusH = head.children[5] || head.querySelector("th:nth-child(6)");
+        if (statusH && statusH.parentNode) {
+          statusH.parentNode.insertBefore(thi, statusH.nextSibling);
+          thi.parentNode.insertBefore(tho, thi.nextSibling);
+        } else {
+          head.appendChild(thi);
+          head.appendChild(tho);
+        }
       }
       table.querySelectorAll("[data-dms]").forEach(function (sel) {
         var id = sel.getAttribute("data-dms");
@@ -1432,22 +1497,76 @@
             sel.appendChild(opt);
           }
         });
-        if (tr.querySelector('[data-dmhol="' + id + '"]')) return;
         var rec = typeof root.dailyGet === "function" ? root.dailyGet((root.S && root.S.ui && root.S.ui.dailyDate) || root.TODAY) : null;
         var row = rec && rec.rows && rec.rows[id];
+        if (!tr.querySelector('[data-dmin="' + id + '"]')) {
+          var tdin = document.createElement("td");
+          tdin.innerHTML =
+            '<input class="hr-att-time" type="time" data-dmin="' +
+            esc(id) +
+            '" value="' +
+            esc((row && row.in) || "") +
+            '" title="Required when status is Present/Late">';
+          var statusTd = sel.closest("td");
+          if (statusTd && statusTd.parentNode) statusTd.parentNode.insertBefore(tdin, statusTd.nextSibling);
+          else tr.appendChild(tdin);
+        }
+        if (!tr.querySelector('[data-dmout="' + id + '"]')) {
+          var tdout = document.createElement("td");
+          tdout.innerHTML =
+            '<input class="hr-att-time" type="time" data-dmout="' +
+            esc(id) +
+            '" value="' +
+            esc((row && row.out) || "") +
+            '" title="Required when status is Undertime">';
+          var inEl = tr.querySelector('[data-dmin="' + id + '"]');
+          var inTd = inEl && inEl.closest ? inEl.closest("td") : null;
+          if (inTd && inTd.parentNode) inTd.parentNode.insertBefore(tdout, inTd.nextSibling);
+          else tr.appendChild(tdout);
+        }
+        syncTimeRequired(sel);
+        sel.addEventListener("change", function () { syncTimeRequired(sel); });
+        if (tr.querySelector('[data-dmhol="' + id + '"]')) return;
         var td = document.createElement("td");
         td.className = "hr-att-hol";
-        td.innerHTML =
-          '<input type="checkbox" data-dmhol="' +
-          esc(id) +
-          '" title="Grant holiday premium"' +
-          (row && row.hol ? " checked" : "") +
-          ">";
+        td.innerHTML = holSelect(id, holidayPremiumCode(row));
         var reasonTd = tr.querySelector("[data-dmr]") ? tr.querySelector("[data-dmr]").closest("td") : null;
         if (reasonTd && reasonTd.parentNode) reasonTd.parentNode.insertBefore(td, reasonTd.nextSibling);
         else tr.appendChild(td);
       });
     });
+  }
+
+  function holSelect(id, code) {
+    var c = Number(code) || 0;
+    if (c !== 1 && c !== 2) c = 0;
+    return (
+      '<select data-dmhol="' +
+      esc(id) +
+      '" title="Holiday treatment: as is, +30%, or +100%" style="min-height:40px;max-width:92px">' +
+      '<option value="0"' + (c === 0 ? " selected" : "") + ">As is</option>" +
+      '<option value="1"' + (c === 1 ? " selected" : "") + ">+30%</option>" +
+      '<option value="2"' + (c === 2 ? " selected" : "") + ">+100%</option>" +
+      "</select>"
+    );
+  }
+
+  function syncTimeRequired(sel) {
+    if (!sel) return;
+    var id = sel.getAttribute("data-dms");
+    var need = requiredTimesForStatus(sel.value);
+    var tin = document.querySelector('[data-dmin="' + id + '"]');
+    var tout = document.querySelector('[data-dmout="' + id + '"]');
+    if (tin) {
+      tin.required = !!need.in;
+      tin.className = String(tin.className || "").replace(/\bhr-att-need\b/g, "").trim();
+      if (need.in) tin.className += " hr-att-need";
+    }
+    if (tout) {
+      tout.required = !!need.out;
+      tout.className = String(tout.className || "").replace(/\bhr-att-need\b/g, "").trim();
+      if (need.out) tout.className += " hr-att-need";
+    }
   }
 
   function wrapDailyCollect() {
@@ -1475,9 +1594,15 @@
           fromPayroll: cur.fromPayroll,
         });
         var hol = document.querySelector('[data-dmhol="' + id + '"]');
-        if (hol) rec.rows[id].hol = !!hol.checked;
+        if (hol) {
+          rec.rows[id].hol = hol.type === "checkbox" ? (hol.checked ? 1 : 0) : Number(hol.value) || 0;
+        }
         var ot = document.querySelector('[data-dmot="' + id + '"]');
         if (ot) rec.rows[id].ot = ot.value === "" ? 0 : Number(ot.value) || 0;
+        var tin = document.querySelector('[data-dmin="' + id + '"]');
+        var tout = document.querySelector('[data-dmout="' + id + '"]');
+        if (tin) rec.rows[id].in = tin.value;
+        if (tout) rec.rows[id].out = tout.value;
       });
       return rec;
     };
@@ -1547,6 +1672,38 @@
     injectInsightsSummary();
     injectAttendanceNote();
     enhanceDailyHolColumn();
+    wrapDailySaveTimes();
+  }
+
+  function wrapDailySaveTimes() {
+    if (typeof document === "undefined") return;
+    var btn = document.getElementById("dm-save");
+    if (!btn || btn.__hrAttTimes) return;
+    btn.__hrAttTimes = true;
+    var orig = btn.onclick;
+    btn.onclick = function (ev) {
+      var problems = [];
+      document.querySelectorAll("[data-dms]").forEach(function (sel) {
+        var id = sel.getAttribute("data-dms");
+        var tin = document.querySelector('[data-dmin="' + id + '"]');
+        var tout = document.querySelector('[data-dmout="' + id + '"]');
+        var errs = validateDayRowTimes({
+          s: sel.value,
+          in: tin ? tin.value : "",
+          out: tout ? tout.value : "",
+        });
+        if (errs.length) {
+          problems.push(errs[0]);
+          syncTimeRequired(sel);
+        }
+      });
+      if (problems.length) {
+        if (root.toast) root.toast(problems[0], "err");
+        if (ev && ev.preventDefault) ev.preventDefault();
+        return;
+      }
+      if (typeof orig === "function") return orig.call(this, ev);
+    };
   }
 
   function attach() {

@@ -221,7 +221,13 @@
     L.hdmf = Number(L.hdmf) || 0;
     L.basic = L.days * L.daily;
     L.otPay = L.ot * L.hourly * otX;
-    L.holPay = L.hol * L.daily * HOL_PREMIUM;
+    /* Paper runs pass hol as a day count at the shipped 30%. Mixed 30/100
+       days send holFactor (sum of per-day rates) so pay follows the ticks. */
+    var holFactor = L.holFactor != null && L.holFactor !== ""
+      ? Number(L.holFactor) || 0
+      : L.hol * HOL_PREMIUM;
+    L.holFactor = holFactor;
+    L.holPay = holFactor * L.daily;
     L.gross = L.basic + L.otPay + L.holPay + L.allowance + L.incentive;
     L.ded =
       L.late + L.ca + L.uniform + L.sssLoan + L.hdmfLoan + L.sss + L.phic + L.hdmf;
@@ -275,7 +281,7 @@
     if (row && (empId || date)) {
       st = effectiveStatusOf(empId, date, row.s || row.status || status, row.r || row.reason, ctx);
     }
-    if (st === "Present" || st === "Present/Late") return 1;
+    if (st === "Present" || st === "Present/Late" || st === "Undertime") return 1;
     if (st === "Leave with Pay") return 1;
     if (st === "Regular Holiday") return 1;
     if (st === "Half Day") return 0.5;
@@ -300,8 +306,58 @@
     return false;
   }
 
+  /* Stored hol: 0 / missing = as is; 1 / true / 0.3 = +30%; 2 / 100 = +100%.
+     Existing Daily Manpower ticks wrote 1, which stays +30%. */
+  function holidayPremiumCode(row) {
+    if (!row) return 0;
+    var h = row.hol;
+    if (h === 2 || h === "2" || h === 100 || h === "100") return 2;
+    if (h === 1 || h === true || h === "1" || h === 0.3 || h === "0.3" || h === "30") return 1;
+    return 0;
+  }
+
+  function holidayPremiumRate(row) {
+    var code = holidayPremiumCode(row);
+    if (code === 2) return 1;
+    if (code === 1) return HOL_PREMIUM;
+    return 0;
+  }
+
   function holidayGranted(row) {
-    return !!(row && (row.hol === 1 || row.hol === true));
+    return holidayPremiumRate(row) > 0;
+  }
+
+  function holLabel(code) {
+    if (code === 2 || code === "2" || code === 100 || code === "100") return "+100%";
+    if (code === 1 || code === true || code === "1" || code === 0.3 || code === "30") return "+30%";
+    return "as is";
+  }
+
+  function holSelectHTML(id, attr, code, extra) {
+    var c = Number(code) || 0;
+    if (c !== 1 && c !== 2) c = 0;
+    return (
+      '<select ' +
+      attr +
+      '="' +
+      esc(id) +
+      '" title="Holiday treatment for this day"' +
+      (extra || "") +
+      ' style="min-height:40px;max-width:92px">' +
+      '<option value="0"' + (c === 0 ? " selected" : "") + ">As is</option>" +
+      '<option value="1"' + (c === 1 ? " selected" : "") + ">+30%</option>" +
+      '<option value="2"' + (c === 2 ? " selected" : "") + ">+100%</option>" +
+      "</select>"
+    );
+  }
+
+  function holValueFromInput(el) {
+    if (!el) return 0;
+    if (el.type === "checkbox") return el.checked ? 1 : 0;
+    var v = el.value;
+    if (v === "2" || v === 2 || v === "100") return 2;
+    if (v === "1" || v === 1 || v === "0.3" || el.checked) return 1;
+    return 0;
   }
 
   function dailyId(d) {
@@ -318,6 +374,9 @@
     var days = 0;
     var ot = 0;
     var hol = 0;
+    var holFactor = 0;
+    var hol30 = 0;
+    var hol100 = 0;
     var eligible = 0;
     var dayDates = [];
     var otDates = [];
@@ -346,15 +405,22 @@
         eligible += 1;
         eligDates.push(d);
       }
-      if (holidayGranted(row)) {
+      var rate = holidayPremiumRate(row);
+      if (rate) {
         hol += 1;
+        holFactor += rate;
         holDates.push(d);
+        if (rate >= 1) hol100 += 1;
+        else hol30 += 1;
       }
     });
     return {
       days: days,
       ot: ot,
       hol: hol,
+      holFactor: holFactor,
+      hol30: hol30,
+      hol100: hol100,
       eligible: eligible,
       dayDates: dayDates,
       otDates: otDates,
@@ -370,6 +436,131 @@
       if (weekdayLocal(d) === 0) return false;
       return !daily[dailyId(d)];
     });
+  }
+
+  function periodHasReports(from, to, daily) {
+    daily = daily || {};
+    return eachDate(from, to).some(function (d) {
+      return !!daily[dailyId(d)];
+    });
+  }
+
+  function latestFiledDate(daily) {
+    var last = "";
+    Object.keys(daily || {}).forEach(function (id) {
+      var d = isoDate((daily[id] || {}).date);
+      if (d && d > last) last = d;
+    });
+    return last;
+  }
+
+  function latestFiledPeriod(kind, daily) {
+    var last = latestFiledDate(daily);
+    if (!last) return null;
+    return payPeriod(kind === "semi" ? "semi" : "weekly", last);
+  }
+
+  function importedPeriodCount(S) {
+    S = S || {};
+    var n = 0;
+    Object.keys(S.periods || {}).forEach(function (id) {
+      if (id === "paymaker") return;
+      var p = S.periods[id];
+      if (p && (p.rows || []).length) n += 1;
+    });
+    return n;
+  }
+
+  function statusAbbr(st) {
+    return (
+      {
+        Present: "P",
+        "Present/Late": "L",
+        Undertime: "U",
+        Absent: "A",
+        Leave: "LV",
+        "Leave with Pay": "LP",
+        "Regular Holiday": "H",
+        "Special Holiday": "SH",
+        "Half Day": "HD",
+        "Rest Day": "R",
+      }[st] || (st ? "?" : "·")
+    );
+  }
+
+  function periodDaySummaries(from, to, ctx) {
+    ctx = ctx || {};
+    var daily = ctx.daily || {};
+    return eachDate(from, to).map(function (d) {
+      var rec = daily[dailyId(d)];
+      var counts = {
+        present: 0,
+        late: 0,
+        undertime: 0,
+        absent: 0,
+        leave: 0,
+        other: 0,
+        people: 0,
+      };
+      if (rec && rec.rows) {
+        Object.keys(rec.rows).forEach(function (id) {
+          var row = rec.rows[id] || {};
+          var st = effectiveStatusOf(id, d, row.s || row.status, row.r || row.reason, ctx);
+          counts.people += 1;
+          if (st === "Present") counts.present += 1;
+          else if (st === "Present/Late") {
+            counts.present += 1;
+            counts.late += 1;
+          } else if (st === "Undertime") counts.undertime += 1;
+          else if (st === "Absent") counts.absent += 1;
+          else if (st === "Leave" || st === "Leave with Pay") counts.leave += 1;
+          else if (st) counts.other += 1;
+        });
+      }
+      return {
+        date: d,
+        filed: !!(rec && rec.rows && Object.keys(rec.rows).length),
+        sunday: weekdayLocal(d) === 0,
+        source: rec && rec.source,
+        counts: counts,
+      };
+    });
+  }
+
+  function personPeriodDays(empId, from, to, ctx) {
+    ctx = ctx || {};
+    var daily = ctx.daily || {};
+    return eachDate(from, to).map(function (d) {
+      var rec = daily[dailyId(d)];
+      var row = rec && rec.rows && rec.rows[empId];
+      return {
+        date: d,
+        filed: !!rec,
+        row: row || null,
+        status: row ? effectiveStatusOf(empId, d, row.s || row.status, row.r || row.reason, ctx) : "",
+        in: (row && row.in) || "",
+        out: (row && row.out) || "",
+        hol: holidayPremiumCode(row),
+        ot: rowOt(row),
+      };
+    });
+  }
+
+  function maybeSnapPayWindow(S) {
+    S = S || store();
+    S.ui = S.ui || {};
+    if (S.ui.payFrom || S.ui.payTo || S.ui.payAnchor || S.ui.payNoSnap) return null;
+    var kind = S.ui.payKind === "semi" ? "semi" : "weekly";
+    var today = (typeof root.TODAY === "string" && root.TODAY) || isoDate(new Date());
+    var std = payPeriod(kind, today);
+    if (periodHasReports(std.from, std.to, S.daily || {})) return null;
+    var latest = latestFiledPeriod(kind, S.daily || {});
+    if (!latest) return null;
+    S.ui.payFrom = latest.from;
+    S.ui.payTo = latest.to;
+    S.ui.payAnchor = latest.from;
+    S.ui.paySnapped = 1;
+    return latest;
   }
 
   function caBalance(a) {
@@ -488,6 +679,8 @@
         site: "area",
         hol: "holiday premium",
         ot: "overtime hours",
+        in: "time in",
+        out: "time out",
       }[k] || k
     );
   }
@@ -495,7 +688,11 @@
   function plainChange(name, field, from, to) {
     var label = fieldLabel(field);
     if (field === "hol") {
-      return name + ": holiday premium " + (to ? "granted" : "cleared");
+      var fromN = Number(from) || 0;
+      var toN = Number(to) || 0;
+      if (!fromN && toN === 1) return name + ": holiday premium granted";
+      if (fromN === 1 && !toN) return name + ": holiday premium cleared";
+      return name + ": holiday premium " + holLabel(from) + " → " + holLabel(to);
     }
     if (from == null || from === "") return name + ": " + label + " set to " + (to || "blank");
     if (to == null || to === "") return name + ": " + label + " cleared (was " + from + ")";
@@ -508,8 +705,10 @@
       s: row.s || row.status || "",
       r: row.r || row.reason || "",
       site: row.site || "",
-      hol: holidayGranted(row) ? 1 : 0,
+      hol: holidayPremiumCode(row),
       ot: rowOt(row),
+      in: row.in || "",
+      out: row.out || "",
     };
   }
 
@@ -524,7 +723,7 @@
     Object.keys(ids).forEach(function (id) {
       var a = rowSnapshot(before[id]);
       var b = rowSnapshot(after[id]);
-      ["s", "r", "site", "hol", "ot"].forEach(function (k) {
+      ["s", "r", "site", "hol", "ot", "in", "out"].forEach(function (k) {
         if (String(a[k]) === String(b[k])) return;
         changes.push({
           empId: id,
@@ -695,6 +894,14 @@
     );
   }
 
+  function holWorkings(L) {
+    var bits = [];
+    if (L.hol30) bits.push(L.hol30 + " × " + money(L.daily) + " × 30%");
+    if (L.hol100) bits.push(L.hol100 + " × " + money(L.daily) + " × 100%");
+    if (!bits.length && L.hol) bits.push((L.hol || 0) + " × " + money(L.daily) + " × 30%");
+    return bits.join(" + ");
+  }
+
   function slipLine(label, amount, work) {
     if (!amount) return "";
     return (
@@ -711,7 +918,7 @@
     var earn =
       slipLine("Basic pay", L.basic, (L.days || 0) + " days × " + money(L.daily)) +
       slipLine("Overtime", L.otPay, (L.ot || 0) + " hrs × " + money(L.hourly) + " × " + (L.otMultiplier || OT_MULTIPLIER)) +
-      slipLine("Holiday premium", L.holPay, (L.hol || 0) + " × " + money(L.daily) + " × 30%") +
+      slipLine("Holiday premium", L.holPay, holWorkings(L)) +
       slipLine("Allowance", L.allowance) +
       slipLine("Incentive", L.incentive);
     var ded =
@@ -804,7 +1011,7 @@
   }
 
   var api = {
-    version: "1.0",
+    version: "1.1",
     OT_MULTIPLIER: OT_MULTIPLIER,
     FIXED_REGULAR_HOLIDAYS: FIXED_REGULAR_HOLIDAYS,
     isoDate: isoDate,
@@ -829,9 +1036,23 @@
     payDayCredit: payDayCredit,
     holEligible: holEligible,
     holidayGranted: holidayGranted,
+    holidayPremiumCode: holidayPremiumCode,
+    holidayPremiumRate: holidayPremiumRate,
+    holLabel: holLabel,
+    holValueFromInput: holValueFromInput,
     applyHolOtFromUi: applyHolOtFromUi,
     tallyPersonPeriod: tallyPersonPeriod,
     missingReportDays: missingReportDays,
+    periodHasReports: periodHasReports,
+    latestFiledDate: latestFiledDate,
+    latestFiledPeriod: latestFiledPeriod,
+    importedPeriodCount: importedPeriodCount,
+    periodDaySummaries: periodDaySummaries,
+    personPeriodDays: personPeriodDays,
+    maybeSnapPayWindow: maybeSnapPayWindow,
+    statusAbbr: statusAbbr,
+    holWorkings: holWorkings,
+    validateTimes: validateTimes,
     caDueForPeriod: caDueForPeriod,
     caBalance: caBalance,
     attachDailyLog: attachDailyLog,
@@ -936,6 +1157,9 @@
       days: tally.days,
       ot: tally.ot,
       hol: tally.hol,
+      holFactor: tally.holFactor,
+      hol30: tally.hol30,
+      hol100: tally.hol100,
       daily: rate.daily,
       hourly: rate.hourly,
       otMultiplier: otMultiplier(settings),
@@ -950,6 +1174,8 @@
       phic: prev.phic != null && prev.phic !== "" ? Number(prev.phic) : stat.phic,
       hdmf: prev.hdmf != null && prev.hdmf !== "" ? Number(prev.hdmf) : stat.hdmf,
     });
+    L.hol30 = tally.hol30;
+    L.hol100 = tally.hol100;
     L.eligDates = tally.eligDates;
     L.dayDates = tally.dayDates;
     L.otDates = tally.otDates;
@@ -1014,12 +1240,17 @@
       ".hr-pay-lock{cursor:default}" +
       ".hr-pay-banner{margin:10px 0;padding:10px 12px}" +
       ".hr-pay-nav .btn,.hr-pay-door .btn{min-height:40px}" +
-      ".hr-pay-hol{width:44px;min-height:40px;display:inline-flex;align-items:center;justify-content:center}" +
+      ".hr-pay-hol{min-height:40px;display:inline-flex;align-items:center;justify-content:center;gap:4px}" +
       ".hr-pay-hol input,.hr-att-hol input{width:20px;height:20px}" +
+      ".hr-pay-hol select,.hr-att-hol select{min-height:40px;max-width:92px}" +
       ".hr-pay-ot{width:64px;min-height:40px}" +
+      ".hr-pay-time{width:92px;min-height:40px}" +
       ".hr-pay-edited{margin-left:6px}" +
       ".hr-pay-log{font-size:12px;line-height:1.45}" +
-      "@media (max-width:980px){.hr-pay-nav .btn,.hr-pay-hol,.hr-pay-ot,.hr-pay-money{min-height:44px}}" +
+      ".hr-pay-att-warn{background:var(--warn-soft,#fbf3e4)}" +
+      ".hr-pay-att-bad{background:var(--crit-soft,#fbeceb);color:var(--crit)}" +
+      ".hr-pay-need{outline:2px solid var(--warn,#c48a2a)}" +
+      "@media (max-width:980px){.hr-pay-nav .btn,.hr-pay-hol,.hr-pay-ot,.hr-pay-money,.hr-pay-time,.hr-pay-door .btn{min-height:44px}}" +
       printStyles();
     (document.head || document.documentElement).appendChild(style);
   }
@@ -1103,8 +1334,158 @@
     return (dates || []).join(", ") || "no days in this window";
   }
 
+  function holMixLabel(L) {
+    if (L.hol30 && L.hol100) return L.hol30 + "×30% " + L.hol100 + "×100%";
+    if (L.hol100) return L.hol100 + "×100%";
+    if (L.hol30) return L.hol30 + "×30%";
+    return String(L.hol || 0);
+  }
+
+  function personHolSelect(L) {
+    var code = 0;
+    if (L.hol100 && !L.hol30) code = 2;
+    else if (L.hol30 && !L.hol100) code = 1;
+    else if (L.hol30 && L.hol100) code = "";
+    return (
+      '<select data-hr-pay-hol="' +
+      esc(L.empId) +
+      '" title="' +
+      esc(L.eligible ? "Eligible days: " + hoverDays(L.eligDates) : "Not eligible") +
+      '"' +
+      (L.eligible ? "" : " disabled") +
+      ' style="min-height:40px;max-width:96px">' +
+      (code === "" ? '<option value="" selected>Mixed</option>' : "") +
+      '<option value="0"' + (code === 0 ? " selected" : "") + ">As is</option>" +
+      '<option value="1"' + (code === 1 ? " selected" : "") + ">+30%</option>" +
+      '<option value="2"' + (code === 2 ? " selected" : "") + ">+100%</option>" +
+      "</select> " +
+      holMixLabel(L)
+    );
+  }
+
+  function periodAttendanceHTML(ui, S, run) {
+    var ctx = ctxFromStore(S);
+    var days = periodDaySummaries(ui.from, ui.to, ctx);
+    var filed = days.filter(function (d) { return d.filed; }).length;
+    var latest = latestFiledPeriod(ui.kind, S.daily || {});
+    var imported = importedPeriodCount(S);
+    var snapped = !!(S.ui && S.ui.paySnapped);
+    var h = '<div class="card" id="hr-pay-att" style="margin:14px 0"><div class="card-h"><h3>Period attendance</h3>' +
+      '<div class="sp"><span class="lbl">' +
+      filed +
+      " of " +
+      days.length +
+      ' days filed</span></div></div><div class="card-b stack">';
+    if (snapped && latest) {
+      h +=
+        '<div class="note hr-pay-banner">Opened the <b>latest period with filed reports</b> (' +
+        esc(latest.from) +
+        " – " +
+        esc(latest.to) +
+        "). This week had none yet.</div>";
+    }
+    if (!filed) {
+      h +=
+        '<div class="empty" id="hr-pay-att-empty">No Daily Manpower report in this window — that is why Days and OT read as blank. ' +
+        "Payroll Maker counts the daily reports (the same ones as the manpower attendance summary), not an Excel paste on Attendance.</div>" +
+        '<div class="row hr-pay-door" style="margin-top:10px">' +
+        '<button type="button" class="btn pri" id="hr-pay-paste">Paste Claude JSON</button>' +
+        '<button type="button" class="btn" id="hr-pay-daily2">Open Daily Manpower</button>' +
+        (latest
+          ? '<button type="button" class="btn" id="hr-pay-latest">Jump to ' +
+            esc(latest.from) +
+            " – " +
+            esc(latest.to) +
+            "</button>"
+          : "") +
+        "</div>";
+      if (imported) {
+        h +=
+          '<div class="note">There ' +
+          (imported === 1 ? "is an imported payroll period" : "are " + imported + " imported payroll periods") +
+          " on <b>Attendance / Payroll Data</b>. Those pasted sheets do not fill this grid — file or paste the daily reports.</div>";
+      }
+      h += "</div></div>";
+      return h;
+    }
+    h +=
+      '<div class="note">Each square is a filed day. P present · L late · U undertime · A absent. ' +
+      "Open a day to edit status, time in/out, and holiday treatment. Days cannot be typed on the register below.</div>";
+    h += '<div class="hr-pay-wrap"><div class="tw"><table class="hr-pay-att"><thead><tr><th>Date</th><th>Filed</th>' +
+      '<th class="num">People</th><th class="num">Late</th><th class="num">UT</th><th class="num">Absent</th><th></th></tr></thead><tbody>';
+    days.forEach(function (d) {
+      h +=
+        "<tr><td class=\"mono\">" +
+        esc(d.date) +
+        (d.sunday ? ' <span class="pill mut">Sun</span>' : "") +
+        "</td><td>" +
+        (d.filed
+          ? '<span class="pill ok">filed</span>'
+          : d.sunday
+            ? '<span class="lbl">Sunday</span>'
+            : '<span class="pill warn">No report filed</span>') +
+        '</td><td class="num">' +
+        (d.filed ? d.counts.people : "—") +
+        '</td><td class="num">' +
+        (d.counts.late || "0") +
+        '</td><td class="num">' +
+        (d.counts.undertime || "0") +
+        '</td><td class="num">' +
+        (d.counts.absent || "0") +
+        '</td><td><button type="button" class="btn sm" data-hr-pay-openday="' +
+        esc(d.date) +
+        '">' +
+        (d.filed ? "Open" : "File") +
+        "</button></td></tr>";
+    });
+    h += "</tbody></table></div></div>";
+    if (run.lines && run.lines.length) {
+      h += '<div class="hr-pay-wrap" style="margin-top:12px"><div class="tw"><table class="hr-pay-att-grid"><thead><tr><th>Name</th>';
+      days.forEach(function (d) {
+        h += '<th class="num" title="' + esc(d.date) + '">' + esc(d.date.slice(8)) + "</th>";
+      });
+      h += "<th></th></tr></thead><tbody>";
+      run.lines.forEach(function (L) {
+        var cells = personPeriodDays(L.empId, ui.from, ui.to, ctx);
+        h +=
+          "<tr><td class=\"nm\"><b>" +
+          esc(flipName(L.name)) +
+          "</b></td>";
+        cells.forEach(function (c) {
+          var title = c.filed
+            ? (c.status || "no row") +
+              (c.in ? " in " + c.in : "") +
+              (c.out ? " out " + c.out : "") +
+              (c.hol ? " hol " + holLabel(c.hol) : "")
+            : "No report filed";
+          h +=
+            '<td class="num' +
+            (c.status === "Present/Late" || c.status === "Undertime" ? " hr-pay-att-warn" : "") +
+            (c.status === "Absent" ? " hr-pay-att-bad" : "") +
+            '" title="' +
+            esc(title) +
+            '">' +
+            (c.filed ? esc(statusAbbr(c.status)) : "—") +
+            "</td>";
+        });
+        h +=
+          '<td><button type="button" class="btn sm" data-hr-pay-person="' +
+          esc(L.empId) +
+          '">Days</button></td></tr>';
+      });
+      h += "</tbody></table></div></div>";
+    }
+    h +=
+      '<div class="row hr-pay-door" style="margin-top:10px">' +
+      '<button type="button" class="btn" id="hr-pay-paste">Paste Claude JSON</button>' +
+      '<button type="button" class="btn" id="hr-pay-daily2">Open Daily Manpower</button></div>';
+    h += "</div></div>";
+    return h;
+  }
+
   function viewPayMaker() {
     var S = store();
+    maybeSnapPayWindow(S);
     var ui = currentPayUi(S);
     var run = buildRun(ui.kind, ui.from, ui.to, S);
     var show = foldDeductionKeys(run.lines);
@@ -1134,6 +1515,7 @@
         ? '<span class="pill acc">Custom range</span><button type="button" class="btn sm" id="hr-pay-std">Standard window</button>'
         : "") +
       '<button type="button" class="btn" id="hr-pay-daily">Open Daily Manpower</button>' +
+      '<button type="button" class="btn" id="hr-pay-paste-nav">Paste Claude JSON</button>' +
       '<button type="button" class="btn" id="hr-pay-print">Print register</button>' +
       '<button type="button" class="btn" id="hr-pay-slips">Payslips</button>' +
       '<button type="button" class="btn pri" id="hr-pay-save">Save run</button>' +
@@ -1141,7 +1523,9 @@
     h +=
       '<div class="note">Kind follows the person\'s <b>rate type</b> (monthly → semi, otherwise weekly), not their department. ' +
       "Days, OT and premium are live from Daily Manpower — they cannot be typed here. " +
+      "Holiday treatment is per day: <b>+30%</b>, <b>+100%</b>, or <b>As is</b>. " +
       "A range you pick by hand has its own save key and a blank release date.</div>";
+    h += periodAttendanceHTML(ui, S, run);
     if (run.missing.length) {
       h +=
         '<div class="note hr-pay-banner" style="border-left-color:var(--warn)"><b>No report filed</b> on ' +
@@ -1154,9 +1538,10 @@
         elig +
         " people have an eligible day; " +
         granted +
-        " have a Hol tick. " +
-        '<button type="button" class="btn sm" id="hr-pay-give">Give all</button> ' +
-        '<button type="button" class="btn sm" id="hr-pay-clear">Clear all</button> ' +
+        " have a premium. Pick <b>+30%</b> (special / Sunday) or <b>+100%</b> (regular holiday); <b>As is</b> pays the day with no increase. " +
+        '<button type="button" class="btn sm" id="hr-pay-give">Give all +30%</button> ' +
+        '<button type="button" class="btn sm" id="hr-pay-give100">Give all +100%</button> ' +
+        '<button type="button" class="btn sm" id="hr-pay-clear">Clear all (as is)</button> ' +
         '<button type="button" class="btn sm" id="hr-pay-holcal">Holiday calendar</button>' +
         '<div class="lbl" style="margin-top:6px">Special non-working days arrive by proclamation — they are not shipped in the calendar.</div></div>';
     }
@@ -1203,15 +1588,7 @@
         '">' +
         L.ot +
         '</td><td class="num">' +
-        '<label class="hr-pay-hol" title="' +
-        esc(L.eligible ? "Eligible days: " + hoverDays(L.eligDates) : "Not eligible") +
-        '"><input type="checkbox" data-hr-pay-hol="' +
-        esc(L.empId) +
-        '"' +
-        (L.hol ? " checked" : "") +
-        (L.eligible ? "" : " disabled") +
-        "></label> " +
-        L.hol +
+        personHolSelect(L) +
         "</td>" +
         '<td class="num">' +
         money(L.daily) +
@@ -1293,11 +1670,13 @@
     if (root.toast) root.toast("Saved " + run.key, "ok");
   }
 
-  async function setHolForPeople(empIds, grant) {
+  async function setHolForPeople(empIds, code) {
     var S = store();
     var ui = currentPayUi(S);
     var ctx = ctxFromStore(S);
     var want = {};
+    var nextCode = Number(code) || 0;
+    if (nextCode !== 1 && nextCode !== 2) nextCode = 0;
     (empIds || []).forEach(function (id) { want[id] = 1; });
     var dates = eachDate(ui.from, ui.to);
     var i;
@@ -1311,15 +1690,9 @@
         var row = (next.rows || {})[id];
         if (!row) return;
         if (!holEligible(row, d, id, ctx)) return;
-        var on = holidayGranted(row);
-        if (grant && !on) {
-          row.hol = 1;
-          changed = true;
-        }
-        if (!grant && on) {
-          row.hol = 0;
-          changed = true;
-        }
+        if (holidayPremiumCode(row) === nextCode) return;
+        row.hol = nextCode;
+        changed = true;
       });
       if (changed && typeof root.put === "function") await root.put("daily", next.id, next);
     }
@@ -1353,6 +1726,149 @@
       w.document.close();
     }
     return landscape;
+  }
+
+  var PAY_STATUSES = [
+    "Present",
+    "Present/Late",
+    "Undertime",
+    "Absent",
+    "Leave",
+    "Leave with Pay",
+    "Regular Holiday",
+    "Special Holiday",
+    "Half Day",
+    "Rest Day",
+  ];
+
+  function validateTimes(row) {
+    if (root.hrAttendance && typeof root.hrAttendance.validateDayRowTimes === "function") {
+      return root.hrAttendance.validateDayRowTimes(row);
+    }
+    var st = (row && (row.s || row.status)) || "";
+    var errors = [];
+    if (st === "Present/Late" && !String((row && row.in) || "").trim()) {
+      errors.push("Time In is required for Present/Late.");
+    }
+    if (st === "Undertime" && !String((row && row.out) || "").trim()) {
+      errors.push("Time Out is required for Undertime.");
+    }
+    return errors;
+  }
+
+  function openPersonAttendance(empId) {
+    var S = store();
+    var ui = currentPayUi(S);
+    var ctx = ctxFromStore(S);
+    var e = (S.employees || {})[empId];
+    if (!e || typeof root.openModal !== "function") return;
+    var days = personPeriodDays(empId, ui.from, ui.to, ctx);
+    var rows = days
+      .map(function (c) {
+        var st = (c.row && (c.row.s || c.row.status)) || c.status || (c.filed ? "Present" : "");
+        return (
+          "<tr><td class=\"mono\">" +
+          esc(c.date) +
+          "</td><td>" +
+          (c.filed
+            ? '<select data-hr-pd-s="' +
+              esc(c.date) +
+              '" style="min-height:40px">' +
+              PAY_STATUSES.map(function (x) {
+                return "<option" + (st === x ? " selected" : "") + ">" + x + "</option>";
+              }).join("") +
+              "</select>"
+            : '<span class="lbl">No report filed</span>') +
+          "</td><td>" +
+          (c.filed
+            ? '<input type="time" data-hr-pd-in="' +
+              esc(c.date) +
+              '" value="' +
+              esc(c.in) +
+              '" style="min-height:40px" title="Required when status is Present/Late">'
+            : "—") +
+          "</td><td>" +
+          (c.filed
+            ? '<input type="time" data-hr-pd-out="' +
+              esc(c.date) +
+              '" value="' +
+              esc(c.out) +
+              '" style="min-height:40px" title="Required when status is Undertime">'
+            : "—") +
+          "</td><td>" +
+          (c.filed ? holSelectHTML(c.date, "data-hr-pd-hol", c.hol) : "—") +
+          "</td></tr>"
+        );
+      })
+      .join("");
+    root.openModal({
+      title: flipName(e.name) + " · " + ui.from + " – " + ui.to,
+      wide: true,
+      body:
+        '<div class="stack"><div class="note">Present/Late needs <b>Time In</b>. Undertime needs <b>Time Out</b>. Holiday is per day: +30%, +100%, or as is.</div>' +
+        '<div class="tw"><table><thead><tr><th>Date</th><th>Status</th><th>Time in</th><th>Time out</th><th>Holiday</th></tr></thead><tbody>' +
+        rows +
+        "</tbody></table></div><div id=\"hr-pd-err\" class=\"note\" style=\"display:none;border-left-color:var(--crit)\"></div></div>",
+      foot:
+        '<button class="btn" id="hr-pd-cancel">Cancel</button>' +
+        '<button class="btn pri" id="hr-pd-save">Save days</button>',
+    });
+    var cancel = $("#hr-pd-cancel");
+    if (cancel && root.closeModal) cancel.onclick = root.closeModal;
+    var go = $("#hr-pd-save");
+    if (!go) return;
+    go.onclick = async function () {
+      var errBox = $("#hr-pd-err");
+      var byDate = {};
+      document.querySelectorAll("[data-hr-pd-s]").forEach(function (sel) {
+        var d = sel.getAttribute("data-hr-pd-s");
+        byDate[d] = byDate[d] || {};
+        byDate[d].s = sel.value;
+      });
+      document.querySelectorAll("[data-hr-pd-in]").forEach(function (inp) {
+        var d = inp.getAttribute("data-hr-pd-in");
+        byDate[d] = byDate[d] || {};
+        byDate[d].in = inp.value;
+      });
+      document.querySelectorAll("[data-hr-pd-out]").forEach(function (inp) {
+        var d = inp.getAttribute("data-hr-pd-out");
+        byDate[d] = byDate[d] || {};
+        byDate[d].out = inp.value;
+      });
+      document.querySelectorAll("[data-hr-pd-hol]").forEach(function (sel) {
+        var d = sel.getAttribute("data-hr-pd-hol");
+        byDate[d] = byDate[d] || {};
+        byDate[d].hol = holValueFromInput(sel);
+      });
+      var dates = Object.keys(byDate);
+      var problems = [];
+      dates.forEach(function (d) {
+        validateTimes(byDate[d]).forEach(function (msg) {
+          problems.push(d.slice(8) + ": " + msg);
+        });
+      });
+      if (problems.length) {
+        if (errBox) {
+          errBox.style.display = "block";
+          errBox.textContent = problems.join(" ");
+        }
+        if (root.toast) root.toast(problems[0], "err");
+        return;
+      }
+      var i;
+      for (i = 0; i < dates.length; i++) {
+        var d = dates[i];
+        var rec = (S.daily || {})[dailyId(d)];
+        if (!rec) continue;
+        var next = JSON.parse(JSON.stringify(rec));
+        next.rows = next.rows || {};
+        next.rows[empId] = Object.assign({}, next.rows[empId] || { site: e.project || "ADMINS" }, byDate[d]);
+        if (typeof root.put === "function") await root.put("daily", next.id, next);
+      }
+      if (root.closeModal) root.closeModal();
+      if (root.toast) root.toast("Attendance saved for " + flipName(e.name), "ok");
+      if (typeof root.render === "function") root.render();
+    };
   }
 
   function wirePayMaker() {
@@ -1403,14 +1919,45 @@
         if (typeof root.render === "function") root.render();
       };
     }
+    function openDaily(date) {
+      var ui = currentPayUi(S);
+      S.ui.dailyDate = date || ui.to;
+      goView("daily");
+    }
+    function openPaste() {
+      if (root.hrAttendance && typeof root.hrAttendance.openPasteDoor === "function") {
+        root.hrAttendance.openPasteDoor();
+        return;
+      }
+      if (root.toast) root.toast("Paste door is on Daily Manpower / Analytics.", "err");
+      openDaily();
+    }
     var daily = $("#hr-pay-daily");
-    if (daily) {
-      daily.onclick = function () {
-        var ui = currentPayUi(S);
-        S.ui.dailyDate = ui.to;
-        goView("daily");
+    if (daily) daily.onclick = function () { openDaily(); };
+    var daily2 = $("#hr-pay-daily2");
+    if (daily2) daily2.onclick = function () { openDaily(); };
+    var paste = $("#hr-pay-paste");
+    if (paste) paste.onclick = openPaste;
+    var pasteNav = $("#hr-pay-paste-nav");
+    if (pasteNav) pasteNav.onclick = openPaste;
+    var latestBtn = $("#hr-pay-latest");
+    if (latestBtn) {
+      latestBtn.onclick = function () {
+        var latest = latestFiledPeriod(currentPayUi(S).kind, S.daily || {});
+        if (!latest) return;
+        S.ui.payFrom = latest.from;
+        S.ui.payTo = latest.to;
+        S.ui.payAnchor = latest.from;
+        S.ui.paySnapped = 0;
+        if (typeof root.render === "function") root.render();
       };
     }
+    document.querySelectorAll("[data-hr-pay-openday]").forEach(function (b) {
+      b.onclick = function () { openDaily(b.getAttribute("data-hr-pay-openday")); };
+    });
+    document.querySelectorAll("[data-hr-pay-person]").forEach(function (b) {
+      b.onclick = function () { openPersonAttendance(b.getAttribute("data-hr-pay-person")); };
+    });
     var save = $("#hr-pay-save");
     if (save) save.onclick = function () { saveCurrentRun(); };
     var pr = $("#hr-pay-print");
@@ -1451,7 +1998,19 @@
         var run = buildRun(ui.kind, ui.from, ui.to, S);
         await setHolForPeople(
           run.lines.filter(function (L) { return L.eligible; }).map(function (L) { return L.empId; }),
-          true
+          1
+        );
+        if (typeof root.render === "function") root.render();
+      };
+    }
+    var give100 = $("#hr-pay-give100");
+    if (give100) {
+      give100.onclick = async function () {
+        var ui = currentPayUi(S);
+        var run = buildRun(ui.kind, ui.from, ui.to, S);
+        await setHolForPeople(
+          run.lines.filter(function (L) { return L.eligible; }).map(function (L) { return L.empId; }),
+          2
         );
         if (typeof root.render === "function") root.render();
       };
@@ -1463,7 +2022,7 @@
         var run = buildRun(ui.kind, ui.from, ui.to, S);
         await setHolForPeople(
           run.lines.map(function (L) { return L.empId; }),
-          false
+          0
         );
         if (typeof root.render === "function") root.render();
       };
@@ -1482,7 +2041,8 @@
     }
     document.querySelectorAll("[data-hr-pay-hol]").forEach(function (box) {
       box.onchange = async function () {
-        await setHolForPeople([box.getAttribute("data-hr-pay-hol")], box.checked);
+        var code = holValueFromInput(box);
+        await setHolForPeople([box.getAttribute("data-hr-pay-hol")], code);
         if (typeof root.render === "function") root.render();
       };
     });
@@ -1615,7 +2175,7 @@
       '<div class="card" id="hr-pay-holidays"><div class="card-h"><h3>Company holiday calendar</h3></div>' +
       '<div class="card-b stack"><div class="note">The seven <b>fixed regular holidays</b> ship with the portal. ' +
       "Movable specials (Maundy Thursday, Eid, EDSA, and the rest) arrive by proclamation — add them here when the year\'s list is out. " +
-      "Holiday premium is never granted just because a date is on this list.</div>" +
+      "Holiday premium is never granted just because a date is on this list — pick <b>+30%</b>, <b>+100%</b>, or <b>As is</b> on the day.</div>" +
       '<div class="tw"><table><thead><tr><th>Date</th><th>Name</th><th>Type</th><th></th></tr></thead><tbody>' +
       rows +
       "</tbody></table></div>" +
@@ -1828,25 +2388,71 @@
         if (holH && holH.parentNode) holH.parentNode.insertBefore(tho, holH.nextSibling);
         else head.appendChild(tho);
       }
+      if (head && !head.querySelector(".hr-pay-time-h")) {
+        var thi = document.createElement("th");
+        thi.className = "hr-pay-time-h";
+        thi.style.width = "88px";
+        thi.textContent = "Time in";
+        thi.title = "Required when status is Present/Late.";
+        var tho2 = document.createElement("th");
+        tho2.className = "hr-pay-timeout-h";
+        tho2.style.width = "88px";
+        tho2.textContent = "Time out";
+        tho2.title = "Required when status is Undertime.";
+        var statusH = head.children[5] || head.querySelector("th:nth-child(6)");
+        if (statusH && statusH.parentNode) {
+          statusH.parentNode.insertBefore(thi, statusH.nextSibling);
+          thi.parentNode.insertBefore(tho2, thi.nextSibling);
+        } else {
+          head.appendChild(thi);
+          head.appendChild(tho2);
+        }
+      }
       table.querySelectorAll("[data-dms]").forEach(function (sel) {
         var id = sel.getAttribute("data-dms");
         var tr = sel.closest("tr");
         if (!tr) return;
         var row = rec && rec.rows && rec.rows[id];
+        if (!tr.querySelector('[data-dmin="' + id + '"]')) {
+          var tdin = document.createElement("td");
+          tdin.innerHTML =
+            '<input class="hr-pay-time" type="time" data-dmin="' +
+            esc(id) +
+            '" value="' +
+            esc((row && row.in) || "") +
+            '" title="Required when status is Present/Late">';
+          var statusTd = sel.closest("td");
+          if (statusTd && statusTd.parentNode) statusTd.parentNode.insertBefore(tdin, statusTd.nextSibling);
+          else tr.appendChild(tdin);
+        }
+        if (!tr.querySelector('[data-dmout="' + id + '"]')) {
+          var tdout = document.createElement("td");
+          tdout.innerHTML =
+            '<input class="hr-pay-time" type="time" data-dmout="' +
+            esc(id) +
+            '" value="' +
+            esc((row && row.out) || "") +
+            '" title="Required when status is Undertime">';
+          var inTd = tr.querySelector('[data-dmin="' + id + '"]');
+          inTd = inTd && inTd.closest ? inTd.closest("td") : null;
+          if (inTd && inTd.parentNode) inTd.parentNode.insertBefore(tdout, inTd.nextSibling);
+          else tr.appendChild(tdout);
+        }
         if (!tr.querySelector('[data-dmhol="' + id + '"]')) {
           var td = document.createElement("td");
           td.className = "hr-att-hol hr-pay-hol";
-          td.innerHTML =
-            '<input type="checkbox" data-dmhol="' +
-            esc(id) +
-            '" title="Grant holiday premium"' +
-            (row && holidayGranted(row) ? " checked" : "") +
-            ">";
+          td.innerHTML = holSelectHTML(id, "data-dmhol", holidayPremiumCode(row));
           var reasonTd = tr.querySelector("[data-dmr]")
             ? tr.querySelector("[data-dmr]").closest("td")
             : null;
           if (reasonTd && reasonTd.parentNode) reasonTd.parentNode.insertBefore(td, reasonTd.nextSibling);
           else tr.appendChild(td);
+        } else {
+          var existingHol = tr.querySelector('[data-dmhol="' + id + '"]');
+          if (existingHol && existingHol.tagName === "INPUT" && existingHol.type === "checkbox") {
+            var wrap = existingHol.parentNode;
+            if (wrap) wrap.innerHTML = holSelectHTML(id, "data-dmhol", holidayPremiumCode(row));
+          }
         }
         if (!tr.querySelector('[data-dmot="' + id + '"]')) {
           var tdo = document.createElement("td");
@@ -1994,8 +2600,14 @@
       var hol = query('[data-dmhol="' + id + '"]');
       var ot = query('[data-dmot="' + id + '"]');
       var old = (prev.rows || {})[id] || {};
-      if (hol) rec.rows[id].hol = hol.checked ? 1 : 0;
+      if (hol) rec.rows[id].hol = holValueFromInput(hol);
       else if (old.hol != null) rec.rows[id].hol = old.hol;
+      var tin = query('[data-dmin="' + id + '"]');
+      var tout = query('[data-dmout="' + id + '"]');
+      if (tin) rec.rows[id].in = tin.value;
+      else if (old.in != null) rec.rows[id].in = old.in;
+      if (tout) rec.rows[id].out = tout.value;
+      else if (old.out != null) rec.rows[id].out = old.out;
       if (ot) rec.rows[id].ot = ot.value === "" ? 0 : Number(ot.value) || 0;
       else if (old.ot != null) rec.rows[id].ot = old.ot;
     });
@@ -2069,6 +2681,26 @@
           "No report has been filed for this day yet. Everyone still reads as Present until you change the exceptions. Save it as-is?"
         );
         if (!ok) return;
+      }
+      var problems = [];
+      document.querySelectorAll("[data-dms]").forEach(function (sel) {
+        var id = sel.getAttribute("data-dms");
+        var tin = document.querySelector('[data-dmin="' + id + '"]');
+        var tout = document.querySelector('[data-dmout="' + id + '"]');
+        var row = {
+          s: sel.value,
+          in: tin ? tin.value : "",
+          out: tout ? tout.value : "",
+        };
+        validateTimes(row).forEach(function (msg) {
+          problems.push(msg);
+          if (sel.value === "Present/Late" && tin) tin.className += " hr-pay-need";
+          if (sel.value === "Undertime" && tout) tout.className += " hr-pay-need";
+        });
+      });
+      if (problems.length) {
+        if (root.toast) root.toast(problems[0], "err");
+        return;
       }
       if (typeof orig === "function") return orig.call(this, ev);
     };
