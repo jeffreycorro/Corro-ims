@@ -1376,7 +1376,7 @@
       " of " +
       days.length +
       ' days filed</span></div></div><div class="card-b stack">';
-    if (snapped && latest) {
+    if (snapped && latest && ui.from === latest.from && ui.to === latest.to) {
       h +=
         '<div class="note hr-pay-banner">Opened the <b>latest period with filed reports</b> (' +
         esc(latest.from) +
@@ -1890,6 +1890,7 @@
       S.ui.payFrom = from.value;
       S.ui.payTo = to.value;
       S.ui.payAnchor = from.value;
+      S.ui.paySnapped = 0;
       if (typeof root.render === "function") root.render();
     }
     if (from) from.onchange = applyDates;
