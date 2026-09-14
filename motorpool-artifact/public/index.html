@@ -2853,8 +2853,21 @@ function pickedVoice(){
   return S.voices[0]||null;
 }
 /* Chrome cuts long utterances off partway, so feed it a sentence at a time. */
+function mpVoice(text,onDone){
+  var hook=window.mpTts;
+  if(!hook||typeof hook.speak!=="function"||!hook.ready) return false;
+  try{
+    var p=hook.speak(text);
+    if(p&&typeof p.then==="function"){
+      p.then(function(){ if(onDone) onDone(); },function(){ if(onDone) onDone(); });
+    }else if(onDone) onDone();
+    return true;
+  }catch(e){ return false; }
+}
 function utter(text,onDone){
-  if(!TTS||!text) return;
+  if(!text) return;
+  if(mpVoice(text,onDone)) return;
+  if(!TTS) return;
   var clean=String(text).replace(/[*_#`>]/g,"").replace(/\s+/g," ").trim();
   var parts=clean.match(/[^.!?;\n]+[.!?;]?/g)||[clean];
   var chunks=[], cur="";
@@ -2874,10 +2887,16 @@ function utter(text,onDone){
   })();
 }
 function speak(text){
-  if(!TTS||!S.voiceOut||!text) return;
-  try{ TTS.cancel(); utter(text); }catch(e){}
+  if(!S.voiceOut||!text) return;
+  try{ hush(); }catch(e){}
+  if(mpVoice(text)) return;
+  if(!TTS) return;
+  try{ utter(text); }catch(e){}
 }
-function hush(){ try{ if(TTS) TTS.cancel(); }catch(e){} }
+function hush(){
+  try{ if(window.mpTts&&typeof window.mpTts.hush==="function") window.mpTts.hush(); }catch(e){}
+  try{ if(TTS) TTS.cancel(); }catch(e){}
+}
 function listen(inp,onFinal,setBusy){
   if(!SR){ toast("This browser cannot listen. Type the question instead."); return; }
   if(_rec){ try{ _rec.stop(); }catch(e){} _rec=null; setBusy(false); return; }
@@ -2932,7 +2951,7 @@ function askView(){
   var vh=el("div","hd");
   vh.appendChild(el("h3",null,"Ask"));
   var vr=el("div","row"); vr.style.marginLeft="auto";
-  if(TTS){
+  if(TTS||(window.mpTts&&window.mpTts.ready)){
     var spk=el("button","btn sm",(S.voiceOut?"🔊 Reading aloud":"🔇 Silent"));
     spk.addEventListener("click",function(){
       S.voiceOut=!S.voiceOut;
@@ -3005,7 +3024,7 @@ function askView(){
       if(m.content&&!m.error){
         var bar=el("div","row"); bar.style.marginTop="var(--space-1)";
         bar.appendChild(el("span","hint","answered from the posted records"));
-        if(TTS){
+        if(TTS||(window.mpTts&&window.mpTts.ready)){
           var pl=el("button","btn sm","🔊 Play");
           pl.addEventListener("click",function(){
             S.ttsReady=true; hush(); utter(m.content);

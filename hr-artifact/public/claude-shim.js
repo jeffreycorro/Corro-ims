@@ -5,9 +5,9 @@
  *
  * window.claude.use(name) returns a Promise synchronously.
  * db is backed by Netlify Functions → Supabase (service role stays on the server).
- * sample (Anthropic), mcp (Google Drive), and transcribe (OpenAI Whisper /
- * gpt-transcribe) are served the same way when their keys are set.
- * Secrets stay on the server.
+ * sample (Anthropic), mcp (Google Drive), transcribe (OpenAI Whisper /
+ * gpt-transcribe), and tts (ElevenLabs) are served the same way when
+ * their keys are set. Secrets stay on the server.
  */
 (function () {
   "use strict";
@@ -644,6 +644,39 @@
     return transcribe;
   }
 
+  function createTts() {
+    function tts(text, options) {
+      options = options || {};
+      return gatedCall(
+        "tts",
+        {
+          text: text == null ? "" : String(text),
+          voiceId: options.voiceId || options.voice,
+        },
+        { signal: options.signal }
+      ).then(function (out) {
+        return {
+          audioBase64: (out && out.audioBase64) || "",
+          mimeType: (out && out.mimeType) || "audio/mpeg",
+          voiceId: out && out.voiceId,
+          text: (out && out.text) || String(text || ""),
+        };
+      });
+    }
+
+    tts.speak = function (text, options) {
+      return tts(text, options);
+    };
+
+    tts.limits = function () {
+      return gatedCall("tts", {}, { method: "GET" }).then(function (out) {
+        return (out && out.limits) || { maxChars: 2500 };
+      });
+    };
+
+    return tts;
+  }
+
   var ONESHOT_B64 = 3.2 * 1024 * 1024;
   var CHUNK_B64 = 4 * Math.floor((256 * 1024) / 3);
 
@@ -726,6 +759,7 @@
   var sampleSingleton = null;
   var mcpSingleton = null;
   var transcribeSingleton = null;
+  var ttsSingleton = null;
 
   function resolveName(name) {
     if (name === "db") {
@@ -770,6 +804,17 @@
           return null;
         });
     }
+    if (name === "tts" || name === "speak") {
+      return waitForAuth()
+        .then(function (status) {
+          if (!capabilityOn(status, "tts")) return null;
+          if (!ttsSingleton) ttsSingleton = createTts();
+          return ttsSingleton;
+        })
+        .catch(function () {
+          return null;
+        });
+    }
     return Promise.resolve(null);
   }
 
@@ -792,6 +837,7 @@
     loadCompanion("/hr-memo.js", "data-hr-memo");
     loadCompanion("/hr-attendance.js", "data-hr-attendance");
     loadCompanion("/hr-payroll.js", "data-hr-payroll");
+    loadCompanion("/hr-tts.js", "data-hr-tts");
   }
 
   var apiObj = {

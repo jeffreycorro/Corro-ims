@@ -104,10 +104,25 @@ Site settings → Environment variables. Copy `.env.example`.
 | `MOTORPOOL_GATE_PASSWORD` | Functions, optional | Login password if `MOTORPOOL_GATE_SECRET` is a signing key only |
 | `SUPABASE_AUTH_ENABLED` | Functions, optional | Set `true` to also accept Supabase email/password |
 | `MOTORPOOL_OFFICE_PASS_HASH` | Functions, optional | SHA-256 **hex** of the office pass (64 lowercase hex chars). Never put the plaintext here. Generate locally: `printf '%s' 'your-pass' \| openssl dgst -sha256` |
+| `ANTHROPIC_API_KEY` | Functions **only** | Enables Ask the log (`claude.use("sample")`). Never put this in the shim or `index.html`. |
+| `ANTHROPIC_MODEL` | Functions, optional | Override the default model (`claude-sonnet-4-5`). |
+| `ELEVENLABS_API_KEY` | Functions **only** | Enables Ask the log readback (`claude.use("tts")`). Never commit the key. |
+| `ELEVENLABS_VOICE_ID` | Functions, optional | Override the default ElevenLabs voice. |
+| `ELEVENLABS_MODEL_ID` | Functions, optional | Override the TTS model (default `eleven_multilingual_v2`). |
 
 The artifact also stores an office hash on `config/app.pass` after the owner sets it in-app. That field is a hash. **Never write the office pass into code, docs, tests, comments, or chat.**
 
 Without Supabase env vars the artifact still opens and uses its **local** document store (`#dbBadge` shows `local`).
+
+**How to set env on Netlify (Motorpool site `corcondev-motorpool`):**
+
+1. Site configuration → Environment variables.
+2. Add `ANTHROPIC_API_KEY` (Ask the log) and `ELEVENLABS_API_KEY` (read-aloud). Optional: `ELEVENLABS_VOICE_ID`.
+3. Scope them to **Production** (and Local if you use `netlify dev`). Same values as in `.env.example` — never commit real keys.
+4. Trigger a **redeploy** after changing keys so functions reload the env.
+5. Confirm `GET /.netlify/functions/auth` shows `capabilities.sample: true` and `capabilities.tts: true`. `/.netlify/functions/sample` must exist (not 404).
+
+Without `ANTHROPIC_API_KEY` the shim still resolves `sample` to `null` and Ask the log shows “The assistant is not available in this view.” Without `ELEVENLABS_API_KEY`, `tts` is `null` and the page falls back to the device’s Web Speech voices.
 
 ### 6. Access control
 
@@ -167,7 +182,8 @@ Each unit record stores its Drive folder link. This host stores photos in `photo
 | --- | --- |
 | `db` | `doc(path).get/set/delete/acquire` and `collection(name).get` / `onSnapshot`. Path: `collection/id`. |
 | `downloads` | `save({ filename, data })` for standalone VRF HTML (the artifact does not rely on `window.print` in the host). |
-| `sample` | `null` until an Anthropic key is added later |
+| `sample` | Anthropic-backed `sample(prompt, { modelTier, onText, tools, signal })` → `{ text, truncated? }`, plus `sample.json` and `sample.limits`. `null` until `ANTHROPIC_API_KEY` is set. Yard Ask the log has no Office peso figures — the artifact already scopes that. |
+| `tts` | ElevenLabs-backed `tts(text)` → `{ audioBase64, mimeType }`. The artifact’s existing `speak` / `utter` / `voiceOut` hooks use this when granted (`motorpool-tts.js`). `null` until `ELEVENLABS_API_KEY` is set. |
 | anything else | `null` |
 
 If functions are unreachable, the artifact keeps its local store.
@@ -210,7 +226,7 @@ Add from **Safari** only.
 3. Tap **Share** → **Add to Home Screen**.
 4. Keep the name **Motorpool** and tap **Add**.
 
-The optional service worker caches icons and `pwa.css` only. It does **not** cache `index.html`, `claude-shim.js`, `motorpool-host.js`, or `/.netlify/functions/*`.
+The optional service worker caches icons and `pwa.css` only. It does **not** cache `index.html`, `claude-shim.js`, `motorpool-host.js`, `motorpool-tts.js`, or `/.netlify/functions/*`.
 
 ## Files
 
@@ -222,8 +238,9 @@ motorpool-artifact/
   public/motorpool-host.js   ← blocks prompt/confirm/alert/print
   public/pwa.js
   public/pwa.css
-  netlify/functions/         ← auth, db, office
-  netlify/lib/
+  public/motorpool-tts.js    ← ElevenLabs readback (loaded by the shim)
+  netlify/functions/         ← auth, db, office, sample, tts
+  netlify/lib/               ← session, capabilities, Anthropic, ElevenLabs
   supabase/migrations/
   tests/                     ← thaw, isFuel, papers, variance, host
   tests/lib/                 ← rule copies only — not a second UI

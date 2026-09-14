@@ -115,6 +115,7 @@ describe("HR PWA bootstrap", () => {
     assert.doesNotMatch(sw, /hr-memo/);
     assert.doesNotMatch(sw, /hr-attendance/);
     assert.doesNotMatch(sw, /hr-payroll/);
+    assert.doesNotMatch(sw, /hr-tts/);
     assert.match(sw, /\/\.netlify\//);
   });
 });

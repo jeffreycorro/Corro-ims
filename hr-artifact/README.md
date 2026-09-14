@@ -22,7 +22,7 @@ Inside `<head>` of that real `index.html`, **before any other scripts**, add:
 <script src="/pwa.js"></script>
 ```
 
-`window.claude.use(name)` is implemented by `public/claude-shim.js` and must load first. Do not rewrite the rest of the artifact. `pwa.js` / `pwa.css` only add iOS Home Screen tags and a scoped mobile overlay. The shim then loads `hr-dictation.js` (hold-to-talk when `OPENAI_API_KEY` is set), `hr-memo.js` (issued / on-paper memoranda open as saved records, not blank drafts), `hr-attendance.js` (manpower tally leave rule, JSON paste/import door, per-person summary), and `hr-payroll.js` (Payroll Maker, contributions, holiday calendar, Daily Manpower Hol/OT + change history). Do not rewrite the artifact to add mic buttons, memo chrome, a second attendance system, or a parallel payroll app.
+`window.claude.use(name)` is implemented by `public/claude-shim.js` and must load first. Do not rewrite the rest of the artifact. `pwa.js` / `pwa.css` only add iOS Home Screen tags and a scoped mobile overlay. The shim then loads `hr-dictation.js` (hold-to-talk when `OPENAI_API_KEY` is set), `hr-memo.js` (issued / on-paper memoranda open as saved records, not blank drafts), `hr-attendance.js` (manpower tally leave rule, JSON paste/import door, per-person summary), `hr-payroll.js` (Payroll Maker, contributions, holiday calendar, Daily Manpower Hol/OT + change history), and `hr-tts.js` (ElevenLabs readback for Ask the records and memo text when `ELEVENLABS_API_KEY` is set). Do not rewrite the artifact to add mic buttons, memo chrome, a second attendance system, a parallel payroll app, or a second voice UI.
 
 ### 3. Apply the SQL migration
 
@@ -71,8 +71,19 @@ Site settings → Environment variables:
 | `OPENAI_TRANSCRIBE_LANGUAGES` | Functions, optional | Comma-separated language hints (e.g. `en,tl`). Leave unset so Taglish / mixed speech is auto-detected. |
 | `OPENAI_TRANSCRIBE_PROMPT` | Functions, optional | Override the workplace / Taglish prompt sent with each clip. |
 | `OPENAI_TRANSCRIBE_KEYWORDS` | Functions, optional | Comma-separated name and term hints. |
+| `ELEVENLABS_API_KEY` | Functions **only** | Enables Ask the records / memo readback (`claude.use("tts")`). Never put this in the shim or `index.html`. |
+| `ELEVENLABS_VOICE_ID` | Functions, optional | Override the default ElevenLabs voice. |
+| `ELEVENLABS_MODEL_ID` | Functions, optional | Override the TTS model (default `eleven_multilingual_v2`). |
 
-Copy `.env.example`. Data, AI, and Drive functions **refuse** requests without a valid session cookie (issued after Supabase Auth). Do not rely on a front-end-only password check.
+Copy `.env.example`. Data, AI, Drive, and voice functions **refuse** requests without a valid session cookie (issued after Supabase Auth). Do not rely on a front-end-only password check.
+
+**How to set env on Netlify (HR site `corcondev-hr`):**
+
+1. Site configuration → Environment variables.
+2. Add `ANTHROPIC_API_KEY` (Ask the records / memo draft) and `ELEVENLABS_API_KEY` (read-aloud). Optional: `ELEVENLABS_VOICE_ID`.
+3. Scope them to **Production**. Never commit real keys.
+4. Trigger a **redeploy** after changing keys so functions reload the env.
+5. Confirm `GET /.netlify/functions/auth` (while signed in) shows `capabilities.sample: true` and `capabilities.tts: true`.
 
 **One staff password.** HR uses the same Supabase email + password as [https://corcondev-portal.netlify.app](https://corcondev-portal.netlify.app). There is no separate HR site password in the default flow. After login, an httpOnly cookie keeps the PWA signed in (7 days, or until Sign out).
 
@@ -86,11 +97,11 @@ Copy `.env.example`. Data, AI, and Drive functions **refuse** requests without a
 4. If those folders are in a Shared Drive, add the service account as a member of that Shared Drive. If they are in a user's My Drive, enable domain-wide delegation for the service account and set `GOOGLE_DRIVE_DELEGATED_USER` to that user's email.
 5. After env vars change, redeploy (or restart) so functions pick them up.
 
-Without `ANTHROPIC_API_KEY` the shim still resolves `sample` to `null` and the memo editor shows “AI drafting is not available in this view”. Without `GOOGLE_SERVICE_ACCOUNT_JSON`, `mcp` is `null` and Drive actions show the artifact’s own unavailable / `not_granted` copy. Without `OPENAI_API_KEY`, `transcribe` is `null` and the hold-to-talk controls are not shown.
+Without `ANTHROPIC_API_KEY` the shim still resolves `sample` to `null` and the memo editor shows “AI drafting is not available in this view”. Without `GOOGLE_SERVICE_ACCOUNT_JSON`, `mcp` is `null` and Drive actions show the artifact’s own unavailable / `not_granted` copy. Without `OPENAI_API_KEY`, `transcribe` is `null` and the hold-to-talk controls are not shown. Without `ELEVENLABS_API_KEY`, `tts` is `null` and the read-aloud controls are not shown.
 
 ### 6. Access control
 
-**App-level login (required):** `/.netlify/functions/auth` accepts the company-portal Supabase email/password, or a short-lived `access_token` from the portal HR deeplink (URL hash only). It then checks `profiles` and issues an httpOnly cookie. `/.netlify/functions/db`, `sample`, `drive`, and `transcribe` return 401 without that cookie. The service role key, Anthropic key, OpenAI key, and service-account JSON never leave Netlify Functions.
+**App-level login (required):** `/.netlify/functions/auth` accepts the company-portal Supabase email/password, or a short-lived `access_token` from the portal HR deeplink (URL hash only). It then checks `profiles` and issues an httpOnly cookie. `/.netlify/functions/db`, `sample`, `drive`, `transcribe`, and `tts` return 401 without that cookie. The service role key, Anthropic key, OpenAI key, ElevenLabs key, and service-account JSON never leave Netlify Functions.
 
 **Portal handoff (`/app/hr`):** The company portal is a different Netlify host, so the Supabase cookie is not shared. If the staff member is already signed in on the portal, the HR CTA reads the browser session and navigates to `https://corcondev-hr.netlify.app/#access_token=…`. The hash is not sent to Netlify request logs. The shim posts that JWT to `auth`, then `history.replaceState` strips the hash. If handoff fails, the same email + password form works — there is no second gate password.
 
@@ -130,6 +141,7 @@ After deploy, open the site, sign in with a portal HR/admin account, and restore
 | `sample` | Anthropic-backed `sample(prompt, { modelTier, onText, tools, signal })` → `{ text, truncated? }`, plus `sample.json` and `sample.limits`. `null` until `ANTHROPIC_API_KEY` is set. Client-side tools (Ask the records) run in the browser; only schemas go to the function. |
 | `mcp` | `callTool("Google Drive", tool, args)` for `search_files`, `read_file_content`, `create_file`. Responses use `{ payload: { files, text/content/fileContent, id, title, viewUrl, nextPageToken } }`. `null` until the service account env is set. Uploads larger than ~3MB are chunked through a resumable Drive session. |
 | `transcribe` | OpenAI-backed `transcribe({ audio, mimeType, language, signal })` → `{ text }`. Hold-to-talk on memo draft / reminder / Ask fields is attached by `hr-dictation.js` (loaded by the shim). `null` until `OPENAI_API_KEY` is set. Issued / Drive-imported memos are treated as saved records by `hr-memo.js` (also loaded by the shim). The manpower leave rule, Claude JSON paste door, and per-person summary are attached by `hr-attendance.js`. Payroll Maker, contributions, the holiday calendar, and the attendance edit log are attached by `hr-payroll.js`. |
+| `tts` | ElevenLabs-backed `tts(text)` → `{ audioBase64, mimeType }`. Ask the records / memo readback is attached by `hr-tts.js` (loaded by the shim). `null` until `ELEVENLABS_API_KEY` is set. |
 | anything else | `null` |
 
 `acquire({ holder })` calls the `acquire_doc_lock` RPC. A second holder with an unexpired lock gets `acquired: false`.
@@ -173,7 +185,7 @@ This HR site is a Progressive Web App. Add it from **Safari** only.
 
 If a Netlify visitor password is also enabled, Safari may prompt for that before the in-app login. Avoid that extra prompt for staff; the in-app form is the real door.
 
-The optional service worker caches icons and `pwa.css` only. It does **not** cache `index.html`, `claude-shim.js`, `hr-dictation.js`, `hr-memo.js`, `hr-attendance.js`, `hr-payroll.js`, or `/.netlify/functions/*`, so auth, db, sample, Drive, dictation, memo chrome, attendance import, and payroll stay on the network.
+The optional service worker caches icons and `pwa.css` only. It does **not** cache `index.html`, `claude-shim.js`, `hr-dictation.js`, `hr-memo.js`, `hr-attendance.js`, `hr-payroll.js`, `hr-tts.js`, or `/.netlify/functions/*`, so auth, db, sample, Drive, dictation, memo chrome, attendance import, payroll, and voice stay on the network.
 
 ## Files
 
@@ -186,6 +198,7 @@ hr-artifact/
   public/hr-memo.js          ← issued / on-paper memo editor (loaded by the shim)
   public/hr-attendance.js    ← manpower summary + Claude JSON paste door (loaded by the shim)
   public/hr-payroll.js       ← Payroll Maker, contributions, holiday calendar, attendance edit log
+  public/hr-tts.js           ← ElevenLabs readback (loaded by the shim)
   public/pwa.js              ← apple / manifest tags + viewport-fit
   public/pwa.css             ← mobile / safe-area overlay
   public/manifest.json
@@ -197,6 +210,7 @@ hr-artifact/
   netlify/functions/sample.js
   netlify/functions/drive.js
   netlify/functions/transcribe.js
-  netlify/lib/               ← session, supabase, locks, collections, Anthropic, Drive, OpenAI
+  netlify/functions/tts.js
+  netlify/lib/               ← session, supabase, locks, collections, Anthropic, Drive, OpenAI, ElevenLabs
   supabase/migrations/       ← docs + locks + RLS
 ```

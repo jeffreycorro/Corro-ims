@@ -16,11 +16,16 @@ function openaiConfigured() {
   return hasText(process.env.OPENAI_API_KEY);
 }
 
+function elevenlabsConfigured() {
+  return hasText(process.env.ELEVENLABS_API_KEY);
+}
+
 function capabilities() {
   return {
     sample: anthropicConfigured(),
     mcp: driveConfigured(),
     transcribe: openaiConfigured(),
+    tts: elevenlabsConfigured(),
   };
 }
 
@@ -28,5 +33,6 @@ module.exports = {
   anthropicConfigured,
   capabilities,
   driveConfigured,
+  elevenlabsConfigured,
   openaiConfigured,
 };

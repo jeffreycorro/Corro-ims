@@ -16,6 +16,10 @@ function openaiConfigured() {
   return hasText(process.env.OPENAI_API_KEY);
 }
 
+function elevenlabsConfigured() {
+  return hasText(process.env.ELEVENLABS_API_KEY);
+}
+
 function officeHashConfigured() {
   return /^[a-f0-9]{64}$/i.test(String(process.env.MOTORPOOL_OFFICE_PASS_HASH || "").trim());
 }
@@ -25,6 +29,7 @@ function capabilities() {
     sample: anthropicConfigured(),
     mcp: driveConfigured(),
     transcribe: openaiConfigured(),
+    tts: elevenlabsConfigured(),
     officeHash: officeHashConfigured(),
   };
 }
@@ -33,6 +38,7 @@ module.exports = {
   anthropicConfigured,
   capabilities,
   driveConfigured,
+  elevenlabsConfigured,
   officeHashConfigured,
   openaiConfigured,
 };
