@@ -13,7 +13,20 @@ function loadHost(windowLike) {
 }
 
 function hostWindow(html) {
-  const banner = { id: "buildBanner", hidden: true };
+  const banner = {
+    id: "buildBanner",
+    hidden: true,
+    style: {
+      display: "",
+      setProperty(name, value) {
+        this[name] = value;
+      },
+      removeProperty(name) {
+        this[name] = "";
+      },
+    },
+    setAttribute() {},
+  };
   const mine = { id: "buildMine", textContent: "" };
   const latest = { id: "buildLatest", textContent: "" };
   const byId = { buildBanner: banner, buildMine: mine, buildLatest: latest };
@@ -77,6 +90,14 @@ describe("motorpool host companion", () => {
     w.latest.textContent = "";
     assert.equal(host.hideEmptyBuildBanner(w.document), true);
     assert.equal(w.banner.hidden, true);
+    assert.equal(w.banner.style.display, "none");
+
+    w.banner.hidden = true;
+    w.banner.style.display = "flex";
+    w.mine.textContent = "";
+    w.latest.textContent = "";
+    assert.equal(host.hideEmptyBuildBanner(w.document), true);
+    assert.equal(w.banner.style.display, "none");
 
     w.banner.hidden = false;
     w.mine.textContent = "2026-09-14 g";

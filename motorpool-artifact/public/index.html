@@ -773,7 +773,9 @@ async function boot(){
 function checkBuild(){
   if(!S.db) return;
   function hide(){
-    var b=$("#buildBanner"); if(b) b.hidden=true;
+    var b=$("#buildBanner"); if(!b) return;
+    b.hidden=true;
+    try{ b.style.setProperty("display","none","important"); }catch(e){}
   }
   function rowsOf(snap){
     return ((snap&&snap.docs)||[]).map(function(d){
@@ -791,9 +793,10 @@ function checkBuild(){
     if(behind&&mineEl&&latestEl){
       mineEl.textContent=mine;
       latestEl.textContent=latest;
+      try{ b.style.removeProperty("display"); }catch(e){}
       b.hidden=false;
     }else{
-      b.hidden=true;
+      hide();
     }
   }
   try{

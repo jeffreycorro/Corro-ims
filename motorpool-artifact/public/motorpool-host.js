@@ -41,20 +41,52 @@
     return Boolean(mine && latest && mine !== latest);
   }
 
+  function forceHideBanner(banner) {
+    if (!banner) return;
+    banner.hidden = true;
+    try {
+      if (banner.setAttribute) banner.setAttribute("hidden", "");
+      if (banner.style && banner.style.setProperty) {
+        banner.style.setProperty("display", "none", "important");
+      }
+    } catch (e) {}
+  }
+
   function hideEmptyBuildBanner(root) {
     root = root || (typeof document !== "undefined" ? document : null);
     if (!root || !root.getElementById) return false;
     var banner = root.getElementById("buildBanner");
-    if (!banner || banner.hidden) return false;
+    if (!banner) return false;
     var mineEl = root.getElementById("buildMine");
     var latestEl = root.getElementById("buildLatest");
     var mine = mineEl ? String(mineEl.textContent || "").trim() : "";
     var latest = latestEl ? String(latestEl.textContent || "").trim() : "";
     if (!shouldShowBuildBanner(mine, latest)) {
-      banner.hidden = true;
+      forceHideBanner(banner);
       return true;
     }
+    try {
+      if (banner.style && banner.style.removeProperty) {
+        banner.style.removeProperty("display");
+      }
+    } catch (e) {}
     return false;
+  }
+
+  function injectBuildBannerStyle(root) {
+    var doc = root;
+    try {
+      if (root && root.ownerDocument) doc = root.ownerDocument;
+      if (root && root.head) doc = root;
+    } catch (e) {}
+    if (!doc || !doc.createElement) return;
+    try {
+      if (doc.getElementById && doc.getElementById("mp-host-build-banner-style")) return;
+      var style = doc.createElement("style");
+      style.id = "mp-host-build-banner-style";
+      style.textContent = "#buildBanner[hidden]{display:none!important}";
+      (doc.head || doc.documentElement || doc.body).appendChild(style);
+    } catch (e2) {}
   }
 
   var registerInFlight = null;
@@ -91,6 +123,7 @@
   function watchBuildBanner(root) {
     root = root || (typeof document !== "undefined" ? document : null);
     if (!root) return;
+    injectBuildBannerStyle(root);
     hideEmptyBuildBanner(root);
     try {
       if (typeof MutationObserver === "function") {
@@ -125,6 +158,7 @@
     buildDocId: buildDocId,
     shouldShowBuildBanner: shouldShowBuildBanner,
     hideEmptyBuildBanner: hideEmptyBuildBanner,
+    injectBuildBannerStyle: injectBuildBannerStyle,
     registerCurrentBuild: registerCurrentBuild,
   };
 

@@ -48,6 +48,9 @@ describe("privacy and host rules", () => {
     assert.match(host, /window\.confirm\s*=/);
     assert.match(host, /window\.alert\s*=/);
     assert.match(host, /window\.print\s*=/);
+    const css = fs.readFileSync(path.join(__dirname, "../public/pwa.css"), "utf8");
+    assert.match(css, /#buildBanner\[hidden\]/);
+    assert.match(css, /display:\s*none\s*!important/);
   });
 
   it("artifact keeps the house teal token and is light-only", () => {
