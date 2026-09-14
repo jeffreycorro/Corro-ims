@@ -119,12 +119,13 @@ describe("claude shim", () => {
     assert.equal(p, again);
   });
 
-  it("returns null for sample, mcp, and transcribe when auth does not advertise them", async () => {
+  it("returns null for sample, mcp, transcribe, and tts when auth does not advertise them", async () => {
     const w = fakeWindow();
     loadShim(w);
     assert.equal(await w.claude.use("sample"), null);
     assert.equal(await w.claude.use("mcp"), null);
     assert.equal(await w.claude.use("transcribe"), null);
+    assert.equal(await w.claude.use("tts"), null);
     assert.equal(await w.claude.use("nope"), null);
   });
 
@@ -140,12 +141,12 @@ describe("claude shim", () => {
           json: async () => ({
             authenticated: true,
             methods: ["password"],
-            capabilities: { sample: true, mcp: true, transcribe: true },
+            capabilities: { sample: true, mcp: true, transcribe: true, tts: true },
           }),
           text: async () =>
             JSON.stringify({
               authenticated: true,
-              capabilities: { sample: true, mcp: true, transcribe: true },
+              capabilities: { sample: true, mcp: true, transcribe: true, tts: true },
             }),
         });
       }
@@ -172,6 +173,17 @@ describe("claude shim", () => {
         return Promise.resolve({
           ok: true,
           text: async () => JSON.stringify({ text: "Draft body", truncated: false }),
+        });
+      }
+      if (String(url).includes("/tts")) {
+        return Promise.resolve({
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              audioBase64: Buffer.from("fake-mp3").toString("base64"),
+              mimeType: "audio/mpeg",
+              voiceId: "voice-1",
+            }),
         });
       }
       if (String(url).includes("/transcribe")) {
@@ -262,6 +274,12 @@ describe("claude shim", () => {
     const transcribeCalls = calls.filter((c) => String(c.url).includes("/transcribe"));
     assert.equal(transcribeCalls[0].body.mimeType, "audio/webm");
     assert.ok(transcribeCalls[0].body.audioBase64);
+    const tts = await w.claude.use("tts");
+    const spokenTts = await tts("Glory Mae was late.");
+    assert.equal(spokenTts.mimeType, "audio/mpeg");
+    assert.ok(spokenTts.audioBase64);
+    const ttsCalls = calls.filter((c) => String(c.url).includes("/tts"));
+    assert.equal(ttsCalls[0].body.text, "Glory Mae was late.");
     const driveCalls = calls.filter((c) => String(c.url).includes("/drive"));
     assert.equal(driveCalls[0].body.tool, "search_files");
   });

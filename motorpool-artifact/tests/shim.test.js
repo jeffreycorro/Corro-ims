@@ -92,12 +92,116 @@ describe("claude shim", () => {
     assert.equal(w.claude.use("db"), p);
   });
 
-  it("returns null for sample and unknown capabilities", async () => {
+  it("returns null for sample, tts, and unknown capabilities", async () => {
     const w = fakeWindow();
     loadShim(w);
     assert.equal(await w.claude.use("sample"), null);
+    assert.equal(await w.claude.use("tts"), null);
     assert.equal(await w.claude.use("mcp"), null);
     assert.equal(await w.claude.use("nope"), null);
+  });
+
+  it("exposes sample and tts when auth reports those capabilities", async () => {
+    const w = fakeWindow();
+    const calls = [];
+    w.fetch = (url, opts) => {
+      const body = opts && opts.body ? JSON.parse(opts.body) : {};
+      calls.push({ url, body });
+      if (String(url).includes("/auth")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            authenticated: true,
+            methods: [],
+            capabilities: { sample: true, tts: true },
+          }),
+          text: async () =>
+            JSON.stringify({
+              authenticated: true,
+              capabilities: { sample: true, tts: true },
+            }),
+        });
+      }
+      if (String(url).includes("/sample")) {
+        if (body.mode === "json") {
+          return Promise.resolve({
+            ok: true,
+            text: async () => JSON.stringify({ json: { ok: true }, text: '{"ok":true}' }),
+          });
+        }
+        if (body.tools && body.tools.length && !(body.messages || []).some((m) => Array.isArray(m.content))) {
+          return Promise.resolve({
+            ok: true,
+            text: async () =>
+              JSON.stringify({
+                toolCalls: [{ id: "t1", name: "find_unit", input: { query: "DT-03" } }],
+                assistantContent: [
+                  { type: "tool_use", id: "t1", name: "find_unit", input: { query: "DT-03" } },
+                ],
+                text: "",
+              }),
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          text: async () => JSON.stringify({ text: "Last battery was in October.", truncated: false }),
+        });
+      }
+      if (String(url).includes("/tts")) {
+        return Promise.resolve({
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              audioBase64: Buffer.from("fake-mp3").toString("base64"),
+              mimeType: "audio/mpeg",
+              voiceId: "voice-1",
+            }),
+        });
+      }
+      return Promise.resolve({ ok: true, text: async () => "{}" });
+    };
+    loadShim(w);
+    const sample = await w.claude.use("sample");
+    assert.equal(typeof sample, "function");
+    assert.equal(typeof sample.json, "function");
+    const limits = await sample.limits();
+    assert.equal(limits.tools.maxCount, 8);
+    const seen = [];
+    const drafted = await sample("DT-03 battery?", {
+      modelTier: "default",
+      onText({ text }) {
+        seen.push(text);
+      },
+    });
+    assert.equal(drafted.text, "Last battery was in October.");
+    assert.deepEqual(seen, ["Last battery was in October."]);
+    const parsed = await sample.json("return json");
+    assert.equal(parsed.ok, true);
+
+    let executed = 0;
+    const asked = await sample([{ role: "user", content: "DT-03?" }], {
+      tools: [
+        {
+          name: "find_unit",
+          description: "find",
+          inputSchema: { type: "object", properties: { query: { type: "string" } } },
+          execute() {
+            executed += 1;
+            return { code: "DT-03" };
+          },
+        },
+      ],
+    });
+    assert.equal(executed, 1);
+    assert.equal(asked.text, "Last battery was in October.");
+
+    const tts = await w.claude.use("tts");
+    const spoken = await tts("DT-03 is due for oil.");
+    assert.equal(spoken.mimeType, "audio/mpeg");
+    assert.ok(spoken.audioBase64);
+    const ttsCalls = calls.filter((c) => String(c.url).includes("/tts"));
+    assert.equal(ttsCalls[0].body.text, "DT-03 is due for oil.");
+    assert.equal(await w.claude.use("speak"), tts);
   });
 
   it("exposes doc get/set/delete/acquire and collection get", async () => {

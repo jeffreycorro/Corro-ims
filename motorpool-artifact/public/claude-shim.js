@@ -5,7 +5,9 @@
  *
  * window.claude.use(name) returns a Promise synchronously.
  * db is backed by Netlify Functions → Supabase when configured.
- * Local static preview works without functions (yard stays open).
+ * sample (Anthropic) and tts (ElevenLabs) are granted when auth
+ * advertises those capabilities. Local static preview works without
+ * functions (yard stays open).
  */
 (function () {
   "use strict";
@@ -60,10 +62,18 @@
           err.status = res.status;
           err.body = json;
           err.code = json.code;
+          err.text = json.text;
           throw err;
         }
         return json;
       });
+    }).catch(function (err) {
+      if (err && (err.name === "AbortError" || (extra.signal && extra.signal.aborted))) {
+        var cancelled = new Error("cancelled");
+        cancelled.code = "cancelled";
+        throw cancelled;
+      }
+      throw err;
     });
   }
 
@@ -226,6 +236,10 @@
     return gatedCall("db", Object.assign({ op: op }, extra || {}));
   }
 
+  function capabilityOn(status, name) {
+    return Boolean(status && status.capabilities && status.capabilities[name]);
+  }
+
   function createDb() {
     return Object.freeze({
       doc: function (path, maybeId) {
@@ -326,6 +340,193 @@
     });
   }
 
+  function normalizeClientMessages(promptOrMessages) {
+    if (typeof promptOrMessages === "string") {
+      return [{ role: "user", content: promptOrMessages }];
+    }
+    if (Array.isArray(promptOrMessages)) {
+      return promptOrMessages.map(function (m) {
+        if (typeof m === "string") return { role: "user", content: m };
+        return {
+          role: m && m.role === "assistant" ? "assistant" : "user",
+          content: m && m.content != null ? m.content : "",
+        };
+      });
+    }
+    if (promptOrMessages && promptOrMessages.role) {
+      return [promptOrMessages];
+    }
+    return [{ role: "user", content: String(promptOrMessages || "") }];
+  }
+
+  function toolDefs(tools) {
+    if (!tools || !tools.length) return [];
+    return tools.map(function (t) {
+      return {
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema || t.input_schema,
+      };
+    });
+  }
+
+  function runToolCalls(toolCalls, tools, signal) {
+    var byName = Object.create(null);
+    (tools || []).forEach(function (t) {
+      if (t && t.name) byName[t.name] = t;
+    });
+    return Promise.all(
+      (toolCalls || []).map(function (call) {
+        var tool = byName[call.name];
+        if (!tool || typeof tool.execute !== "function") {
+          return Promise.resolve({
+            type: "tool_result",
+            tool_use_id: call.id,
+            content: "Unknown tool: " + call.name,
+            is_error: true,
+          });
+        }
+        return Promise.resolve()
+          .then(function () {
+            return tool.execute(call.input || {}, { signal: signal });
+          })
+          .then(function (result) {
+            return {
+              type: "tool_result",
+              tool_use_id: call.id,
+              content: typeof result === "string" ? result : JSON.stringify(result),
+            };
+          })
+          .catch(function (err) {
+            return {
+              type: "tool_result",
+              tool_use_id: call.id,
+              content: (err && err.message) || "tool failed",
+              is_error: true,
+            };
+          });
+      })
+    );
+  }
+
+  function createSample() {
+    function sample(promptOrMessages, options) {
+      options = options || {};
+      var messages = normalizeClientMessages(promptOrMessages);
+      var tools = options.tools || [];
+      var round = 0;
+
+      function once(msgs) {
+        if (options.signal && options.signal.aborted) {
+          var cancelled = new Error("cancelled");
+          cancelled.code = "cancelled";
+          return Promise.reject(cancelled);
+        }
+        if (round++ > 8) {
+          var loop = new Error("Too many tool rounds");
+          loop.code = "tool_error";
+          return Promise.reject(loop);
+        }
+        return gatedCall(
+          "sample",
+          {
+            messages: msgs,
+            modelTier: options.modelTier || "default",
+            tools: toolDefs(tools),
+            cache: options.cache,
+          },
+          { signal: options.signal }
+        ).then(function (out) {
+          if (out && out.toolCalls && out.toolCalls.length) {
+            var next = msgs.slice();
+            next.push({
+              role: "assistant",
+              content: out.assistantContent || out.toolCalls,
+            });
+            return runToolCalls(out.toolCalls, tools, options.signal).then(function (results) {
+              next.push({ role: "user", content: results });
+              return once(next);
+            });
+          }
+          var text = (out && out.text) || "";
+          if (typeof options.onText === "function") {
+            try {
+              options.onText({ text: text });
+            } catch (e) {}
+          }
+          return { text: text, truncated: Boolean(out && out.truncated) };
+        });
+      }
+
+      return once(messages);
+    }
+
+    sample.json = function (prompt, options) {
+      options = options || {};
+      return gatedCall(
+        "sample",
+        {
+          prompt: typeof prompt === "string" ? prompt : undefined,
+          messages: typeof prompt === "string" ? undefined : normalizeClientMessages(prompt),
+          modelTier: (options && options.modelTier) || "default",
+          mode: "json",
+        },
+        { signal: options && options.signal }
+      ).then(function (out) {
+        if (out && out.json && typeof out.json === "object") return out.json;
+        var err = new Error("The model did not return valid JSON");
+        err.code = "tool_error";
+        throw err;
+      });
+    };
+
+    sample.limits = function () {
+      return Promise.resolve({
+        tools: { maxCount: 8 },
+        modelTiers: ["default", "complex"],
+        maxOutputTokens: 8192,
+      });
+    };
+
+    return sample;
+  }
+
+  function createTts() {
+    function tts(text, options) {
+      options = options || {};
+      return gatedCall(
+        "tts",
+        {
+          text: text == null ? "" : String(text),
+          voiceId: options.voiceId || options.voice,
+        },
+        { signal: options.signal }
+      ).then(function (out) {
+        return {
+          audioBase64: (out && out.audioBase64) || "",
+          mimeType: (out && out.mimeType) || "audio/mpeg",
+          voiceId: out && out.voiceId,
+          text: (out && out.text) || String(text || ""),
+        };
+      });
+    }
+
+    tts.speak = function (text, options) {
+      return tts(text, options);
+    };
+
+    tts.limits = function () {
+      return gatedCall("tts", {}, { method: "GET" }).then(function (out) {
+        return (out && out.limits) || { maxChars: 2500 };
+      });
+    };
+
+    return tts;
+  }
+
+  var sampleSingleton = null;
+  var ttsSingleton = null;
+
   function resolveName(name) {
     if (name === "db") {
       return waitForAuth().then(function (status) {
@@ -335,6 +536,30 @@
     }
     if (name === "downloads") {
       return Promise.resolve(createDownloads());
+    }
+    if (name === "sample") {
+      return waitForAuth()
+        .then(function (status) {
+          if (status && status.offline) return null;
+          if (!capabilityOn(status, "sample")) return null;
+          if (!sampleSingleton) sampleSingleton = createSample();
+          return sampleSingleton;
+        })
+        .catch(function () {
+          return null;
+        });
+    }
+    if (name === "tts" || name === "speak") {
+      return waitForAuth()
+        .then(function (status) {
+          if (status && status.offline) return null;
+          if (!capabilityOn(status, "tts")) return null;
+          if (!ttsSingleton) ttsSingleton = createTts();
+          return ttsSingleton;
+        })
+        .catch(function () {
+          return null;
+        });
     }
     return Promise.resolve(null);
   }
@@ -361,5 +586,6 @@
     },
   });
   loadCompanion("/motorpool-host.js", "data-mp-host");
+  loadCompanion("/motorpool-tts.js", "data-mp-tts");
 })();
 

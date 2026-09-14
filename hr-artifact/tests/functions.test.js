@@ -8,6 +8,7 @@ const { handler: dbHandler } = require("../netlify/functions/db");
 const { handler: sampleHandler } = require("../netlify/functions/sample");
 const { handler: driveHandler } = require("../netlify/functions/drive");
 const { handler: transcribeHandler } = require("../netlify/functions/transcribe");
+const { handler: ttsHandler } = require("../netlify/functions/tts");
 const { COOKIE_NAME, signSession } = require("../netlify/lib/session");
 const { resetTokenCache } = require("../netlify/lib/google-drive");
 
@@ -37,6 +38,8 @@ describe("netlify functions", () => {
     delete process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
     delete process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_TRANSCRIBE_MODEL;
+    delete process.env.ELEVENLABS_API_KEY;
+    delete process.env.ELEVENLABS_VOICE_ID;
     resetTokenCache();
   });
 
@@ -129,6 +132,15 @@ describe("netlify functions", () => {
     assert.equal(body.capabilities.sample, true);
     assert.equal(body.capabilities.mcp, false);
     assert.equal(body.capabilities.transcribe, false);
+    assert.equal(body.capabilities.tts, false);
+  });
+
+  it("reports tts capability when ELEVENLABS_API_KEY is set", async () => {
+    process.env.ELEVENLABS_API_KEY = "el-test";
+    const res = await authHandler({ httpMethod: "GET", headers: {} });
+    const body = JSON.parse(res.body);
+    assert.equal(body.capabilities.tts, true);
+    assert.equal(body.capabilities.sample, false);
   });
 
   it("rejects sample, drive, and transcribe without a session", async () => {
@@ -150,6 +162,12 @@ describe("netlify functions", () => {
       body: JSON.stringify({ audioBase64: "ZmFrZQ==", mimeType: "audio/webm" }),
     });
     assert.equal(transcribe.statusCode, 401);
+    const tts = await ttsHandler({
+      httpMethod: "POST",
+      headers: {},
+      body: JSON.stringify({ text: "hi" }),
+    });
+    assert.equal(tts.statusCode, 401);
   });
 
   it("refuses sample/drive/transcribe when keys are missing even with a session", async () => {
@@ -176,6 +194,13 @@ describe("netlify functions", () => {
     });
     assert.equal(transcribe.statusCode, 403);
     assert.equal(JSON.parse(transcribe.body).code, "not_granted");
+    const tts = await ttsHandler({
+      httpMethod: "POST",
+      headers,
+      body: JSON.stringify({ text: "hi" }),
+    });
+    assert.equal(tts.statusCode, 403);
+    assert.equal(JSON.parse(tts.body).code, "not_granted");
   });
 
   it("calls Anthropic with the session cookie and returns { text }", async () => {
@@ -391,6 +416,36 @@ describe("netlify functions", () => {
       assert.equal(captured.opts.headers.Authorization, "Bearer sk-test");
       assert.equal(captured.opts.body.get("model"), "gpt-transcribe");
       assert.ok(captured.opts.body.get("file"));
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it("calls ElevenLabs with the session cookie and returns audioBase64", async () => {
+    process.env.ELEVENLABS_API_KEY = "el-test";
+    const token = signSession({ sub: "gate", method: "password" }, SECRET);
+    const originalFetch = global.fetch;
+    let captured;
+    global.fetch = async (url, opts) => {
+      captured = { url, opts };
+      return {
+        ok: true,
+        status: 200,
+        arrayBuffer: async () => Buffer.from("fake-mp3"),
+      };
+    };
+    try {
+      const res = await ttsHandler({
+        httpMethod: "POST",
+        headers: { cookie: `${COOKIE_NAME}=${encodeURIComponent(token)}` },
+        body: JSON.stringify({ text: "Glory Mae was late on August 5." }),
+      });
+      assert.equal(res.statusCode, 200);
+      const body = JSON.parse(res.body);
+      assert.equal(body.audioBase64, Buffer.from("fake-mp3").toString("base64"));
+      assert.equal(body.mimeType, "audio/mpeg");
+      assert.match(String(captured.url), /api\.elevenlabs\.io\/v1\/text-to-speech\//);
+      assert.equal(captured.opts.headers["xi-api-key"], "el-test");
     } finally {
       global.fetch = originalFetch;
     }

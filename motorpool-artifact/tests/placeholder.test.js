@@ -22,11 +22,13 @@ describe("placeholder and host", () => {
     assert.ok(pwaIndex > shimIndex);
     assert.doesNotMatch(html, /\/js\/app\.js/);
     assert.doesNotMatch(html, /motorpool-host\.js/);
+    assert.doesNotMatch(html, /motorpool-tts\.js/);
     const shim = fs.readFileSync(
       path.join(__dirname, "../public/claude-shim.js"),
       "utf8"
     );
     assert.match(shim, /motorpool-host\.js/);
+    assert.match(shim, /motorpool-tts\.js/);
   });
 
   it("README tells the operator how to replace the Claude export and redeploy", () => {
@@ -41,6 +43,8 @@ describe("placeholder and host", () => {
     assert.match(readme, /Redeploy when the artifact HTML is updated/);
     assert.match(readme, /move it to public\/index\.html/);
     assert.match(readme, /publish directory is `public`/);
+    assert.match(readme, /ANTHROPIC_API_KEY/);
+    assert.match(readme, /ELEVENLABS_API_KEY/);
   });
 
   it("public/ has no parallel from-scratch Motorpool UI", () => {
