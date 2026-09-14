@@ -772,24 +772,35 @@ async function boot(){
    The page takes the highest seq and says so if it is not this page's own BUILD. */
 function checkBuild(){
   if(!S.db) return;
+  function hide(){
+    var b=$("#buildBanner"); if(b) b.hidden=true;
+  }
   function rowsOf(snap){
     return ((snap&&snap.docs)||[]).map(function(d){
       try{ return typeof d.data==="function"?d.data():d; }catch(e){ return null; } });
   }
   function apply(rows){
     var best=null;
-    rows.forEach(function(d){
+    (rows||[]).forEach(function(d){
       if(d&&d.build&&(!best||(+d.seq||0)>(+best.seq||0))) best=d; });
     var b=$("#buildBanner"); if(!b) return;
-    var behind=!!(best&&best.build!==BUILD);
-    b.hidden=!behind;
-    if(behind){ $("#buildMine").textContent=BUILD; $("#buildLatest").textContent=best.build; }
+    var mine=String(BUILD||"").trim();
+    var latest=best&&best.build!=null?String(best.build).trim():"";
+    var behind=!!(mine&&latest&&latest!==mine);
+    var mineEl=$("#buildMine"), latestEl=$("#buildLatest");
+    if(behind&&mineEl&&latestEl){
+      mineEl.textContent=mine;
+      latestEl.textContent=latest;
+      b.hidden=false;
+    }else{
+      b.hidden=true;
+    }
   }
   try{
     var col=S.db.collection("builds");
-    col.get().then(function(s){ apply(rowsOf(s)); },function(){});
-    col.onSnapshot(function(s){ apply(rowsOf(s)); },function(){});
-  }catch(e){}
+    col.get().then(function(s){ apply(rowsOf(s)); },function(){ hide(); });
+    col.onSnapshot(function(s){ apply(rowsOf(s)); },function(){ hide(); });
+  }catch(e){ hide(); }
 }
 
 /* The store hands back FROZEN documents — its snapshots are shared, immutable

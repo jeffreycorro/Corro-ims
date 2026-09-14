@@ -16,6 +16,7 @@ function loadShim(windowLike) {
 
 function fakeWindow() {
   const clicks = [];
+  const appended = [];
   const window = {
     sessionStorage: {
       _d: {},
@@ -25,9 +26,27 @@ function fakeWindow() {
       setItem(k, v) {
         this._d[k] = String(v);
       },
+      removeItem(k) {
+        delete this._d[k];
+      },
+    },
+    location: {
+      hash: "",
+      pathname: "/",
+      search: "",
+      replace(url) {
+        window.replaced = url;
+      },
+      reload() {
+        window.reloaded = true;
+      },
     },
     document: {
-      documentElement: { appendChild() {} },
+      documentElement: {
+        appendChild(el) {
+          appended.push(el);
+        },
+      },
       head: { appendChild() {} },
       body: {
         appendChild(el) {
@@ -35,19 +54,29 @@ function fakeWindow() {
         },
       },
       createElement(tag) {
+        const listeners = {};
+        const children = [];
         const el = {
           tagName: tag,
           style: { cssText: "" },
+          children,
+          addEventListener(type, fn) {
+            (listeners[type] || (listeners[type] = [])).push(fn);
+          },
           click() {
             clicks.push(el);
+            (listeners.click || []).forEach((fn) => fn({ preventDefault() {} }));
           },
-          remove() {},
+          remove() {
+            el.removed = true;
+            const idx = appended.indexOf(el);
+            if (idx >= 0) appended.splice(idx, 1);
+          },
           setAttribute() {},
           attachShadow() {
-            const nodes = [];
             return {
               appendChild(child) {
-                nodes.push(child);
+                children.push(child);
               },
               querySelector() {
                 return null;
@@ -63,8 +92,8 @@ function fakeWindow() {
       querySelector() {
         return null;
       },
-      getElementById() {
-        return null;
+      getElementById(id) {
+        return appended.find((el) => el && el.id === id) || null;
       },
       addEventListener() {},
     },
@@ -94,6 +123,7 @@ function fakeWindow() {
   };
   window.window = window;
   window.clicks = clicks;
+  window.appended = appended;
   return window;
 }
 
@@ -362,5 +392,91 @@ describe("claude shim", () => {
     const login = calls.find((c) => c.body && c.body.access_token === "portal-jwt");
     assert.ok(login);
     assert.equal(w.location.hash, "");
+  });
+
+  it("fails closed to the login gate when auth status cannot be loaded", async () => {
+    const w = fakeWindow();
+    w.fetch = () => Promise.reject(new Error("network"));
+    loadShim(w);
+    let resolved = false;
+    w.claude.use("db").then(() => {
+      resolved = true;
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(
+      w.appended.some((el) => el && el.id === "mp-shim-gate-host"),
+      true
+    );
+    assert.equal(resolved, false);
+  });
+
+  it("treats a failed builds list as empty so the banner stays hidden", async () => {
+    const w = fakeWindow();
+    w.fetch = (url, opts) => {
+      const body = opts && opts.body ? JSON.parse((opts && opts.body) || "{}") : {};
+      if (String(url).includes("/auth")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ authenticated: true, method: "open", open: true }),
+          text: async () => JSON.stringify({ authenticated: true, method: "open", open: true }),
+        });
+      }
+      if (body.op === "list" && body.collection === "builds") {
+        return Promise.resolve({
+          ok: false,
+          status: 400,
+          text: async () => JSON.stringify({ error: "Collection not allowed: builds" }),
+        });
+      }
+      return Promise.resolve({ ok: true, text: async () => JSON.stringify({ docs: [] }) });
+    };
+    loadShim(w);
+    const db = await w.claude.use("db");
+    const snap = await db.collection("builds").get();
+    assert.equal(snap.size, 0);
+    assert.equal(snap.empty, true);
+  });
+
+  it("sign out removes session chrome and replaces the page", async () => {
+    const w = fakeWindow();
+    const calls = [];
+    w.fetch = (url, opts) => {
+      const body = opts && opts.body ? JSON.parse((opts && opts.body) || "{}") : {};
+      calls.push({ url: String(url), body });
+      if (String(url).includes("/auth") && (!opts || opts.method === "GET")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ authenticated: true, method: "supabase", open: false }),
+          text: async () =>
+            JSON.stringify({ authenticated: true, method: "supabase", open: false }),
+        });
+      }
+      if (body.action === "logout") {
+        return Promise.resolve({
+          ok: true,
+          text: async () =>
+            JSON.stringify({ authenticated: false, methods: ["supabase"], open: false }),
+        });
+      }
+      return Promise.resolve({ ok: true, text: async () => "{}" });
+    };
+    loadShim(w);
+    await w.claude.use("db");
+    const chrome = w.appended.find((el) => el && el.id === "mp-shim-session-host");
+    assert.ok(chrome, "signed-in chrome must mount");
+    const btn = chrome.children.find((c) => c.textContent === "Sign out");
+    assert.ok(btn, "Sign out button");
+    btn.click();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.ok(calls.some((c) => c.body && c.body.action === "logout"));
+    assert.equal(w.replaced, "/");
+    assert.equal(w.appended.some((el) => el && el.id === "mp-shim-session-host"), false);
+  });
+
+  it("does not fail-open the yard in waitForAuth catch", () => {
+    const src = fs.readFileSync(path.join(__dirname, "../public/claude-shim.js"), "utf8");
+    assert.match(src, /return showLoginGate\(\["supabase"\]\)/);
+    assert.match(src, /location\.replace/);
+    assert.match(src, /removeSessionChrome/);
   });
 });

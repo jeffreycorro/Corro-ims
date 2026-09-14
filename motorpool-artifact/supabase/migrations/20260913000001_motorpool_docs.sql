@@ -20,7 +20,8 @@ values
   ('reserves'),
   ('fuel'),
   ('photos'),
-  ('config')
+  ('config'),
+  ('builds')
 on conflict (name) do nothing;
 
 create table if not exists public.motorpool_docs (

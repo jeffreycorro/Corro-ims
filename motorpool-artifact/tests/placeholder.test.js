@@ -45,6 +45,7 @@ describe("placeholder and host", () => {
     assert.match(readme, /publish directory is `public`/);
     assert.match(readme, /ANTHROPIC_API_KEY/);
     assert.match(readme, /ELEVENLABS_API_KEY/);
+    assert.match(readme, /`builds`/);
     assert.match(readme, /MOTORPOOL_OPEN_YARD/);
     assert.match(readme, /SUPABASE_AUTH_ENABLED/);
   });

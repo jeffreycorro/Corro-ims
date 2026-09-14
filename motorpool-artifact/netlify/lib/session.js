@@ -141,26 +141,43 @@ function cookieSecure(event) {
   return proto.split(",")[0].trim() === "https";
 }
 
+const COOKIE_EXPIRES_PAST = "Thu, 01 Jan 1970 00:00:00 GMT";
+
 function sessionCookie(token, event, { clear = false } = {}) {
   const secure = cookieSecure(event) ? "; Secure" : "";
   if (clear) {
-    return `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secure}`;
+    return `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0; Expires=${COOKIE_EXPIRES_PAST}${secure}`;
   }
   const maxAge = Math.floor(MAX_AGE_MS / 1000);
   return `${COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure}`;
 }
 
+function clearSessionCookies() {
+  const expired = `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0; Expires=${COOKIE_EXPIRES_PAST}`;
+  return [expired, `${expired}; Secure`];
+}
+
 function json(statusCode, body, extraHeaders = {}) {
-  return {
+  const extras = { ...extraHeaders };
+  const cookie = extras["set-cookie"];
+  delete extras["set-cookie"];
+  const headers = {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-store",
+    "x-robots-tag": "noindex, nofollow",
+    ...extras,
+  };
+  const result = {
     statusCode,
-    headers: {
-      "content-type": "application/json; charset=utf-8",
-      "cache-control": "no-store",
-      "x-robots-tag": "noindex, nofollow",
-      ...extraHeaders,
-    },
+    headers,
     body: JSON.stringify(body),
   };
+  if (cookie != null && cookie !== "") {
+    const list = Array.isArray(cookie) ? cookie : [cookie];
+    result.headers["set-cookie"] = list[list.length - 1];
+    result.multiValueHeaders = { "Set-Cookie": list };
+  }
+  return result;
 }
 
 function unauthorized(message = "Authentication required") {
@@ -181,8 +198,10 @@ function requireSession(event) {
 }
 
 module.exports = {
+  COOKIE_EXPIRES_PAST,
   COOKIE_NAME,
   MAX_AGE_MS,
+  clearSessionCookies,
   configuredMethods,
   cookieSecure,
   gateOptional,

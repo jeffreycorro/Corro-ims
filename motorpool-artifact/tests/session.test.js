@@ -8,7 +8,10 @@ const {
   parseCookieHeader,
   safeEqual,
   sessionSecret,
+  sessionCookie,
+  clearSessionCookies,
   COOKIE_NAME,
+  COOKIE_EXPIRES_PAST,
   MAX_AGE_MS,
 } = require("../netlify/lib/session");
 
@@ -47,6 +50,22 @@ describe("session", () => {
     const token = signSession({ sub: "user-1", method: "supabase" }, SECRET);
     const payload = verifySession(token, SECRET);
     assert.ok(payload.exp - Date.now() > 6 * 24 * 60 * 60 * 1000);
+  });
+
+  it("clears motorpool_session with the same attributes used when setting it", () => {
+    const httpsEvent = { headers: { "x-forwarded-proto": "https" } };
+    const cleared = sessionCookie("", httpsEvent, { clear: true });
+    assert.match(cleared, new RegExp(`^${COOKIE_NAME}=;`));
+    assert.match(cleared, /Path=\//);
+    assert.match(cleared, /HttpOnly/);
+    assert.match(cleared, /SameSite=Strict/);
+    assert.match(cleared, /Max-Age=0/);
+    assert.match(cleared, new RegExp(`Expires=${COOKIE_EXPIRES_PAST.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+    assert.match(cleared, /Secure/);
+    const twins = clearSessionCookies(httpsEvent);
+    assert.equal(twins.length, 2);
+    assert.ok(twins.some((c) => /Secure/.test(c)));
+    assert.ok(twins.some((c) => !/;\s*Secure(?:;|$)/.test(c)));
   });
 
   it("can sign cookies without treating MOTORPOOL_GATE_SECRET as a login password", () => {

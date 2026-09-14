@@ -8,6 +8,7 @@ const ALLOWED_COLLECTIONS = Object.freeze([
   "fuel",
   "photos",
   "config",
+  "builds",
 ]);
 
 const ALLOWED_SET = new Set(ALLOWED_COLLECTIONS);
@@ -32,6 +33,7 @@ function assertCollection(name) {
  *   fuel/purchases | fuel/withdrawals
  *   photos/<key>
  *   config/app | config/counter | config/rsvcounter
+ *   builds/<BUILD>   {build, seq}
  */
 function parsePath(path, maybeId) {
   if (path && typeof path === "object" && path.collection && path.id) {
