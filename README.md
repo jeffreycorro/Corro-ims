@@ -47,6 +47,7 @@ Use the **anon / public** key only in the Next.js app. Never put the service rol
 - Row Level Security: authenticated users can read their own profile; admins can manage all profiles
 - **Admin role** sees every department tile. Other roles see only their assigned department
 - The separate HR site (`corcondev-hr`) accepts the **same** email/password. Only `admin`, `hr` role, or department `hr` may enter that site. Other department accounts are signed in on this portal only.
+- The separate Motorpool site (`corcondev-motorpool`) accepts the **same** email/password. Only `admin` role or department `motorpool` may enter that site.
 - If a user can sign in but has no `profiles` row, the hub explains that an administrator must provision the account
 
 Apply the schema from `supabase/migrations/20260907000001_create_profiles.sql` in the Supabase SQL editor (or `supabase db push`).
@@ -75,7 +76,7 @@ Do not commit real emails or passwords. The first admin profile must be inserted
 | `/app/[department]` | Department home (`admin`, `technical`, `finance`, `procurement`, `motorpool`, `safety`, `site`, `hr`) |
 | `/settings` | Signed-in profile and change-password form |
 
-Department stubs show “module coming soon”. The **HR** workspace replaces that stub with a primary CTA to the live HR portal (`NEXT_PUBLIC_HR_PORTAL_URL`, default `https://corcondev-hr.netlify.app`). Staff use the same Supabase login; if they are already signed in here, the CTA hands off a short-lived access token in the URL hash so they should not need to type the password again. The **Motorpool** workspace deep-links to the live Motorpool portal (`NEXT_PUBLIC_MOTORPOOL_PORTAL_URL`, default `https://corcondev-motorpool.netlify.app`). Each department home still reserves a **Department Assistant — soon** slot.
+Department stubs show “module coming soon”. The **HR** workspace replaces that stub with a primary CTA to the live HR portal (`NEXT_PUBLIC_HR_PORTAL_URL`, default `https://corcondev-hr.netlify.app`). Staff use the same Supabase login; if they are already signed in here, the CTA hands off a short-lived access token in the URL hash so they should not need to type the password again. The **Motorpool** workspace does the same for the live Motorpool portal (`NEXT_PUBLIC_MOTORPOOL_PORTAL_URL`, default `https://corcondev-motorpool.netlify.app`). Each department home still reserves a **Department Assistant — soon** slot.
 
 ## Demo mode
 

@@ -2,10 +2,12 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { DepartmentIcon } from "@/components/department-icons";
 import { HrPortalLink } from "@/components/hr-portal-link";
+import { PortalHandoffLink } from "@/components/portal-handoff-link";
 import { requireUser } from "@/lib/auth";
 import {
   canAccessDepartment,
   canAccessHrPortal,
+  canAccessMotorpoolPortal,
   getDepartment,
   isDepartmentSlug,
 } from "@/lib/departments";
@@ -35,7 +37,9 @@ export default async function DepartmentPage({ params }: { params: Params }) {
   const allowed =
     slug === "hr"
       ? canAccessHrPortal(user.profile)
-      : canAccessDepartment(user.profile, slug);
+      : slug === "motorpool"
+        ? canAccessMotorpoolPortal(user.profile)
+        : canAccessDepartment(user.profile, slug);
 
   return (
     <main className="mx-auto w-full max-w-6xl px-5 py-10">
@@ -98,15 +102,20 @@ export default async function DepartmentPage({ params }: { params: Params }) {
                 </h2>
                 <p className="mt-2 max-w-2xl text-sm text-muted">
                   Yard boards and office VRF analytics live on the Motorpool portal — a separate
-                  site, not rebuilt inside this workspace. Open it to continue.
+                  site, not rebuilt inside this workspace. Use the same company portal email and
+                  password. There is no second Motorpool site password.
                 </p>
-                <a
+                <PortalHandoffLink
                   href={getMotorpoolPortalUrl()}
                   className="mt-5 inline-flex h-11 items-center justify-center rounded-md bg-navy-900 px-5 text-sm font-semibold text-white hover:bg-navy-800"
                 >
                   Open Motorpool Portal
-                </a>
-                <p className="mt-3 text-xs text-muted">Opens the live Motorpool site in this tab.</p>
+                </PortalHandoffLink>
+                <p className="mt-3 text-xs text-muted">
+                  Opens the live Motorpool site in this tab. If you are already signed in here, a
+                  short-lived session token is passed in the URL hash so you should not need to
+                  type your password again.
+                </p>
               </div>
             ) : (
               <div className="rounded-lg border border-dashed border-navy-200 bg-navy-50 px-5 py-6">

@@ -103,3 +103,11 @@ export function canAccessHrPortal(
   if (!profile) return false;
   return profile.role === "admin" || profile.role === "hr" || profile.department === "hr";
 }
+
+/** Full Motorpool artifact (corcondev-motorpool): admins or department motorpool. */
+export function canAccessMotorpoolPortal(
+  profile: { department: DepartmentSlug; role: Role } | null,
+): boolean {
+  if (!profile) return false;
+  return profile.role === "admin" || profile.department === "motorpool";
+}

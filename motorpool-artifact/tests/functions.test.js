@@ -16,7 +16,14 @@ describe("motorpool netlify functions", () => {
     env = { ...process.env };
     delete process.env.MOTORPOOL_GATE_SECRET;
     delete process.env.MOTORPOOL_GATE_PASSWORD;
+    delete process.env.MOTORPOOL_GATE_REQUIRED;
+    delete process.env.MOTORPOOL_OPEN_YARD;
+    delete process.env.MOTORPOOL_SESSION_SECRET;
     delete process.env.SUPABASE_AUTH_ENABLED;
+    delete process.env.SUPABASE_URL;
+    delete process.env.SUPABASE_ANON_KEY;
+    delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+    delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.ELEVENLABS_API_KEY;
     delete process.env.ELEVENLABS_VOICE_ID;
@@ -32,8 +39,30 @@ describe("motorpool netlify functions", () => {
     const body = JSON.parse(res.body);
     assert.equal(body.authenticated, true);
     assert.equal(body.open, true);
+    assert.deepEqual(body.methods, []);
     assert.equal(body.capabilities.sample, false);
     assert.equal(body.capabilities.tts, false);
+  });
+
+  it("closes the yard when Supabase Auth keys are configured", async () => {
+    process.env.SUPABASE_URL = "https://example.supabase.co";
+    process.env.SUPABASE_ANON_KEY = "anon-test";
+    const res = await authHandler({ httpMethod: "GET", headers: {} });
+    const body = JSON.parse(res.body);
+    assert.equal(body.authenticated, false);
+    assert.equal(body.open, false);
+    assert.deepEqual(body.methods, ["supabase"]);
+  });
+
+  it("reopens the yard with MOTORPOOL_OPEN_YARD even when Auth keys exist", async () => {
+    process.env.SUPABASE_URL = "https://example.supabase.co";
+    process.env.SUPABASE_ANON_KEY = "anon-test";
+    process.env.MOTORPOOL_OPEN_YARD = "true";
+    const res = await authHandler({ httpMethod: "GET", headers: {} });
+    const body = JSON.parse(res.body);
+    assert.equal(body.authenticated, true);
+    assert.equal(body.open, true);
+    assert.equal(body.method, "open");
   });
 
   it("advertises sample and tts when those keys are set", async () => {
@@ -45,7 +74,9 @@ describe("motorpool netlify functions", () => {
     assert.equal(body.capabilities.tts, true);
   });
 
-  it("rejects sample and tts without a session when the gate is on", async () => {
+  it("rejects sample and tts without a session when Auth is configured", async () => {
+    process.env.SUPABASE_URL = "https://example.supabase.co";
+    process.env.SUPABASE_ANON_KEY = "anon-test";
     process.env.MOTORPOOL_GATE_SECRET = SECRET;
     const sample = await sampleHandler({
       httpMethod: "POST",
@@ -62,6 +93,8 @@ describe("motorpool netlify functions", () => {
   });
 
   it("refuses sample and tts when keys are missing even with a session", async () => {
+    process.env.SUPABASE_URL = "https://example.supabase.co";
+    process.env.SUPABASE_ANON_KEY = "anon-test";
     process.env.MOTORPOOL_GATE_SECRET = SECRET;
     const token = signSession({ sub: "gate", method: "password" }, SECRET);
     const headers = { cookie: `${COOKIE_NAME}=${encodeURIComponent(token)}` };
@@ -82,6 +115,8 @@ describe("motorpool netlify functions", () => {
   });
 
   it("calls Anthropic with the session cookie and returns { text }", async () => {
+    process.env.SUPABASE_URL = "https://example.supabase.co";
+    process.env.SUPABASE_ANON_KEY = "anon-test";
     process.env.MOTORPOOL_GATE_SECRET = SECRET;
     process.env.ANTHROPIC_API_KEY = "sk-test";
     const token = signSession({ sub: "gate", method: "password" }, SECRET);
@@ -118,6 +153,8 @@ describe("motorpool netlify functions", () => {
   });
 
   it("calls ElevenLabs and returns audioBase64", async () => {
+    process.env.SUPABASE_URL = "https://example.supabase.co";
+    process.env.SUPABASE_ANON_KEY = "anon-test";
     process.env.MOTORPOOL_GATE_SECRET = SECRET;
     process.env.ELEVENLABS_API_KEY = "el-test";
     const token = signSession({ sub: "gate", method: "password" }, SECRET);

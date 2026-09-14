@@ -7,7 +7,9 @@ const {
   verifySession,
   parseCookieHeader,
   safeEqual,
+  sessionSecret,
   COOKIE_NAME,
+  MAX_AGE_MS,
 } = require("../netlify/lib/session");
 
 const SECRET = "unit-test-secret-key-32chars-min";
@@ -38,5 +40,30 @@ describe("session", () => {
   it("compares secrets without throwing on length mismatch", () => {
     assert.equal(safeEqual("abc", "abc"), true);
     assert.equal(safeEqual("abc", "ab"), false);
+  });
+
+  it("keeps a multi-day session so the PWA stays signed in", () => {
+    assert.ok(MAX_AGE_MS >= 7 * 24 * 60 * 60 * 1000);
+    const token = signSession({ sub: "user-1", method: "supabase" }, SECRET);
+    const payload = verifySession(token, SECRET);
+    assert.ok(payload.exp - Date.now() > 6 * 24 * 60 * 60 * 1000);
+  });
+
+  it("can sign cookies without treating MOTORPOOL_GATE_SECRET as a login password", () => {
+    const prevGate = process.env.MOTORPOOL_GATE_SECRET;
+    const prevRole = process.env.SUPABASE_SERVICE_ROLE;
+    delete process.env.MOTORPOOL_GATE_SECRET;
+    process.env.SUPABASE_SERVICE_ROLE = "service-role-for-hmac";
+    try {
+      const derived = sessionSecret();
+      assert.ok(derived);
+      const token = signSession({ sub: "user-1", method: "supabase" });
+      assert.equal(verifySession(token).sub, "user-1");
+    } finally {
+      if (prevGate == null) delete process.env.MOTORPOOL_GATE_SECRET;
+      else process.env.MOTORPOOL_GATE_SECRET = prevGate;
+      if (prevRole == null) delete process.env.SUPABASE_SERVICE_ROLE;
+      else process.env.SUPABASE_SERVICE_ROLE = prevRole;
+    }
   });
 });
