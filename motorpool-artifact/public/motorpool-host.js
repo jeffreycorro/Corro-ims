@@ -41,8 +41,20 @@
     return Boolean(mine && latest && mine !== latest);
   }
 
+  function bannerDisplayIsNone(banner) {
+    try {
+      return Boolean(banner && banner.style && banner.style.display === "none");
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function bannerAlreadyHidden(banner) {
+    return Boolean(banner && banner.hidden && bannerDisplayIsNone(banner));
+  }
+
   function forceHideBanner(banner) {
-    if (!banner) return;
+    if (!banner || bannerAlreadyHidden(banner)) return false;
     banner.hidden = true;
     try {
       if (banner.setAttribute) banner.setAttribute("hidden", "");
@@ -50,27 +62,36 @@
         banner.style.setProperty("display", "none", "important");
       }
     } catch (e) {}
+    return true;
   }
 
+  var applyingBanner = false;
+
   function hideEmptyBuildBanner(root) {
+    if (applyingBanner) return false;
     root = root || (typeof document !== "undefined" ? document : null);
     if (!root || !root.getElementById) return false;
     var banner = root.getElementById("buildBanner");
     if (!banner) return false;
-    var mineEl = root.getElementById("buildMine");
-    var latestEl = root.getElementById("buildLatest");
-    var mine = mineEl ? String(mineEl.textContent || "").trim() : "";
-    var latest = latestEl ? String(latestEl.textContent || "").trim() : "";
-    if (!shouldShowBuildBanner(mine, latest)) {
-      forceHideBanner(banner);
-      return true;
-    }
+    applyingBanner = true;
     try {
-      if (banner.style && banner.style.removeProperty) {
-        banner.style.removeProperty("display");
+      var mineEl = root.getElementById("buildMine");
+      var latestEl = root.getElementById("buildLatest");
+      var mine = mineEl ? String(mineEl.textContent || "").trim() : "";
+      var latest = latestEl ? String(latestEl.textContent || "").trim() : "";
+      if (!shouldShowBuildBanner(mine, latest)) {
+        forceHideBanner(banner);
+        return true;
       }
-    } catch (e) {}
-    return false;
+      try {
+        if (banner.style && banner.style.display === "none" && banner.style.removeProperty) {
+          banner.style.removeProperty("display");
+        }
+      } catch (e) {}
+      return false;
+    } finally {
+      applyingBanner = false;
+    }
   }
 
   function injectBuildBannerStyle(root) {
@@ -125,19 +146,20 @@
     if (!root) return;
     injectBuildBannerStyle(root);
     hideEmptyBuildBanner(root);
+    // Watch the version labels only. Observing #buildBanner attributes/style
+    // and then writing display/hidden in the callback is a MutationObserver
+    // feedback loop — Chrome shows Page Unresponsive with the yard half-painted.
     try {
       if (typeof MutationObserver === "function") {
-        var banner = root.getElementById && root.getElementById("buildBanner");
-        var target = banner || root.documentElement || root.body;
-        if (target) {
+        var mineEl = root.getElementById && root.getElementById("buildMine");
+        var latestEl = root.getElementById && root.getElementById("buildLatest");
+        var targets = [mineEl, latestEl].filter(Boolean);
+        if (targets.length) {
           var obs = new MutationObserver(function () {
             hideEmptyBuildBanner(root);
           });
-          obs.observe(target, {
-            attributes: true,
-            childList: true,
-            subtree: true,
-            characterData: true,
+          targets.forEach(function (el) {
+            obs.observe(el, { childList: true, characterData: true, subtree: true });
           });
         }
       }
@@ -158,6 +180,7 @@
     buildDocId: buildDocId,
     shouldShowBuildBanner: shouldShowBuildBanner,
     hideEmptyBuildBanner: hideEmptyBuildBanner,
+    bannerAlreadyHidden: bannerAlreadyHidden,
     injectBuildBannerStyle: injectBuildBannerStyle,
     registerCurrentBuild: registerCurrentBuild,
   };
@@ -177,7 +200,24 @@
 
   function bootHost() {
     watchBuildBanner();
-    registerCurrentBuild();
+    // Do not contend with yard boot / ledger load on the first turn.
+    var later = null;
+    if (typeof requestIdleCallback === "function") {
+      later = function (fn) {
+        requestIdleCallback(fn, { timeout: 2500 });
+      };
+    } else if (typeof setTimeout === "function") {
+      later = function (fn) {
+        setTimeout(fn, 0);
+      };
+    }
+    if (later) {
+      later(function () {
+        registerCurrentBuild();
+      });
+    } else {
+      registerCurrentBuild();
+    }
   }
 
   if (typeof document === "undefined") return;

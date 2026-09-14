@@ -478,5 +478,37 @@ describe("claude shim", () => {
     assert.match(src, /return showLoginGate\(\["supabase"\]\)/);
     assert.match(src, /location\.replace/);
     assert.match(src, /removeSessionChrome/);
+    assert.match(src, /extra\._authRetry/);
+  });
+
+  it("retries a 401 once and does not recurse when auth stays accepted", async () => {
+    const w = fakeWindow();
+    let authGets = 0;
+    let dbCalls = 0;
+    w.fetch = (url, opts) => {
+      if (String(url).includes("/auth") && (!opts || opts.method === "GET")) {
+        authGets += 1;
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ authenticated: true, method: "supabase", open: false }),
+          text: async () =>
+            JSON.stringify({ authenticated: true, method: "supabase", open: false }),
+        });
+      }
+      if (String(url).includes("/db")) {
+        dbCalls += 1;
+        return Promise.resolve({
+          ok: false,
+          status: 401,
+          text: async () => JSON.stringify({ error: "unauthorized" }),
+        });
+      }
+      return Promise.resolve({ ok: true, text: async () => "{}" });
+    };
+    loadShim(w);
+    const db = await w.claude.use("db");
+    await assert.rejects(() => db.doc("config/app").get(), /unauthorized|failed/);
+    assert.equal(dbCalls, 2);
+    assert.ok(authGets <= 3);
   });
 });

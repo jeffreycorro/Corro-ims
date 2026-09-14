@@ -345,9 +345,13 @@
         throw err;
       }
       return api(fn, body, extra).catch(function (err) {
-        if (err.status === 401) {
+        // One re-auth only. A 401 after waitForAuth must not recurse
+        // (GET /auth still "authenticated" + db 401 used to retry forever).
+        if (err.status === 401 && !extra._authRetry) {
+          extra._authRetry = true;
           authReady = null;
-          return waitForAuth().then(function () {
+          return waitForAuth().then(function (next) {
+            if (next && next.offline) throw err;
             return api(fn, body, extra);
           });
         }

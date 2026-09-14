@@ -53,6 +53,8 @@ function hostWindow(html) {
     print() {},
     setInterval,
     clearInterval,
+    setTimeout,
+    clearTimeout,
   };
   window.window = window;
   window.banner = banner;
@@ -111,6 +113,49 @@ describe("motorpool host companion", () => {
     assert.match(html, /var mine=String\(BUILD\|\|""\)\.trim\(\)/);
     assert.match(html, /mine&&latest&&latest!==mine/);
     assert.match(html, /function hide\(\)/);
+    assert.match(html, /setTimeout\(checkBuild, 0\)/);
+    assert.match(html, /Keep the VRF index across chrome re-renders/);
+  });
+
+  it("does not keep writing banner style once the banner is already hidden", () => {
+    const w = hostWindow();
+    const host = loadHost(w);
+    w.banner.hidden = false;
+    w.banner.style.display = "flex";
+    let writes = 0;
+    const orig = w.banner.style.setProperty;
+    w.banner.style.setProperty = function (name, value, prio) {
+      writes += 1;
+      this[name] = value;
+      return orig.call(this, name, value, prio);
+    };
+    assert.equal(host.hideEmptyBuildBanner(w.document), true);
+    const afterFirst = writes;
+    assert.ok(afterFirst >= 1);
+    assert.equal(host.bannerAlreadyHidden(w.banner), true);
+    host.hideEmptyBuildBanner(w.document);
+    host.hideEmptyBuildBanner(w.document);
+    assert.equal(writes, afterFirst);
+  });
+
+  it("banner hide is safe under attribute MutationObserver re-delivery", () => {
+    const w = hostWindow();
+    const host = loadHost(w);
+    let deliveries = 0;
+    w.banner.hidden = false;
+    w.banner.style.display = "";
+    const orig = w.banner.style.setProperty;
+    w.banner.style.setProperty = function (name, value, prio) {
+      this[name] = value;
+      if (orig) orig.call(this, name, value, prio);
+      if (deliveries < 100) {
+        deliveries += 1;
+        host.hideEmptyBuildBanner(w.document);
+      }
+    };
+    host.hideEmptyBuildBanner(w.document);
+    assert.ok(deliveries < 5, "must not re-enter on every style write");
+    assert.equal(w.banner.hidden, true);
   });
 
   it("registers the current BUILD once when the doc is missing", async () => {
