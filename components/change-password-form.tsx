@@ -12,7 +12,7 @@ const initialState: ChangePasswordState = {
 };
 
 const fieldClassName =
-  "h-11 w-full rounded-md border border-navy-200 bg-white px-3 text-navy-900 outline-none ring-amber-400 focus:ring-2 disabled:bg-navy-50 disabled:text-navy-600";
+  "h-12 w-full rounded-md border border-navy-200 bg-white px-3 text-base text-navy-900 outline-none ring-amber-400 focus:ring-2 disabled:bg-navy-50 disabled:text-navy-600";
 
 export function ChangePasswordForm({ isDemo }: { isDemo: boolean }) {
   const [state, formAction] = useActionState(changePasswordAction, initialState);
@@ -89,7 +89,7 @@ export function ChangePasswordForm({ isDemo }: { isDemo: boolean }) {
       <SubmitButton
         pendingLabel="Updating password…"
         disabled={isDemo}
-        className="inline-flex h-11 items-center justify-center rounded-md bg-navy-900 px-5 text-sm font-semibold text-white hover:bg-navy-800 disabled:opacity-60"
+        className="inline-flex h-12 w-full items-center justify-center rounded-md bg-navy-900 px-5 text-sm font-semibold text-white hover:bg-navy-800 disabled:opacity-60 sm:w-auto"
       >
         Update password
       </SubmitButton>

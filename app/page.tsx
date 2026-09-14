@@ -71,7 +71,7 @@ export default async function LandingPage() {
                     <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-navy-950 text-amber-400">
                       <DepartmentIcon slug={department.slug} className="h-5 w-5" />
                     </span>
-                    <span>
+                    <span className="min-w-0">
                       <span className="block text-sm font-semibold">{department.name}</span>
                       <span className="block text-[11px] leading-snug text-navy-300">
                         {department.slug === "hr" ? "201 File next" : "Workspace"}

@@ -1,5 +1,6 @@
 /**
  * CorConDev Motorpool PWA bootstrap. Load after /claude-shim.js.
+ * Extends the existing viewport meta and adds iOS standalone tags.
  */
 (function () {
   "use strict";
@@ -53,6 +54,76 @@
     el.setAttribute("content", content);
   }
 
+  function syncView() {
+    var btn = document.querySelector('.nav button[aria-current="true"]');
+    var text = btn ? btn.textContent || "" : "";
+    var view = /ask the log/i.test(text) ? "ask" : "other";
+    if (document.documentElement.getAttribute("data-mp-view") !== view) {
+      document.documentElement.setAttribute("data-mp-view", view);
+    }
+  }
+
+  function watchView() {
+    if (!document.documentElement || typeof MutationObserver !== "function") {
+      syncView();
+      return;
+    }
+    var observer = new MutationObserver(syncView);
+    observer.observe(document.documentElement, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ["aria-current"],
+    });
+    syncView();
+  }
+
+  function isStandalone() {
+    try {
+      if (window.navigator && window.navigator.standalone) return true;
+      return !!(window.matchMedia && window.matchMedia("(display-mode: standalone)").matches);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function isIosSafari() {
+    try {
+      var ua = navigator.userAgent || "";
+      var iOS =
+        /iPhone|iPad|iPod/.test(ua) ||
+        (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+      if (!iOS) return false;
+      return !/CriOS|FxiOS|EdgiOS|OPiOS/.test(ua);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function showInstallTip() {
+    try {
+      if (isStandalone()) return;
+      if (!isIosSafari()) return;
+      if (window.localStorage && localStorage.getItem("mp-a2hs-dismissed") === "1") return;
+      if (document.getElementById("mp-a2hs")) return;
+      var tip = document.createElement("div");
+      tip.id = "mp-a2hs";
+      tip.className = "mp-a2hs";
+      tip.setAttribute("role", "note");
+      tip.innerHTML =
+        "<p><strong>Add to Home Screen</strong>Safari → Share → Add to Home Screen. Opens as a full-screen Motorpool app.</p>" +
+        '<button type="button" aria-label="Dismiss">×</button>';
+      var btn = tip.querySelector("button");
+      btn.addEventListener("click", function () {
+        try {
+          localStorage.setItem("mp-a2hs-dismissed", "1");
+        } catch (e) {}
+        tip.remove();
+      });
+      (document.body || document.documentElement).appendChild(tip);
+    } catch (e) {}
+  }
+
   function boot() {
     if (!document.head) return;
     patchViewport();
@@ -61,7 +132,9 @@
     });
     ensureLink("manifest", "/manifest.json");
     ensureLink("icon", "/favicon.svg", { type: "image/svg+xml" });
-    ensureLink("apple-touch-icon", "/favicon.svg");
+    ensureLink("apple-touch-icon", "/apple-touch-icon.png", { sizes: "180x180" });
+    watchView();
+    showInstallTip();
   }
 
   if (document.head) boot();

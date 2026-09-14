@@ -69,7 +69,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Search
                     name="email"
                     autoComplete="username"
                     required
-                    className="h-11 w-full rounded-md border border-navy-200 bg-white px-3 text-base text-navy-900 outline-none ring-amber-400 focus:ring-2"
+                    className="h-12 w-full rounded-md border border-navy-200 bg-white px-3 text-base text-navy-900 outline-none ring-amber-400 focus:ring-2"
                   />
                 </label>
                 <label className="block">
@@ -79,7 +79,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Search
                     name="password"
                     autoComplete="current-password"
                     required
-                    className="h-11 w-full rounded-md border border-navy-200 bg-white px-3 text-base text-navy-900 outline-none ring-amber-400 focus:ring-2"
+                    className="h-12 w-full rounded-md border border-navy-200 bg-white px-3 text-base text-navy-900 outline-none ring-amber-400 focus:ring-2"
                   />
                 </label>
               </>
@@ -90,7 +90,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Search
                   <select
                     name="role"
                     defaultValue="admin"
-                    className="h-11 w-full rounded-md border border-navy-200 bg-white px-3 text-base text-navy-900 outline-none ring-amber-400 focus:ring-2"
+                    className="h-12 w-full rounded-md border border-navy-200 bg-white px-3 text-base text-navy-900 outline-none ring-amber-400 focus:ring-2"
                   >
                     {ROLES.map((role) => (
                       <option key={role} value={role}>
@@ -106,7 +106,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Search
                   <select
                     name="department"
                     defaultValue="admin"
-                    className="h-11 w-full rounded-md border border-navy-200 bg-white px-3 text-base text-navy-900 outline-none ring-amber-400 focus:ring-2"
+                    className="h-12 w-full rounded-md border border-navy-200 bg-white px-3 text-base text-navy-900 outline-none ring-amber-400 focus:ring-2"
                   >
                     {DEPARTMENTS.map((department) => (
                       <option key={department.slug} value={department.slug}>

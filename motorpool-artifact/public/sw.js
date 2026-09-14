@@ -1,6 +1,14 @@
 /* Minimal Motorpool PWA shell. Never cache HTML, the shim, app JS, or functions. */
-var CACHE = "corcondev-motorpool-shell-v1";
-var SHELL = ["/manifest.json", "/favicon.svg", "/pwa.css"];
+var CACHE = "corcondev-motorpool-shell-v2";
+var SHELL = [
+  "/manifest.json",
+  "/favicon.svg",
+  "/apple-touch-icon.png",
+  "/icon-192.png",
+  "/icon-512.png",
+  "/icon-512-maskable.png",
+  "/pwa.css",
+];
 
 self.addEventListener("install", function (event) {
   event.waitUntil(

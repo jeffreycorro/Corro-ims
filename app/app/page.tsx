@@ -2,7 +2,12 @@ import Link from "next/link";
 import { DepartmentIcon } from "@/components/department-icons";
 import { requireUser } from "@/lib/auth";
 import { formatManilaDate } from "@/lib/dates";
-import { canAccessDepartment, DEPARTMENTS } from "@/lib/departments";
+import {
+  canAccessDepartment,
+  canAccessHrPortal,
+  canAccessMotorpoolPortal,
+  DEPARTMENTS,
+} from "@/lib/departments";
 
 export const metadata = {
   title: "Department hub",
@@ -11,9 +16,11 @@ export const metadata = {
 export default async function HubPage() {
   const user = await requireUser();
   const isAdmin = user.profile?.role === "admin";
+  const showMotorpoolAssistant = canAccessMotorpoolPortal(user.profile);
+  const showHrAssistant = canAccessHrPortal(user.profile);
 
   return (
-    <main className="mx-auto w-full max-w-6xl px-5 py-10 pb-[max(2.5rem,env(safe-area-inset-bottom))]">
+    <main className="mx-auto w-full max-w-6xl px-5 py-8 pb-[max(2.5rem,env(safe-area-inset-bottom))] sm:py-10">
       <div className="mb-8 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="text-xs font-semibold tracking-[0.22em] text-amber-500">PORTAL</p>
@@ -38,6 +45,46 @@ export default async function HubPage() {
         </div>
       ) : null}
 
+      {showMotorpoolAssistant || showHrAssistant ? (
+        <section className="mb-8">
+          <p className="text-xs font-semibold tracking-[0.18em] text-amber-600">ASSISTANTS</p>
+          <ul className="mt-3 grid gap-3 sm:grid-cols-2">
+            {showMotorpoolAssistant ? (
+              <li>
+                <Link
+                  href="/app/motorpool"
+                  className="flex min-h-16 items-center gap-3 rounded-xl border border-navy-100 bg-white px-4 py-3 shadow-sm hover:border-amber-400"
+                >
+                  <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-navy-50 text-navy-900">
+                    <DepartmentIcon slug="motorpool" />
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block font-semibold text-navy-950">Ask the Log</span>
+                    <span className="block text-sm text-muted">Motorpool yard assistant</span>
+                  </span>
+                </Link>
+              </li>
+            ) : null}
+            {showHrAssistant ? (
+              <li>
+                <Link
+                  href="/app/hr"
+                  className="flex min-h-16 items-center gap-3 rounded-xl border border-navy-100 bg-white px-4 py-3 shadow-sm hover:border-amber-400"
+                >
+                  <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-navy-50 text-navy-900">
+                    <DepartmentIcon slug="hr" />
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block font-semibold text-navy-950">Ask the records</span>
+                    <span className="block text-sm text-muted">HR 201 File assistant</span>
+                  </span>
+                </Link>
+              </li>
+            ) : null}
+          </ul>
+        </section>
+      ) : null}
+
       <ul className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {DEPARTMENTS.map((department) => {
           const allowed = canAccessDepartment(user.profile, department.slug);
@@ -54,14 +101,16 @@ export default async function HubPage() {
                 {department.summary}
               </span>
               <span
-                className={`mt-5 block text-xs font-semibold tracking-[0.16em] ${
+                className={`mt-5 inline-flex min-h-11 items-center text-xs font-semibold tracking-[0.16em] ${
                   allowed ? "text-amber-600" : "text-navy-600"
                 }`}
               >
                 {allowed
                   ? department.slug === "hr"
                     ? "OPEN 201 FILE REGISTER"
-                    : "OPEN WORKSPACE"
+                    : department.slug === "motorpool"
+                      ? "OPEN YARD + ASK THE LOG"
+                      : "OPEN WORKSPACE"
                   : "NO ACCESS"}
               </span>
             </>

@@ -42,7 +42,7 @@ export default async function DepartmentPage({ params }: { params: Params }) {
         : canAccessDepartment(user.profile, slug);
 
   return (
-    <main className="mx-auto w-full max-w-6xl px-5 py-10">
+    <main className="mx-auto w-full max-w-6xl px-5 py-8 pb-[max(2.5rem,env(safe-area-inset-bottom))] sm:py-10">
       <p className="mb-4 text-sm">
         <Link
           href="/app"
@@ -78,13 +78,13 @@ export default async function DepartmentPage({ params }: { params: Params }) {
                   HR 201 File Register
                 </h2>
                 <p className="mt-2 max-w-2xl text-sm text-muted">
-                  People operations and 201 files live on the HR portal — a separate site, not
-                  rebuilt inside this workspace. Use the same company portal email and password.
-                  There is no second HR site password.
+                  People operations, 201 files, and Ask the records live on the HR portal — a
+                  separate site, not rebuilt inside this workspace. Use the same company portal
+                  email and password. There is no second HR site password.
                 </p>
                 <HrPortalLink
                   href={getHrPortalUrl()}
-                  className="mt-5 inline-flex h-11 items-center justify-center rounded-md bg-navy-900 px-5 text-sm font-semibold text-white hover:bg-navy-800"
+                  className="mt-5 inline-flex h-12 w-full items-center justify-center rounded-md bg-navy-900 px-5 text-sm font-semibold text-white hover:bg-navy-800 sm:w-auto"
                 >
                   Open HR 201 File Register
                 </HrPortalLink>
@@ -101,13 +101,13 @@ export default async function DepartmentPage({ params }: { params: Params }) {
                   Motorpool Portal
                 </h2>
                 <p className="mt-2 max-w-2xl text-sm text-muted">
-                  Yard boards and office VRF analytics live on the Motorpool portal — a separate
-                  site, not rebuilt inside this workspace. Use the same company portal email and
-                  password. There is no second Motorpool site password.
+                  Yard boards, office VRF analytics, and Ask the Log live on the Motorpool
+                  portal — a separate site, not rebuilt inside this workspace. Use the same
+                  company portal email and password. There is no second Motorpool site password.
                 </p>
                 <PortalHandoffLink
                   href={getMotorpoolPortalUrl()}
-                  className="mt-5 inline-flex h-11 items-center justify-center rounded-md bg-navy-900 px-5 text-sm font-semibold text-white hover:bg-navy-800"
+                  className="mt-5 inline-flex h-12 w-full items-center justify-center rounded-md bg-navy-900 px-5 text-sm font-semibold text-white hover:bg-navy-800 sm:w-auto"
                 >
                   Open Motorpool Portal
                 </PortalHandoffLink>

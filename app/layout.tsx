@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Source_Sans_3, Source_Serif_4 } from "next/font/google";
 import { DemoBanner } from "@/components/demo-banner";
+import { IosInstallTip } from "@/components/ios-install-tip";
 import { PwaRegister } from "@/components/pwa-register";
 import "./globals.css";
 
@@ -59,6 +60,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className={`${sourceSans.variable} ${sourceSerif.variable} font-sans antialiased`}>
         <DemoBanner />
         {children}
+        <IosInstallTip />
         <PwaRegister />
       </body>
     </html>

@@ -44,7 +44,7 @@ Inside `<head>` of that real `index.html`, **before any other scripts**, keep:
 <script src="/claude-shim.js"></script>
 <link rel="manifest" href="/manifest.json">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<link rel="apple-touch-icon" href="/favicon.svg">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="stylesheet" href="/pwa.css">
 <script src="/pwa.js"></script>
 ```
@@ -236,6 +236,9 @@ Add from **Safari** only.
 2. Sign in with the company portal email and password (or accept the portal handoff).
 3. Tap **Share** → **Add to Home Screen**.
 4. Keep the name **Motorpool** and tap **Add**.
+5. Open the icon. It should launch full-screen with the teal “C” icon.
+
+If the icon is missing or the page still shows Safari chrome, delete the Home Screen icon, confirm you used Safari, and add it again.
 
 The optional service worker caches icons and `pwa.css` only. It does **not** cache `index.html`, `claude-shim.js`, `motorpool-host.js`, `motorpool-tts.js`, or `/.netlify/functions/*`.
 
@@ -247,8 +250,14 @@ motorpool-artifact/
   public/index.html          ← Claude export + shim tags (the app)
   public/claude-shim.js
   public/motorpool-host.js   ← blocks prompt/confirm/alert/print
-  public/pwa.js
-  public/pwa.css
+  public/pwa.js              ← apple / manifest tags + viewport-fit + Home Screen tip
+  public/pwa.css             ← mobile / safe-area overlay
+  public/manifest.json
+  public/sw.js               ← icon/CSS shell only
+  public/apple-touch-icon.png
+  public/icon-192.png
+  public/icon-512.png
+  public/icon-512-maskable.png
   public/motorpool-tts.js    ← ElevenLabs readback (loaded by the shim)
   netlify/functions/         ← auth, db, office, sample, tts
   netlify/lib/               ← session, mp-access, capabilities, Anthropic, ElevenLabs
