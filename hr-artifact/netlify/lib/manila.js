@@ -20,6 +20,12 @@ function manilaParts(date = new Date()) {
   return parts;
 }
 
+/** Calendar date in Asia/Manila, e.g. 2026-09-14 */
+function formatManilaDate(date = new Date()) {
+  const p = manilaParts(date);
+  return `${p.year}-${p.month}-${p.day}`;
+}
+
 /** ISO-like local timestamp in Asia/Manila, e.g. 2026-09-07T16:00:00+08:00 */
 function formatManilaIso(date = new Date()) {
   const p = manilaParts(date);
@@ -28,6 +34,7 @@ function formatManilaIso(date = new Date()) {
 
 module.exports = {
   MANILA,
+  formatManilaDate,
   formatManilaIso,
   manilaParts,
 };

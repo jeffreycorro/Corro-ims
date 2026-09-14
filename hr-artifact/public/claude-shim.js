@@ -838,6 +838,7 @@
     loadCompanion("/hr-attendance.js", "data-hr-attendance");
     loadCompanion("/hr-payroll.js", "data-hr-payroll");
     loadCompanion("/hr-tts.js", "data-hr-tts");
+    loadCompanion("/hr-recruit.js", "data-hr-recruit");
   }
 
   var apiObj = {

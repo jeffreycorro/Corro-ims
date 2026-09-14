@@ -24,6 +24,7 @@ describe("placeholder and privacy", () => {
     assert.doesNotMatch(html, /hr-attendance\.js/);
     assert.doesNotMatch(html, /hr-payroll\.js/);
     assert.doesNotMatch(html, /hr-tts\.js/);
+    assert.doesNotMatch(html, /hr-recruit\.js/);
     const shim = fs.readFileSync(
       path.join(__dirname, "../public/claude-shim.js"),
       "utf8"
@@ -31,6 +32,7 @@ describe("placeholder and privacy", () => {
     assert.match(shim, /hr-attendance\.js/);
     assert.match(shim, /hr-payroll\.js/);
     assert.match(shim, /hr-tts\.js/);
+    assert.match(shim, /hr-recruit\.js/);
     const hostFiles = [
       "../public/claude-shim.js",
       "../.env.example",
@@ -57,6 +59,8 @@ describe("placeholder and privacy", () => {
     assert.match(readme, /hr-attendance\.js/);
     assert.match(readme, /hr-payroll\.js/);
     assert.match(readme, /hr-tts\.js/);
+    assert.match(readme, /hr-recruit\.js/);
+    assert.match(readme, /HR_APPLICANTS_INGEST_KEY/);
     assert.match(readme, /ELEVENLABS_API_KEY/);
     assert.match(readme, /same Supabase email \+ password/);
     assert.match(readme, /HR_GATE_REQUIRED/);
