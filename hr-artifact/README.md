@@ -22,7 +22,7 @@ Inside `<head>` of that real `index.html`, **before any other scripts**, add:
 <script src="/pwa.js"></script>
 ```
 
-`window.claude.use(name)` is implemented by `public/claude-shim.js` and must load first. Do not rewrite the rest of the artifact. `pwa.js` / `pwa.css` only add iOS Home Screen tags and a scoped mobile overlay. The shim then loads `hr-dictation.js` (hold-to-talk when `OPENAI_API_KEY` is set), `hr-memo.js` (issued / on-paper memoranda open as saved records, not blank drafts), `hr-attendance.js` (manpower tally leave rule, JSON paste/import door, per-person summary, Present/Late Time In and Undertime Time Out), `hr-payroll.js` (Payroll Maker period attendance, +30% / +100% / as-is holiday premium, contributions, holiday calendar, Daily Manpower Hol/OT + change history), and `hr-tts.js` (ElevenLabs readback for Ask the records and memo text when `ELEVENLABS_API_KEY` is set). Do not rewrite the artifact to add mic buttons, memo chrome, a second attendance system, a parallel payroll app, or a second voice UI.
+`window.claude.use(name)` is implemented by `public/claude-shim.js` and must load first. Do not rewrite the rest of the artifact. `pwa.js` / `pwa.css` only add iOS Home Screen tags and a scoped mobile overlay. The shim then loads `hr-dictation.js` (hold-to-talk when `OPENAI_API_KEY` is set), `hr-memo.js` (issued / on-paper memoranda open as saved records, not blank drafts), `hr-attendance.js` (manpower tally leave rule, JSON paste/import door, per-person summary, Present/Late Time In and Undertime Time Out), `hr-payroll.js` (Payroll Maker period attendance, +30% / +100% / as-is holiday premium, contributions, holiday calendar, Daily Manpower Hol/OT + change history), `hr-tts.js` (ElevenLabs readback for Ask the records and memo text when `ELEVENLABS_API_KEY` is set), and `hr-recruit.js` (Recruitment → Pipeline “Bulk import JSON”). Do not rewrite the artifact to add mic buttons, memo chrome, a second attendance system, a parallel payroll app, a second voice UI, or a second recruitment editor.
 
 ### 3. Apply the SQL migration
 
@@ -74,16 +74,20 @@ Site settings → Environment variables:
 | `ELEVENLABS_API_KEY` | Functions **only** | Enables Ask the records / memo readback (`claude.use("tts")`). Never put this in the shim or `index.html`. |
 | `ELEVENLABS_VOICE_ID` | Functions, optional | Override the default ElevenLabs voice. |
 | `ELEVENLABS_MODEL_ID` | Functions, optional | Override the TTS model (default `eleven_multilingual_v2`). |
+| `HR_APPLICANTS_INGEST_KEY` | Functions **only** | Shared secret for `POST /.netlify/functions/applicants-ingest` (GoDaddy extractor). Staff already signed in can use the session cookie instead. Generate with `openssl rand -hex 32`. Never commit the value. |
 
-Copy `.env.example`. Data, AI, Drive, and voice functions **refuse** requests without a valid session cookie (issued after Supabase Auth). Do not rely on a front-end-only password check.
+Copy `.env.example`. Data, AI, Drive, and voice functions **refuse** requests without a valid session cookie (issued after Supabase Auth). The applicants ingest function also accepts `X-HR-Ingest-Key` / `Authorization: Bearer` when `HR_APPLICANTS_INGEST_KEY` is set. Do not rely on a front-end-only password check. Do not invent a default ingest key in code.
 
 **How to set env on Netlify (HR site `corcondev-hr`):**
 
 1. Site configuration → Environment variables.
 2. Add `ANTHROPIC_API_KEY` (Ask the records / memo draft) and `ELEVENLABS_API_KEY` (read-aloud). Optional: `ELEVENLABS_VOICE_ID`.
-3. Scope them to **Production**. Never commit real keys.
-4. Trigger a **redeploy** after changing keys so functions reload the env.
-5. Confirm `GET /.netlify/functions/auth` (while signed in) shows `capabilities.sample: true` and `capabilities.tts: true`.
+3. For the GoDaddy extractor, add `HR_APPLICANTS_INGEST_KEY` (long random string). Give that value to Jeffrey out of band — not git.
+4. Scope them to **Production**. Never commit real keys.
+5. Trigger a **redeploy** after changing keys so functions reload the env.
+6. Confirm `GET /.netlify/functions/auth` (while signed in) shows `capabilities.sample: true` and `capabilities.tts: true`.
+
+Extractor contract (URL, headers, field map, seed roles `ro01`–`ro10`): `docs/applicants-ingest.md`.
 
 **One staff password.** HR uses the same Supabase email + password as [https://corcondev-portal.netlify.app](https://corcondev-portal.netlify.app). There is no separate HR site password in the default flow. After login, an httpOnly cookie keeps the PWA signed in (7 days, or until Sign out).
 
@@ -101,7 +105,7 @@ Without `ANTHROPIC_API_KEY` the shim still resolves `sample` to `null` and the m
 
 ### 6. Access control
 
-**App-level login (required):** `/.netlify/functions/auth` accepts the company-portal Supabase email/password, or a short-lived `access_token` from the portal HR deeplink (URL hash only). It then checks `profiles` and issues an httpOnly cookie. `/.netlify/functions/db`, `sample`, `drive`, `transcribe`, and `tts` return 401 without that cookie. The service role key, Anthropic key, OpenAI key, ElevenLabs key, and service-account JSON never leave Netlify Functions.
+**App-level login (required):** `/.netlify/functions/auth` accepts the company-portal Supabase email/password, or a short-lived `access_token` from the portal HR deeplink (URL hash only). It then checks `profiles` and issues an httpOnly cookie. `/.netlify/functions/db`, `sample`, `drive`, `transcribe`, and `tts` return 401 without that cookie. `/.netlify/functions/applicants-ingest` accepts that cookie **or** `HR_APPLICANTS_INGEST_KEY`. The service role key, Anthropic key, OpenAI key, ElevenLabs key, ingest key, and service-account JSON never leave Netlify Functions.
 
 **Portal handoff (`/app/hr`):** The company portal is a different Netlify host, so the Supabase cookie is not shared. If the staff member is already signed in on the portal, the HR CTA reads the browser session and navigates to `https://corcondev-hr.netlify.app/#access_token=…`. The hash is not sent to Netlify request logs. The shim posts that JWT to `auth`, then `history.replaceState` strips the hash. If handoff fails, the same email + password form works — there is no second gate password.
 
@@ -185,7 +189,7 @@ This HR site is a Progressive Web App. Add it from **Safari** only.
 
 If a Netlify visitor password is also enabled, Safari may prompt for that before the in-app login. Avoid that extra prompt for staff; the in-app form is the real door.
 
-The optional service worker caches icons and `pwa.css` only. It does **not** cache `index.html`, `claude-shim.js`, `hr-dictation.js`, `hr-memo.js`, `hr-attendance.js`, `hr-payroll.js`, `hr-tts.js`, or `/.netlify/functions/*`, so auth, db, sample, Drive, dictation, memo chrome, attendance import, payroll, and voice stay on the network.
+The optional service worker caches icons and `pwa.css` only. It does **not** cache `index.html`, `claude-shim.js`, `hr-dictation.js`, `hr-memo.js`, `hr-attendance.js`, `hr-payroll.js`, `hr-tts.js`, `hr-recruit.js`, or `/.netlify/functions/*`, so auth, db, sample, Drive, dictation, memo chrome, attendance import, payroll, voice, and applicant ingest stay on the network.
 
 ## Files
 
@@ -199,6 +203,7 @@ hr-artifact/
   public/hr-attendance.js    ← manpower summary + Claude JSON paste door (loaded by the shim)
   public/hr-payroll.js       ← Payroll Maker, contributions, holiday calendar, attendance edit log
   public/hr-tts.js           ← ElevenLabs readback (loaded by the shim)
+  public/hr-recruit.js       ← Pipeline bulk import JSON (loaded by the shim)
   public/pwa.js              ← apple / manifest tags + viewport-fit
   public/pwa.css             ← mobile / safe-area overlay
   public/manifest.json
@@ -207,10 +212,12 @@ hr-artifact/
   public/robots.txt
   netlify/functions/auth.js
   netlify/functions/db.js
+  netlify/functions/applicants-ingest.js
   netlify/functions/sample.js
   netlify/functions/drive.js
   netlify/functions/transcribe.js
   netlify/functions/tts.js
-  netlify/lib/               ← session, supabase, locks, collections, Anthropic, Drive, OpenAI, ElevenLabs
+  netlify/lib/               ← session, supabase, locks, collections, Anthropic, Drive, OpenAI, ElevenLabs, applicants ingest
+  docs/applicants-ingest.md  ← extractor URL, headers, field map, seed roles
   supabase/migrations/       ← docs + locks + RLS
 ```
