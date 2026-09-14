@@ -1,5 +1,10 @@
 /* Motorpool mobile / standalone overlay. */
 
+/* Artifact .banner { display:flex } overrides the HTML hidden attribute. */
+#buildBanner[hidden] {
+  display: none !important;
+}
+
 html {
   -webkit-text-size-adjust: 100%;
 }

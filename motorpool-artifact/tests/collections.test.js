@@ -31,6 +31,7 @@ describe("motorpool collections", () => {
   it("rejects unknown collections", () => {
     assert.throws(() => parsePath("employees/x"), /not allowed/);
     assert.equal(isAllowedCollection("reserves"), true);
+    assert.equal(isAllowedCollection("builds"), true);
     assert.equal(isAllowedCollection("meta"), false);
     assert.throws(() => assertCollection("anon"), /not allowed/);
   });
@@ -49,6 +50,11 @@ describe("motorpool collections", () => {
       "fuel",
       "photos",
       "config",
+      "builds",
     ]);
+    assert.deepEqual(parsePath("builds/2026-09-14 g"), {
+      collection: "builds",
+      id: "2026-09-14 g",
+    });
   });
 });

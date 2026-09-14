@@ -240,6 +240,13 @@ describe("supabase auth login", () => {
     assert.equal(res.statusCode, 200);
     assert.equal(JSON.parse(res.body).authenticated, false);
     assert.match(res.headers["set-cookie"], /Max-Age=0/);
+    assert.match(res.headers["set-cookie"], /Expires=Thu, 01 Jan 1970/);
+    assert.match(res.headers["set-cookie"], /Path=\//);
+    assert.match(res.headers["set-cookie"], /HttpOnly/);
+    assert.match(res.headers["set-cookie"], /SameSite=Strict/);
+    assert.match(res.headers["set-cookie"], /Secure/);
+    assert.ok(res.multiValueHeaders);
+    assert.ok(res.multiValueHeaders["Set-Cookie"].some((c) => /Max-Age=0/.test(c)));
   });
 
   it("lets sample through after a supabase session cookie is set", async () => {

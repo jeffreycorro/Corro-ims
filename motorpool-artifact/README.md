@@ -55,13 +55,13 @@ Inside `<head>` of that real `index.html`, **before any other scripts**, keep:
 
 In the Supabase SQL editor for the project this site will use, run:
 
-`supabase/migrations/20260913000001_motorpool_docs.sql`
+`supabase/migrations/20260913000001_motorpool_docs.sql` (and `20260914000001_motorpool_builds.sql` if that first file was already applied).
 
 That creates `motorpool_docs`, `motorpool_locks`, `motorpool_allowed_collections`, RLS (no anonymous reads), and `acquire_motorpool_doc_lock`. Tables are separate from the HR artifact so one Supabase project can host both.
 
 Timestamps are `timestamptz` (UTC). Display in **Asia/Manila**.
 
-Collections the artifact writes: `master`, `ledger`, `ops`, `reserves`, `fuel`, `photos`, `config`.
+Collections the artifact writes: `master`, `ledger`, `ops`, `reserves`, `fuel`, `photos`, `config`, and `builds` (the host registers `{build, seq}` for the page `BUILD` so the newer-version banner never shows blank labels).
 
 Document paths (from the build brief — do not invent others):
 
@@ -77,6 +77,7 @@ Document paths (from the build brief — do not invent others):
 | `photos/<key>` | `{kind:"photo"| "link", …}` |
 | `config/app` | Full-field writes: `nextVrf`, `pass` (hash only), `fuel`, `varianceTol`, `nextReserve`, `driveFolder` |
 | `config/counter` `config/rsvcounter` | Short-lease number allocation |
+| `builds/<BUILD>` | `{build, seq}` — host writes once per BUILD so the newer-version banner can compare real labels |
 
 Reads come back **frozen**. Thaw before mutate (`JSON.parse(JSON.stringify(v))`). A partial write to `config/app` erases the other fields.
 
@@ -246,7 +247,7 @@ motorpool-artifact/
   netlify.toml               ← publish = public
   public/index.html          ← Claude export + shim tags (the app)
   public/claude-shim.js
-  public/motorpool-host.js   ← blocks prompt/confirm/alert/print
+  public/motorpool-host.js   ← blocks prompt/confirm/alert/print; registers builds/
   public/pwa.js
   public/pwa.css
   public/motorpool-tts.js    ← ElevenLabs readback (loaded by the shim)

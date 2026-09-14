@@ -77,6 +77,14 @@
     });
   }
 
+  function closedGateStatus() {
+    return { authenticated: false, methods: ["supabase"], open: false };
+  }
+
+  function hasSupabaseMethod(status) {
+    return Boolean(status && status.methods && status.methods.indexOf("supabase") !== -1);
+  }
+
   function authStatus() {
     return fetch("/.netlify/functions/auth", {
       method: "GET",
@@ -89,11 +97,13 @@
         return { open: true, local: true, offline: true };
       }
       if (!res.ok) {
-        return { authenticated: false, methods: ["supabase"], open: false };
+        return closedGateStatus();
       }
       return res.json().catch(function () {
-        return { authenticated: false, methods: ["supabase"], open: false };
+        return closedGateStatus();
       });
+    }).catch(function () {
+      return closedGateStatus();
     });
   }
 
@@ -137,10 +147,32 @@
     shadow.appendChild(style);
   }
 
-  function showSessionChrome() {
+  function removeSessionChrome() {
     try {
       var existing = document.getElementById("mp-shim-session-host");
       if (existing) existing.remove();
+    } catch (e) {}
+  }
+
+  function leaveSignedOutSession() {
+    authReady = null;
+    cache = Object.create(null);
+    removeSessionChrome();
+    try {
+      sessionStorage.removeItem("mp-shim-holder");
+    } catch (e) {}
+    try {
+      window.location.replace("/");
+    } catch (e1) {
+      try {
+        window.location.reload();
+      } catch (e2) {}
+    }
+  }
+
+  function showSessionChrome() {
+    try {
+      removeSessionChrome();
       var host = document.createElement("div");
       host.id = "mp-shim-session-host";
       var shadow = host.attachShadow({ mode: "closed" });
@@ -157,15 +189,16 @@
       btn.textContent = "Sign out";
       btn.addEventListener("click", function () {
         btn.disabled = true;
+        var left = false;
+        function leave() {
+          if (left) return;
+          left = true;
+          leaveSignedOutSession();
+        }
         api("auth", { action: "logout" })
           .catch(function () {})
-          .then(function () {
-            authReady = null;
-            try {
-              sessionStorage.removeItem("mp-shim-holder");
-            } catch (e) {}
-            window.location.reload();
-          });
+          .then(leave);
+        setTimeout(leave, 2000);
       });
       shadow.appendChild(btn);
       (document.documentElement || document.body).appendChild(host);
@@ -251,6 +284,9 @@
     authReady = authStatus()
       .then(function (status) {
         if (status && status.offline) {
+          if (status.open === false || hasSupabaseMethod(status)) {
+            return showLoginGate(status.methods || ["supabase"]);
+          }
           return { authenticated: true, method: "open", local: true, offline: true };
         }
         if (status && status.authenticated) {
@@ -275,7 +311,7 @@
         return showLoginGate(status && status.methods);
       })
       .catch(function () {
-        return { authenticated: true, method: "open", local: true, offline: true };
+        return showLoginGate(["supabase"]);
       });
     return authReady;
   }
@@ -380,6 +416,9 @@
                 return makeDocSnap(d.id, d.data, d.exists);
               });
               return makeColSnap(docs);
+            }).catch(function (err) {
+              if (name === "builds") return makeColSnap([]);
+              throw err;
             });
           },
           onSnapshot: function (observer) {

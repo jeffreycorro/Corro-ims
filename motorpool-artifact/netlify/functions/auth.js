@@ -4,6 +4,7 @@ const {
   configuredMethods,
   gateOptional,
   gatePassword,
+  clearSessionCookies,
   json,
   readSession,
   safeEqual,
@@ -128,7 +129,7 @@ exports.handler = async (event) => {
       return json(
         200,
         { authenticated: gateOptional(), ...methodsPayload() },
-        { "set-cookie": sessionCookie("", event, { clear: true }) }
+        { "set-cookie": clearSessionCookies() }
       );
     }
 
