@@ -756,8 +756,11 @@ async function boot(){
     ? "Shared workbook · live"
     : "This device only — shared storage unavailable";
   if(S.db) watch();
-  checkBuild();
   render();
+  /* Banner compare is not needed for the first paint. Running it in the
+     same turn as yardView() (full VRF index) made the tab look frozen, and
+     writing #buildBanner from here used to trip the host MutationObserver. */
+  setTimeout(checkBuild, 0);
   /* Outside Claude (a plain web host) there is no claude runtime at all: the page
      runs on this device's storage, with no shared records and no assistant. */
   if(typeof claude!=="undefined"&&claude&&typeof claude.use==="function"){
@@ -2481,7 +2484,10 @@ function goBack(){
 
 /* ============================ views ============================ */
 function render(){
-  _oil=null; _vrfs=null; _lw=null; _cons=null; _inv=null; _itemIdx=null;
+  _oil=null; _cons=null; _inv=null; _itemIdx=null;
+  /* Keep the VRF index across chrome re-renders. Rebuilding ~2300 ledger
+     lines on the main thread on every render() is what locked the tab
+     after login once the host observer also started spinning. */
   buildNav(); navTrack();
   var isOffice = OFFICE.some(function(o){return o.id===S.view;});
   $("#zoneTag").textContent = isOffice ? "Office — figures" : "Yard — staff";
