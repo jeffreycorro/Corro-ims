@@ -215,6 +215,172 @@
   }
 
   /**
+   * Workbook LTO lines rarely use the job-type name "LTO registration renewal".
+   * They land as item "LTO Renewal" under part category "LTO Processing / Delivery F"
+   * and sub "Registration". Phrase-in-name matching therefore misses them.
+   */
+  var LTO_RENEW_RE =
+    /lto\s*(registration\s*)?renew|registration\s*renew|lto\s*processing|lto\s*reg(?:istration)?\b/i;
+
+  function lineHaystack(line) {
+    if (!line) return "";
+    return [line.cat, line.sub, line.item, line.notes, line.grp, line.description]
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  function isLtoRenewalLine(line) {
+    if (!line) return false;
+    var hay = lineHaystack(line);
+    if (LTO_RENEW_RE.test(hay)) return true;
+    var cat = String(line.cat || "");
+    var sub = String(line.sub || "");
+    var item = String(line.item || "");
+    if (/lto/i.test(cat) && /regist/i.test(sub)) return true;
+    if (/lto/i.test(cat) && /lto/i.test(item)) return true;
+    if (/lto/i.test(item) && /regist/i.test(sub + " " + cat)) return true;
+    if (/\blto\b/i.test(item)) return true;
+    return false;
+  }
+
+  function findLtoWorktype(worktypes) {
+    var best = null;
+    var bestScore = 0;
+    (worktypes || []).forEach(function (w) {
+      var name = String(w.name || "").toLowerCase();
+      var code = String(w.code || w.id || "").toLowerCase();
+      var blob = name + " " + code + " " + String(w.family || w.familyId || "").toLowerCase();
+      var score = 0;
+      if (/lto/.test(blob) && /renew|regist/.test(blob)) score += 3;
+      if (/registration renew/.test(name)) score += 2;
+      if (name === "lto registration renewal") score += 2;
+      if (score > bestScore) {
+        bestScore = score;
+        best = w;
+      }
+    });
+    return bestScore > 0 ? best : null;
+  }
+
+  function ltoWorkCode(worktypes) {
+    var w = findLtoWorktype(worktypes);
+    if (!w) return null;
+    return w.code || w.id || null;
+  }
+
+  /** 2026-08-03 → 2027-08-03. Feb 29 clamps to Feb 28. PH LTO renewal is typically 1 year. */
+  function addCalendarYear(isoDate) {
+    var s = String(isoDate || "");
+    var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+    if (!m) return "";
+    var y = Number(m[1]) + 1;
+    var mo = Number(m[2]);
+    var day = Number(m[3]);
+    var next = new Date(y, mo - 1, day);
+    if (next.getMonth() !== mo - 1) {
+      next = new Date(y, mo, 0);
+    }
+    var mm = String(next.getMonth() + 1).padStart(2, "0");
+    var dd = String(next.getDate()).padStart(2, "0");
+    return next.getFullYear() + "-" + mm + "-" + dd;
+  }
+
+  function ltoProposalFromLine(line) {
+    if (!line || !isLtoRenewalLine(line)) return null;
+    var issued = String(line.date || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(issued)) return null;
+    var monthNames = [
+      "January",
+      "February",
+      "March",
+      "April",
+      "May",
+      "June",
+      "July",
+      "August",
+      "September",
+      "October",
+      "November",
+      "December",
+    ];
+    return {
+      regDate: issued,
+      regExpiry: addCalendarYear(issued),
+      regMonth: monthNames[Number(issued.slice(5, 7)) - 1] || "",
+      vrf: line.vrf || "",
+      item: line.item || line.cat || "LTO Renewal",
+      assumption: "Expiry is registration date + 1 year (typical PH LTO private-vehicle renewal). Change it if the OR shows a different stamp.",
+    };
+  }
+
+  function ltoDetailsStale(unit, proposal) {
+    if (!proposal) return false;
+    if (!unit) return true;
+    var haveDate = String(unit.regDate || "").slice(0, 10);
+    var haveExp = String(unit.regExpiry || "").slice(0, 10);
+    if (!haveDate || !haveExp) return true;
+    return haveDate !== proposal.regDate;
+  }
+
+  /**
+   * VRF log search: "5604" hits 5604; a padded typo "56004" also hits 5604.
+   * Leading zeros are ignored. Non-numeric needles still substring-match.
+   */
+  function vrfSearchHits(vrf, term) {
+    var v = String(vrf == null ? "" : vrf).toLowerCase();
+    var t = String(term == null ? "" : term).toLowerCase().trim();
+    if (!t) return true;
+    if (v.indexOf(t) >= 0) return true;
+    var vd = v.replace(/\D/g, "");
+    var td = t.replace(/\D/g, "");
+    if (!td || !vd) return false;
+    if (vd === td) return true;
+    var vs = vd.replace(/^0+/, "") || "0";
+    var ts = td.replace(/^0+/, "") || "0";
+    if (vs === ts) return true;
+    if (td.length === vd.length + 1) {
+      for (var i = 0; i < td.length; i++) {
+        if (td.charAt(i) === "0" && td.slice(0, i) + td.slice(i + 1) === vd) return true;
+      }
+    }
+    return false;
+  }
+
+  var LTO_EXTRA_KEYS = [
+    "LTO Processing / Delivery F",
+    "LTO Processing / Delivery",
+    "LTO Processing",
+    "LTO Renewal",
+  ];
+  var LTO_EXTRA_WORDS = [
+    "lto renewal",
+    "lto registration renewal",
+    "registration renewal",
+    "lto processing",
+    "lto renew",
+  ];
+
+  function enrichLtoWorktype(worktypes) {
+    var w = findLtoWorktype(worktypes);
+    if (!w) return null;
+    function merge(arr, extra) {
+      var out = (arr || []).slice();
+      extra.forEach(function (x) {
+        var needle = String(x).toLowerCase();
+        var has = out.some(function (y) {
+          return String(y).toLowerCase() === needle;
+        });
+        if (!has) out.push(x);
+      });
+      return out;
+    }
+    w.key = merge(w.key, LTO_EXTRA_KEYS);
+    w.cats = merge(w.cats, LTO_EXTRA_KEYS);
+    w.words = merge(w.words, LTO_EXTRA_WORDS);
+    return w;
+  }
+
+  /**
    * Infer job from lines: key category 3, supporting 1, longest phrase wins.
    * Labour / fasteners / rags score 0.
    */
@@ -513,9 +679,17 @@
     freezeRead: freezeRead,
     fuelGates: fuelGates,
     hasPaper: hasPaper,
+    addCalendarYear: addCalendarYear,
+    enrichLtoWorktype: enrichLtoWorktype,
+    findLtoWorktype: findLtoWorktype,
     inferJob: inferJob,
     isEquipmentNName: isEquipmentNName,
     isFuel: isFuel,
+    isLtoRenewalLine: isLtoRenewalLine,
+    lineHaystack: lineHaystack,
+    ltoDetailsStale: ltoDetailsStale,
+    ltoProposalFromLine: ltoProposalFromLine,
+    ltoWorkCode: ltoWorkCode,
     isFrozenDeep: isFrozenDeep,
     isPlantUnit: isPlantUnit,
     lineAmount: lineAmount,
@@ -536,6 +710,7 @@
     typicalBand: typicalBand,
     varianceFlag: varianceFlag,
     varianceNotice: varianceNotice,
+    vrfSearchHits: vrfSearchHits,
     workRefStates: workRefStates,
   };
 });

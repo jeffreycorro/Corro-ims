@@ -1,5 +1,5 @@
 /**
- * 39 work types in 10 families. Master data for VRF line inference.
+ * 40 work types in 10 families. Master data for VRF line inference.
  */
 (function (root, factory) {
   if (typeof module === "object" && module.exports) {
@@ -63,6 +63,7 @@
     { id: "weld", familyId: "fab", name: "Welding / fabrication" },
     { id: "undercarriage", familyId: "fab", name: "Undercarriage" },
     { id: "misc", familyId: "fab", name: "Miscellaneous" },
+    { id: "lto-ren", familyId: "fab", name: "LTO registration renewal" },
   ];
 
   var CHECKLISTS = {
