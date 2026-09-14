@@ -433,6 +433,144 @@ function normProj(p){ p=(p||"").trim(); return PROJ_ALIAS[p]||p; }
    consumption maths. The dash is what separates the two. */
 function isFuel(c){ return /^\s*fuel\s*[—–-]/i.test(c||""); }
 
+/* Workbook LTO lines say "LTO Renewal" under "LTO Processing / Delivery F" /
+   sub "Registration". The job-type name is "LTO registration renewal", so a
+   straight phrase match on the name never sees the spend. */
+var LTO_RENEW_RE=/lto\s*(registration\s*)?renew|registration\s*renew|lto\s*processing|lto\s*reg(?:istration)?\b/i;
+function lineHaystack(r){
+  if(!r) return "";
+  return [r.cat,r.sub,r.item,r.notes,r.grp].filter(Boolean).join(" ");
+}
+function isLtoRenewalLine(r){
+  if(!r) return false;
+  if(LTO_RENEW_RE.test(lineHaystack(r))) return true;
+  if(/lto/i.test(r.cat||"") && /regist/i.test(r.sub||"")) return true;
+  if(/lto/i.test(r.cat||"") && /lto/i.test(r.item||"")) return true;
+  if(/lto/i.test(r.item||"") && /regist/i.test((r.sub||"")+" "+(r.cat||""))) return true;
+  if(/\blto\b/i.test(r.item||"")) return true;
+  return false;
+}
+function findLtoWorktype(){
+  var best=null, bestScore=0;
+  S.worktypes.forEach(function(w){
+    var name=String(w.name||"").toLowerCase();
+    var code=String(w.code||"").toLowerCase();
+    var blob=name+" "+code+" "+String(w.family||"").toLowerCase();
+    var score=0;
+    if(/lto/.test(blob)&&/renew|regist/.test(blob)) score+=3;
+    if(/registration renew/.test(name)) score+=2;
+    if(name==="lto registration renewal") score+=2;
+    if(score>bestScore){ bestScore=score; best=w; }
+  });
+  return bestScore>0?best:null;
+}
+function ltoWorkCode(){ var w=findLtoWorktype(); return w?w.code:null; }
+function addCalendarYear(s){
+  var m=/^(\d{4})-(\d{2})-(\d{2})/.exec(String(s||""));
+  if(!m) return "";
+  var y=+m[1]+1, mo=+m[2], day=+m[3];
+  var next=new Date(y,mo-1,day);
+  if(next.getMonth()!==mo-1) next=new Date(y,mo,0);
+  return iso(next);
+}
+function ltoProposalFromLine(r){
+  if(!r||!isLtoRenewalLine(r)) return null;
+  var issued=String(r.date||"").slice(0,10);
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(issued)) return null;
+  return {regDate:issued, regExpiry:addCalendarYear(issued),
+    regMonth:MONTHS[Number(issued.slice(5,7))-1]||"",
+    vrf:r.vrf||"", item:r.item||r.cat||"LTO Renewal",
+    assumption:"Expiry is the log date plus one year — the usual Philippine LTO private-vehicle renewal. Change it if the OR shows a different stamp."};
+}
+function latestLtoLine(code){
+  var best=null, bestD=null;
+  allLines().forEach(function(r){
+    if(r.veh!==code||!isLtoRenewalLine(r)) return;
+    var d=parseDate(r.date); if(!d) return;
+    if(!bestD||d>bestD){ best=r; bestD=d; }
+  });
+  return best;
+}
+function ltoDetailsStale(v,proposal){
+  if(!proposal) return false;
+  if(!v) return true;
+  var haveDate=String(v.regDate||"").slice(0,10);
+  var haveExp=String(v.regExpiry||"").slice(0,10);
+  if(!haveDate||!haveExp) return true;
+  return haveDate!==proposal.regDate;
+}
+function vrfSearchHits(vrf,term){
+  var v=String(vrf==null?"":vrf).toLowerCase();
+  var t=String(term==null?"":term).toLowerCase().trim();
+  if(!t) return true;
+  if(v.indexOf(t)>=0) return true;
+  var vd=v.replace(/\D/g,""), td=t.replace(/\D/g,"");
+  if(!td||!vd) return false;
+  if(vd===td) return true;
+  var vs=vd.replace(/^0+/,"")||"0", ts=td.replace(/^0+/,"")||"0";
+  if(vs===ts) return true;
+  if(td.length===vd.length+1){
+    for(var i=0;i<td.length;i++){
+      if(td.charAt(i)==="0" && td.slice(0,i)+td.slice(i+1)===vd) return true;
+    }
+  }
+  return false;
+}
+function enrichLtoWorktype(){
+  var w=findLtoWorktype(); if(!w) return;
+  var i=-1, n;
+  for(n=0;n<S.worktypes.length;n++) if(S.worktypes[n]===w) i=n;
+  w=thaw(w);
+  function merge(arr,extra){
+    var out=(arr||[]).slice();
+    extra.forEach(function(x){
+      var needle=String(x).toLowerCase();
+      if(!out.some(function(y){ return String(y).toLowerCase()===needle; })) out.push(x);
+    });
+    return out;
+  }
+  w.key=merge(w.key,["LTO Processing / Delivery F","LTO Processing / Delivery","LTO Processing","LTO Renewal"]);
+  w.cats=merge(w.cats,["LTO Processing / Delivery F","LTO Processing / Delivery","LTO Processing","LTO Renewal"]);
+  w.words=merge(w.words,["lto renewal","lto registration renewal","registration renewal","lto processing","lto renew"]);
+  if(i>=0){ var list=S.worktypes.slice(); list[i]=w; S.worktypes=list; }
+}
+async function applyLtoDetails(code,proposal){
+  var v=vehicle(code); if(!v||!proposal) return null;
+  var next=S.vehicles.map(function(x){
+    if(x.code!==code) return x;
+    var copy=Object.assign({},x);
+    copy.regDate=proposal.regDate;
+    copy.regExpiry=proposal.regExpiry;
+    if(proposal.regMonth) copy.regMonth=proposal.regMonth;
+    copy.ltoFromVrf=proposal.vrf||"";
+    return copy;
+  });
+  await saveVehicles(next);
+  v=vehicle(code);
+  var papers=thaw(S.papers||[]);
+  var hit=null;
+  papers.forEach(function(d){
+    if(d.code!==code) return;
+    if(/LTO renewal receipt|Official Receipt|Registration papers/i.test(d.docType||"")){
+      if(!hit||String(d.issued||"")<String(hit.issued||"")) hit=d;
+    }
+  });
+  if(hit){
+    if(!hit.issued||hit.issued<proposal.regDate) hit.issued=proposal.regDate;
+    hit.expires=proposal.regExpiry;
+    if(proposal.vrf) hit.notes=((hit.notes?hit.notes+" · ":"")+"Applied from VRF "+proposal.vrf).trim();
+    await replaceRows("papers",papers);
+  }else{
+    await addDoc(code,{
+      docType:"LTO renewal receipt",
+      docNo:v.orno||(proposal.vrf?("VRF "+proposal.vrf):""),
+      issued:proposal.regDate, expires:proposal.regExpiry,
+      notes:"Applied from spend"+(proposal.vrf?(" VRF "+proposal.vrf):"")+". "+proposal.assumption,
+      by:""});
+  }
+  return v;
+}
+
 /* ---------- work types ----------
    A VRF says WHAT WAS BOUGHT on each line but, until now, never WHY it was
    raised. Twenty-seven "Labor — General Mechanical" lines and seventeen
@@ -459,9 +597,11 @@ function isAmbiguous(cat){ return S.ambig.indexOf(normCat(cat))>=0; }
    whatever the VRF is mostly about. Labour, fasteners and tape score nothing —
    that is precisely why they can never classify a VRF on their own. */
 function scopeOfLine(r,keyOwner,wordIdx){
+  var lto=findLtoWorktype();
+  if(lto&&isLtoRenewalLine(r)) return {codes:[lto.code],how:"LTO renewal wording",strong:true};
   var c=normCat(r.cat);
   if(keyOwner[c]&&keyOwner[c].length) return {codes:keyOwner[c],how:"category "+c,strong:true};
-  var hay=((r.item||"")+" "+(r.notes||"")).toLowerCase();
+  var hay=((r.item||"")+" "+(r.sub||"")+" "+(r.notes||"")).toLowerCase();
   var best=null;
   wordIdx.forEach(function(e){
     if(hay.indexOf(e.word)<0) return;
@@ -521,7 +661,11 @@ function inferScopes(rows){
 /* One entry per VRF, plus the per-line scope map every screen reads from. */
 var _vrfs=null, _lw=null;
 function buildIndex(){
-  if(_vrfs) return;
+  /* [] is truthy. A first-paint reminders() count used to run before the
+     ledger was loaded and freeze an empty index, so History said Never
+     even when the spend was already in the workbook. */
+  if(_vrfs && _vrfs.length) return;
+  if(_vrfs && !allLines().length) return;
   _lw=new Map();
   var by={};
   allLines().forEach(function(r){
@@ -840,6 +984,7 @@ async function loadAll(){
   S.photoCounts=(pix&&pix.counts)||{};
   var wt = await readDoc(PATHS.worktypes);
   S.ambig = (wt&&wt.ambiguous)||[];
+  enrichLtoWorktype();
   var cfg = await readDoc(PATHS.cfg);
   if(cfg) S.cfg = {nextVrf: cfg.nextVrf||5793, pass: cfg.pass||null, fuel: cfg.fuel||null,
     varianceTol: (typeof cfg.varianceTol==="number")?cfg.varianceTol:VARIANCE_TOL_DEFAULT,
@@ -850,6 +995,7 @@ async function loadAll(){
   var docs = await Promise.all(mks.map(function(m){ return readDoc("ledger/"+m); }));
   S.ledger={};
   mks.forEach(function(m,i){ S.ledger[m]=(docs[i]&&docs[i].rows)||[]; });
+  _vrfs=null; _lw=null;
 }
 
 /* Screens where someone may be typing. A live update must never wipe a
@@ -1973,11 +2119,11 @@ function reminders(){
       unit:b.vehicle,what:b.problem,since:b.date,ago:d,go:"down"});
   });
 
-  /* renewal: due if the unit's month has arrived and no LTO Renewal line was
-     posted for it this year */
+  /* renewal: due if the unit's month has arrived and no LTO renewal spend was
+     posted for it this year. Match item / category / sub — not only cat. */
   var renewed={};
   allLines().forEach(function(r){
-    if(!r.veh||!/LTO Renewal/i.test(r.cat||"")) return;
+    if(!r.veh||!isLtoRenewalLine(r)) return;
     var d=parseDate(r.date); if(d&&d.getFullYear()===yr) renewed[r.veh]=iso(d);
   });
   S.vehicles.forEach(function(v){
@@ -2422,7 +2568,7 @@ function buildNav(){
       if(g[2]&&!S.office) b.className="locked";
       b.appendChild(el("span","ic", g[2]&&!S.office ? "○" : it.ic));
       b.appendChild(el("span",null,it.label));
-      var c=it.count&&it.count();
+      var c=S.ready&&it.count&&it.count();
       if(c) { var s=el("span","cnt",String(c)); b.appendChild(s); }
       b.addEventListener("click",function(){ go(it.id); });
       n.appendChild(b);
@@ -2717,7 +2863,7 @@ function askTools(){
      }
      var renewed={};
      allLines().forEach(function(r){
-       if(!r.veh||!/LTO Renewal/i.test(r.cat||"")) return;
+       if(!r.veh||!isLtoRenewalLine(r)) return;
        var d=parseDate(r.date); if(d&&d.getFullYear()===yr) renewed[r.veh]={date:iso(d),vrf:r.vrf};
      });
      var live=S.vehicles.filter(function(v){ return v.status!=="SOLD"&&v.status!=="Personal"; });
@@ -2742,7 +2888,7 @@ function askTools(){
        still_to_renew:due.filter(function(x){ return x.renewed_this_year==="no"; }).length,
        overdue_from_earlier_months:overdue, papers_expiring_this_month:papers,
        units_with_no_renewal_month_on_file:noMonth.length, those_units:noMonth,
-       note:"Renewal month comes from the fleet list. A renewal counts as done when an LTO Renewal line was posted for the unit this calendar year."};
+       note:"Renewal month comes from the fleet list. A renewal counts as done when an LTO Renewal / LTO registration / LTO Processing line was posted for the unit this calendar year."};
    }},
   {name:"fleet",
    description:"List or search the fleet: code, description, plate, status, renewal month, site. Omit the query for every unit. Use this instead of ever asking the user for unit codes.",
@@ -2766,6 +2912,7 @@ function askTools(){
        .filter(function(c){ return c!==u; }).slice(0,6);
      return {code:u, other_units_that_also_match:others, description:v.desc, make:v.make, model:v.model, year:v.year,
        plate:v.plate, fuel:v.fuel, registered_owner:v.owner||null, cr:v.cr||null, or:v.orno||null,
+       registration_date:v.regDate||null, registration_expires:v.regExpiry||null,
        renewal_month:v.regMonth||null, status:v.status||"Active", site:v.site||null,
        last_odometer:lastOdo(u),
        open_breakdowns:openBreakdowns().filter(function(b){return b.vehicle===u;}),
@@ -2791,8 +2938,10 @@ function askTools(){
        if(w.code.toLowerCase()===t||w.name.toLowerCase()===t){ code=w.code; break; }
      }
      if(!code) for(var j=0;j<S.worktypes.length;j++){
-       if(S.worktypes[j].name.toLowerCase().indexOf(t)>=0){ code=S.worktypes[j].code; break; }
+       var nm=S.worktypes[j].name.toLowerCase();
+       if(nm.indexOf(t)>=0||t.indexOf(nm)>=0){ code=S.worktypes[j].code; break; }
      }
+     if(!code && isLtoRenewalLine({item:a.work_type,cat:a.work_type})) code=ltoWorkCode();
      if(!code) return {error:"No type of job matches '"+a.work_type+"'. Call names for the list."};
      var hits=jobHistory(u,code), wt=workBy(code);
      return {unit:u, matched_job:wt.name, interval_months:wt.intervalMo, times:hits.length,
@@ -4970,12 +5119,25 @@ function vrfLogView(){
       if(S.regWork&&v.works.indexOf(S.regWork)<0) return false;
       if(S.regStatus&&v.status!==S.regStatus) return false;
       if(!term) return true;
-      if(String(v.vrf).toLowerCase().indexOf(term)>=0) return true;
+      if(vrfSearchHits(v.vrf,term)) return true;
       if(v.units.join(" ").toLowerCase().indexOf(term)>=0) return true;
       if((v.project||"").toLowerCase().indexOf(term)>=0) return true;
       return v.rows.some(function(r){
-        return ((r.item||"")+" "+(r.supplier||"")+" "+(r.cat||"")).toLowerCase().indexOf(term)>=0; });
+        return ((r.item||"")+" "+(r.supplier||"")+" "+(r.cat||"")+" "+(r.sub||"")).toLowerCase().indexOf(term)>=0; });
     });
+    if(!list.length && term){
+      var loose=vrfIndex().filter(function(v){
+        if(S.regStatus&&v.status!==S.regStatus) return false;
+        return vrfSearchHits(v.vrf,term);
+      });
+      if(loose.length && S.regWork){
+        var hint=el("div","banner warn");
+        var jobs=loose[0].scopes.map(function(sc){ return sc.name; }).join(", ")||"unclassified";
+        hint.innerHTML="<b>VRF "+esc(loose[0].vrf)+" is on file</b> — classified as "+esc(jobs)+
+          ", not "+esc(workName(S.regWork))+". Clear the job filter to open it, or confirm the work type on the form.";
+        host.appendChild(hint);
+      }
+    }
     var withFile=list.filter(function(v){ return vrfDrive(v); }).length;
     host.appendChild(stats([
       ["Forms in view", nnum(list.length), vrfIndex().length+" on file"],
@@ -5113,6 +5275,28 @@ function partsView(){
           ago>=iv*MO?"Past its "+iv+"-month interval":"Within its "+iv+"-month interval"));
         if(!hits[0].confirmed) chips.appendChild(el("span","chip mute","work type inferred, not entered"));
         ab.appendChild(chips);
+        var ltoHit=(hits[0].rows||[]).filter(isLtoRenewalLine)[0]||hits[0].rows[0];
+        var ltoP=ltoHit?ltoProposalFromLine(ltoHit):null;
+        if(!ltoP && ltoWorkCode()===wk && hits[0].date){
+          ltoP=ltoProposalFromLine(Object.assign({},hits[0].rows[0]||{},{date:hits[0].date,vrf:hits[0].vrf,item:"LTO Renewal",cat:"LTO Processing"}));
+        }
+        if(ltoP){
+          var vehU=vehicle(u);
+          if(ltoDetailsStale(vehU,ltoP)){
+            var abn=el("button","btn pri","Apply this renewal to LTO Details");
+            abn.style.marginTop="var(--space-3)";
+            abn.addEventListener("click",async function(){
+              abn.disabled=true; abn.textContent="Applying…";
+              try{ await applyLtoDetails(u,ltoP);
+                toast(u+" LTO Details set from VRF "+(ltoP.vrf||"—")+".");
+                render();
+              }catch(e){ abn.disabled=false; abn.textContent="Apply this renewal to LTO Details";
+                toast("Could not apply: "+(e&&e.message||e)); }
+            });
+            ab.appendChild(abn);
+            ab.appendChild(el("div","hint",ltoP.assumption));
+          }
+        }
       }else{
         var none=el("div",null,"Never — nothing on record");
         none.style.cssText="font-family:var(--font-heading);font-weight:600;font-size:19px;margin-top:var(--space-1)";
@@ -7848,7 +8032,7 @@ function openUnitEdit(code){
   var v=code?vehicle(code):null;
   var isNew=!v;
   if(isNew) v={code:"",desc:"",make:"",model:"",year:"",color:"",fuel:"Diesel",plate:"",
-    engine:"",chassis:"",owner:"",cr:"",orno:"",regMonth:"",status:"Active",site:"",
+    engine:"",chassis:"",owner:"",cr:"",orno:"",regDate:"",regExpiry:"",regMonth:"",status:"Active",site:"",
     lastOil:"",schedOil:"",newTire:"",battery:"",insurance:"",insuranceExp:"",
     acquired:"",notes:"",drive:""};
   var m=el("div","modal"); m.id="unSheet";
@@ -7895,6 +8079,7 @@ function openUnitEdit(code){
   fieldRow([["cr","CR no.","text",""],["orno","OR no.","text",""],
             ["regMonth","Renewal month","select",["","January","February","March","April","May",
               "June","July","August","September","October","November","December"]]]);
+  fieldRow([["regDate","Registration date","date",""],["regExpiry","Registration expires","date",""]]);
   fieldRow([["insurance","Insurer","text",""],["insuranceExp","Insurance expires","date",""],
             ["acquired","Acquired","date",""]]);
   var h3=el("h4",null,"Service and posting"); h3.style.marginTop="var(--space-5)"; b.appendChild(h3);
@@ -7961,9 +8146,8 @@ function unitView(code){
   ]));
 
   var spec=el("div"); spec.style.cssText="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px 22px";
-  [["Registered owner",v.owner||"— none on file"],["CR no.",v.cr||"—"],["OR no.",v.orno||"—"],
+  [["Registered owner",v.owner||"— none on file"],["CR no.",v.cr||"—"],
    ["Engine no.",v.engine||"—"],["Chassis no.",v.chassis||"—"],
-   ["Renewal month",v.regMonth||"—"],
    ["Insurer",v.insurance||"—"],["Insurance expires",v.insuranceExp||"—"],
    ["Last change oil",v.lastOil||"—"],["Change oil due",v.schedOil||"—"],
    ["New tires",v.newTire||"—"],["Battery",v.battery||"—"],["Assigned site",v.site||"—"],
@@ -7975,6 +8159,51 @@ function unitView(code){
     spec.appendChild(r);
   });
   g.appendChild(card("Unit record","from the alpha list",spec));
+
+  var ltoLine=latestLtoLine(code);
+  var ltoProp=ltoLine?ltoProposalFromLine(ltoLine):null;
+  var ltoBox=el("div");
+  var ltoGrid=el("div"); ltoGrid.style.cssText="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px 22px";
+  [["OR no.",v.orno||"—"],
+   ["Registration date",v.regDate||"—"],
+   ["Expiry date",v.regExpiry||"—"],
+   ["Renewal month",v.regMonth||"—"]
+  ].forEach(function(p){
+    var cell=el("div");
+    cell.appendChild(el("div","hint",p[0]));
+    var val=el("div",null,p[1]); val.style.fontWeight="500"; cell.appendChild(val);
+    ltoGrid.appendChild(cell);
+  });
+  ltoBox.appendChild(ltoGrid);
+  if(ltoProp&&ltoDetailsStale(v,ltoProp)){
+    var miss=!v.regDate&&!v.regExpiry;
+    var ban=el("div","banner "+(miss?"warn":"info"));
+    ban.style.marginTop="var(--space-3)";
+    ban.innerHTML="<b>"+(miss?"LTO Details are empty, but a renewal is already in the spend log."
+      :"A newer LTO renewal is on the spend log.")+"</b> VRF "+esc(ltoProp.vrf||"—")+
+      " · "+esc(ltoProp.item)+" on "+esc(ltoProp.regDate)+
+      ". Applying sets the registration date from that log date and expiry to "+esc(ltoProp.regExpiry)+
+      " (one year — usual PH LTO private-vehicle renewal). OR number is not on the spend line; type it when you have the receipt.";
+    ltoBox.appendChild(ban);
+    var apply=el("button","btn pri","Apply this renewal to LTO Details");
+    apply.style.marginTop="var(--space-3)";
+    apply.addEventListener("click",async function(){
+      apply.disabled=true; apply.textContent="Applying…";
+      try{ await applyLtoDetails(code,ltoProp);
+        toast(code+" LTO Details set from VRF "+(ltoProp.vrf||"—")+".");
+        render();
+      }catch(e){ apply.disabled=false; apply.textContent="Apply this renewal to LTO Details";
+        toast("Could not apply: "+(e&&e.message||e)); }
+    });
+    ltoBox.appendChild(apply);
+    ltoBox.appendChild(el("div","hint",ltoProp.assumption));
+  }else if(ltoProp){
+    ltoBox.appendChild(el("div","hint","Last renewal spend: VRF "+(ltoProp.vrf||"—")+" on "+ltoProp.regDate+
+      (v.ltoFromVrf?" · applied from VRF "+v.ltoFromVrf:"")));
+  }else{
+    ltoBox.appendChild(el("div","hint","No LTO renewal spend is on file for this unit. These dates are filled by hand, or with Apply once a renewal line is posted."));
+  }
+  g.appendChild(card("LTO Details","from the unit record — not filled automatically when a spend lands",ltoBox));
 
   if(brk.length){
     g.appendChild(card("Breakdown history",brk.length+" logged",
@@ -8219,7 +8448,23 @@ function unitView(code){
       {h:"Qty",num:true,get:function(r){return r.qty!=null?nnum(r.qty,2):"—";}},
       {h:"Supplier",get:function(r){return r.supplier||"—";}},
       {h:"Project",get:function(r){return r.project||"—";}},
-      {h:"Odometer",num:true,get:function(r){return r.odo?nnum(r.odo):"—";}}
+      {h:"Odometer",num:true,get:function(r){return r.odo?nnum(r.odo):"—";}},
+      {h:"",get:function(r){
+        var p=ltoProposalFromLine(r);
+        if(!p) return "";
+        var b=el("button","btn sm","Apply to LTO Details");
+        b.title=p.assumption;
+        b.addEventListener("click",async function(ev){
+          ev.stopPropagation();
+          b.disabled=true; b.textContent="Applying…";
+          try{ await applyLtoDetails(code,p);
+            toast(code+" LTO Details set from VRF "+(p.vrf||"—")+".");
+            render();
+          }catch(e){ b.disabled=false; b.textContent="Apply to LTO Details";
+            toast("Could not apply: "+(e&&e.message||e)); }
+        });
+        return b;
+      }}
     ],hist.slice(0,80),{empty:"Nothing logged against this unit yet."})));
   w.appendChild(g);
   return w;
