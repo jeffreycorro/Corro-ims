@@ -7,6 +7,10 @@ const {
   fuelGates,
   missingJoCloseFields,
   missingTaskCloseFields,
+  missingFuelApproveFields,
+  isFuelBypass,
+  bypassAttribution,
+  fuelAskApprovalBlockedByPhoto,
   workRefStates,
   checkOfficeHash,
   sha256hexSync,
@@ -60,6 +64,47 @@ describe("infer job and gates", () => {
       "Open",
       "In progress",
     ]);
+  });
+
+  it("fuel ask-approval is not blocked by a missing gauge photo", () => {
+    assert.equal(fuelAskApprovalBlockedByPhoto(), false);
+    assert.deepEqual(
+      missingFuelApproveFields({
+        kind: "fuel-issue",
+        gauge: "1/4",
+      }),
+      []
+    );
+    assert.ok(
+      !missingFuelApproveFields({
+        kind: "fuel-issue",
+        gauge: "1/4",
+      }).includes("Gauge photo")
+    );
+    assert.ok(
+      missingFuelApproveFields({ kind: "fuel-issue", gauge: "" }).includes("Gauge level")
+    );
+  });
+
+  it("bypass override skips approval and names who / when / unit / litres / reason", () => {
+    assert.equal(isFuelBypass(null), false);
+    assert.equal(isFuelBypass({ reason: "Emergency dispatch", by: "Jun" }), false);
+    const ov = {
+      bypass: true,
+      reason: "Emergency dispatch",
+      by: "Jun Cruz",
+      at: "2026-09-14",
+      note: "night pour",
+    };
+    assert.equal(isFuelBypass(ov), true);
+    const note = bypassAttribution(ov, { unit: "DT-12", litres: 40 });
+    assert.match(note, /Bypass — no office approval/);
+    assert.match(note, /Jun Cruz/);
+    assert.match(note, /2026-09-14/);
+    assert.match(note, /DT-12/);
+    assert.match(note, /40 L/);
+    assert.match(note, /Emergency dispatch/);
+    assert.match(note, /night pour/);
   });
 
   it("office hash compare is hex-only and never stores plaintext", () => {
