@@ -1,31 +1,68 @@
 "use strict";
 
 const crypto = require("crypto");
+const { envFlag } = require("./mp-access");
 
 const COOKIE_NAME = "motorpool_session";
-const MAX_AGE_MS = 12 * 60 * 60 * 1000;
+const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 function gateSecret() {
   return process.env.MOTORPOOL_GATE_SECRET || "";
 }
 
+function sessionSecret() {
+  const explicit =
+    process.env.MOTORPOOL_SESSION_SECRET || process.env.MOTORPOOL_GATE_SECRET || "";
+  if (explicit) return explicit;
+  const role =
+    process.env.SUPABASE_SERVICE_ROLE ||
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    "";
+  if (!role) return "";
+  return crypto.createHash("sha256").update(`motorpool-session:${role}`).digest("hex");
+}
+
+function gateRequired() {
+  return envFlag("MOTORPOOL_GATE_REQUIRED", false);
+}
+
 function gatePassword() {
+  if (!gateRequired()) return "";
   return process.env.MOTORPOOL_GATE_PASSWORD || process.env.MOTORPOOL_GATE_SECRET || "";
 }
 
+function supabaseConfigured() {
+  const url = (
+    process.env.SUPABASE_URL ||
+    process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    ""
+  ).trim();
+  const anon = (
+    process.env.SUPABASE_ANON_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    ""
+  ).trim();
+  return Boolean(url && anon);
+}
+
 function supabaseAuthEnabled() {
-  const flag = String(process.env.SUPABASE_AUTH_ENABLED || "").toLowerCase();
-  return flag === "true" || flag === "1" || flag === "yes";
+  if (!supabaseConfigured()) return false;
+  return envFlag("SUPABASE_AUTH_ENABLED", true);
+}
+
+function openYard() {
+  return envFlag("MOTORPOOL_OPEN_YARD", false);
 }
 
 function configuredMethods() {
   const methods = [];
-  if (gatePassword()) methods.push("password");
   if (supabaseAuthEnabled()) methods.push("supabase");
+  if (gatePassword()) methods.push("password");
   return methods;
 }
 
 function gateOptional() {
+  if (openYard()) return true;
   return configuredMethods().length === 0;
 }
 
@@ -40,9 +77,9 @@ function safeEqual(a, b) {
   return crypto.timingSafeEqual(left, right);
 }
 
-function signSession(payload, secret = gateSecret()) {
+function signSession(payload, secret = sessionSecret()) {
   if (!secret) {
-    throw new Error("MOTORPOOL_GATE_SECRET is not configured");
+    throw new Error("Motorpool session signing secret is not configured");
   }
   const body = Buffer.from(
     JSON.stringify({
@@ -55,7 +92,7 @@ function signSession(payload, secret = gateSecret()) {
   return `${body}.${sig}`;
 }
 
-function verifySession(token, secret = gateSecret()) {
+function verifySession(token, secret = sessionSecret()) {
   if (!token || !secret) return null;
   const parts = String(token).split(".");
   if (parts.length !== 2) return null;
@@ -150,15 +187,19 @@ module.exports = {
   cookieSecure,
   gateOptional,
   gatePassword,
+  gateRequired,
   gateSecret,
   json,
+  openYard,
   parseCookieHeader,
   readSession,
   requireSession,
   safeEqual,
   sessionCookie,
+  sessionSecret,
   signSession,
   supabaseAuthEnabled,
+  supabaseConfigured,
   unauthorized,
   verifySession,
 };

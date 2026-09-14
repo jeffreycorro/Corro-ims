@@ -43,6 +43,20 @@ function fakeWindow() {
           },
           remove() {},
           setAttribute() {},
+          attachShadow() {
+            const nodes = [];
+            return {
+              appendChild(child) {
+                nodes.push(child);
+              },
+              querySelector() {
+                return null;
+              },
+              getElementById() {
+                return { value: "", textContent: "" };
+              },
+            };
+          },
         };
         return el;
       },
@@ -60,6 +74,7 @@ function fakeWindow() {
       },
       revokeObjectURL() {},
     },
+    URLSearchParams,
     Blob: class FakeBlob {
       constructor(parts, opts) {
         this.parts = parts;
@@ -292,5 +307,60 @@ describe("claude shim", () => {
     const saved = w.clicks.find((el) => el.download === "VRF-1.html");
     assert.ok(saved, "downloads.save must click an anchor");
     assert.equal(saved.href, "blob:test");
+  });
+
+  it("ships an email+password staff form for iOS autocomplete and tap targets", () => {
+    const src = fs.readFileSync(path.join(__dirname, "../public/claude-shim.js"), "utf8");
+    assert.match(src, /autocomplete="username"/);
+    assert.match(src, /autocomplete="current-password"/);
+    assert.match(src, /inputmode="email"/);
+    assert.match(src, /min-height:44px/);
+    assert.match(src, /font-size:16px/);
+    assert.match(src, /company portal/);
+    assert.doesNotMatch(src, /MOTORPOOL_GATE_SECRET/);
+    assert.match(src, /access_token/);
+    assert.match(src, /Sign out/);
+  });
+
+  it("hands off a hash access_token to auth and strips it from the URL", async () => {
+    const w = fakeWindow();
+    const calls = [];
+    w.location = { hash: "#access_token=portal-jwt", pathname: "/", search: "" };
+    w.history = {
+      replaceState(_a, _b, url) {
+        w.location.hash = "";
+        w.replaced = url;
+      },
+    };
+    w.fetch = (url, opts) => {
+      const body = opts && opts.body ? JSON.parse(opts.body) : {};
+      calls.push({ url: String(url), method: opts && opts.method, body });
+      if (String(url).includes("/auth") && (!opts || opts.method === "GET")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ authenticated: false, methods: ["supabase"], open: false }),
+          text: async () =>
+            JSON.stringify({ authenticated: false, methods: ["supabase"], open: false }),
+        });
+      }
+      if (body.action === "login" && body.access_token === "portal-jwt") {
+        return Promise.resolve({
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              authenticated: true,
+              method: "supabase",
+              capabilities: { sample: false, tts: false },
+            }),
+        });
+      }
+      return Promise.resolve({ ok: true, text: async () => "{}" });
+    };
+    loadShim(w);
+    const db = await w.claude.use("db");
+    await db.doc("config/app").get();
+    const login = calls.find((c) => c.body && c.body.access_token === "portal-jwt");
+    assert.ok(login);
+    assert.equal(w.location.hash, "");
   });
 });

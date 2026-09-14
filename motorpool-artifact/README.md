@@ -97,12 +97,15 @@ Site settings → Environment variables. Copy `.env.example`.
 
 | Variable | Where | Purpose |
 | --- | --- | --- |
-| `SUPABASE_URL` | Functions | Supabase project URL |
-| `SUPABASE_ANON_KEY` | Functions | Anon key (Auth login only, if enabled) |
-| `SUPABASE_SERVICE_ROLE` | Functions **only** | Data plane. Never put this in the shim or `index.html`. |
-| `MOTORPOOL_GATE_SECRET` | Functions, optional | Shared staff password **and** HMAC key for the httpOnly session cookie. If unset, the yard is open to anyone who has the link. |
-| `MOTORPOOL_GATE_PASSWORD` | Functions, optional | Login password if `MOTORPOOL_GATE_SECRET` is a signing key only |
-| `SUPABASE_AUTH_ENABLED` | Functions, optional | Set `true` to also accept Supabase email/password |
+| `SUPABASE_URL` | Functions | Same Supabase project as the company portal |
+| `SUPABASE_ANON_KEY` | Functions | Anon key for staff email/password (and portal handoff JWT). Never the service role. |
+| `SUPABASE_SERVICE_ROLE` | Functions **only** | Data plane + server-side profile lookup. Never put this in the shim or `index.html`. |
+| `MOTORPOOL_SESSION_SECRET` | Functions, optional | HMAC key for the httpOnly session cookie. If unset, `MOTORPOOL_GATE_SECRET` or a hash of `SUPABASE_SERVICE_ROLE` is used. |
+| `MOTORPOOL_GATE_SECRET` | Functions, **deprecated** | No longer a login password. Kept only as a fallback cookie HMAC key. Ignored as a door unless `MOTORPOOL_GATE_REQUIRED=true`. |
+| `MOTORPOOL_GATE_REQUIRED` | Functions, optional | Default **off**. Set `true` only if you still want the old shared-password wall as an extra method. |
+| `MOTORPOOL_GATE_PASSWORD` | Functions, optional | Shared password used only when `MOTORPOOL_GATE_REQUIRED=true`. |
+| `SUPABASE_AUTH_ENABLED` | Functions, optional | Default **on** when URL + anon key are set. Set `false` only to disable Auth. |
+| `MOTORPOOL_OPEN_YARD` | Functions, optional | Local / demo only. When `true`, the yard stays open even if Auth is configured. Leave unset on production. |
 | `MOTORPOOL_OFFICE_PASS_HASH` | Functions, optional | SHA-256 **hex** of the office pass (64 lowercase hex chars). Never put the plaintext here. Generate locally: `printf '%s' 'your-pass' \| openssl dgst -sha256` |
 | `ANTHROPIC_API_KEY` | Functions **only** | Enables Ask the log (`claude.use("sample")`). Never put this in the shim or `index.html`. |
 | `ANTHROPIC_MODEL` | Functions, optional | Override the default model (`claude-sonnet-4-5`). |
@@ -112,7 +115,7 @@ Site settings → Environment variables. Copy `.env.example`.
 
 The artifact also stores an office hash on `config/app.pass` after the owner sets it in-app. That field is a hash. **Never write the office pass into code, docs, tests, comments, or chat.**
 
-Without Supabase env vars the artifact still opens and uses its **local** document store (`#dbBadge` shows `local`).
+Without `SUPABASE_URL` / `SUPABASE_ANON_KEY` the artifact still opens (open yard / local store — `#dbBadge` shows `local`). When those Auth keys **are** set, the yard is closed unless `MOTORPOOL_OPEN_YARD=true`.
 
 **How to set env on Netlify (Motorpool site `corcondev-motorpool`):**
 
@@ -120,19 +123,27 @@ Without Supabase env vars the artifact still opens and uses its **local** docume
 2. Add `ANTHROPIC_API_KEY` (Ask the log) and `ELEVENLABS_API_KEY` (read-aloud). Optional: `ELEVENLABS_VOICE_ID`.
 3. Scope them to **Production** (and Local if you use `netlify dev`). Same values as in `.env.example` — never commit real keys.
 4. Trigger a **redeploy** after changing keys so functions reload the env.
-5. Confirm `GET /.netlify/functions/auth` shows `capabilities.sample: true` and `capabilities.tts: true`. `/.netlify/functions/sample` must exist (not 404).
+5. Confirm `GET /.netlify/functions/auth` shows `capabilities.sample: true` and `capabilities.tts: true` (and `open: false` once Auth keys are set). `/.netlify/functions/sample` must exist (not 404).
 
 Without `ANTHROPIC_API_KEY` the shim still resolves `sample` to `null` and Ask the log shows “The assistant is not available in this view.” Without `ELEVENLABS_API_KEY`, `tts` is `null` and the page falls back to the device’s Web Speech voices.
 
 ### 6. Access control
 
-**Link sharing** is the real control.
+**App-level login (required when Auth is configured):** `/.netlify/functions/auth` accepts the company-portal Supabase email/password, or a short-lived `access_token` from the portal Motorpool deeplink (URL hash only). It then checks `profiles` and issues an httpOnly cookie. `/.netlify/functions/db`, `sample`, `tts`, and `office` return 401 without that cookie. The service role key, Anthropic key, and ElevenLabs key never leave Netlify Functions.
 
-**Optional staff gate:** `/.netlify/functions/auth` issues an httpOnly cookie when `MOTORPOOL_GATE_SECRET` is set.
+**One staff password.** Motorpool uses the same Supabase email + password as [https://corcondev-portal.netlify.app](https://corcondev-portal.netlify.app). There is no separate Motorpool site password in the default flow. After login, an httpOnly cookie keeps the PWA signed in (7 days, or until Sign out).
 
-**Office soft gate:** hashed pass in the artifact (`config/app.pass`) and/or `MOTORPOOL_OFFICE_PASS_HASH` on the host (`/.netlify/functions/office` accepts a hash only — plaintext is rejected).
+**Who can enter.** After Auth succeeds, the function reads `public.profiles` (same table as the portal). Only `role = admin` or `department = motorpool` receive a session. Other department logins get 403 — they can use the company portal, not this Motorpool site. Portal departments are `admin`, `technical`, `finance`, `procurement`, `motorpool`, `safety`, `site`, `hr`. Roles are `staff`, `dept_lead`, `hr`, `admin`. There is no operations department.
 
-**Netlify visitor password (additional):** Site configuration → Access & security → Visitor access → **Password protection**.
+**Portal handoff (`/app/motorpool`):** The company portal is a different Netlify host, so the Supabase cookie is not shared. If the staff member is already signed in on the portal, the Motorpool CTA reads the browser session and navigates to `https://corcondev-motorpool.netlify.app/#access_token=…`. The hash is not sent to Netlify request logs. The shim posts that JWT to `auth`, then `history.replaceState` strips the hash. If handoff fails, the same email + password form works — there is no second gate password.
+
+**Open yard (local / demo only):** If `SUPABASE_URL` and `SUPABASE_ANON_KEY` are unset, or `MOTORPOOL_OPEN_YARD=true`, the yard stays open. Do not set `MOTORPOOL_OPEN_YARD` on production (`corcondev-motorpool`).
+
+**Office soft gate (separate):** hashed pass in the artifact (`config/app.pass`) and/or `MOTORPOOL_OFFICE_PASS_HASH` on the host (`/.netlify/functions/office` accepts a hash only — plaintext is rejected). This is the figures-zone pass, not staff login.
+
+**Deprecated shared gate:** `MOTORPOOL_GATE_SECRET` is not a staff password anymore. Leave `MOTORPOOL_GATE_REQUIRED` unset. Only set `MOTORPOOL_GATE_REQUIRED=true` if you deliberately want the old shared-password method as an extra wall.
+
+**Netlify visitor password / Identity (optional extra, not the staff login):** Site configuration → Access & security → Visitor access → **Password protection**.
 
 ### 7. Turn off Deploy Previews
 
@@ -154,7 +165,7 @@ On the **company portal** Netlify site (repo root):
 NEXT_PUBLIC_MOTORPOOL_PORTAL_URL=https://corcondev-motorpool.netlify.app
 ```
 
-If unset, the Motorpool department tile uses that same default.
+If unset, the Motorpool department tile uses that same default. When staff are already signed in on the portal, that tile hands off `#access_token=…` the same way the HR tile does.
 
 ## Drive folder convention
 
@@ -222,7 +233,7 @@ Functions need Netlify (`npx netlify dev --dir .`) plus the env vars above. With
 Add from **Safari** only.
 
 1. Open [https://corcondev-motorpool.netlify.app](https://corcondev-motorpool.netlify.app) in Safari.
-2. Complete the staff gate if it is enabled.
+2. Sign in with the company portal email and password (or accept the portal handoff).
 3. Tap **Share** → **Add to Home Screen**.
 4. Keep the name **Motorpool** and tap **Add**.
 
@@ -240,9 +251,9 @@ motorpool-artifact/
   public/pwa.css
   public/motorpool-tts.js    ← ElevenLabs readback (loaded by the shim)
   netlify/functions/         ← auth, db, office, sample, tts
-  netlify/lib/               ← session, capabilities, Anthropic, ElevenLabs
+  netlify/lib/               ← session, mp-access, capabilities, Anthropic, ElevenLabs
   supabase/migrations/
-  tests/                     ← thaw, isFuel, papers, variance, host
+  tests/                     ← auth, thaw, isFuel, papers, variance, host
   tests/lib/                 ← rule copies only — not a second UI
 ```
 

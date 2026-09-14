@@ -85,13 +85,34 @@
     }).then(function (res) {
       // Static preview (`npx serve public`, python http.server) has no functions.
       // A 404 HTML body is not a closed gate — open the yard on the local store.
-      if (!res.ok) {
+      if (res.status === 404) {
         return { open: true, local: true, offline: true };
       }
+      if (!res.ok) {
+        return { authenticated: false, methods: ["supabase"], open: false };
+      }
       return res.json().catch(function () {
-        return { open: true, local: true };
+        return { authenticated: false, methods: ["supabase"], open: false };
       });
     });
+  }
+
+  function consumeHandoffToken() {
+    try {
+      var loc = window.location;
+      if (!loc) return null;
+      var hash = String(loc.hash || "").replace(/^#/, "");
+      if (!hash) return null;
+      var params = new URLSearchParams(hash);
+      var token = params.get("access_token") || params.get("mp_access_token");
+      if (!token) return null;
+      if (window.history && window.history.replaceState) {
+        window.history.replaceState(null, "", (loc.pathname || "/") + (loc.search || ""));
+      }
+      return token;
+    } catch (e) {
+      return null;
+    }
   }
 
   function ensureGateStyles(shadow) {
@@ -107,7 +128,7 @@
       "p{margin:0 0 16px;color:#5b5e5e;font-size:0.95rem;line-height:1.45}" +
       "label{display:block;font-size:0.8rem;margin:10px 0 4px;color:#5b5e5e}" +
       "input{width:100%;min-height:44px;padding:10px 12px;border-radius:4px;border:1px solid #b5b8b8;" +
-      "background:#fff;color:#2e2e2e;font-size:16px}" +
+      "background:#fff;color:#2e2e2e;font-size:16px;-webkit-text-size-adjust:100%}" +
       "button{margin-top:16px;width:100%;min-height:44px;padding:10px 12px;border:0;border-radius:4px;" +
       "background:#2aa0c0;color:#fff;font-weight:650;cursor:pointer;font-size:16px}" +
       "button:disabled{opacity:0.6;cursor:not-allowed}" +
@@ -116,7 +137,42 @@
     shadow.appendChild(style);
   }
 
-  function showLoginGate(methods) {
+  function showSessionChrome() {
+    try {
+      var existing = document.getElementById("mp-shim-session-host");
+      if (existing) existing.remove();
+      var host = document.createElement("div");
+      host.id = "mp-shim-session-host";
+      var shadow = host.attachShadow({ mode: "closed" });
+      var style = document.createElement("style");
+      style.textContent =
+        ":host{all:initial;position:fixed;top:max(8px,env(safe-area-inset-top,0px));" +
+        "right:max(8px,env(safe-area-inset-right,0px));z-index:2147483646;font-family:Archivo,system-ui,sans-serif}" +
+        "button{min-height:44px;min-width:44px;padding:8px 14px;border:1px solid #d3d5d5;border-radius:4px;" +
+        "background:#fbfbfc;color:#2e2e2e;font-size:14px;font-weight:650;cursor:pointer}" +
+        "button:disabled{opacity:0.6}";
+      shadow.appendChild(style);
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = "Sign out";
+      btn.addEventListener("click", function () {
+        btn.disabled = true;
+        api("auth", { action: "logout" })
+          .catch(function () {})
+          .then(function () {
+            authReady = null;
+            try {
+              sessionStorage.removeItem("mp-shim-holder");
+            } catch (e) {}
+            window.location.reload();
+          });
+      });
+      shadow.appendChild(btn);
+      (document.documentElement || document.body).appendChild(host);
+    } catch (e) {}
+  }
+
+  function showLoginGate(methods, presetError) {
     return new Promise(function (resolve) {
       function mount() {
         var host = document.getElementById("mp-shim-gate-host");
@@ -127,39 +183,56 @@
         ensureGateStyles(shadow);
         var wrap = document.createElement("div");
         wrap.className = "wrap";
-        var useSupabase = methods && methods.indexOf("supabase") !== -1;
+        var useSupabase = !methods || methods.length === 0 || methods.indexOf("supabase") !== -1;
+        var usePassword = methods && methods.indexOf("password") !== -1;
         wrap.innerHTML =
           '<form class="card" autocomplete="on">' +
           "<h1>CorConDev Motorpool</h1>" +
-          "<p>This site is private. Sign in to open the yard. The access check runs on the server.</p>" +
+          "<p>Sign in with the same email and password you use for the company portal. " +
+          "Motorpool is limited to motorpool and admin staff.</p>" +
           (useSupabase
-            ? '<label for="mp-shim-email">Email</label><input id="mp-shim-email" name="email" type="email" autocomplete="username">'
+            ? '<label for="mp-shim-email">Email</label>' +
+              '<input id="mp-shim-email" name="email" type="email" inputmode="email" ' +
+              'autocomplete="username" autocapitalize="none" autocorrect="off" ' +
+              'spellcheck="false" enterkeyhint="next"' +
+              (usePassword ? ">" : " required>")
             : "") +
           '<label for="mp-shim-password">Password</label>' +
-          '<input id="mp-shim-password" name="password" type="password" autocomplete="current-password" required>' +
-          "<button type=\"submit\">Continue</button>" +
+          '<input id="mp-shim-password" name="password" type="password" ' +
+          'autocomplete="current-password" enterkeyhint="go" required>' +
+          '<button type="submit">Sign in</button>' +
           '<div class="err" id="mp-shim-err"></div>' +
-          '<p class="note">Netlify visitor password protection, if enabled, is an extra layer in front of this gate.</p>' +
+          '<p class="note">Your session stays on this device until you sign out.</p>' +
           "</form>";
         shadow.appendChild(wrap);
         document.documentElement.appendChild(host);
         var form = shadow.querySelector("form");
         var errEl = shadow.getElementById("mp-shim-err");
+        if (errEl && presetError) errEl.textContent = presetError;
+        if (!form) return;
         form.addEventListener("submit", function (ev) {
           ev.preventDefault();
           var btn = form.querySelector("button");
           btn.disabled = true;
           errEl.textContent = "";
           var payload = { action: "login" };
-          payload.password = shadow.getElementById("mp-shim-password").value;
+          var pw = shadow.getElementById("mp-shim-password").value;
+          payload.password = pw;
           if (useSupabase) {
             var emailEl = shadow.getElementById("mp-shim-email");
-            if (emailEl && emailEl.value) payload.email = emailEl.value;
+            var email = emailEl && emailEl.value ? String(emailEl.value).trim() : "";
+            if (email) payload.email = email;
+            else if (!usePassword) {
+              errEl.textContent = "Enter your company portal email.";
+              btn.disabled = false;
+              return;
+            }
           }
           api("auth", payload)
             .then(function (out) {
               if (!out.authenticated) throw new Error("Sign-in failed");
               host.remove();
+              showSessionChrome();
               resolve(out);
             })
             .catch(function (err) {
@@ -180,9 +253,24 @@
         if (status && status.offline) {
           return { authenticated: true, method: "open", local: true, offline: true };
         }
-        if (status && status.authenticated) return status;
-        if (status && (status.open || (status.methods && status.methods.length === 0))) {
+        if (status && status.authenticated) {
+          if (status.method !== "open") showSessionChrome();
+          return status;
+        }
+        if (status && status.open) {
           return { authenticated: true, method: "open", local: true };
+        }
+        var token = consumeHandoffToken();
+        if (token) {
+          return api("auth", { action: "login", access_token: token })
+            .then(function (out) {
+              if (!out.authenticated) throw new Error("Sign-in failed");
+              showSessionChrome();
+              return out;
+            })
+            .catch(function (err) {
+              return showLoginGate(status && status.methods, err && err.message);
+            });
         }
         return showLoginGate(status && status.methods);
       })
