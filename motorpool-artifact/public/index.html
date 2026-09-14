@@ -661,7 +661,11 @@ function inferScopes(rows){
 /* One entry per VRF, plus the per-line scope map every screen reads from. */
 var _vrfs=null, _lw=null;
 function buildIndex(){
-  if(_vrfs) return;
+  /* [] is truthy. A first-paint reminders() count used to run before the
+     ledger was loaded and freeze an empty index, so History said Never
+     even when the spend was already in the workbook. */
+  if(_vrfs && _vrfs.length) return;
+  if(_vrfs && !allLines().length) return;
   _lw=new Map();
   var by={};
   allLines().forEach(function(r){
@@ -991,6 +995,7 @@ async function loadAll(){
   var docs = await Promise.all(mks.map(function(m){ return readDoc("ledger/"+m); }));
   S.ledger={};
   mks.forEach(function(m,i){ S.ledger[m]=(docs[i]&&docs[i].rows)||[]; });
+  _vrfs=null; _lw=null;
 }
 
 /* Screens where someone may be typing. A live update must never wipe a
@@ -2563,7 +2568,7 @@ function buildNav(){
       if(g[2]&&!S.office) b.className="locked";
       b.appendChild(el("span","ic", g[2]&&!S.office ? "○" : it.ic));
       b.appendChild(el("span",null,it.label));
-      var c=it.count&&it.count();
+      var c=S.ready&&it.count&&it.count();
       if(c) { var s=el("span","cnt",String(c)); b.appendChild(s); }
       b.addEventListener("click",function(){ go(it.id); });
       n.appendChild(b);

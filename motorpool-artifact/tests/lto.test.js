@@ -10,6 +10,7 @@ const {
   ltoDetailsStale,
   ltoProposalFromLine,
   ltoWorkCode,
+  vrfIndexStale,
   vrfSearchHits,
 } = require("./lib/rules");
 const { TYPES } = require("./lib/worktypes");
@@ -114,6 +115,15 @@ describe("job-history classification (artifact short-circuit)", () => {
     assert.equal(isLtoRenewalLine(ST02_LINE), true);
     const works = isLtoRenewalLine(ST02_LINE) ? [code] : ["UNCLASS"];
     assert.deepEqual(works, ["LTO-REN"]);
+  });
+});
+
+describe("VRF index cache", () => {
+  it("rebuilds when first paint froze an empty index and the ledger later has rows", () => {
+    assert.equal(vrfIndexStale(null, 1), true);
+    assert.equal(vrfIndexStale([], 1), true);
+    assert.equal(vrfIndexStale([], 0), false);
+    assert.equal(vrfIndexStale([{ vrf: "5604" }], 1), false);
   });
 });
 

@@ -326,6 +326,13 @@
    * VRF log search: "5604" hits 5604; a padded typo "56004" also hits 5604.
    * Leading zeros are ignored. Non-numeric needles still substring-match.
    */
+  /** Empty array is truthy — do not treat a first-paint [] as a built index. */
+  function vrfIndexStale(cached, lineCount) {
+    if (cached == null) return true;
+    if (!cached.length && lineCount > 0) return true;
+    return false;
+  }
+
   function vrfSearchHits(vrf, term) {
     var v = String(vrf == null ? "" : vrf).toLowerCase();
     var t = String(term == null ? "" : term).toLowerCase().trim();
@@ -710,6 +717,7 @@
     typicalBand: typicalBand,
     varianceFlag: varianceFlag,
     varianceNotice: varianceNotice,
+    vrfIndexStale: vrfIndexStale,
     vrfSearchHits: vrfSearchHits,
     workRefStates: workRefStates,
   };
