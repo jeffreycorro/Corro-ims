@@ -158,6 +158,18 @@ describe("motorpool host companion", () => {
     assert.equal(w.banner.hidden, true);
   });
 
+  it("fuel reserve ask-approval no longer requires a gauge photo, and bypass logs a VRF", () => {
+    const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
+    assert.doesNotMatch(html, /Attach the photo of the gauge\. Fuel is not approved without it/);
+    assert.doesNotMatch(html, /if\(!photoCount\(rsvOwner\(r\.no\)\)\) miss\.push\("no photo of the gauge"\)/);
+    assert.match(html, /function isFuelBypass/);
+    assert.match(html, /function bypassAttribution/);
+    assert.match(html, /function logBypassFuelVrf/);
+    assert.match(html, /Bypass — log VRF now/);
+    assert.match(html, /Gauge photo is optional/);
+    assert.match(html, /var BUILD = "2026-09-14 h"/);
+  });
+
   it("registers the current BUILD once when the doc is missing", async () => {
     const w = hostWindow('var BUILD = "2026-09-14 g";');
     const calls = [];

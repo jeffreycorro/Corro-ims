@@ -586,8 +586,40 @@
     if (!fuel) return [];
     return missingList([
       { ok: doc.gauge != null && String(doc.gauge) !== "", label: "Gauge level" },
-      { ok: Boolean(doc.gaugePhotoId || doc.gaugePhoto), label: "Gauge photo" },
     ]);
+  }
+
+  function isFuelBypass(override) {
+    return Boolean(
+      override &&
+        override.bypass &&
+        String(override.reason || "").trim() &&
+        String(override.by || "").trim()
+    );
+  }
+
+  function bypassAttribution(override, extra) {
+    extra = extra || {};
+    var who = (override && override.by) || extra.by || "";
+    var when = (override && override.at) || extra.at || "";
+    var reason = (override && override.reason) || extra.reason || "";
+    var note = (override && override.note) || extra.note || "";
+    var unit = extra.unit || extra.veh || "";
+    var litres = extra.litres != null ? extra.litres : extra.liters;
+    var parts = ["Bypass — no office approval"];
+    if (who) parts.push("by " + who);
+    if (when) parts.push("on " + when);
+    if (unit) parts.push("unit " + unit);
+    if (litres != null && litres !== "" && isFinite(Number(litres))) {
+      parts.push(Number(litres) + " L");
+    }
+    if (reason) parts.push(reason);
+    if (note) parts.push(note);
+    return parts.join(" · ");
+  }
+
+  function fuelAskApprovalBlockedByPhoto() {
+    return false;
   }
 
   function missingVrfCloseFields(doc) {
@@ -702,6 +734,9 @@
     lineAmount: lineAmount,
     longestPhraseMatch: longestPhraseMatch,
     meterKindForUnit: meterKindForUnit,
+    bypassAttribution: bypassAttribution,
+    fuelAskApprovalBlockedByPhoto: fuelAskApprovalBlockedByPhoto,
+    isFuelBypass: isFuelBypass,
     missingFuelApproveFields: missingFuelApproveFields,
     missingJoCloseFields: missingJoCloseFields,
     missingList: missingList,

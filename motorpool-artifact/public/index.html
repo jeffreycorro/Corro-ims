@@ -361,7 +361,7 @@ var SIGNATORIES = [
 ];
 var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
 /* Shown on the Ask screen, so a screenshot says which version someone is on. */
-var BUILD = "2026-09-14 g";
+var BUILD = "2026-09-14 h";
 var DAY = 86400000, MO = 30.44;
 
 /* Part categories that were entered under two spellings and so split a unit's
@@ -789,6 +789,11 @@ async function postReserveVrf(r){
   var rows=lines.map(function(l){
     var sp=partSpec(l.cat);
     var qty=parseFloat(l.qty)||0, price=parseFloat(l.price)||0;
+    var note=r.draftPurpose||r.scope||"";
+    if(r.bypass||r.fuelOverride){
+      var extra=bypassAttribution(r.fuelOverride,{unit:r.veh,litres:r.litres,by:r.approvedBy||r.requestedBy});
+      note=note?note+" — "+extra:extra;
+    }
     return {month:mk, date:r.date||iso(), vrf:String(no), veh:r.veh, name:v?v.desc:"",
       cat:l.cat, sub:sp?sp.sub:(isFuel(l.cat)?"Fuel":""),
       grp:isFuel(l.cat)?"Fuel":"Maintenance",
@@ -797,7 +802,9 @@ async function postReserveVrf(r){
       liters:parseFloat(l.liters)||null,
       odo:parseFloat(String(r.draftOdo||"").replace(/,/g,""))||null,
       reserve:String(r.no), vstatus:"Open",
-      notes:r.draftPurpose||r.scope||""};
+      override:(r.bypass||r.fuelOverride)?(r.fuelOverride||null):null,
+      bypass:!!r.bypass,
+      notes:note};
   });
   await appendLedger(mk,rows);
   return String(no);
@@ -1164,13 +1171,71 @@ function gaugePct(v){
   return null;
 }
 function rsvOwner(no){ return "RSV-"+no; }
-/* Fuel cannot be approved on a number alone — the tank has to be shown. */
+/* Bypass is the artifact Override path with bypass:true — emergency / admin
+   override. It skips office approval and logs the VRF immediately. */
+function isFuelBypass(override){
+  return !!(override && override.bypass && String(override.reason||"").trim() && String(override.by||"").trim());
+}
+function bypassAttribution(override, extra){
+  extra=extra||{};
+  var who=(override&&override.by)||extra.by||"";
+  var when=(override&&override.at)||extra.at||"";
+  var reason=(override&&override.reason)||extra.reason||"";
+  var note=(override&&override.note)||extra.note||"";
+  var unit=extra.unit||extra.veh||"";
+  var litres=extra.litres!=null?extra.litres:extra.liters;
+  var parts=["Bypass — no office approval"];
+  if(who) parts.push("by "+who);
+  if(when) parts.push("on "+when);
+  if(unit) parts.push("unit "+unit);
+  if(litres!=null&&litres!==""&&isFinite(Number(litres))) parts.push(nnum(Number(litres),0)+" L");
+  if(reason) parts.push(reason);
+  if(note) parts.push(note);
+  return parts.join(" · ");
+}
+function fuelReserveDraftLines(r){
+  var L=Number(r&&r.litres)||0;
+  var price=Number(r&&r.pricePerL)||0;
+  var bulk=rsvKind(r)==="fuel-bulk";
+  return [{
+    cat:"Fuel — Diesel",
+    item:bulk?"Bulk fuel into the reserve":"Fuel Reserve dispense",
+    supplier:bulk?(r.supplier||""):"FUEL RESERVE",
+    qty:L, unit:"L", price:price, liters:L,
+    work:(r&&r.work)||(bulk?"FUEL-BULK":"FUEL-RES")
+  }];
+}
+/* Gauge photo is optional. It must not block ask-approval or office approve. */
 function rsvReadyToApprove(r){
   if(rsvKind(r)==="job") return {ok:true,missing:[]};
   var miss=[];
   if(!r.gauge) miss.push("no gauge reading");
-  if(!photoCount(rsvOwner(r.no))) miss.push("no photo of the gauge");
   return {ok:!miss.length, missing:miss};
+}
+async function logBypassFuelVrf(r, override){
+  r.fuelOverride=override||r.fuelOverride||null;
+  r.bypass=true;
+  r.status="Approved";
+  r.approvedBudget=r.approvedBudget!=null?r.approvedBudget:r.budget;
+  r.approvedBy=(r.fuelOverride&&r.fuelOverride.by)||r.requestedBy||"";
+  r.approvedAt=(r.fuelOverride&&r.fuelOverride.at)||iso();
+  r.decisionNote=bypassAttribution(r.fuelOverride,{unit:r.veh,litres:r.litres,by:r.requestedBy});
+  if(!(r.draftLines||[]).length) r.draftLines=fuelReserveDraftLines(r);
+  r.draftPurpose=r.draftPurpose||r.decisionNote;
+  var no=await postReserveVrf(r);
+  if(no){
+    r.vrfs=(r.vrfs||[]).concat([String(no)]);
+    if(rsvKind(r)==="fuel-issue"&&r.litres>0){
+      await appendRows("withdrawals",[{
+        date:r.date||iso(), vrf:String(no), vehicle:r.veh, project:r.project||"",
+        fuel:"Diesel", cont:Math.round(r.litres/CONTAINER_L), liters:r.litres,
+        cost:null, rate:null, operator:r.approvedBy,
+        override:r.fuelOverride, reserve:String(r.no), bypass:true
+      }]);
+    }
+  }
+  await saveReserves();
+  return no;
 }
 
 var RSV_STATES={
@@ -1181,6 +1246,7 @@ var RSV_STATES={
   "Closed":["ok","Closed"]
 };
 function rsvChip(r){
+  if(r&&r.bypass) return el("span","chip warn","Bypass");
   var m=RSV_STATES[r.status]||["mute",r.status||"—"];
   return el("span","chip "+m[0],r.status);
 }
@@ -3433,13 +3499,16 @@ function askView(){
 }
 
 /* A live gate panel: it says what is wrong, and takes the override on the spot
-   rather than sending someone to a settings screen. */
-function fuelGatePanel(state,onChange){
+   rather than sending someone to a settings screen. opts.bypass keeps the card
+   visible even when nothing is stopped — that is the no-approval path. */
+function fuelGatePanel(state,onChange,opts){
+  opts=opts||{};
   var box=el("div");
   function draw(){
     box.innerHTML="";
     var chk=state.check;
-    if(!chk||!chk.gates.length){
+    var hasStops=!!(chk&&chk.stops&&chk.stops.length);
+    if(!chk||!chk.gates||!chk.gates.length){
       if(chk&&chk.move>0&&chk.expected){
         var ok=el("div","banner info");
         ok.innerHTML="<b>Within range.</b> "+nnum(chk.move,chk.meter==="km"?0:1)+" "+
@@ -3447,19 +3516,23 @@ function fuelGatePanel(state,onChange){
           esc(nnum(chk.expected,2))+" L expected at its usual "+chk.avg.toFixed(2)+" "+meterUnit(chk.meter)+".";
         box.appendChild(ok);
       }
-      return;
+      if(!opts.bypass) return;
+    }else{
+      chk.gates.forEach(function(gt){
+        var bn=el("div","banner "+(gt.level==="stop"?"crit":"warn"));
+        var d=el("div");
+        d.innerHTML="<b>"+esc(gt.msg)+"</b><br>"+esc(gt.detail);
+        bn.appendChild(d);
+        box.appendChild(bn);
+      });
     }
-    chk.gates.forEach(function(gt){
-      var bn=el("div","banner "+(gt.level==="stop"?"crit":"warn"));
-      var d=el("div");
-      d.innerHTML="<b>"+esc(gt.msg)+"</b><br>"+esc(gt.detail);
-      bn.appendChild(d);
-      box.appendChild(bn);
-    });
-    if(chk.stops&&chk.stops.length){
+    if(hasStops||opts.bypass){
+      var asBypass=!!opts.bypass;
       var ov=el("div","card"); ov.style.marginTop="var(--space-3)";
-      var oh=el("div","hd"); oh.appendChild(el("h3",null,"Override"));
-      oh.appendChild(el("span","note","Kept with the VRF and reviewable in the Office screens."));
+      var oh=el("div","hd"); oh.appendChild(el("h3",null,asBypass?"Bypass":"Override"));
+      oh.appendChild(el("span","note",asBypass
+        ?"Logs the VRF now. No office approval. Who, when, unit, litres and the reason stay on the record."
+        :"Kept with the VRF and reviewable in the Office screens."));
       ov.appendChild(oh);
       var ob=el("div","bd");
       var r1=el("div","f3");
@@ -3471,23 +3544,29 @@ function fuelGatePanel(state,onChange){
       nt.value=state.override?state.override.note:"";
       var wh=el("input"); wh.placeholder="your name";
       wh.value=state.override?state.override.by:"";
-      r1.appendChild(f3("Reason",rs)); r1.appendChild(f3("Note",nt)); r1.appendChild(f3("Approved by",wh));
+      r1.appendChild(f3("Reason",rs)); r1.appendChild(f3("Note",nt));
+      r1.appendChild(f3(asBypass?"Logged by":"Approved by",wh));
       ob.appendChild(r1);
       var act=el("div","row"); act.style.marginTop="var(--space-3)";
-      var ap=el("button","btn pri",state.override?"Override saved":"Apply override");
+      var ap=el("button","btn pri",state.override
+        ?(asBypass?"Bypass saved":"Override saved")
+        :(asBypass?"Apply bypass":"Apply override"));
       ap.addEventListener("click",function(){
-        if(!rs.value){ toast("Pick a reason for the override."); return; }
-        if(!wh.value.trim()){ toast("The override has to carry a name."); return; }
-        state.override={codes:chk.stops.map(function(g){return g.code;}),
-          reason:rs.value,note:nt.value.trim(),by:wh.value.trim(),at:iso()};
-        toast("Override recorded — the request can be posted.");
+        if(!rs.value){ toast("Pick a reason for the "+(asBypass?"bypass":"override")+"."); return; }
+        if(!wh.value.trim()){ toast("The "+(asBypass?"bypass":"override")+" has to carry a name."); return; }
+        var codes=(chk&&chk.stops)?chk.stops.map(function(g){return g.code;}):[];
+        state.override={codes:codes,
+          reason:rs.value,note:nt.value.trim(),by:wh.value.trim(),at:iso(),bypass:asBypass};
+        toast(asBypass
+          ?"Bypass recorded — the VRF will be logged without waiting for approval."
+          :"Override recorded — the request can be posted.");
         if(onChange) onChange();
         draw();
       });
       act.appendChild(ap);
       if(state.override){
         act.appendChild(el("span","chip ok","cleared by "+state.override.by+" on "+state.override.at));
-        var cl=el("button","btn sm","Remove override");
+        var cl=el("button","btn sm",asBypass?"Remove bypass":"Remove override");
         cl.addEventListener("click",function(){ state.override=null; if(onChange) onChange(); draw(); });
         act.appendChild(cl);
       }
@@ -3547,7 +3626,7 @@ function rsvView(){
 
   var c=el("div","card"), h=el("div","hd");
   h.appendChild(el("h3",null,"Raise a reserve"));
-  h.appendChild(el("span","note","Approved by the office before any purchase is made."));
+  h.appendChild(el("span","note","Approved by the office before any purchase — unless you apply a bypass, which logs the VRF now."));
   c.appendChild(h);
   var b=el("div","bd");
   function fld(l,n,hint){ var x=el("div","field"); x.appendChild(el("label",null,l)); x.appendChild(n);
@@ -3592,7 +3671,7 @@ function rsvView(){
   /* the picture of the gauge, staged and saved with the reserve */
   var rphotos=[];
   var gcard=el("div"); gcard.style.marginTop="var(--space-3)";
-  gcard.appendChild(el("div","hint","Picture of the gauge. The approver looks at this before releasing any fuel, so it has to be on the request — not added afterwards."));
+  gcard.appendChild(el("div","hint","Picture of the gauge (optional). Attach it if you have it — it does not block sending for approval."));
   var gstrip=el("div","pgrid"); gstrip.style.margin="var(--space-2) 0";
   function gdraw(){
     gstrip.innerHTML="";
@@ -3625,7 +3704,12 @@ function rsvView(){
   });
   b.appendChild(gcard);
   var fgate={check:null,override:null};
-  var fpanel=fuelGatePanel(fgate,null);
+  var sv;
+  function syncSendLabel(){
+    if(!sv) return;
+    sv.textContent=isFuelBypass(fgate.override)?"Bypass — log VRF now":"Send for approval";
+  }
+  var fpanel=fuelGatePanel(fgate,syncSendLabel,{bypass:true});
   var fgwGate=el("div"); fgwGate.style.marginTop="var(--space-3)"; fgwGate.appendChild(fpanel);
   b.appendChild(fgwGate);
 
@@ -3679,7 +3763,7 @@ function rsvView(){
   var rf=fld("Requested by",rq); rf.style.marginTop="var(--space-3)"; rf.style.maxWidth="300px";
   b.appendChild(rf);
   var act=el("div","row"); act.style.marginTop="var(--space-4)";
-  var sv=el("button","btn pri","Send for approval");
+  sv=el("button","btn pri","Send for approval");
   sv.addEventListener("click",async function(){
     var k=kindSel.value;
     if(k!=="fuel-bulk"&&!vs.getCode()){ toast("Pick a unit."); return; }
@@ -3688,15 +3772,13 @@ function rsvView(){
     if(k!=="job"&&!rgauge.value){
       toast(k==="fuel-bulk"?"Read the drum level before asking for a delivery."
         :"Read the gauge before asking for fuel — it is what the approver decides on."); return; }
-    if(k!=="job"&&!rphotos.length){
-      toast("Attach the photo of the gauge. Fuel is not approved without it."); return; }
     var amount=parseFloat(bg.value)||0;
     if(amount<=0){ toast("Put an estimated budget on it — that is what is being approved."); return; }
     if(!rq.value.trim()){ toast("The request has to carry a name."); return; }
-    sv.disabled=true; sv.textContent="Sending…";
+    sv.disabled=true; sv.textContent=isFuelBypass(fgate.override)?"Logging VRF…":"Sending…";
     var no=await claimReserveNo();
     var vno=await claimVrf();
-    S.reserves.push({no:String(no),vrfNo:String(vno),date:dt.value,kind:k,veh:(k==="fuel-bulk"?"":vs.getCode()),
+    var rec={no:String(no),vrfNo:String(vno),date:dt.value,kind:k,veh:(k==="fuel-bulk"?"":vs.getCode()),
       work: k==="fuel-issue"?"FUEL-RES":(k==="fuel-bulk"?"FUEL-BULK":(ws.value||"")),
       litres:parseFloat(lt2.value)||null, pricePerL:parseFloat(pl.value)||null,
       supplier:sup.value||"", odoAtRequest:parseFloat(String(rodo.value).replace(/,/g,""))||null,
@@ -3707,13 +3789,20 @@ function rsvView(){
       requestedBy:rq.value.trim(),status:"Requested",
       approvedBudget:null,approvedBy:"",approvedAt:"",decisionNote:"",
       vrfs:[],jo:"",actual:null,liquidatedAt:"",
-      justification:"",justifiedBy:"",varianceBy:"",varianceAt:"",varianceNote:""});
+      justification:"",justifiedBy:"",varianceBy:"",varianceAt:"",varianceNote:""};
+    S.reserves.push(rec);
     for(var gi=0;gi<rphotos.length;gi++){
       try{ await addPhoto(rsvOwner(no),{data:rphotos[gi].data,w:rphotos[gi].w,h:rphotos[gi].h,
         bytes:rphotos[gi].bytes,caption:rphotos[gi].caption,by:rq.value.trim()}); }catch(e){}
     }
-    await saveReserves();
-    toast("VRF "+vno+" sent for approval"+(rphotos.length?" with the gauge photo.":"."));
+    if(k!=="job"&&isFuelBypass(fgate.override)){
+      var logged=await logBypassFuelVrf(rec,fgate.override);
+      toast("Bypass — VRF "+(logged||vno)+" logged"+(rec.veh?" for "+rec.veh:"")+
+        (rec.litres?" · "+nnum(rec.litres,0)+" L":"")+". No office approval.");
+    }else{
+      await saveReserves();
+      toast("VRF "+vno+" sent for approval"+(rphotos.length?" with the gauge photo.":"."));
+    }
     render();
   });
   act.appendChild(sv); b.appendChild(act);
@@ -3746,7 +3835,7 @@ function rsvView(){
         if(rsvKind(r)==="job") return "—";
         var d=el("div"); d.style.cssText="display:flex;flex-wrap:wrap;gap:3px";
         d.appendChild(el("span","chip "+(r.gauge?"ok":"crit"),r.gauge?gaugeLabel(r.gauge):"not read"));
-        if(!photoCount(rsvOwner(r.no))) d.appendChild(el("span","chip crit","no photo"));
+        if(!photoCount(rsvOwner(r.no))) d.appendChild(el("span","chip mute","no photo"));
         return d; }},
       {h:"Spent",num:true,get:function(r){
         var rv=reserveVariance(r);
@@ -3842,11 +3931,12 @@ function openReserve(no,asApprover){
         b.appendChild(okb);
       }
     }
-    if(r.fuelOverride){
+    if(r.bypass||r.fuelOverride){
       var fo=el("div","banner warn");
-      fo.innerHTML="<b>The fuel check was overridden when this was raised.</b> "+
-        esc(r.fuelOverride.reason)+(r.fuelOverride.note?" — "+esc(r.fuelOverride.note):"")+
-        "  ·  "+esc(r.fuelOverride.by)+" on "+esc(r.fuelOverride.at);
+      fo.innerHTML=(r.bypass
+        ?"<b>Bypass — VRF logged without office approval.</b> "
+        :"<b>The fuel check was overridden when this was raised.</b> ")+
+        esc(bypassAttribution(r.fuelOverride,{unit:r.veh,litres:r.litres,by:r.requestedBy||r.approvedBy}));
       b.appendChild(fo);
     }
   }
@@ -3868,7 +3958,7 @@ function openReserve(no,asApprover){
       list=list.filter(function(x){ return x.kind!=="link"&&x.data; });
       if(!list.length){
         var nb=el("div","banner warn");
-        nb.innerHTML="<b>No picture of the gauge on this request.</b> Fuel is not approved without one — send it back and ask for the photo.";
+        nb.innerHTML="<b>No picture of the gauge on this request.</b> Optional — it does not block approval.";
         pgal.appendChild(nb);
         return;
       }
@@ -4161,7 +4251,7 @@ function openReserve(no,asApprover){
     if(!ready.ok){
       var rb=el("div","banner crit"); rb.style.marginTop="var(--space-3)";
       rb.innerHTML="<b>This fuel request cannot be approved yet — "+esc(ready.missing.join(" and "))+
-        ".</b> The gauge reading and its photo have to be on the request before any fuel is released. Reject it and ask the yard to raise it again with the picture.";
+        ".</b> The gauge reading has to be on the request. A gauge photo is optional.";
       acb.appendChild(rb);
     }
     var arow=el("div","row"); arow.style.marginTop="var(--space-3)";
@@ -4323,7 +4413,7 @@ function approveView(){
         var d=el("div"); d.style.cssText="display:flex;flex-wrap:wrap;gap:3px";
         d.appendChild(el("span","chip "+(r.gauge?"ok":"crit"),
           r.gauge?"gauge "+gaugeLabel(r.gauge):"no gauge reading"));
-        d.appendChild(el("span","chip "+(photoCount(rsvOwner(r.no))?"ok":"crit"),
+        d.appendChild(el("span","chip "+(photoCount(rsvOwner(r.no))?"ok":"mute"),
           photoCount(rsvOwner(r.no))?"📎 photo":"no photo"));
         return d; }},
       {h:"",get:function(r){
@@ -6887,7 +6977,7 @@ async function sendForApproval(d,btn){
     return a+((parseFloat(l.qty)||0)*(parseFloat(l.price)||0)); },0);
   if(total<=0){ toast("Put the estimated amounts on the lines — that is what is being approved."); return; }
   if(rows.some(function(l){ return isFuel(l.cat); })){
-    toast("Fuel is raised on the Reserves screen — it needs the gauge reading and its photo first.");
+    toast("Fuel is raised on the Reserves screen — pick the litres and the gauge reading there. A gauge photo is optional.");
     S.view="rsv"; render(); return;
   }
   /* No window.prompt here: this page runs in a sandboxed frame that blocks
@@ -6936,8 +7026,8 @@ async function postVrf(d,btn){
   if(!d.veh){ toast("Pick a unit first."); return; }
   if(!d.work){ toast("Pick the type of job — it is what makes this VRF findable later."); return; }
   var fuelLines=d.lines.filter(function(l){ return isFuel(l.cat)&&(parseFloat(l.qty)||parseFloat(l.liters)); });
-  if(fuelLines.length&&!d.reserve){
-    toast("Fuel needs an approved reserve behind it — pick one at the top of the form.");
+  if(fuelLines.length&&!d.reserve&&!isFuelBypass(d.gateOverride)){
+    toast("Fuel needs an approved reserve behind it — pick one at the top of the form, or apply a bypass.");
     return;
   }
   if(fuelLines.length&&!d.gateOverride){
@@ -6968,10 +7058,13 @@ async function postVrf(d,btn){
         supplier:l.supplier, project:d.project, liters:parseFloat(l.liters)||null,
         odo:parseFloat(String(d.odo).replace(/,/g,""))||null,
         override: (isFuel(l.cat)&&d.gateOverride)?d.gateOverride:null,
+        bypass: isFuel(l.cat)&&isFuelBypass(d.gateOverride),
         reserve: d.reserve||"", vstatus:"Open",
         jo: (d.jo&&d.jo.indexOf("JO:")===0)?d.jo.slice(3):"",
         task: (d.jo&&d.jo.indexOf("T:")===0)?d.jo.slice(2):"",
-        notes:d.purpose};
+        notes: (isFuel(l.cat)&&isFuelBypass(d.gateOverride))
+          ? bypassAttribution(d.gateOverride,{unit:d.veh,litres:l.liters||l.qty,by:d.requestedBy})
+          : d.purpose};
     });
     await appendLedger(mk,out);
     /* a line drawn against the reserve is also a withdrawal from the drums */
@@ -7131,7 +7224,7 @@ function fuelView(){
   }
   fillRsv();
   var rfld=fld("Against an approved reserve",rsel,
-    "Fuel out of the drums is spend like any other — it needs an approved reserve behind it.");
+    "Normal path: pick an approved reserve. Bypass (below) logs the VRF now and does not wait for approval.");
   rfld.style.gridColumn="1 / -1";
   fb.appendChild(rfld);
   var dt=el("input"); dt.type="date"; dt.value=iso();
@@ -7156,7 +7249,12 @@ function fuelView(){
   form2.appendChild(fld("Containers",cn)); form2.appendChild(fld("Litres",lt)); form2.appendChild(fld("Released to",op));
   fb.appendChild(form2);
   var dgate={check:null,override:null};
-  var dpanel=fuelGatePanel(dgate,null);
+  var sub;
+  function syncDispenseLabel(){
+    if(!sub) return;
+    sub.textContent=isFuelBypass(dgate.override)?"Bypass — log VRF now":"Record dispense";
+  }
+  var dpanel=fuelGatePanel(dgate,syncDispenseLabel,{bypass:true});
   var dodo=el("input"); dodo.className="mono"; dodo.inputMode="numeric";
   var dodoW=fld("Meter reading now",dodo);
   var dhint=el("div","hint"); dodoW.appendChild(dhint);
@@ -7209,11 +7307,12 @@ function fuelView(){
   fb.appendChild(pcard);
 
   var act=el("div","row"); act.style.marginTop="12px";
-  var sub=el("button","btn pri","Record dispense");
+  sub=el("button","btn pri","Record dispense");
   sub.addEventListener("click",async function(){
-    if(!rsel.value){ toast("Pick the approved reserve this fuel is going against."); return; }
+    var bypass=isFuelBypass(dgate.override);
+    if(!rsel.value&&!bypass){ toast("Pick the approved reserve this fuel is going against, or apply a bypass."); return; }
     if(!vs.getCode()){ toast("Pick a unit."); return; }
-    if(!dphotos.length){ toast("Attach the gauge or meter photo — it is what closes the reserve."); return; }
+    if(!dphotos.length&&!bypass){ toast("Attach the gauge or meter photo — it is what closes the reserve."); return; }
     var L=(parseFloat(cn.value)||0)*CONTAINER_L;
     if(L<=0){ toast("Containers must be at least 1."); return; }
     if(L>f.onHand){ toast("Only "+nnum(f.onHand,0)+" L on hand — record a delivery first."); return; }
@@ -7225,24 +7324,48 @@ function fuelView(){
     }
     sub.disabled=true; sub.textContent="Recording…";
     var no=await claimVrf();
+    var rsvNo=rsel.value;
+    if(!rsvNo&&bypass){
+      rsvNo=String(await claimReserveNo());
+      S.reserves.push({no:rsvNo,vrfNo:String(no),date:dt.value,kind:"fuel-issue",
+        veh:vs.getCode(),work:"FUEL-RES",litres:L,pricePerL:null,supplier:"FUEL RESERVE",
+        odoAtRequest:parseFloat(String(dodo.value).replace(/,/g,""))||null,
+        gauge:"",gaugePct:null,tankLeft:null,fuelOverride:dgate.override,bypass:true,
+        project:ps.value,budget:0,needBy:"",
+        scope:bypassAttribution(dgate.override,{unit:vs.getCode(),litres:L,by:op.value}),
+        requestedBy:op.value.trim()||dgate.override.by,status:"Approved",
+        approvedBudget:0,approvedBy:dgate.override.by,approvedAt:dgate.override.at,
+        decisionNote:bypassAttribution(dgate.override,{unit:vs.getCode(),litres:L,by:op.value}),
+        vrfs:[String(no)],jo:"",actual:null,liquidatedAt:"",
+        justification:"",justifiedBy:"",varianceBy:"",varianceAt:"",varianceNote:""});
+    }
+    var attr=bypass
+      ? bypassAttribution(dgate.override,{unit:vs.getCode(),litres:L,by:op.value})
+      : "Reserve dispense";
     await appendRows("withdrawals",[{date:dt.value,vrf:String(no),vehicle:vs.getCode(),project:ps.value,
       fuel:"Diesel",cont:parseFloat(cn.value)||0,liters:L,cost:null,rate:null,
-      operator:op.value,override:dgate.override||null,reserve:rsel.value}]);
+      operator:op.value,override:dgate.override||null,reserve:rsvNo,bypass:bypass}]);
     var mk=monthKey(dt.value)||iso().slice(0,7);
     var v=vehicle(vs.getCode());
     await appendLedger(mk,[{month:mk,date:dt.value,vrf:String(no),veh:vs.getCode(),name:v?v.desc:"",
       cat:"Fuel — Diesel",sub:"Fuel",grp:"Fuel",work:"FUEL-RES",item:"Fuel Reserve dispense",qty:L,price:null,total:null,
       supplier:"FUEL RESERVE",project:ps.value,liters:L,
       odo:parseFloat(String(dodo.value).replace(/,/g,""))||null,
-      override:dgate.override||null,reserve:rsel.value,vstatus:"Open",
-      notes:"Reserve dispense"}]);
+      override:dgate.override||null,reserve:rsvNo,vstatus:"Open",bypass:bypass,
+      notes:attr}]);
     for(var pi=0;pi<dphotos.length;pi++){
       try{ await addPhoto(no,{data:dphotos[pi].data,w:dphotos[pi].w,h:dphotos[pi].h,
         bytes:dphotos[pi].bytes,caption:dphotos[pi].caption,by:op.value}); }catch(e){}
     }
-    var rr=reserveBy(rsel.value);
-    if(rr){ rr.vrfs=(rr.vrfs||[]).concat([String(no)]); await saveReserves(); }
-    toast("Dispensed "+nnum(L,0)+" L on VRF "+no+" against RSV-"+rsel.value+".");
+    var rr=reserveBy(rsvNo);
+    if(rr){
+      if((rr.vrfs||[]).indexOf(String(no))<0) rr.vrfs=(rr.vrfs||[]).concat([String(no)]);
+      if(bypass){ rr.bypass=true; rr.fuelOverride=rr.fuelOverride||dgate.override; }
+      await saveReserves();
+    }
+    toast(bypass
+      ? "Bypass — VRF "+no+" logged for "+vs.getCode()+" · "+nnum(L,0)+" L. No office approval."
+      : "Dispensed "+nnum(L,0)+" L on VRF "+no+" against RSV-"+rsvNo+".");
     render();
   });
   act.appendChild(sub);
