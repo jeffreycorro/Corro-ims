@@ -228,6 +228,7 @@ describe("hr-recruit application file", () => {
       { id: "a1", hiredEmpId: "e9" }
     );
     assert.match(hired, /Open 201 file/);
+    assert.match(hired, /View 201 \/ application file/);
   });
 
   it("renders the Recruitment checklist and resume link without requiring a 201", () => {
@@ -249,6 +250,63 @@ describe("hr-recruit application file", () => {
     assert.doesNotMatch(html, /Gov \/ Valid ID/);
     assert.match(html, /https:\/\/drive\.example\/luisa/);
     assert.match(html, /application file, not a hired 201/);
+    assert.match(html, /Application files/);
+    assert.match(html, />Open</);
+  });
+
+  it("attaches Drive files whose titles match the applicant name", async () => {
+    const w = fakeWindow({
+      a1: { id: "a1", name: "Barrios, Luisa G.", resumeLink: "", hiredEmpId: "" },
+    });
+    w.claude = {
+      use(name) {
+        if (name !== "mcp") return Promise.resolve(null);
+        return Promise.resolve({
+          callTool(_server, tool, args) {
+            assert.equal(tool, "search_files");
+            return Promise.resolve({
+              payload: {
+                files: [
+                  {
+                    id: "file1",
+                    title: "Barrios_Luisa_Application.pdf",
+                    viewUrl: "https://drive.google.com/file/d/file1/view",
+                    mimeType: "application/pdf",
+                  },
+                  {
+                    id: "file2",
+                    title: "Unrelated leave form.pdf",
+                    viewUrl: "https://drive.google.com/file/d/file2/view",
+                    mimeType: "application/pdf",
+                  },
+                ],
+              },
+            });
+          },
+        });
+      },
+    };
+    const hr = loadRecruit(w);
+    const result = await hr.prepareApplicationFiles(w.S.applicants.a1, { forceDrive: true });
+    assert.equal(result.found, 1);
+    assert.match(w.S.applicants.a1.resumeLink, /file1/);
+    assert.equal(w.S.applicants.a1.docs.resume.s, "on");
+    assert.ok(!(w.S.applicants.a1.linkedDocs || []).some((x) => /file2/.test((x && x.url) || "")));
+  });
+
+  it("surfaces a Drive file id that ingest stored instead of resumeLink", () => {
+    const w = fakeWindow({
+      a1: {
+        id: "a1",
+        name: "Santos, Hazel Kate",
+        driveFileId: "1AbCdEfGhIjKlMnOpQrStUvWxYz012345",
+        hiredEmpId: "",
+      },
+    });
+    const hr = loadRecruit(w);
+    const html = hr.applicationFileHtml(w.S.applicants.a1);
+    assert.match(html, /drive\.google\.com\/file\/d\/1AbCdEfGhIjKlMnOpQrStUvWxYz012345/);
+    assert.match(html, /On file/);
   });
 });
 

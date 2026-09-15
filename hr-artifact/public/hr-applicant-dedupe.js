@@ -572,6 +572,7 @@
 
   function incomingAsApplicant(norm) {
     var fields = (norm && norm.fields) || {};
+    var files = ingestFileFields(norm && norm.item ? norm.item : fields);
     return {
       id: "",
       name: (norm && norm.name) || "",
@@ -583,17 +584,17 @@
       roleId: fields.roleId || "",
       position: fields.position || "",
       dept: fields.dept || "",
-      resumeLink: fields.resumeLink || "",
+      resumeLink: files.resumeLink || fields.resumeLink || "",
       notes: fields.notes || "",
       expected: fields.expected || "",
       education: fields.education || "",
       years: fields.years || "",
-      docs: {},
+      docs: files.docs || {},
       exams: [],
       interviews: [],
       history: [],
       background: [],
-      linkedDocs: [],
+      linkedDocs: files.linkedDocs || [],
       staffNotes: [],
     };
   }
@@ -647,20 +648,236 @@
     return { s: "miss", link: "", links: [], filed: "", expiry: "", title: "" };
   }
 
+  var DRIVE_FILE_RE =
+    /(?:drive\.google\.com\/(?:file\/d\/|open\?id=)|docs\.google\.com\/(?:document|spreadsheets|presentation)\/d\/)([A-Za-z0-9_-]+)/i;
+  var DRIVE_FOLDER_RE = /drive\.google\.com\/drive\/(?:u\/\d+\/)?folders\/([A-Za-z0-9_-]+)/i;
+  var DRIVE_ID_RE = /^[A-Za-z0-9_-]{20,}$/;
+
+  function driveFileUrl(id) {
+    var key = asString(id);
+    if (!key) return "";
+    return "https://drive.google.com/file/d/" + key + "/view";
+  }
+
+  function parseDriveRef(value) {
+    var s = asString(value);
+    if (!s) return null;
+    var m = s.match(DRIVE_FOLDER_RE);
+    if (m) {
+      return {
+        kind: "folder",
+        id: m[1],
+        url: "https://drive.google.com/drive/folders/" + m[1],
+      };
+    }
+    m = s.match(DRIVE_FILE_RE);
+    if (m) return { kind: "file", id: m[1], url: driveFileUrl(m[1]) };
+    if (DRIVE_ID_RE.test(s) && !/^https?:\/\//i.test(s)) {
+      return { kind: "file", id: s, url: driveFileUrl(s) };
+    }
+    if (/^https?:\/\//i.test(s)) return { kind: "url", id: "", url: s };
+    return null;
+  }
+
+  function normalizeFileRef(raw, fallbackTitle) {
+    if (raw == null || raw === "") return null;
+    if (typeof raw === "string" || typeof raw === "number") {
+      var parsed = parseDriveRef(raw);
+      if (!parsed) return null;
+      return {
+        url: parsed.url,
+        title: asString(fallbackTitle) || (parsed.kind === "folder" ? "Application folder" : "Application file"),
+        note: "",
+        kind: parsed.kind,
+        id: parsed.id,
+        docKey: "",
+      };
+    }
+    if (typeof raw !== "object") return null;
+    var url = asString(raw.url || raw.link || raw.href || raw.webViewLink || raw.viewUrl);
+    var id = asString(raw.id || raw.fileId || raw.driveFileId || raw.driveId);
+    if (!url && id) {
+      var fromId = parseDriveRef(id);
+      if (fromId) {
+        url = fromId.url;
+        id = fromId.id;
+      }
+    }
+    if (!url) return null;
+    var parsedUrl = parseDriveRef(url) || { kind: "url", id: id, url: url };
+    return {
+      url: parsedUrl.url || url,
+      title: asString(raw.title || raw.name || raw.filename || fallbackTitle) || "Application file",
+      note: asString(raw.note || raw.source),
+      kind: parsedUrl.kind || "url",
+      id: parsedUrl.id || id,
+      docKey: asString(raw.docKey || raw.k || raw.kind),
+    };
+  }
+
+  function lastNameToken(name) {
+    var raw = asString(name);
+    if (!raw) return "";
+    var comma = raw.indexOf(",");
+    if (comma >= 0) return tokensOf(raw.slice(0, comma))[0] || "";
+    var parts = tokensOf(raw);
+    return parts.length ? parts[parts.length - 1] : "";
+  }
+
+  function fileMatchesApplicant(title, name) {
+    var nameTokens = tokensOf(name);
+    if (!nameTokens.length) return false;
+    var hay = foldMarks(title).replace(/[_./-]+/g, " ");
+    var hits = nameTokens.filter(function (tok) {
+      return hay.indexOf(tok) >= 0;
+    });
+    if (nameTokens.length === 1) return hits.length === 1 && nameTokens[0].length >= 5;
+    return hits.length >= 2;
+  }
+
+  function guessApplicantDocKey(title) {
+    var t = foldMarks(title).replace(/[_./-]+/g, " ");
+    if (/transcript|\btor\b/.test(t)) return "tor";
+    if (/data\s*sheet|\bpds\b/.test(t)) return "datasheet";
+    if (/residential\s*sketch|sketch\s*of/.test(t)) return "sketch";
+    if (/iq\s*test|aptitude/.test(t)) return "iqtest";
+    if (/initial\s*interview/.test(t)) return "initint";
+    if (/recommend|rffi/.test(t)) return "recoletter";
+    if (/endorsement/.test(t)) return "endorse";
+    if (/diploma|certificate of|\bcoc\b|\bnc\s*ii\b/.test(t)) return "certs";
+    return "resume";
+  }
+
+  function collectApplicationFiles(applicant) {
+    var a = applicant || {};
+    var out = [];
+    var seen = Object.create(null);
+    function push(raw, fallbackTitle, note) {
+      var n = normalizeFileRef(raw, fallbackTitle);
+      if (!n || !n.url || seen[n.url]) return;
+      seen[n.url] = true;
+      if (note && !n.note) n.note = note;
+      out.push(n);
+    }
+    push(a.resumeLink, "CV / application", "resumeLink");
+    push(a.cvLink, "CV / application", "cvLink");
+    push(a.cv, "CV / application", "cv");
+    push(a.applicationLink, "Application file", "applicationLink");
+    push(a.driveUrl, "Drive file", "driveUrl");
+    push(a.fileUrl, "Application file", "fileUrl");
+    push(a.driveFileId || a.fileId || a.resumeFileId || a.driveId, "CV / application", "driveFileId");
+    ;["attachments", "files", "linkedDocs"].forEach(function (key) {
+      var list = a[key];
+      if (!Array.isArray(list)) return;
+      list.forEach(function (x) {
+        push(x, key === "linkedDocs" ? "Linked file" : "Attachment", key);
+      });
+    });
+    var docs = a.docs && typeof a.docs === "object" ? a.docs : {};
+    Object.keys(docs).forEach(function (k) {
+      var v = docs[k] || {};
+      push(v.link, v.title || k, k);
+      (v.links || []).forEach(function (x) {
+        push(x, (x && x.title) || k, k);
+      });
+    });
+    return out;
+  }
+
+  function addLinkToDocRow(row, file, filedOn) {
+    var cur = row || blankDocRow();
+    var url = asString(file && file.url);
+    if (!url) return cur;
+    var links = [];
+    var seen = Object.create(null);
+    function pushLink(u, title) {
+      u = asString(u);
+      if (!u || seen[u]) return;
+      seen[u] = true;
+      links.push({ url: u, title: asString(title), on: asString(filedOn) });
+    }
+    pushLink(cur.link, cur.title);
+    (cur.links || []).forEach(function (x) {
+      if (typeof x === "string") pushLink(x, "");
+      else if (x) pushLink(x.url, x.title);
+    });
+    pushLink(url, file.title);
+    if (links.length && cur.s === "miss") cur.s = "on";
+    cur.link = links[0] ? links[0].url : "";
+    cur.title = links[0] ? links[0].title : cur.title;
+    cur.links = links;
+    cur.filed = asString(cur.filed) || asString(filedOn);
+    return cur;
+  }
+
+  function ingestFileFields(item) {
+    var src = item && typeof item === "object" && !Array.isArray(item) ? item : {};
+    var files = collectApplicationFiles(src);
+    var resume = "";
+    var linked = [];
+    files.forEach(function (f) {
+      if (!resume && f.url && f.kind !== "folder") resume = f.url;
+      linked.push({
+        title: f.title,
+        url: f.url,
+        note: f.note || "ingest",
+        added: asString(src.appliedOn),
+      });
+    });
+    if (!resume && files[0] && files[0].url) resume = files[0].url;
+    var docs = seedApplicantDocs({
+      resumeLink: resume,
+      linkedDocs: linked,
+      docs: src.docs && typeof src.docs === "object" ? src.docs : {},
+      appliedOn: src.appliedOn,
+    });
+    return { resumeLink: resume, linkedDocs: linked, docs: docs };
+  }
+
+  function attachFilesToApplicant(applicant, files, opts) {
+    opts = opts || {};
+    var a = applicant || {};
+    var incoming = (files || []).map(function (f) {
+      return normalizeFileRef(f, f && f.title);
+    }).filter(Boolean);
+    var linked = (a.linkedDocs || []).slice();
+    var seen = Object.create(null);
+    linked.forEach(function (x) {
+      var n = normalizeFileRef(x);
+      if (n && n.url) seen[n.url] = true;
+    });
+    incoming.forEach(function (f) {
+      if (!f.url || seen[f.url]) return;
+      seen[f.url] = true;
+      linked.push({
+        title: f.title,
+        url: f.url,
+        note: f.note || opts.note || "Drive match",
+        added: asString(opts.today || a.appliedOn),
+      });
+    });
+    if (!asString(a.resumeLink)) {
+      var first = incoming.find(function (f) {
+        return f.kind !== "folder";
+      }) || incoming[0];
+      if (first) a.resumeLink = first.url;
+    }
+    a.linkedDocs = linked;
+    a.docs = seedApplicantDocs(a, opts);
+    return a;
+  }
+
   function seedApplicantDocs(applicant, opts) {
     opts = opts || {};
     var a = applicant || {};
     var docs = cloneRow(a.docs || {});
-    var resume = asString(a.resumeLink);
-    if (resume) {
-      docs.resume = docs.resume || blankDocRow();
-      if (!asString(docs.resume.link) && !(docs.resume.links || []).length) {
-        docs.resume.link = resume;
-        docs.resume.links = [{ url: resume, title: "CV / application", on: asString(a.appliedOn) }];
-        docs.resume.s = docs.resume.s === "miss" ? "on" : docs.resume.s;
-        docs.resume.filed = docs.resume.filed || asString(a.appliedOn);
-      }
-    }
+    collectApplicationFiles(a).forEach(function (f) {
+      if (f.kind === "folder") return;
+      var k = f.docKey && RECRUITMENT_DOCS.some(function (d) { return d.k === f.docKey; })
+        ? f.docKey
+        : guessApplicantDocKey(f.title || f.url);
+      docs[k] = addLinkToDocRow(docs[k], f, a.appliedOn);
+    });
     if ((a.exams || []).length) {
       docs.iqtest = docs.iqtest || blankDocRow();
       if (docs.iqtest.s === "miss") docs.iqtest.s = "on";
@@ -687,21 +904,8 @@
       seen[url] = true;
       out.push({ url: url, title: asString(title) || "Attachment", note: asString(note) });
     }
-    var a = applicant || {};
-    push(a.resumeLink, "CV / documents", "resumeLink");
-    (a.linkedDocs || []).forEach(function (x) {
-      if (!x) return;
-      if (typeof x === "string") push(x, "Linked file", "");
-      else push(x.url || x.link, x.title, x.note);
-    });
-    var docs = a.docs || {};
-    Object.keys(docs).forEach(function (k) {
-      var v = docs[k] || {};
-      push(v.link, v.title || k, k);
-      (v.links || []).forEach(function (x) {
-        if (typeof x === "string") push(x, k, k);
-        else if (x) push(x.url, x.title || k, k);
-      });
+    collectApplicationFiles(applicant).forEach(function (f) {
+      push(f.url, f.title, f.note);
     });
     return out;
   }
@@ -718,7 +922,16 @@
     emailKey: emailKey,
     emailsCompatible: emailsCompatible,
     extraLinks: extraLinks,
+    attachFilesToApplicant: attachFilesToApplicant,
+    collectApplicationFiles: collectApplicationFiles,
+    driveFileUrl: driveFileUrl,
+    fileMatchesApplicant: fileMatchesApplicant,
     findIngestMatch: findIngestMatch,
+    guessApplicantDocKey: guessApplicantDocKey,
+    ingestFileFields: ingestFileFields,
+    lastNameToken: lastNameToken,
+    normalizeFileRef: normalizeFileRef,
+    parseDriveRef: parseDriveRef,
     furthestStage: furthestStage,
     groupApplicants: groupApplicants,
     incomingAsApplicant: incomingAsApplicant,

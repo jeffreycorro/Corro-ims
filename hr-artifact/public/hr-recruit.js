@@ -9,10 +9,10 @@
 (function (root) {
   "use strict";
 
-  if (root.hrRecruit && root.hrRecruit.version === "1.4.0") return;
+  if (root.hrRecruit && root.hrRecruit.version === "1.5.0") return;
 
   var api = {
-    version: "1.4.0",
+    version: "1.5.0",
     attached: false,
     openAppId: "",
     roleFilter: "",
@@ -888,9 +888,12 @@
     var html = String(foot || "");
     if (html.indexOf("hr-recruit-file") >= 0) return html;
     var hired = applicant && applicant.hiredEmpId;
-    var label = hired ? "Open 201 file" : "View 201 / application file";
     var btn =
-      '<button class="btn" id="hr-recruit-file" type="button">' + esc(label) + "</button>";
+      '<button class="btn" id="hr-recruit-file" type="button">View 201 / application file</button>';
+    if (hired) {
+      btn +=
+        '<button class="btn" id="hr-recruit-open-201-inline" type="button">Open 201 file</button>';
+    }
     if (html.indexOf('id="a-hire"') >= 0) {
       return html.replace('<button class="btn" id="a-hire"', btn + '<button class="btn" id="a-hire"');
     }
@@ -928,11 +931,20 @@
     return out;
   }
 
+  function applicationFiles(a) {
+    var d = dedupe();
+    if (typeof d.collectApplicationFiles === "function") return d.collectApplicationFiles(a);
+    if (typeof d.extraLinks === "function") return d.extraLinks(a);
+    var out = [];
+    if (a && a.resumeLink) out.push({ url: a.resumeLink, title: "CV / application", note: "resumeLink" });
+    return out;
+  }
+
   function applicationFileHtml(a) {
     var d = dedupe();
     var docs = typeof d.seedApplicantDocs === "function" ? d.seedApplicantDocs(a) : (a.docs || {});
     var items = recruitmentDocList();
-    var extras = typeof d.extraLinks === "function" ? d.extraLinks(Object.assign({}, a, { docs: docs })) : [];
+    var files = applicationFiles(Object.assign({}, a, { docs: docs }));
     var hired = a.hiredEmpId && store() && store().employees && store().employees[a.hiredEmpId];
     var h =
       '<div class="stack" id="hr-recruit-file-body" data-app="' +
@@ -946,17 +958,32 @@
       esc(a.stage || "Applied") +
       ". This is the application file, not a hired 201. " +
       (hired
-        ? 'They already have a 201: use <b>Open 201 file</b>.'
-        : "Hire still creates the employee 201. Attach Drive links here for reference.") +
+        ? 'They already have a 201: use <b>Open 201 file</b> after the application PDF is linked here.'
+        : "Hire still creates the employee 201. The extractor / Drive link is the file — it is not re-uploaded.") +
       "</div>";
-    if (a.resumeLink) {
+    h +=
+      '<div class="sect-h" style="margin:6px 0 0"><h2 style="font-size:12.5px">Application files</h2><span class="rule"></span></div>';
+    if (files.length) {
+      h += '<div class="chklist">';
+      files.forEach(function (x, i) {
+        h +=
+          '<div class="chk"><span class="idx">' +
+          String(i + 1).padStart(2, "0") +
+          '</span><span class="n"><b>' +
+          esc(x.title || "Application file") +
+          '</b><span class="lbl">' +
+          esc(x.note || (x.kind === "folder" ? "Drive folder" : "Drive / CV link")) +
+          "</span></span>" +
+          '<a class="btn sm pri" href="' +
+          esc(x.url) +
+          '" target="_blank" rel="noopener noreferrer">Open</a></div>';
+      });
+      h += "</div>";
+    } else {
       h +=
-        '<div class="row"><a class="btn sm pri" href="' +
-        esc(a.resumeLink) +
-        '" target="_blank" rel="noopener noreferrer">Open CV / documents</a>' +
-        '<span class="lbl mono">' +
-        esc(a.resumeLink) +
-        "</span></div>";
+        '<div class="note" style="border-left-color:var(--warn)"><b>No application PDF is linked yet.</b> ' +
+        "If GoDaddy / Drive already holds the file, use <b>Find files in Drive</b> — the portal matches the " +
+        "applicant name onto the Recruitment folder and does not copy the binary into this database.</div>";
     }
     h +=
       '<div class="sect-h" style="margin:6px 0 0"><h2 style="font-size:12.5px">Recruitment checklist</h2><span class="rule"></span></div>' +
@@ -1017,23 +1044,9 @@
         '"></div>';
     });
     h += "</div>";
-    if (extras.length) {
-      h +=
-        '<div class="sect-h" style="margin:10px 0 0"><h2 style="font-size:12.5px">Links on this application</h2><span class="rule"></span></div><div class="chklist">';
-      extras.forEach(function (x, i) {
-        h +=
-          '<div class="chk"><span class="idx">' +
-          String(i + 1).padStart(2, "0") +
-          '</span><span class="n"><b>' +
-          esc(x.title) +
-          "</b><span class=\"lbl\">" +
-          esc(x.note || "") +
-          '</span></span><a class="btn sm" href="' +
-          esc(x.url) +
-          '" target="_blank" rel="noopener noreferrer">Open</a></div>';
-      });
-      h += "</div>";
-    }
+    h +=
+      '<div class="note">TOR, certificates and the data sheet stay <b>Missing</b> until those papers exist. ' +
+      "The application PDF belongs on <b>Resume / Biodata</b>.</div>";
     h +=
       '<div class="f"><label>Add another Drive / application link</label>' +
       '<div class="row"><input id="hr-recruit-extra-title" placeholder="Label (e.g. TOR scan)">' +
@@ -1073,6 +1086,181 @@
     return a;
   }
 
+  function recruitmentFolderId() {
+    var list = root.GENERAL_FOLDERS || [];
+    var i;
+    for (i = 0; i < list.length; i += 1) {
+      if (list[i] && (list[i].k === "g08" || /recruit/i.test(list[i].n || ""))) return list[i].id;
+    }
+    return "1zGWUEFDsHyqYE1lOK6xNyQvGh2BW0a9j";
+  }
+
+  function escapeDriveQuery(value) {
+    return String(value || "").replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  }
+
+  async function getDriveMcp() {
+    if (typeof root.getMcp === "function") {
+      try {
+        return await root.getMcp();
+      } catch (e) {
+        return null;
+      }
+    }
+    if (root.claude && typeof root.claude.use === "function") {
+      try {
+        return await root.claude.use("mcp");
+      } catch (e) {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  function driveFilesFromResult(res) {
+    if (typeof root.payloadFiles === "function") return root.payloadFiles(res) || [];
+    var p = (res && res.payload) || {};
+    return p.files || p.items || [];
+  }
+
+  function asDriveAttachment(f, note) {
+    if (!f) return null;
+    var id = f.id || "";
+    var url = f.viewUrl || f.webViewLink || (id ? "https://drive.google.com/file/d/" + id + "/view" : "");
+    if (!url) return null;
+    return {
+      title: f.title || f.name || "Application file",
+      url: url,
+      id: id,
+      mimeType: f.mimeType || "",
+      note: note || "matched in Drive by name",
+    };
+  }
+
+  async function searchDriveQuery(mcp, query) {
+    if (!mcp || typeof mcp.callTool !== "function") return [];
+    try {
+      var res = await mcp.callTool("Google Drive", "search_files", {
+        query: query,
+        pageSize: 50,
+        excludeContentSnippets: true,
+      });
+      return driveFilesFromResult(res);
+    } catch (e) {
+      return [];
+    }
+  }
+
+  async function listDriveFolderFiles(mcp, folderId, note) {
+    if (!folderId) return [];
+    var kids = await searchDriveQuery(mcp, "parentId = '" + escapeDriveQuery(folderId) + "'");
+    return kids
+      .filter(function (f) {
+        return f && f.mimeType !== "application/vnd.google-apps.folder";
+      })
+      .map(function (f) {
+        return asDriveAttachment(f, note || "from application folder");
+      })
+      .filter(Boolean);
+  }
+
+  async function findApplicantDriveFiles(a) {
+    var d = dedupe();
+    var matches = typeof d.fileMatchesApplicant === "function" ? d.fileMatchesApplicant : null;
+    var last = typeof d.lastNameToken === "function" ? d.lastNameToken(a && a.name) : "";
+    var mcp = await getDriveMcp();
+    if (!mcp) return { files: [], reason: "drive-unavailable" };
+    var seen = Object.create(null);
+    var out = [];
+    function take(file, note) {
+      var att = asDriveAttachment(file, note);
+      if (!att || seen[att.url] || seen[att.id]) return;
+      var title = att.title;
+      if (matches && a && a.name && !matches(title, a.name)) return;
+      seen[att.url] = true;
+      if (att.id) seen[att.id] = true;
+      out.push(att);
+    }
+    var folderRefs = applicationFiles(a).filter(function (f) {
+      return f && (f.kind === "folder" || /\/folders\//.test(f.url || ""));
+    });
+    var i;
+    for (i = 0; i < folderRefs.length; i += 1) {
+      var parsed = typeof d.parseDriveRef === "function" ? d.parseDriveRef(folderRefs[i].url) : null;
+      var fid = (parsed && parsed.id) || folderRefs[i].id;
+      var fromFolder = await listDriveFolderFiles(mcp, fid, "from linked application folder");
+      fromFolder.forEach(function (f) {
+        take(f, f.note);
+      });
+    }
+    if (last) {
+      var q = "title contains '" + escapeDriveQuery(last) + "' and mimeType != 'application/vnd.google-apps.folder'";
+      var hits = await searchDriveQuery(mcp, q);
+      hits.forEach(function (f) {
+        take(f, "matched in Drive by name");
+      });
+      var rec = recruitmentFolderId();
+      if (rec) {
+        var scoped = await searchDriveQuery(
+          mcp,
+          "parentId = '" + rec + "' and title contains '" + escapeDriveQuery(last) + "'"
+        );
+        scoped.forEach(function (f) {
+          if (f && f.mimeType === "application/vnd.google-apps.folder") {
+            return;
+          }
+          take(f, "Recruitment folder");
+        });
+      }
+    }
+    return { files: out, reason: out.length ? "ok" : "none" };
+  }
+
+  function persistSeededDocs(a) {
+    var d = dedupe();
+    if (!a || typeof d.seedApplicantDocs !== "function") return a;
+    var seeded = d.seedApplicantDocs(a);
+    var before = JSON.stringify(a.docs || {});
+    var after = JSON.stringify(seeded || {});
+    a.docs = seeded;
+    a._docsDirty = before !== after;
+    return a;
+  }
+
+  async function prepareApplicationFiles(a, opts) {
+    opts = opts || {};
+    if (!a) return { a: a, found: 0 };
+    var d = dedupe();
+    persistSeededDocs(a);
+    var have = applicationFiles(a).filter(function (f) {
+      return f && f.kind !== "folder";
+    });
+    var found = [];
+    if (opts.forceDrive || !have.length) {
+      var result = await findApplicantDriveFiles(a);
+      found = (result && result.files) || [];
+      if (found.length && typeof d.attachFilesToApplicant === "function") {
+        d.attachFilesToApplicant(a, found, { today: today(), note: "Drive match" });
+      } else {
+        persistSeededDocs(a);
+      }
+    }
+    if (a._docsDirty || found.length) {
+      delete a._docsDirty;
+      await persistApplicant(a);
+    }
+    if (a.hiredEmpId) {
+      var S = store();
+      var emp = S && S.employees ? S.employees[a.hiredEmpId] : null;
+      if (emp) {
+        emp.applicantId = emp.applicantId || a.id;
+        carryApplicantDocs(emp);
+        if (typeof root.put === "function") await root.put("employees", emp.id, emp);
+      }
+    }
+    return { a: a, found: found.length };
+  }
+
   function openHired201(a) {
     if (!a || !a.hiredEmpId) return false;
     if (typeof root.closeModal === "function") root.closeModal();
@@ -1092,7 +1280,8 @@
     }
     var open201 = $("#hr-recruit-open-201");
     if (open201) {
-      open201.onclick = function () {
+      open201.onclick = async function () {
+        await prepareApplicationFiles(a, {});
         if (!openHired201(a)) toast("The 201 record is not on file yet.", "err");
       };
     }
@@ -1100,9 +1289,26 @@
     if (save) {
       save.onclick = async function () {
         readFileEdits(a);
+        persistSeededDocs(a);
         await persistApplicant(a);
         toast("Application file saved.", "ok");
         if (typeof root.appEditor === "function") root.appEditor(a.id);
+      };
+    }
+    var find = $("#hr-recruit-drive-find");
+    if (find) {
+      find.onclick = async function () {
+        var st = $("#hr-recruit-file-status");
+        if (st) st.textContent = "Searching Drive…";
+        find.disabled = true;
+        try {
+          var result = await prepareApplicationFiles(a, { forceDrive: true });
+          if (result.found) toast("Linked " + result.found + " Drive file(s).", "ok");
+          else toast("No Drive file matched this name.", "err");
+          openApplicationFile(a.id, { skipPrepare: true });
+        } finally {
+          find.disabled = false;
+        }
       };
     }
     var add = $("#hr-recruit-extra-add");
@@ -1118,13 +1324,16 @@
         a.linkedDocs = (a.linkedDocs || []).concat([
           { title: title, url: url, added: today(), note: "application file" },
         ]);
+        if (!a.resumeLink) a.resumeLink = url;
+        persistSeededDocs(a);
         await persistApplicant(a);
-        openApplicationFile(a.id);
+        openApplicationFile(a.id, { skipPrepare: true });
       };
     }
   }
 
-  function openApplicationFile(appId) {
+  async function openApplicationFile(appId, opts) {
+    opts = opts || {};
     var a = findApplicant(appId);
     if (!a) {
       toast("Save the applicant first, then open the application file.", "err");
@@ -1134,6 +1343,12 @@
       toast("The application file is not available in this view.", "err");
       return;
     }
+    if (!opts.skipPrepare) {
+      var st = $("#hr-recruit-file-status");
+      if (st) st.textContent = "Looking for the application file…";
+      await prepareApplicationFiles(a, {});
+      a = findApplicant(appId) || a;
+    }
     var hired = a.hiredEmpId && store() && store().employees && store().employees[a.hiredEmpId];
     root.openModal({
       title: "Application file — " + (a.name || ""),
@@ -1141,8 +1356,10 @@
       body: applicationFileHtml(a),
       foot:
         '<button class="btn" id="hr-recruit-file-back" type="button">Back to applicant</button>' +
+        '<button class="btn" id="hr-recruit-drive-find" type="button">Find files in Drive</button>' +
         (hired
-          ? '<button class="btn pri" id="hr-recruit-open-201" type="button">Open 201 file</button>'
+          ? '<button class="btn" id="hr-recruit-file-save" type="button">Save attachments</button>' +
+            '<button class="btn pri" id="hr-recruit-open-201" type="button">Open 201 file</button>'
           : '<button class="btn pri" id="hr-recruit-file-save" type="button">Save attachments</button>'),
     });
     bindFileView(a);
@@ -1150,25 +1367,34 @@
 
   function bindApplicantFileButton() {
     var btn = $("#hr-recruit-file");
-    if (!btn || btn.getAttribute("data-bound") === "1") return;
-    btn.setAttribute("data-bound", "1");
-    btn.onclick = async function () {
-      var a = applicantFromEditor();
-      if (!a) {
-        toast("Save the applicant first, then open the application file.", "err");
-        return;
-      }
-      if (a.hiredEmpId && store() && store().employees && store().employees[a.hiredEmpId]) {
-        openHired201(a);
-        return;
-      }
-      var grabName = $("#a-name");
-      var grabCv = $("#a-cv");
-      if (grabName && grabName.value) a.name = grabName.value.trim();
-      if (grabCv && grabCv.value) a.resumeLink = grabCv.value.trim();
-      if (typeof root.put === "function") await persistApplicant(a);
-      openApplicationFile(a.id);
-    };
+    if (btn && btn.getAttribute("data-bound") !== "1") {
+      btn.setAttribute("data-bound", "1");
+      btn.onclick = async function () {
+        var a = applicantFromEditor();
+        if (!a) {
+          toast("Save the applicant first, then open the application file.", "err");
+          return;
+        }
+        var grabName = $("#a-name");
+        var grabCv = $("#a-cv");
+        if (grabName && grabName.value) a.name = grabName.value.trim();
+        if (grabCv && grabCv.value) a.resumeLink = grabCv.value.trim();
+        await openApplicationFile(a.id);
+      };
+    }
+    var open201 = $("#hr-recruit-open-201-inline");
+    if (open201 && open201.getAttribute("data-bound") !== "1") {
+      open201.setAttribute("data-bound", "1");
+      open201.onclick = async function () {
+        var a = applicantFromEditor();
+        if (!a) {
+          toast("Save the applicant first, then open the application file.", "err");
+          return;
+        }
+        await prepareApplicationFiles(a, {});
+        if (!openHired201(a)) toast("The 201 record is not on file yet.", "err");
+      };
+    }
   }
 
   function staffNoteKindLabel(kind) {
@@ -1499,6 +1725,9 @@
   api.openApplicationFile = openApplicationFile;
   api.decorateApplicantFoot = decorateApplicantFoot;
   api.applicationFileHtml = applicationFileHtml;
+  api.applicationFiles = applicationFiles;
+  api.findApplicantDriveFiles = findApplicantDriveFiles;
+  api.prepareApplicationFiles = prepareApplicationFiles;
   api.duplicateGroups = duplicateGroups;
   api.mergeGroup = mergeGroup;
   api.carryApplicantDocs = carryApplicantDocs;
