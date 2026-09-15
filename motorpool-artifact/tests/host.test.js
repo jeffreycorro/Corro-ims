@@ -158,16 +158,28 @@ describe("motorpool host companion", () => {
     assert.equal(w.banner.hidden, true);
   });
 
-  it("fuel reserve ask-approval no longer requires a gauge photo, and bypass logs a VRF", () => {
+  it("fuel VRF is unblocked and Reserves is a log of approved VRFs only", () => {
     const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
     assert.doesNotMatch(html, /Attach the photo of the gauge\. Fuel is not approved without it/);
     assert.doesNotMatch(html, /if\(!photoCount\(rsvOwner\(r\.no\)\)\) miss\.push\("no photo of the gauge"\)/);
+    assert.doesNotMatch(html, /Fuel needs an approved reserve behind it/);
+    assert.doesNotMatch(html, /The fuel check has stopped this request/);
+    assert.doesNotMatch(html, /The fuel check has stopped this dispense/);
+    assert.doesNotMatch(html, /h3",null,"Raise a reserve"/);
+    assert.doesNotMatch(html, /Bypass — log VRF now/);
+    assert.doesNotMatch(html, /Read the gauge before asking for fuel/);
+    assert.doesNotMatch(
+      html,
+      /Fuel is raised on the Reserves screen — pick the litres and the gauge reading there/
+    );
     assert.match(html, /function isFuelBypass/);
     assert.match(html, /function bypassAttribution/);
     assert.match(html, /function logBypassFuelVrf/);
-    assert.match(html, /Bypass — log VRF now/);
-    assert.match(html, /Gauge photo is optional/);
-    assert.match(html, /var BUILD = "2026-09-15 c"/);
+    assert.match(html, /var BUILD = "2026-09-15 d"/);
+    assert.match(html, /Approved VRFs waiting to be liquidated/);
+    assert.match(html, /Reserves is a log, not a maker/);
+    assert.match(html, /Raise the VRF here/);
+    assert.match(html, /this screen does not invent a reserve/);
     assert.match(html, /function photoFingerprint/);
     assert.match(html, /function projectPicker/);
     assert.match(html, /function listPhotosMany/);
@@ -177,11 +189,47 @@ describe("motorpool host companion", () => {
     assert.match(html, /function upsertManagedProject/);
     assert.match(html, /Show archived/);
     assert.match(html, /Manage projects/);
-    assert.doesNotMatch(html, /Read the gauge before asking for fuel/);
-    assert.doesNotMatch(
-      html,
-      /Fuel is raised on the Reserves screen — pick the litres and the gauge reading there/
-    );
+  });
+
+  it("host overlay strips a leftover Raise-a-reserve card and will not re-gate fuel VRF", () => {
+    const w = hostWindow();
+    const host = loadHost(w);
+    assert.equal(host.fuelVrfGatesEnabled(), false);
+    assert.equal(host.fuelVrfRequiresApprovedReserve(), false);
+    assert.equal(host.fuelVrfRequiresBypass(), false);
+    assert.equal(host.reserveCreatePathAllowed(), false);
+    assert.equal(host.reservesAreLogOnly(), true);
+
+    const card = {
+      className: "card",
+      parentNode: { removeChild(el) { this.removed = el; } },
+    };
+    const h3 = { textContent: "Raise a reserve", className: "", parentNode: card };
+    card.parentNode.removeChild = function (el) {
+      this.removed = el;
+    };
+    const root = {
+      querySelectorAll(sel) {
+        if (sel === "h3, h2, .hd h3") return [h3];
+        if (sel === "h3") return [h3];
+        if (sel === ".page-head h2, .page-head p, .page-head .eyebrow") return [];
+        return [];
+      },
+    };
+    assert.equal(host.stripReserveCreateForm(root), 1);
+    assert.equal(card.parentNode.removed, card);
+
+    let called = 0;
+    w.postVrf = function postVrf(d, btn) {
+      // Fuel needs an approved reserve behind it
+      called += 1;
+      return d && d.gateOverride;
+    };
+    assert.equal(host.wrapPostVrfIfGated(w), true);
+    const ov = w.postVrf({ requestedBy: "Jun" }, null);
+    assert.equal(called, 1);
+    assert.equal(ov.bypass, true);
+    assert.match(ov.reason, /VRF maker/);
   });
 
   it("registers the current BUILD once when the doc is missing", async () => {

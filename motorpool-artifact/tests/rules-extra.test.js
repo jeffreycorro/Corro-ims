@@ -11,6 +11,12 @@ const {
   isFuelBypass,
   bypassAttribution,
   fuelAskApprovalBlockedByPhoto,
+  fuelPostBlocked,
+  fuelVrfGatesEnabled,
+  fuelVrfRequiresApprovedReserve,
+  fuelVrfRequiresBypass,
+  reserveCreatePathAllowed,
+  reservesAreLogOnly,
   workRefStates,
   checkOfficeHash,
   sha256hexSync,
@@ -86,6 +92,24 @@ describe("infer job and gates", () => {
       }).includes("Gauge photo")
     );
     assert.deepEqual(missingFuelApproveFields({ kind: "fuel-issue", gauge: "" }), []);
+  });
+
+  it("staff can post a fuel VRF with no gauge, fuel check, reserve or bypass, and cannot invent a reserve", () => {
+    assert.equal(fuelVrfGatesEnabled(), false);
+    assert.equal(fuelVrfRequiresApprovedReserve(), false);
+    assert.equal(fuelVrfRequiresBypass(), false);
+    assert.equal(reserveCreatePathAllowed(), false);
+    assert.equal(reservesAreLogOnly(), true);
+    assert.equal(
+      fuelPostBlocked({
+        kind: "fuel-issue",
+        reserve: "",
+        gateOverride: null,
+        gauge: "",
+        photos: [],
+      }),
+      false
+    );
   });
 
   it("bypass override skips approval and names who / when / unit / litres / reason", () => {

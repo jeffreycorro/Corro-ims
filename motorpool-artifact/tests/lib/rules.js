@@ -826,6 +826,33 @@
     return false;
   }
 
+  function fuelVrfGatesEnabled() {
+    return false;
+  }
+
+  function fuelVrfRequiresApprovedReserve() {
+    return false;
+  }
+
+  function fuelVrfRequiresBypass() {
+    return false;
+  }
+
+  function reserveCreatePathAllowed() {
+    return false;
+  }
+
+  function reservesAreLogOnly() {
+    return true;
+  }
+
+  function fuelPostBlocked(doc) {
+    if (fuelVrfGatesEnabled()) return true;
+    if (fuelVrfRequiresApprovedReserve() && doc && !doc.reserve) return true;
+    if (fuelVrfRequiresBypass() && doc && !isFuelBypass(doc.gateOverride)) return true;
+    return false;
+  }
+
   function missingVrfCloseFields(doc) {
     return missingList([
       { ok: Boolean(doc && doc.vrfNo), label: "VRF number (approve first)" },
@@ -940,6 +967,12 @@
     meterKindForUnit: meterKindForUnit,
     bypassAttribution: bypassAttribution,
     fuelAskApprovalBlockedByPhoto: fuelAskApprovalBlockedByPhoto,
+    fuelPostBlocked: fuelPostBlocked,
+    fuelVrfGatesEnabled: fuelVrfGatesEnabled,
+    fuelVrfRequiresApprovedReserve: fuelVrfRequiresApprovedReserve,
+    fuelVrfRequiresBypass: fuelVrfRequiresBypass,
+    reserveCreatePathAllowed: reserveCreatePathAllowed,
+    reservesAreLogOnly: reservesAreLogOnly,
     isFuelBypass: isFuelBypass,
     asProject: asProject,
     harvestProjectCodes: harvestProjectCodes,
