@@ -50,6 +50,10 @@ describe("placeholder and privacy", () => {
     assert.match(readme, /never commit backup/i);
     assert.match(readme, /ANTHROPIC_API_KEY/);
     assert.match(readme, /GOOGLE_SERVICE_ACCOUNT_JSON/);
+    assert.match(readme, /4KB/);
+    assert.match(readme, /hr-secrets/);
+    assert.match(readme, /Builds only/);
+    assert.match(readme, /HR_SESSION_SECRET/);
     assert.match(readme, /GOOGLE_DRIVE_DELEGATED_USER/);
     assert.match(readme, /Add to Home Screen/);
     assert.match(readme, /<script src="\/pwa\.js"><\/script>/);
@@ -64,10 +68,17 @@ describe("placeholder and privacy", () => {
     assert.match(readme, /ELEVENLABS_API_KEY/);
     assert.match(readme, /same Supabase email \+ password/);
     assert.match(readme, /HR_GATE_REQUIRED/);
+    const envDoc = fs.readFileSync(path.join(__dirname, "../docs/netlify-functions-env.md"), "utf8");
+    assert.match(envDoc, /4KB/);
+    assert.match(envDoc, /HR_APPLICANTS_INGEST_KEY/);
+    assert.match(envDoc, /Functions-scoped vs Builds-only/);
+    assert.match(envDoc, /HR_GATE_SECRET/);
   });
 
   it("netlify.toml publishes public with privacy headers", () => {
     const toml = fs.readFileSync(path.join(__dirname, "../netlify.toml"), "utf8");
+    assert.match(toml, /prepare-google-sa\.js/);
+    assert.match(toml, /@netlify\/blobs/);
     assert.match(toml, /publish = "public"/);
     assert.match(toml, /X-Robots-Tag = "noindex, nofollow"/);
     assert.match(toml, /X-Frame-Options = "DENY"/);

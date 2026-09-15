@@ -2,6 +2,7 @@
 
 const { json, requireSession } = require("../lib/session");
 const { capabilities, openaiConfigured } = require("../lib/capabilities");
+const { attachFunctionEvent } = require("../lib/google-sa");
 const { codedError, errorBody } = require("../lib/coded-error");
 const { createLimiter } = require("../lib/rate-limit");
 const { formatManilaIso } = require("../lib/manila");
@@ -17,11 +18,11 @@ const limitTranscribe = createLimiter({
   message: "Too many dictation requests. Try again in a moment.",
 });
 
-function envelope(extra) {
+async function envelope(event, extra) {
   return {
     timezone: "Asia/Manila",
     serverTime: formatManilaIso(),
-    capabilities: capabilities(),
+    capabilities: await capabilities(event),
     ...extra,
   };
 }
@@ -43,10 +44,11 @@ exports.handler = async (event) => {
       return { statusCode: 204, body: "" };
     }
 
+    attachFunctionEvent(event);
     requireSession(event);
 
     if (event.httpMethod === "GET") {
-      return json(200, envelope({ available: openaiConfigured(), limits: transcribeLimits() }));
+      return json(200, await envelope(event, { available: openaiConfigured(), limits: transcribeLimits() }));
     }
 
     if (event.httpMethod !== "POST") {
@@ -65,7 +67,7 @@ exports.handler = async (event) => {
 
     return json(
       200,
-      envelope({
+      await envelope(event, {
         text: result.text,
         model: result.model,
         language: result.language,

@@ -2,6 +2,11 @@
 
 const crypto = require("crypto");
 const { codedError } = require("./coded-error");
+const {
+  loadServiceAccount,
+  parseServiceAccount,
+  resetServiceAccountCache,
+} = require("./google-sa");
 
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const DRIVE_API = "https://www.googleapis.com/drive/v3";
@@ -12,32 +17,6 @@ const FILE_FIELDS = "id,name,mimeType,webViewLink,parents,modifiedTime";
 const MAX_READ_BYTES = 12 * 1024 * 1024;
 
 let tokenCache = null;
-
-function parseServiceAccount(raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
-  let text = String(raw || "").trim();
-  if (!text) return null;
-  if (!text.startsWith("{")) {
-    try {
-      text = Buffer.from(text, "base64").toString("utf8").trim();
-    } catch {
-      throw codedError("server_not_connected", "GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON.");
-    }
-  }
-  let json;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    throw codedError("server_not_connected", "GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON.");
-  }
-  if (!json.client_email || !json.private_key) {
-    throw codedError(
-      "server_not_connected",
-      "GOOGLE_SERVICE_ACCOUNT_JSON must include client_email and private_key."
-    );
-  }
-  json.private_key = String(json.private_key).replace(/\\n/g, "\n");
-  return json;
-}
 
 function delegatedUser() {
   return String(process.env.GOOGLE_DRIVE_DELEGATED_USER || "").trim();
@@ -75,7 +54,7 @@ async function getAccessToken({ force = false } = {}) {
   if (!force && tokenCache && tokenCache.expiresAt > Date.now() + 60_000) {
     return tokenCache.token;
   }
-  const account = parseServiceAccount();
+  const account = await loadServiceAccount();
   if (!account) {
     throw codedError("server_not_connected", "Google Drive is not configured on this site.");
   }
@@ -111,6 +90,7 @@ async function getAccessToken({ force = false } = {}) {
 
 function resetTokenCache() {
   tokenCache = null;
+  resetServiceAccountCache();
 }
 
 function escapeDriveValue(value) {

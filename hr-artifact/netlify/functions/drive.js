@@ -1,7 +1,8 @@
 "use strict";
 
-const { json, requireSession, gateSecret } = require("../lib/session");
+const { json, requireSession, sessionSecret } = require("../lib/session");
 const { capabilities, driveConfigured } = require("../lib/capabilities");
+const { attachFunctionEvent } = require("../lib/google-sa");
 const { codedError, errorBody } = require("../lib/coded-error");
 const { createLimiter } = require("../lib/rate-limit");
 const {
@@ -23,11 +24,11 @@ const limitDrive = createLimiter({
 
 const ONESHOT_MAX = 3.5 * 1024 * 1024;
 
-function envelope(extra) {
+async function envelope(event, extra) {
   return {
     timezone: "Asia/Manila",
     serverTime: formatManilaIso(),
-    capabilities: capabilities(),
+    capabilities: await capabilities(event),
     ...extra,
   };
 }
@@ -48,6 +49,7 @@ function toolArgs(body) {
 
 exports.handler = async (event) => {
   try {
+    attachFunctionEvent(event);
     if (event.httpMethod === "OPTIONS") {
       return { statusCode: 204, body: "" };
     }
@@ -55,14 +57,14 @@ exports.handler = async (event) => {
     requireSession(event);
 
     if (event.httpMethod === "GET") {
-      return json(200, envelope({ available: driveConfigured() }));
+      return json(200, await envelope(event, { available: await driveConfigured() }));
     }
 
     if (event.httpMethod !== "POST") {
       return json(405, { error: "Method not allowed" });
     }
 
-    if (!driveConfigured()) {
+    if (!(await driveConfigured())) {
       throw codedError("server_not_connected", "Google Drive is not configured on this site.");
     }
 
@@ -78,17 +80,17 @@ exports.handler = async (event) => {
     const args = toolArgs(body);
 
     if (tool === "search_files") {
-      return json(200, envelope(await searchFiles(args)));
+      return json(200, await envelope(event, await searchFiles(args)));
     }
 
     if (tool === "read_file_content") {
-      return json(200, envelope(await readFileContent(args)));
+      return json(200, await envelope(event, await readFileContent(args)));
     }
 
     if (tool === "create_file") {
       const mime = args.contentMimeType || "";
       if (mime === FOLDER_MIME) {
-        return json(200, envelope(await createFile(args)));
+        return json(200, await envelope(event, await createFile(args)));
       }
       const bytes = base64DecodedLength(args.base64Content);
       if (bytes > ONESHOT_MAX) {
@@ -97,15 +99,15 @@ exports.handler = async (event) => {
           "This file is too large for a single request. The shim should upload it in chunks."
         );
       }
-      return json(200, envelope(await createFile(args)));
+      return json(200, await envelope(event, await createFile(args)));
     }
 
     if (tool === "create_file_init") {
-      return json(200, envelope(await createFileInit(args, gateSecret())));
+      return json(200, await envelope(event, await createFileInit(args, sessionSecret())));
     }
 
     if (tool === "create_file_chunk") {
-      return json(200, envelope(await createFileChunk(args, gateSecret())));
+      return json(200, await envelope(event, await createFileChunk(args, sessionSecret())));
     }
 
     throw codedError("bad_request", `Unknown Drive tool: ${tool || "(none)"}`);

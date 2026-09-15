@@ -2,6 +2,7 @@
 
 const { json, requireSession } = require("../lib/session");
 const { anthropicConfigured, capabilities } = require("../lib/capabilities");
+const { attachFunctionEvent } = require("../lib/google-sa");
 const { codedError, errorBody } = require("../lib/coded-error");
 const { createLimiter } = require("../lib/rate-limit");
 const {
@@ -18,11 +19,11 @@ const limitSample = createLimiter({
   message: "Too many AI requests. Try again in a moment.",
 });
 
-function envelope(extra) {
+async function envelope(event, extra) {
   return {
     timezone: "Asia/Manila",
     serverTime: formatManilaIso(),
-    capabilities: capabilities(),
+    capabilities: await capabilities(event),
     ...extra,
   };
 }
@@ -33,10 +34,11 @@ exports.handler = async (event) => {
       return { statusCode: 204, body: "" };
     }
 
+    attachFunctionEvent(event);
     requireSession(event);
 
     if (event.httpMethod === "GET") {
-      return json(200, envelope({ available: anthropicConfigured(), limits: sampleLimits() }));
+      return json(200, await envelope(event, { available: anthropicConfigured(), limits: sampleLimits() }));
     }
 
     if (event.httpMethod !== "POST") {
@@ -60,12 +62,12 @@ exports.handler = async (event) => {
 
     if (body.mode === "json") {
       const parsed = parseJsonText(result.text);
-      return json(200, envelope({ json: parsed, text: result.text, truncated: result.truncated }));
+      return json(200, await envelope(event, { json: parsed, text: result.text, truncated: result.truncated }));
     }
 
     return json(
       200,
-      envelope({
+      await envelope(event, {
         text: result.text,
         truncated: result.truncated,
         toolCalls: result.toolCalls,
