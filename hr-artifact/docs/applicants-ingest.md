@@ -31,7 +31,7 @@ The key is the Netlify env var `HR_APPLICANTS_INGEST_KEY` on site **corcondev-hr
 
 1. Open Netlify → site **corcondev-hr** → Site configuration → Environment variables.
 2. Add `HR_APPLICANTS_INGEST_KEY`. Generate a long random value, e.g. `openssl rand -hex 32`.
-3. Scope it to **Production**. Never commit the value.
+3. Scope it to **Functions** + **Production** (not Builds-only). Never commit the value. Keep it — this key is small (~80 B) and is required for the extractor after the Google SA JSON is moved off Functions. See `docs/netlify-functions-env.md`.
 4. **Redeploy** the site so functions reload env.
 5. Give the key to Jeffrey out of band (password manager / chat). Not git, not this file.
 6. If the key leaks, rotate it on Netlify, redeploy, and update the extractor.

@@ -60,7 +60,9 @@ describe("session", () => {
   it("can sign cookies without treating HR_GATE_SECRET as a login password", () => {
     const prevGate = process.env.HR_GATE_SECRET;
     const prevRole = process.env.SUPABASE_SERVICE_ROLE;
+    const prevSession = process.env.HR_SESSION_SECRET;
     delete process.env.HR_GATE_SECRET;
+    delete process.env.HR_SESSION_SECRET;
     process.env.SUPABASE_SERVICE_ROLE = "service-role-for-hmac";
     try {
       const derived = sessionSecret();
@@ -72,6 +74,27 @@ describe("session", () => {
       else process.env.HR_GATE_SECRET = prevGate;
       if (prevRole == null) delete process.env.SUPABASE_SERVICE_ROLE;
       else process.env.SUPABASE_SERVICE_ROLE = prevRole;
+      if (prevSession == null) delete process.env.HR_SESSION_SECRET;
+      else process.env.HR_SESSION_SECRET = prevSession;
+    }
+  });
+
+  it("prefers HR_SESSION_SECRET over a leftover HR_GATE_SECRET", () => {
+    const prevGate = process.env.HR_GATE_SECRET;
+    const prevRole = process.env.SUPABASE_SERVICE_ROLE;
+    const prevSession = process.env.HR_SESSION_SECRET;
+    process.env.HR_GATE_SECRET = "legacy-gate";
+    process.env.HR_SESSION_SECRET = SECRET;
+    delete process.env.SUPABASE_SERVICE_ROLE;
+    try {
+      assert.equal(sessionSecret(), SECRET);
+    } finally {
+      if (prevGate == null) delete process.env.HR_GATE_SECRET;
+      else process.env.HR_GATE_SECRET = prevGate;
+      if (prevRole == null) delete process.env.SUPABASE_SERVICE_ROLE;
+      else process.env.SUPABASE_SERVICE_ROLE = prevRole;
+      if (prevSession == null) delete process.env.HR_SESSION_SECRET;
+      else process.env.HR_SESSION_SECRET = prevSession;
     }
   });
 });

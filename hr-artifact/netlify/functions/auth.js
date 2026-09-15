@@ -15,6 +15,7 @@ const { getProfile, verifySupabaseJwt, verifySupabasePassword } = require("../li
 const { canAccessHr, deniedMessage } = require("../lib/hr-access");
 const { formatManilaIso } = require("../lib/manila");
 const { capabilities } = require("../lib/capabilities");
+const { attachFunctionEvent } = require("../lib/google-sa");
 
 const loginAttempts = new Map();
 
@@ -42,13 +43,13 @@ function rateLimitLogin(event) {
   }
 }
 
-function methodsPayload() {
+async function methodsPayload(event) {
   return {
     methods: configuredMethods(),
     gateRequired: gateRequired() && Boolean(gatePassword()),
     timezone: "Asia/Manila",
     serverTime: formatManilaIso(),
-    capabilities: capabilities(),
+    capabilities: await capabilities(event),
   };
 }
 
@@ -65,12 +66,12 @@ function sessionPublicFields(session) {
   };
 }
 
-function statusBody(event) {
+async function statusBody(event) {
   const session = readSession(event);
   return {
     authenticated: Boolean(session),
     ...sessionPublicFields(session),
-    ...methodsPayload(),
+    ...(await methodsPayload(event)),
   };
 }
 
@@ -94,12 +95,13 @@ async function sessionFromSupabaseUser(user, accessToken) {
 
 exports.handler = async (event) => {
   try {
+    attachFunctionEvent(event);
     if (event.httpMethod === "OPTIONS") {
       return { statusCode: 204, headers: { "cache-control": "no-store" }, body: "" };
     }
 
     if (event.httpMethod === "GET") {
-      return json(200, statusBody(event));
+      return json(200, await statusBody(event));
     }
 
     if (event.httpMethod !== "POST") {
@@ -110,13 +112,13 @@ exports.handler = async (event) => {
     const action = body.action || "status";
 
     if (action === "status") {
-      return json(200, statusBody(event));
+      return json(200, await statusBody(event));
     }
 
     if (action === "logout") {
       return json(
         200,
-        { authenticated: false, ...methodsPayload() },
+        { authenticated: false, ...(await methodsPayload(event)) },
         { "set-cookie": sessionCookie("", event, { clear: true }) }
       );
     }
@@ -154,7 +156,7 @@ exports.handler = async (event) => {
     }
 
     if (!sessionPayload) {
-      return json(401, { error: "Invalid credentials", ...methodsPayload() });
+      return json(401, { error: "Invalid credentials", ...(await methodsPayload(event)) });
     }
 
     const token = signSession(sessionPayload);
@@ -163,12 +165,12 @@ exports.handler = async (event) => {
       {
         authenticated: true,
         ...sessionPublicFields(sessionPayload),
-        ...methodsPayload(),
+        ...(await methodsPayload(event)),
       },
       { "set-cookie": sessionCookie(token, event) }
     );
   } catch (err) {
     const status = err.statusCode || 500;
-    return json(status, { error: err.message || "Auth error", ...methodsPayload() });
+    return json(status, { error: err.message || "Auth error", ...(await methodsPayload(event)) });
   }
 };

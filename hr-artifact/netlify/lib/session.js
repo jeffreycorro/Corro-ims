@@ -11,15 +11,18 @@ function gateSecret() {
 }
 
 function sessionSecret() {
-  const explicit =
-    process.env.HR_SESSION_SECRET || process.env.HR_GATE_SECRET || "";
+  const explicit = process.env.HR_SESSION_SECRET || "";
   if (explicit) return explicit;
   const role =
     process.env.SUPABASE_SERVICE_ROLE ||
     process.env.SUPABASE_SERVICE_ROLE_KEY ||
     "";
-  if (!role) return "";
-  return crypto.createHash("sha256").update(`hr-session:${role}`).digest("hex");
+  if (role) {
+    return crypto.createHash("sha256").update(`hr-session:${role}`).digest("hex");
+  }
+  // Last resort for local tests / legacy sites. Do not Functions-scope
+  // HR_GATE_SECRET on production — it is not a login password.
+  return process.env.HR_GATE_SECRET || "";
 }
 
 function gateRequired() {

@@ -55,15 +55,15 @@ Site settings → Environment variables:
 | `SUPABASE_URL` | Functions | Same Supabase project as the company portal |
 | `SUPABASE_ANON_KEY` | Functions | Anon key for staff email/password (and portal handoff JWT). Never the service role. |
 | `SUPABASE_SERVICE_ROLE` | Functions **only** | Data plane + server-side profile lookup. Never put this in the shim, `index.html`, or any public env. |
-| `HR_SESSION_SECRET` | Functions, optional | HMAC key for the httpOnly session cookie. If unset, `HR_GATE_SECRET` or a hash of `SUPABASE_SERVICE_ROLE` is used. |
-| `HR_GATE_SECRET` | Functions, **deprecated** | No longer a login password. Kept only as a fallback cookie HMAC key. Ignored as a door unless `HR_GATE_REQUIRED=true`. |
+| `HR_SESSION_SECRET` | Functions | HMAC key for the httpOnly session cookie. Generate with `openssl rand -hex 32`. If unset, a hash of `SUPABASE_SERVICE_ROLE` is used. |
+| `HR_GATE_SECRET` | **Do not set** | Deprecated. Not a login password. Delete it from Functions so it does not count toward the 4KB Lambda env limit. |
 | `HR_GATE_REQUIRED` | Functions, optional | Default **off**. Set `true` only if you still want the old shared-password wall as an extra method. |
 | `HR_GATE_PASSWORD` | Functions, optional | Shared password used only when `HR_GATE_REQUIRED=true`. |
 | `SUPABASE_AUTH_ENABLED` | Functions, optional | Default **on** when URL + anon key are set. Set `false` only to disable Auth. |
 | `ANTHROPIC_API_KEY` | Functions **only** | Enables memo drafting, Ask the records, and other `sample` calls. Never put this in the shim or `index.html`. |
 | `ANTHROPIC_MODEL` | Functions, optional | Override the default model (`claude-sonnet-4-5`). |
 | `ANTHROPIC_MODEL_COMPLEX` | Functions, optional | Model for `modelTier: "complex"` (role defs, long drafts). Defaults to `ANTHROPIC_MODEL`. |
-| `GOOGLE_SERVICE_ACCOUNT_JSON` | Functions **only** | Raw JSON (or base64 of that JSON) for a Google service account. Enables Drive search / read / upload. |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | **Builds only**, or **unset** | Must **not** be Functions-scoped. A full GCP JSON is ~3KB and blows the AWS 4KB Functions env limit. Prefer Netlify Blobs (below). |
 | `GOOGLE_DRIVE_DELEGATED_USER` | Functions, optional | Workspace user email if the service account uses domain-wide delegation to reach user folders. |
 | `GOOGLE_DRIVE_OCR` | Functions, optional | Set `true` to OCR image/PDF files that have no text layer (uses the Anthropic key; slow on bulk reads). |
 | `OPENAI_API_KEY` | Functions **only** | Enables hold-to-talk dictation (`transcribe`) for memo drafting and Ask the records. Never put this in the shim or `index.html`. |
@@ -78,14 +78,17 @@ Site settings → Environment variables:
 
 Copy `.env.example`. Data, AI, Drive, and voice functions **refuse** requests without a valid session cookie (issued after Supabase Auth). The applicants ingest function also accepts `X-HR-Ingest-Key` / `Authorization: Bearer` when `HR_APPLICANTS_INGEST_KEY` is set. Do not rely on a front-end-only password check. Do not invent a default ingest key in code.
 
+**AWS 4KB Functions limit.** Every Functions-scoped variable is copied into every Lambda. Keep secrets that functions need (Supabase, Anthropic, OpenAI, ElevenLabs, session, ingest) on Functions. Keep the Google service-account JSON **off** Functions. Full operator table, remaining-size estimates (~0.9–2.6KB of our keys plus Netlify platform vars), and “do not gzip/split” notes: [`docs/netlify-functions-env.md`](docs/netlify-functions-env.md).
+
 **How to set env on Netlify (HR site `corcondev-hr`):**
 
 1. Site configuration → Environment variables.
 2. Add `ANTHROPIC_API_KEY` (Ask the records / memo draft) and `ELEVENLABS_API_KEY` (read-aloud). Optional: `ELEVENLABS_VOICE_ID`.
 3. For the GoDaddy extractor, add `HR_APPLICANTS_INGEST_KEY` (long random string). Give that value to Jeffrey out of band — not git.
-4. Scope them to **Production**. Never commit real keys.
-5. Trigger a **redeploy** after changing keys so functions reload the env.
-6. Confirm `GET /.netlify/functions/auth` (while signed in) shows `capabilities.sample: true` and `capabilities.tts: true`.
+4. Add `HR_SESSION_SECRET` (`openssl rand -hex 32`). Scope **Functions**, Production. Delete `HR_GATE_SECRET` if it is still set.
+5. Scope API keys to **Functions** + **Production**. Never commit real keys. Do **not** also set `NEXT_PUBLIC_SUPABASE_*` on this site (duplicates the JWTs).
+6. Move Drive credentials off Functions (see Drive notes below), then **redeploy**.
+7. Confirm the deploy creates functions (no “exceed the 4KB limit”). Then `GET /.netlify/functions/auth` (while signed in) shows `capabilities.sample: true`, `capabilities.tts: true`, and `capabilities.mcp: true` when Drive is configured.
 
 Extractor contract (URL, headers, field map, seed roles `ro01`–`ro10`): `docs/applicants-ingest.md`.
 
@@ -95,21 +98,27 @@ Extractor contract (URL, headers, field map, seed roles `ro01`–`ro10`): `docs/
 
 **Drive operator notes**
 
-1. Create a Google Cloud service account and download its JSON key.
-2. Paste the JSON (one line is fine) into `GOOGLE_SERVICE_ACCOUNT_JSON` on this Netlify site. Alternatively paste base64 of the file so newlines in `private_key` survive the env editor.
-3. Share every HR folder the artifact uses (201 ACTIVE / SEPARATED, inbox, memos, attendance, training manuals) with the service account email (`client_email` in the JSON). Viewer is enough to search and read; Content Manager (or Editor) is required to upload or create folders.
-4. If those folders are in a Shared Drive, add the service account as a member of that Shared Drive. If they are in a user's My Drive, enable domain-wide delegation for the service account and set `GOOGLE_DRIVE_DELEGATED_USER` to that user's email.
-5. After env vars change, redeploy (or restart) so functions pick them up.
+1. Create a Google Cloud service account and download its JSON key. **Do not paste that JSON into a Functions-scoped env var** — AWS rejects the deploy over 4KB.
+2. **Preferred (set once, no 3KB env var):** from a machine with Netlify CLI access to `corcondev-hr`:
+   ```bash
+   npx netlify blobs:set hr-secrets google-service-account --input ./google-sa.json
+   ```
+   Then delete `GOOGLE_SERVICE_ACCOUNT_JSON` from the site (Builds and Functions) and redeploy.
+3. **Also supported:** keep `GOOGLE_SERVICE_ACCOUNT_JSON` as **Builds only** (uncheck Functions). The build copies it into the functions bundle via `scripts/prepare-google-sa.js`. The committed `google-sa.generated.js` stub stays empty — never commit a real key.
+4. Local / `netlify dev`: `.env` may set `GOOGLE_SERVICE_ACCOUNT_JSON` or `GOOGLE_SERVICE_ACCOUNT_FILE`. That file is gitignored.
+5. Share every HR folder the artifact uses (201 ACTIVE / SEPARATED, inbox, memos, attendance, training manuals) with the service account email (`client_email` in the JSON). Viewer is enough to search and read; Content Manager (or Editor) is required to upload or create folders.
+6. If those folders are in a Shared Drive, add the service account as a member of that Shared Drive. If they are in a user's My Drive, enable domain-wide delegation for the service account and set `GOOGLE_DRIVE_DELEGATED_USER` to that user's email.
+7. After Blobs or env scopes change, redeploy so functions pick them up.
 
-Without `ANTHROPIC_API_KEY` the shim still resolves `sample` to `null` and the memo editor shows “AI drafting is not available in this view”. Without `GOOGLE_SERVICE_ACCOUNT_JSON`, `mcp` is `null` and Drive actions show the artifact’s own unavailable / `not_granted` copy. Without `OPENAI_API_KEY`, `transcribe` is `null` and the hold-to-talk controls are not shown. Without `ELEVENLABS_API_KEY`, `tts` is `null` and the read-aloud controls are not shown.
+Without `ANTHROPIC_API_KEY` the shim still resolves `sample` to `null` and the memo editor shows “AI drafting is not available in this view”. Without a Drive service account (Blobs, Builds bundle, or local env), `mcp` is `null` and Drive actions show the artifact’s own unavailable / `not_granted` copy. Without `OPENAI_API_KEY`, `transcribe` is `null` and the hold-to-talk controls are not shown. Without `ELEVENLABS_API_KEY`, `tts` is `null` and the read-aloud controls are not shown.
 
 ### 6. Access control
 
-**App-level login (required):** `/.netlify/functions/auth` accepts the company-portal Supabase email/password, or a short-lived `access_token` from the portal HR deeplink (URL hash only). It then checks `profiles` and issues an httpOnly cookie. `/.netlify/functions/db`, `sample`, `drive`, `transcribe`, and `tts` return 401 without that cookie. `/.netlify/functions/applicants-ingest` accepts that cookie **or** `HR_APPLICANTS_INGEST_KEY`. The service role key, Anthropic key, OpenAI key, ElevenLabs key, ingest key, and service-account JSON never leave Netlify Functions.
+**App-level login (required):** `/.netlify/functions/auth` accepts the company-portal Supabase email/password, or a short-lived `access_token` from the portal HR deeplink (URL hash only). It then checks `profiles` and issues an httpOnly cookie. `/.netlify/functions/db`, `sample`, `drive`, `transcribe`, and `tts` return 401 without that cookie. `/.netlify/functions/applicants-ingest` accepts that cookie **or** `HR_APPLICANTS_INGEST_KEY`. The service role key, Anthropic key, OpenAI key, ElevenLabs key, ingest key, and service-account JSON never leave Netlify Functions (the service-account JSON is read from Blobs or the build bundle, not from Functions env).
 
 **Portal handoff (`/app/hr`):** The company portal is a different Netlify host, so the Supabase cookie is not shared. If the staff member is already signed in on the portal, the HR CTA reads the browser session and navigates to `https://corcondev-hr.netlify.app/#access_token=…`. The hash is not sent to Netlify request logs. The shim posts that JWT to `auth`, then `history.replaceState` strips the hash. If handoff fails, the same email + password form works — there is no second gate password.
 
-**Deprecated shared gate:** `HR_GATE_SECRET` is not a staff password anymore. Leave `HR_GATE_REQUIRED` unset. Only set `HR_GATE_REQUIRED=true` if you deliberately want the old shared-password method as an extra wall.
+**Deprecated shared gate:** `HR_GATE_SECRET` is not a staff password anymore. **Remove it from Functions** on production. Leave `HR_GATE_REQUIRED` unset. Only set `HR_GATE_REQUIRED=true` (and `HR_GATE_PASSWORD`) if you deliberately want the old shared-password method as an extra wall.
 
 **Netlify visitor password / Identity (optional extra, not the staff login):**
 
@@ -219,5 +228,7 @@ hr-artifact/
   netlify/functions/tts.js
   netlify/lib/               ← session, supabase, locks, collections, Anthropic, Drive, OpenAI, ElevenLabs, applicants ingest
   docs/applicants-ingest.md  ← extractor URL, headers, field map, seed roles
+  docs/netlify-functions-env.md ← 4KB limit, Functions vs Builds, Blobs setup
+  scripts/prepare-google-sa.js  ← Builds-only SA JSON → functions bundle
   supabase/migrations/       ← docs + locks + RLS
 ```

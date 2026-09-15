@@ -11,6 +11,7 @@ const { handler: transcribeHandler } = require("../netlify/functions/transcribe"
 const { handler: ttsHandler } = require("../netlify/functions/tts");
 const { COOKIE_NAME, signSession } = require("../netlify/lib/session");
 const { resetTokenCache } = require("../netlify/lib/google-drive");
+const { setTestBlobLoader } = require("../netlify/lib/google-sa");
 
 function testServiceAccountJson() {
   const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -36,14 +37,19 @@ describe("netlify functions", () => {
     delete process.env.SUPABASE_SERVICE_ROLE;
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+    delete process.env.GOOGLE_SERVICE_ACCOUNT_FILE;
+    delete process.env.GOOGLE_SERVICE_ACCOUNT_BLOB;
     delete process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_TRANSCRIBE_MODEL;
     delete process.env.ELEVENLABS_API_KEY;
     delete process.env.ELEVENLABS_VOICE_ID;
+    setTestBlobLoader(async () => "");
     resetTokenCache();
   });
 
   afterEach(() => {
+    setTestBlobLoader(null);
+    resetTokenCache();
     process.env = env;
   });
 
@@ -233,6 +239,54 @@ describe("netlify functions", () => {
       const sent = JSON.parse(captured.opts.body);
       assert.equal(sent.messages[0].content, "Draft a memo");
       assert.equal(captured.opts.headers["x-api-key"], "sk-test");
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it("loads Drive from a file when Functions env JSON is absent", async () => {
+    const fs = require("node:fs");
+    const os = require("node:os");
+    const path = require("node:path");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hr-sa-fn-"));
+    const file = path.join(dir, "sa.json");
+    fs.writeFileSync(file, testServiceAccountJson());
+    process.env.GOOGLE_SERVICE_ACCOUNT_FILE = file;
+    delete process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+    const token = signSession({ sub: "gate", method: "password" }, SECRET);
+    const originalFetch = global.fetch;
+    global.fetch = async (url) => {
+      const href = String(url);
+      if (href.includes("oauth2.googleapis.com/token")) {
+        return { ok: true, json: async () => ({ access_token: "ya29.test", expires_in: 3600 }) };
+      }
+      if (href.includes("/drive/v3/files")) {
+        const payload = {
+          files: [
+            {
+              id: "f1",
+              name: "FromFile.pdf",
+              mimeType: "application/pdf",
+              webViewLink: "https://drive.google.com/file/d/f1/view",
+              parents: ["p1"],
+            },
+          ],
+        };
+        return { ok: true, text: async () => JSON.stringify(payload), json: async () => payload };
+      }
+      throw new Error("unexpected fetch " + href);
+    };
+    try {
+      const res = await driveHandler({
+        httpMethod: "POST",
+        headers: { cookie: `${COOKIE_NAME}=${encodeURIComponent(token)}` },
+        body: JSON.stringify({
+          tool: "search_files",
+          args: { query: "parentId = 'p1'" },
+        }),
+      });
+      assert.equal(res.statusCode, 200);
+      assert.equal(JSON.parse(res.body).payload.files[0].title, "FromFile.pdf");
     } finally {
       global.fetch = originalFetch;
     }

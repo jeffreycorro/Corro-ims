@@ -1,15 +1,13 @@
 "use strict";
 
+const { attachFunctionEvent, driveConfigured } = require("./google-sa");
+
 function hasText(value) {
   return Boolean(value && String(value).trim());
 }
 
 function anthropicConfigured() {
   return hasText(process.env.ANTHROPIC_API_KEY);
-}
-
-function driveConfigured() {
-  return hasText(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
 }
 
 function openaiConfigured() {
@@ -20,10 +18,11 @@ function elevenlabsConfigured() {
   return hasText(process.env.ELEVENLABS_API_KEY);
 }
 
-function capabilities() {
+async function capabilities(event) {
+  if (event) attachFunctionEvent(event);
   return {
     sample: anthropicConfigured(),
-    mcp: driveConfigured(),
+    mcp: await driveConfigured(),
     transcribe: openaiConfigured(),
     tts: elevenlabsConfigured(),
   };

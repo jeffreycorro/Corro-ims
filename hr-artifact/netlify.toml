@@ -2,8 +2,11 @@
 # Base directory: hr-artifact
 # Do not point the public company portal at this folder.
 
+# Build copies a Builds-only GOOGLE_SERVICE_ACCOUNT_JSON into the
+# functions bundle so that ~3KB value is never injected into Lambda env
+# (AWS 4KB limit). Prefer Netlify Blobs — see docs/netlify-functions-env.md.
 [build]
-  command = "node -e \"console.log('static HR artifact — no SPA build')\""
+  command = "node scripts/prepare-google-sa.js"
   publish = "public"
 
 [build.environment]
@@ -12,6 +15,7 @@
 [functions]
   directory = "netlify/functions"
   node_bundler = "esbuild"
+  external_node_modules = ["@netlify/blobs"]
 
 [functions.sample]
   timeout = 26

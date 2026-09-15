@@ -118,7 +118,7 @@ The optional service worker only caches icons. It does not store pages offline a
 
 The Claude HR single-file app is **not** part of this portal build. Host it from [`hr-artifact/`](hr-artifact/) as its **own** Netlify site (base directory `hr-artifact`). Do not point the company portal at that folder. See `hr-artifact/README.md` for paste-the-export, shim injection, SQL, env, and privacy steps.
 
-HR login is the same Supabase Auth used here. Do **not** set a second staff password (`HR_GATE_SECRET` is deprecated / ignored unless `HR_GATE_REQUIRED=true`). The HR Netlify site needs `SUPABASE_URL` and `SUPABASE_ANON_KEY` from this project, plus `SUPABASE_SERVICE_ROLE` for data.
+HR login is the same Supabase Auth used here. Do **not** set a second staff password (`HR_GATE_SECRET` is deprecated — delete it from the HR site Functions env). The HR Netlify site needs `SUPABASE_URL` and `SUPABASE_ANON_KEY` from this project, plus `SUPABASE_SERVICE_ROLE` for data. Do **not** Functions-scope `GOOGLE_SERVICE_ACCOUNT_JSON` (AWS 4KB limit); use Netlify Blobs or Builds-only as in `hr-artifact/docs/netlify-functions-env.md`.
 
 ## Motorpool artifact (separate Netlify site)
 

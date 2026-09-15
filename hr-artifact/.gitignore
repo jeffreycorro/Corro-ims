@@ -6,6 +6,12 @@
 .env.*
 !.env.example
 
+# Google service account material (never commit a real key)
+netlify/.secrets/
+*.sa.json
+google-sa.json
+google-service-account.json
+
 # HR backup JSON restored via Settings in the artifact — never commit
 *.backup.json
 *backup*.json

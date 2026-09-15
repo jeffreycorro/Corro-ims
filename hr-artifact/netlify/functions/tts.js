@@ -2,6 +2,7 @@
 
 const { json, requireSession } = require("../lib/session");
 const { capabilities } = require("../lib/capabilities");
+const { attachFunctionEvent } = require("../lib/google-sa");
 const { codedError, errorBody } = require("../lib/coded-error");
 const { createLimiter } = require("../lib/rate-limit");
 const { formatManilaIso } = require("../lib/manila");
@@ -17,11 +18,11 @@ const limitTts = createLimiter({
   message: "Too many voice requests. Try again in a moment.",
 });
 
-function envelope(extra) {
+async function envelope(event, extra) {
   return {
     timezone: "Asia/Manila",
     serverTime: formatManilaIso(),
-    capabilities: capabilities(),
+    capabilities: await capabilities(event),
     ...extra,
   };
 }
@@ -32,10 +33,11 @@ exports.handler = async (event) => {
       return { statusCode: 204, body: "" };
     }
 
+    attachFunctionEvent(event);
     requireSession(event);
 
     if (event.httpMethod === "GET") {
-      return json(200, envelope({ available: elevenlabsConfigured(), limits: ttsLimits() }));
+      return json(200, await envelope(event, { available: elevenlabsConfigured(), limits: ttsLimits() }));
     }
 
     if (event.httpMethod !== "POST") {
@@ -54,7 +56,7 @@ exports.handler = async (event) => {
       voiceId: body.voiceId || body.voice,
     });
 
-    return json(200, envelope(result));
+    return json(200, await envelope(event, result));
   } catch (err) {
     const status = err.statusCode || (err instanceof SyntaxError ? 400 : 500);
     return json(status, errorBody(err));
