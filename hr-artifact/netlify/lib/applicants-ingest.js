@@ -3,6 +3,11 @@
 const crypto = require("crypto");
 const { formatManilaDate } = require("./manila");
 const { readSession, safeEqual, unauthorized } = require("./session");
+const {
+  applyIngestOnto,
+  emailKey,
+  findIngestMatch,
+} = require("../../public/hr-applicant-dedupe");
 
 const MAX_BATCH = 100;
 const ID_RE = /^[A-Za-z0-9._-]{1,80}$/;
@@ -148,6 +153,7 @@ function parseIngestBody(raw) {
   return {
     applicants: body.applicants,
     overwrite: body.overwrite === true,
+    forceNew: body.forceNew === true,
   };
 }
 
@@ -174,6 +180,7 @@ function normalizeItem(item, index, { today, batchOverwrite } = {}) {
     return { ok: false, index, error: "overwrite requires an explicit id" };
   }
   const overwrite = item.overwrite === true || (batchOverwrite === true && explicitId);
+  const forceNew = item.forceNew === true;
 
   let appliedOn = asString(item.appliedOn);
   if (appliedOn) {
@@ -203,6 +210,7 @@ function normalizeItem(item, index, { today, batchOverwrite } = {}) {
     id: id || null,
     explicitId,
     overwrite,
+    forceNew,
     appliedOn,
     stage,
     source: asString(item.source) || "Email",
@@ -218,14 +226,36 @@ function existingData(row) {
   return null;
 }
 
+function collectExisting(rows) {
+  const out = [];
+  (rows || []).forEach((row) => {
+    const data = existingData(row);
+    if (!data) return;
+    if (!data.id && row && row.id) data.id = row.id;
+    out.push(data);
+  });
+  return out;
+}
+
 async function ingestApplicants(items, deps) {
   const getDoc = deps.getDoc;
   const setDoc = deps.setDoc;
+  const listCollection = deps.listCollection;
   const today = deps.today || formatManilaDate();
   const batchOverwrite = deps.batchOverwrite === true;
+  const batchForceNew = deps.batchForceNew === true;
   const created = [];
+  const updated = [];
   const errors = [];
   const roleCache = new Map();
+  let known = [];
+  if (typeof listCollection === "function") {
+    try {
+      known = collectExisting(await listCollection("applicants"));
+    } catch {
+      known = [];
+    }
+  }
 
   async function loadRole(roleId) {
     if (!roleId) return null;
@@ -254,8 +284,10 @@ async function ingestApplicants(items, deps) {
 
     try {
       const warnings = norm.warnings.slice();
+      const forceNew = norm.forceNew === true || batchForceNew === true;
       let id = norm.id;
       let prior = null;
+      let matchedBy = "";
 
       if (id) {
         const row = await getDoc("applicants", id);
@@ -268,8 +300,23 @@ async function ingestApplicants(items, deps) {
             continue;
           }
           prior = existingData(row);
+          matchedBy = "id";
         }
-      } else {
+      } else if (!forceNew) {
+        const match = findIngestMatch(
+          { name: norm.name, email: norm.fields.email, roleId: norm.fields.roleId },
+          known
+        );
+        if (match && match.id) {
+          prior = match;
+          id = match.id;
+          matchedBy = emailKey(norm.fields.email) && emailKey(match.email)
+            ? "email"
+            : "name";
+        }
+      }
+
+      if (!id) {
         id = await allocateId();
         if (!id) {
           errors.push({ index: i, error: "could not allocate a unique id" });
@@ -277,39 +324,61 @@ async function ingestApplicants(items, deps) {
         }
       }
 
-      const doc =
-        prior && norm.overwrite
-          ? { ...blankApplicant(id, today), ...prior, id }
-          : blankApplicant(id, today);
-
-      doc.name = norm.name;
-      doc.source = norm.source;
-      doc.appliedOn = norm.appliedOn;
-      doc.stage = norm.stage;
-      Object.assign(doc, norm.fields);
+      let doc;
+      if (prior && matchedBy && matchedBy !== "id") {
+        doc = applyIngestOnto(prior, norm, { today });
+        doc.id = id;
+      } else if (prior && norm.overwrite) {
+        doc = { ...blankApplicant(id, today), ...prior, id };
+        doc.name = norm.name;
+        doc.source = norm.source;
+        doc.appliedOn = norm.appliedOn;
+        doc.stage = norm.stage;
+        Object.assign(doc, norm.fields);
+      } else {
+        doc = blankApplicant(id, today);
+        doc.name = norm.name;
+        doc.source = norm.source;
+        doc.appliedOn = norm.appliedOn;
+        doc.stage = norm.stage;
+        Object.assign(doc, norm.fields);
+      }
       for (const key of ["exams", "interviews", "history", "background"]) {
         if (!Array.isArray(doc[key])) doc[key] = [];
       }
 
-      const roleId = asString(doc.roleId);
+      const incomingRoleId = asString(norm.fields.roleId);
+      const roleId = incomingRoleId || asString(doc.roleId);
       if (roleId) {
         const role = await loadRole(roleId);
         if (!role) {
           warnings.push(`roleId ${roleId} not found; left unlinked`);
-          doc.roleId = "";
+          if (incomingRoleId && incomingRoleId === roleId) {
+            doc.roleId = asString(prior && prior.roleId) || "";
+          } else if (!asString(doc.roleId)) {
+            doc.roleId = "";
+          }
         } else {
           doc.roleId = roleId;
           if (!asString(doc.position)) doc.position = asString(role.title);
           if (!asString(doc.dept)) doc.dept = asString(role.dept);
         }
-      } else {
+      } else if (!prior) {
         doc.roleId = "";
       }
 
       await setDoc("applicants", id, doc);
+      const idx = known.findIndex((row) => row && row.id === id);
+      if (idx >= 0) known[idx] = doc;
+      else known.push(doc);
       const entry = { id, name: doc.name };
       if (warnings.length) entry.warning = warnings.join("; ");
-      created.push(entry);
+      if (matchedBy && matchedBy !== "id") {
+        entry.matchedBy = matchedBy;
+        updated.push(entry);
+      } else {
+        created.push(entry);
+      }
     } catch (err) {
       errors.push({ index: i, error: (err && err.message) || "persist failed" });
     }
@@ -318,6 +387,7 @@ async function ingestApplicants(items, deps) {
   return {
     ok: errors.length === 0,
     created,
+    updated,
     errors,
   };
 }

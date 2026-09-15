@@ -37,6 +37,13 @@ function memoryStore(seed = {}) {
       docs.set(`${collection}/${id}`, row);
       return row;
     },
+    async listCollection(collection) {
+      const out = [];
+      for (const row of docs.values()) {
+        if (row.collection === collection) out.push(row);
+      }
+      return out;
+    },
   };
 }
 
@@ -49,6 +56,7 @@ describe("applicants ingest validation", () => {
     const ok = parseIngestBody(JSON.stringify({ applicants: [{ name: "Ada" }] }));
     assert.equal(ok.applicants.length, 1);
     assert.equal(ok.overwrite, false);
+    assert.equal(ok.forceNew, false);
   });
 
   it("rejects batches larger than the documented max", () => {
@@ -184,6 +192,134 @@ describe("applicants ingest persist", () => {
     assert.equal(saved.roleId, "");
     const ok = result.created.find((row) => row.name === "Good Role");
     assert.equal(store.docs.get(`applicants/${ok.id}`).data.roleId, "ro01");
+  });
+
+  it("updates an existing Applied row on the same normalized name instead of creating another", async () => {
+    const store = memoryStore({
+      applicants: {
+        a_keep: {
+          id: "a_keep",
+          name: "Sibonga, Tristan",
+          stage: "Applied",
+          appliedOn: "2026-08-10",
+          roleId: "ro02",
+          email: "",
+          notes: "First email",
+          exams: [],
+          interviews: [],
+          history: [],
+        },
+      },
+    });
+    const result = await ingestApplicants(
+      [
+        {
+          name: "Tristan Sibonga",
+          appliedOn: "2026-08-10",
+          mobile: "0917 111 1111",
+          notes: "GoDaddy reload",
+        },
+      ],
+      { ...store, today: "2026-09-15" }
+    );
+    assert.equal(result.ok, true);
+    assert.equal(result.created.length, 0);
+    assert.equal(result.updated.length, 1);
+    assert.equal(result.updated[0].id, "a_keep");
+    assert.equal(result.updated[0].matchedBy, "name");
+    const rows = [...store.docs.values()].filter((r) => r.collection === "applicants");
+    assert.equal(rows.length, 1);
+    const saved = store.docs.get("applicants/a_keep").data;
+    assert.equal(saved.appliedOn, "2026-08-10");
+    assert.equal(saved.mobile, "0917 111 1111");
+    assert.match(saved.notes, /First email/);
+    assert.match(saved.notes, /GoDaddy reload|Re-applied/);
+    assert.equal(saved.stage, "Applied");
+  });
+
+  it("matches on email even when the name is written differently", async () => {
+    const store = memoryStore({
+      applicants: {
+        a_mail: {
+          id: "a_mail",
+          name: "Cañete, Prince Joseph F.",
+          stage: "Screening",
+          appliedOn: "2026-08-01",
+          email: "prince@example.com",
+          resumeLink: "",
+          exams: [],
+          interviews: [],
+          history: [],
+        },
+      },
+    });
+    const result = await ingestApplicants(
+      [
+        {
+          name: "Prince Joseph F. Canete",
+          email: "Prince@example.com",
+          appliedOn: "2026-08-10",
+          resumeLink: "https://drive.example/cv",
+        },
+      ],
+      { ...store, today: "2026-09-15" }
+    );
+    assert.equal(result.updated[0].id, "a_mail");
+    assert.equal(result.updated[0].matchedBy, "email");
+    const saved = store.docs.get("applicants/a_mail").data;
+    assert.equal(saved.appliedOn, "2026-08-01");
+    assert.equal(saved.stage, "Screening");
+    assert.equal(saved.resumeLink, "https://drive.example/cv");
+  });
+
+  it("creates a new row when forceNew is set", async () => {
+    const store = memoryStore({
+      applicants: {
+        a_keep: {
+          id: "a_keep",
+          name: "Barrios, Luisa G.",
+          stage: "Applied",
+          appliedOn: "2026-05-15",
+          exams: [],
+          interviews: [],
+          history: [],
+        },
+      },
+    });
+    const result = await ingestApplicants(
+      [{ name: "Barrios, Luisa G.", forceNew: true, appliedOn: "2026-05-15" }],
+      { ...store, today: "2026-09-15" }
+    );
+    assert.equal(result.created.length, 1);
+    assert.equal(result.updated.length, 0);
+    assert.notEqual(result.created[0].id, "a_keep");
+    const rows = [...store.docs.values()].filter((r) => r.collection === "applicants");
+    assert.equal(rows.length, 2);
+  });
+
+  it("does not fold two people who share a last name but have different emails", async () => {
+    const store = memoryStore({
+      applicants: {
+        a_one: {
+          id: "a_one",
+          name: "Santos, Maria",
+          email: "maria@example.com",
+          stage: "Applied",
+          appliedOn: "2026-01-01",
+          exams: [],
+          interviews: [],
+          history: [],
+        },
+      },
+    });
+    const result = await ingestApplicants(
+      [{ name: "Santos, Maria", email: "other.maria@example.com" }],
+      { ...store, today: "2026-09-15" }
+    );
+    assert.equal(result.created.length, 1);
+    assert.equal(result.updated.length, 0);
+    const rows = [...store.docs.values()].filter((r) => r.collection === "applicants");
+    assert.equal(rows.length, 2);
   });
 });
 
@@ -361,6 +497,9 @@ describe("applicants ingest docs and secrets", () => {
     assert.match(doc, /ro10/);
     assert.match(doc, /Operations Manager/);
     assert.match(doc, /Driver \/ Equipment Operator/);
+    assert.match(doc, /forceNew/);
+    assert.match(doc, /Consolidate duplicates/);
+    assert.match(doc, /soft-dedupe|Soft-dedupe/);
     assert.doesNotMatch(doc, /sk-|service_role|eyJhbGci/);
     const envExample = fs.readFileSync(path.join(__dirname, "../.env.example"), "utf8");
     assert.match(envExample, /HR_APPLICANTS_INGEST_KEY=/);

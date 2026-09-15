@@ -838,6 +838,7 @@
     loadCompanion("/hr-attendance.js", "data-hr-attendance");
     loadCompanion("/hr-payroll.js", "data-hr-payroll");
     loadCompanion("/hr-tts.js", "data-hr-tts");
+    loadCompanion("/hr-applicant-dedupe.js", "data-hr-applicant-dedupe");
     loadCompanion("/hr-recruit.js", "data-hr-recruit");
     loadCompanion("/hr-201-file.js", "data-hr-201-file");
   }

@@ -22,7 +22,7 @@ Inside `<head>` of that real `index.html`, **before any other scripts**, add:
 <script src="/pwa.js"></script>
 ```
 
-`window.claude.use(name)` is implemented by `public/claude-shim.js` and must load first. Do not rewrite the rest of the artifact. `pwa.js` / `pwa.css` only add iOS Home Screen tags and a scoped mobile overlay. The shim then loads `hr-dictation.js` (hold-to-talk when `OPENAI_API_KEY` is set), `hr-memo.js` (issued / on-paper memoranda open as saved records, not blank drafts), `hr-attendance.js` (manpower tally leave rule, JSON paste/import door, per-person summary, Present/Late Time In and Undertime Time Out), `hr-payroll.js` (Payroll Maker period attendance, +30% / +100% / as-is holiday premium, contributions, holiday calendar, Daily Manpower Hol/OT + change history), `hr-tts.js` (ElevenLabs readback for Ask the records and memo text when `ELEVENLABS_API_KEY` is set), `hr-recruit.js` (Recruitment → Pipeline “Bulk import JSON”), and `hr-201-file.js` (201 profile “On file for this person” — NTEs, memos, incidents, leave, cash advances, and other empId-tagged records). Do not rewrite the artifact to add mic buttons, memo chrome, a second attendance system, a parallel payroll app, a second voice UI, a second recruitment editor, or a second 201 register.
+`window.claude.use(name)` is implemented by `public/claude-shim.js` and must load first. Do not rewrite the rest of the artifact. `pwa.js` / `pwa.css` only add iOS Home Screen tags and a scoped mobile overlay. The shim then loads `hr-dictation.js` (hold-to-talk when `OPENAI_API_KEY` is set), `hr-memo.js` (issued / on-paper memoranda open as saved records, not blank drafts), `hr-attendance.js` (manpower tally leave rule, JSON paste/import door, per-person summary, Present/Late Time In and Undertime Time Out), `hr-payroll.js` (Payroll Maker period attendance, +30% / +100% / as-is holiday premium, contributions, holiday calendar, Daily Manpower Hol/OT + change history), `hr-tts.js` (ElevenLabs readback for Ask the records and memo text when `ELEVENLABS_API_KEY` is set), `hr-recruit.js` (Recruitment → Pipeline “Bulk import JSON”, “Consolidate duplicates”, and the applicant “View 201 / application file”), and `hr-201-file.js` (201 profile “On file for this person” — NTEs, memos, incidents, leave, cash advances, and other empId-tagged records). Do not rewrite the artifact to add mic buttons, memo chrome, a second attendance system, a parallel payroll app, a second voice UI, a second recruitment editor, or a second 201 register.
 
 ### 3. Apply the SQL migration
 
@@ -90,7 +90,7 @@ Copy `.env.example`. Data, AI, Drive, and voice functions **refuse** requests wi
 6. Move Drive credentials off Functions (see Drive notes below), then **redeploy**.
 7. Confirm the deploy creates functions (no “exceed the 4KB limit”). Then `GET /.netlify/functions/auth` (while signed in) shows `capabilities.sample: true`, `capabilities.tts: true`, and `capabilities.mcp: true` when Drive is configured.
 
-Extractor contract (URL, headers, field map, seed roles `ro01`–`ro10`): `docs/applicants-ingest.md`.
+Extractor contract (URL, headers, field map, seed roles `ro01`–`ro10`, soft-dedupe, one-shot Pipeline cleanup): `docs/applicants-ingest.md`.
 
 **One staff password.** HR uses the same Supabase email + password as [https://corcondev-portal.netlify.app](https://corcondev-portal.netlify.app). There is no separate HR site password in the default flow. After login, an httpOnly cookie keeps the PWA signed in (7 days, or until Sign out).
 
@@ -198,7 +198,7 @@ This HR site is a Progressive Web App. Add it from **Safari** only.
 
 If a Netlify visitor password is also enabled, Safari may prompt for that before the in-app login. Avoid that extra prompt for staff; the in-app form is the real door.
 
-The optional service worker caches icons and `pwa.css` only. It does **not** cache `index.html`, `claude-shim.js`, `hr-dictation.js`, `hr-memo.js`, `hr-attendance.js`, `hr-payroll.js`, `hr-tts.js`, `hr-recruit.js`, or `/.netlify/functions/*`, so auth, db, sample, Drive, dictation, memo chrome, attendance import, payroll, voice, and applicant ingest stay on the network.
+The optional service worker caches icons and `pwa.css` only. It does **not** cache `index.html`, `claude-shim.js`, `hr-dictation.js`, `hr-memo.js`, `hr-attendance.js`, `hr-payroll.js`, `hr-tts.js`, `hr-applicant-dedupe.js`, `hr-recruit.js`, or `/.netlify/functions/*`, so auth, db, sample, Drive, dictation, memo chrome, attendance import, payroll, voice, and applicant ingest stay on the network.
 
 ## Files
 
@@ -212,7 +212,8 @@ hr-artifact/
   public/hr-attendance.js    ← manpower summary + Claude JSON paste door (loaded by the shim)
   public/hr-payroll.js       ← Payroll Maker, contributions, holiday calendar, attendance edit log
   public/hr-tts.js           ← ElevenLabs readback (loaded by the shim)
-  public/hr-recruit.js       ← Pipeline bulk import JSON (loaded by the shim)
+  public/hr-applicant-dedupe.js ← name keys + merge rules (shim + ingest)
+  public/hr-recruit.js       ← Pipeline bulk import, consolidate duplicates, application file (loaded by the shim)
   public/pwa.js              ← apple / manifest tags + viewport-fit
   public/pwa.css             ← mobile / safe-area overlay
   public/manifest.json
