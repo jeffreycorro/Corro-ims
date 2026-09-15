@@ -711,8 +711,12 @@
       existing.parentNode.replaceChild(node, existing);
     } else {
       var tabs = folder.querySelector && folder.querySelector(".tabs");
-      if (tabs && tabs.parentNode) tabs.parentNode.insertBefore(node, tabs);
-      else folder.appendChild(node);
+      var cardB = folder.querySelector && folder.querySelector(".card-b");
+      if (cardB && cardB.parentNode) cardB.parentNode.insertBefore(node, cardB);
+      else if (tabs && tabs.parentNode) {
+        if (tabs.nextSibling) tabs.parentNode.insertBefore(node, tabs.nextSibling);
+        else tabs.parentNode.appendChild(node);
+      } else folder.appendChild(node);
     }
     return node;
   }

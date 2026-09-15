@@ -80,6 +80,11 @@ function el(tag, attrs) {
     get firstChild() {
       return this.children[0] || null;
     },
+    get nextSibling() {
+      if (!this.parentNode) return null;
+      const i = this.parentNode.children.indexOf(this);
+      return i >= 0 ? this.parentNode.children[i + 1] || null : null;
+    },
     appendChild(child) {
       child.parentNode = this;
       this.children.push(child);
@@ -431,7 +436,7 @@ describe("hr-201-file inject", () => {
     assert.match(node.innerHTML || "", /On file for this person|hr-201-onfile/);
     const folderKids = dom.folder.children.map((c) => c.id || c.className);
     assert.ok(folderKids.includes("hr-201-onfile"));
-    assert.ok(folderKids.indexOf("hr-201-onfile") < folderKids.indexOf("tabs"));
+    assert.ok(folderKids.indexOf("tabs") < folderKids.indexOf("hr-201-onfile"));
   });
 
   it("does not inject outside the 201 view", () => {
