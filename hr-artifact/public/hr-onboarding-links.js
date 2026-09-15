@@ -1,22 +1,39 @@
 /**
  * Company onboarding video Drive file remap.
- * Loaded by claude-shim.js. Does not rewrite the artifact.
+ * Loaded by claude-shim.js.
  *
- * New Employee Orientation (pg_onb) "Onboarding video" still points at an
- * older Drive file. Patch that file id on the programme record and on any
- * rendered link that still uses it. Other role orientation videos are left
- * alone unless they literally share the same id.
+ * The artifact PROGRAMMES row is also updated, but a pasted Claude export
+ * can bring the old Drive file back. This companion remaps that file id on
+ * programme records, resource-library rows, and rendered links. Other role
+ * orientation videos are left alone unless they literally share the same id.
+ *
+ * Dynamically injected companions can run before function render / programme
+ * exist. Poll until they do, then wrap render. Click capture rewrites leftover
+ * old hrefs even if wrap lost the race.
  */
 (function (root) {
   "use strict";
 
-  if (root.hrOnboardingLinks && root.hrOnboardingLinks.attached) return;
+  if (root.hrOnboardingLinks && root.hrOnboardingLinks.install) {
+    try {
+      root.hrOnboardingLinks.install();
+    } catch (e) {}
+    return;
+  }
 
   var OLD_ID = "11wX350zj31ybmtagU9P8TTA71gIX2i3Y";
   var NEW_ID = "1SaURmAToj3CiSpVYagFHXCtdq3A-z2_d";
   var NEW_URL = "https://drive.google.com/file/d/" + NEW_ID + "/view";
   var OLD_NAME = "CORCONDEV Onboarding";
   var NEW_NAME = "CORCONDEV Onboarding (2026)";
+  var LINK_KEYS = ["url", "link", "href", "src"];
+  var NAME_KEYS = ["n", "title", "name"];
+  var MAX_POLLS = 80;
+  var POLL_MS = 250;
+
+  var polling = false;
+  var observer = null;
+  var pollTries = 0;
 
   function rewriteUrl(url) {
     var s = String(url == null ? "" : url);
@@ -24,13 +41,38 @@
     return s.split(OLD_ID).join(NEW_ID);
   }
 
+  function looksLikeOldName(name) {
+    var n = String(name || "").trim();
+    if (!n || n.indexOf("(with audio)") !== -1) return false;
+    if (n.indexOf("(2026)") !== -1) return false;
+    return n === OLD_NAME;
+  }
+
+  function patchName(obj) {
+    if (!obj || typeof obj !== "object") return;
+    var i;
+    for (i = 0; i < NAME_KEYS.length; i += 1) {
+      var k = NAME_KEYS[i];
+      if (looksLikeOldName(obj[k])) obj[k] = NEW_NAME;
+    }
+  }
+
+  function patchRecord(obj) {
+    if (!obj || typeof obj !== "object") return false;
+    var changed = false;
+    var i;
+    for (i = 0; i < LINK_KEYS.length; i += 1) {
+      var k = LINK_KEYS[i];
+      if (typeof obj[k] !== "string" || obj[k].indexOf(OLD_ID) === -1) continue;
+      obj[k] = rewriteUrl(obj[k]);
+      changed = true;
+    }
+    if (changed) patchName(obj);
+    return changed;
+  }
+
   function patchMaterial(m) {
-    if (!m || typeof m !== "object") return false;
-    var url = String(m.url || "");
-    if (url.indexOf(OLD_ID) === -1) return false;
-    m.url = rewriteUrl(url);
-    if (String(m.n || "").trim() === OLD_NAME) m.n = NEW_NAME;
-    return true;
+    return patchRecord(m);
   }
 
   function patchProgramme(pg) {
@@ -43,20 +85,57 @@
     return n;
   }
 
+  function asList(value) {
+    if (!value) return [];
+    if (value.length && typeof value !== "string") {
+      try {
+        return Array.prototype.slice.call(value);
+      } catch (e) {
+        return [];
+      }
+    }
+    if (typeof value === "object") return Object.keys(value).map(function (k) { return value[k]; });
+    return [];
+  }
+
   function patchKnownProgrammes() {
     var n = 0;
     if (typeof root.programme === "function") {
-      n += patchProgramme(root.programme("pg_onb"));
+      try {
+        n += patchProgramme(root.programme("pg_onb"));
+      } catch (e) {}
     }
     if (typeof root.everyoneProgrammes === "function") {
-      var everyone = root.everyoneProgrammes() || [];
-      var e;
-      for (e = 0; e < everyone.length; e += 1) n += patchProgramme(everyone[e]);
+      try {
+        var everyone = root.everyoneProgrammes() || [];
+        var e;
+        for (e = 0; e < everyone.length; e += 1) n += patchProgramme(everyone[e]);
+      } catch (e2) {}
     }
     var list = root.PROGRAMMES;
     if (list && list.length) {
       var i;
       for (i = 0; i < list.length; i += 1) n += patchProgramme(list[i]);
+    }
+    return n;
+  }
+
+  function patchResources() {
+    var n = 0;
+    var lists = [];
+    if (typeof root.resList === "function") {
+      try {
+        lists.push(root.resList() || []);
+      } catch (e) {}
+    }
+    if (root.S && root.S.resources) lists.push(asList(root.S.resources));
+    var i;
+    var j;
+    for (i = 0; i < lists.length; i += 1) {
+      var rows = asList(lists[i]);
+      for (j = 0; j < rows.length; j += 1) {
+        if (patchRecord(rows[j])) n += 1;
+      }
     }
     return n;
   }
@@ -79,7 +158,7 @@
       }
       return;
     }
-    if (el.textContent != null && String(el.textContent).trim() === OLD_NAME) {
+    if (el.textContent != null && looksLikeOldName(el.textContent)) {
       el.textContent = NEW_NAME;
     }
   }
@@ -95,7 +174,7 @@
       el.setAttribute(names[i], rewriteUrl(v));
       changed = true;
     }
-    if (changed) rewriteName(el);
+    if (changed || (el.getAttribute("href") || "").indexOf(NEW_ID) !== -1) rewriteName(el);
     return changed;
   }
 
@@ -121,7 +200,7 @@
     while (cur && cur !== root.document) {
       var name = String(cur.tagName || cur.nodeName || "").toUpperCase();
       if (name === "A") return cur;
-      cur = cur.parentNode;
+      cur = cur.parentNode || cur.parentElement;
     }
     return null;
   }
@@ -145,11 +224,13 @@
   }
 
   function wrapRender() {
-    if (typeof root.render !== "function" || root.render.__hrOnboardingLinks) return;
+    if (typeof root.render !== "function") return false;
+    if (root.render.__hrOnboardingLinks) return true;
     var orig = root.render;
     root.render = function () {
       try {
         patchKnownProgrammes();
+        patchResources();
       } catch (e) {}
       var r = orig.apply(this, arguments);
       try {
@@ -158,14 +239,77 @@
       return r;
     };
     root.render.__hrOnboardingLinks = true;
+    return true;
+  }
+
+  function observe() {
+    var doc = root.document;
+    if (!doc || !doc.documentElement) return;
+    if (typeof root.MutationObserver !== "function") return;
+    if (observer) return;
+    observer = new root.MutationObserver(function () {
+      try {
+        rewriteTree(doc);
+      } catch (e) {}
+    });
+    try {
+      observer.observe(doc.documentElement, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["href", "data-url", "data-trcopy"],
+      });
+    } catch (e2) {
+      observer = null;
+    }
+  }
+
+  function tick() {
+    var patched = 0;
+    var wrapped = false;
+    try {
+      patched += patchKnownProgrammes();
+    } catch (e) {}
+    try {
+      patched += patchResources();
+    } catch (e2) {}
+    try {
+      wrapped = wrapRender();
+    } catch (e3) {
+      wrapped = false;
+    }
+    bindClicks();
+    observe();
+    try {
+      patched += rewriteTree(root.document);
+    } catch (e4) {}
+    return { patched: patched, wrapped: wrapped };
+  }
+
+  function schedule(fn) {
+    if (typeof root.setTimeout === "function") return root.setTimeout(fn, POLL_MS);
+    return 0;
+  }
+
+  function startPoll() {
+    if (polling) return;
+    polling = true;
+    pollTries = 0;
+    function again() {
+      var out = tick();
+      pollTries += 1;
+      if (out.wrapped || pollTries >= MAX_POLLS) {
+        polling = false;
+        return;
+      }
+      schedule(again);
+    }
+    schedule(again);
   }
 
   function attach() {
-    if (api.attached) return api;
-    patchKnownProgrammes();
-    wrapRender();
-    bindClicks();
-    rewriteTree(root.document);
+    var out = tick();
+    if (!out.wrapped) startPoll();
     api.attached = true;
     return api;
   }
@@ -175,12 +319,17 @@
     OLD_FILE_ID: OLD_ID,
     NEW_FILE_ID: NEW_ID,
     NEW_URL: NEW_URL,
+    NEW_NAME: NEW_NAME,
     rewriteUrl: rewriteUrl,
     patchMaterial: patchMaterial,
+    patchRecord: patchRecord,
     patchProgramme: patchProgramme,
     patchKnownProgrammes: patchKnownProgrammes,
+    patchResources: patchResources,
     rewriteElement: rewriteElement,
     rewriteTree: rewriteTree,
+    wrapRender: wrapRender,
+    tick: tick,
     attach: attach,
     install: attach,
   };
