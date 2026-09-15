@@ -28,6 +28,7 @@ describe("placeholder and privacy", () => {
     assert.doesNotMatch(html, /hr-applicant-dedupe\.js/);
     assert.doesNotMatch(html, /hr-201-file\.js/);
     assert.doesNotMatch(html, /hr-leave-numbers\.js/);
+    assert.doesNotMatch(html, /hr-onboarding-links\.js/);
     const shim = fs.readFileSync(
       path.join(__dirname, "../public/claude-shim.js"),
       "utf8"
@@ -39,6 +40,7 @@ describe("placeholder and privacy", () => {
     assert.match(shim, /hr-recruit\.js/);
     assert.match(shim, /hr-201-file\.js/);
     assert.match(shim, /hr-leave-numbers\.js/);
+    assert.match(shim, /hr-onboarding-links\.js/);
     const hostFiles = [
       "../public/claude-shim.js",
       "../.env.example",
@@ -73,6 +75,7 @@ describe("placeholder and privacy", () => {
     assert.match(readme, /hr-recruit\.js/);
     assert.match(readme, /hr-201-file\.js/);
     assert.match(readme, /hr-leave-numbers\.js/);
+    assert.match(readme, /hr-onboarding-links\.js/);
     assert.match(readme, /Renumber leave/);
     assert.match(readme, /20260915000001_lv_unique_leave_numbers/);
     assert.match(readme, /fixLiveDuplicate169/);
