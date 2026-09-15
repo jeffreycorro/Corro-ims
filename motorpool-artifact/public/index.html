@@ -361,7 +361,7 @@ var SIGNATORIES = [
 ];
 var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
 /* Shown on the Ask screen, so a screenshot says which version someone is on. */
-var BUILD = "2026-09-15 a";
+var BUILD = "2026-09-15 b";
 var DAY = 86400000, MO = 30.44;
 
 /* Part categories that were entered under two spellings and so split a unit's
@@ -1477,14 +1477,23 @@ function shrinkImage(file){
   });
 }
 function photoKey(vrf,n){ return "vrf-"+String(vrf).replace(/[^A-Za-z0-9_.~:@+-]/g,"_")+"__"+n; }
+/* The same clip is written under RSV-{no} and the VRF number so either
+   file can find it. Treat matching image bytes as one picture. */
+function photoFingerprint(x){
+  if(!x) return "";
+  if(x.data) return "img:"+(x.bytes||0)+"|"+(x.w||"")+"x"+(x.h||"")+"|"+String(x.caption||"")+"|"+String(x.data).length+"|"+String(x.data).slice(-48);
+  if(x.url) return "url:"+String(x.url);
+  return String(x.id||(x.vrf+"__"+(x.idx||"")+"__"+(x.at||"")));
+}
 function mergePhotoLists(lists){
   var seen={}, out=[];
   (lists||[]).forEach(function(list){
     (list||[]).forEach(function(x){
       if(!x) return;
-      var id=x.id||(x.vrf+"__"+(x.idx||"")+"__"+(x.at||""));
-      if(seen[id]) return;
-      seen[id]=1; out.push(x);
+      var id=String(x.id||(x.vrf+"__"+(x.idx||"")+"__"+(x.at||"")));
+      var fp=photoFingerprint(x);
+      if(seen[id]||seen[fp]) return;
+      seen[id]=1; seen[fp]=1; out.push(x);
     });
   });
   out.sort(function(a,b){ return (a.idx||0)-(b.idx||0); });

@@ -17,6 +17,7 @@ const {
   masterList,
   asProject,
   photoOwnersForReserve,
+  mergePhotoLists,
 } = require("./lib/rules");
 const { TYPES } = require("./lib/worktypes");
 
@@ -119,6 +120,12 @@ describe("infer job and gates", () => {
       "RSV-3",
       "5795",
     ]);
+    const data = "data:image/png;base64,AAAABBBB";
+    const merged = mergePhotoLists([
+      [{ id: "vrf-RSV-1__1", vrf: "RSV-1", idx: 1, data: data, bytes: 12, w: 64, h: 40, caption: "Gauge before filling" }],
+      [{ id: "vrf-5793__1", vrf: "5793", idx: 1, data: data, bytes: 12, w: 64, h: 40, caption: "Gauge before filling" }],
+    ]);
+    assert.equal(merged.length, 1);
   });
 
   it("office hash compare is hex-only and never stores plaintext", () => {

@@ -619,6 +619,48 @@
     });
   }
 
+  function photoFingerprint(x) {
+    if (!x) return "";
+    if (x.data) {
+      return (
+        "img:" +
+        (x.bytes || 0) +
+        "|" +
+        (x.w || "") +
+        "x" +
+        (x.h || "") +
+        "|" +
+        String(x.caption || "") +
+        "|" +
+        String(x.data).length +
+        "|" +
+        String(x.data).slice(-48)
+      );
+    }
+    if (x.url) return "url:" + String(x.url);
+    return String(x.id || x.vrf + "__" + (x.idx || "") + "__" + (x.at || ""));
+  }
+
+  function mergePhotoLists(lists) {
+    var seen = {};
+    var out = [];
+    (lists || []).forEach(function (list) {
+      (list || []).forEach(function (x) {
+        if (!x) return;
+        var id = String(x.id || x.vrf + "__" + (x.idx || "") + "__" + (x.at || ""));
+        var fp = photoFingerprint(x);
+        if (seen[id] || seen[fp]) return;
+        seen[id] = 1;
+        seen[fp] = 1;
+        out.push(x);
+      });
+    });
+    out.sort(function (a, b) {
+      return (a.idx || 0) - (b.idx || 0);
+    });
+    return out;
+  }
+
   function isFuelBypass(override) {
     return Boolean(
       override &&
@@ -771,6 +813,7 @@
     masterList: masterList,
     missingFuelApproveFields: missingFuelApproveFields,
     photoOwnersForReserve: photoOwnersForReserve,
+    mergePhotoLists: mergePhotoLists,
     missingJoCloseFields: missingJoCloseFields,
     missingList: missingList,
     missingPapers: missingPapers,
