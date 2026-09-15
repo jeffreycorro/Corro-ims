@@ -195,6 +195,7 @@
         "conflicting-roles": "Same name, different roles — confirm they are one person",
         "conflicting-emails": "Same name, different emails — confirm they are one person",
         "same-email-different-names": "Same email, different names — confirm they are one person",
+        "similar-names": "Names overlap (extra middle name or suffix) — confirm they are one person",
       }[reason] || "Needs a look before merging"
     );
   }

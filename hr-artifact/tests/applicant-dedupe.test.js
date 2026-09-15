@@ -69,6 +69,18 @@ describe("applicant duplicate groups", () => {
     assert.equal(emails.reason, "conflicting-emails");
   });
 
+  it("asks for confirm when one name is a subset of the other (extra middle name)", () => {
+    const groups = groupApplicants([
+      { id: "a1", name: "Barrios, Luisa G.", roleId: "ro06", stage: "Applied", appliedOn: "2026-05-15" },
+      { id: "a2", name: "Barrios, Luisa G.", roleId: "ro06", stage: "Applied", appliedOn: "2026-05-15" },
+      { id: "a3", name: "Barrios, Luisa Mae G.", roleId: "ro06", stage: "Applied", appliedOn: "2026-05-15" },
+    ]);
+    assert.equal(groups.length, 1);
+    assert.equal(groups[0].applicants.length, 3);
+    assert.equal(groups[0].autoSafe, false);
+    assert.equal(groups[0].reason, "similar-names");
+  });
+
   it("links same-email rows with unlike names as a confirm group", () => {
     const groups = groupApplicants([
       { id: "a1", name: "Juan Dela Cruz", email: "shared@x.com", roleId: "ro01" },

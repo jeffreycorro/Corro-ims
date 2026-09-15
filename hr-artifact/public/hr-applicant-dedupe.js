@@ -222,7 +222,13 @@
     if (sameName && !emailOk) {
       return { autoSafe: false, reason: "conflicting-emails" };
     }
-    return { autoSafe: false, reason: "same-email-different-names" };
+    var sharedEmail = (emails || []).some(function (em) {
+      return emailKey(em);
+    }) && emailOk;
+    if (!sameName && sharedEmail) {
+      return { autoSafe: false, reason: "same-email-different-names" };
+    }
+    return { autoSafe: false, reason: "similar-names" };
   }
 
   function parentOf(parents, id) {
@@ -261,6 +267,25 @@
         if (byEmail[ek]) union(parents, byEmail[ek], id);
         else byEmail[ek] = id;
       }
+    });
+
+    /* "Barrios, Luisa G." vs "Barrios, Luisa Mae G." — extra middle
+       names only. Confirm, never auto-safe. Distinct given names
+       (John Mark vs John Louie) do not subset each other. */
+    var nameKeys = Object.keys(byName);
+    nameKeys.forEach(function (aKey) {
+      nameKeys.forEach(function (bKey) {
+        if (aKey >= bKey) return;
+        var aTok = aKey.split("|");
+        var bTok = bKey.split("|");
+        var small = aTok.length < bTok.length ? aTok : bTok;
+        var large = aTok.length < bTok.length ? bTok : aTok;
+        if (small.length < 2 || small.length === large.length) return;
+        var subset = small.every(function (t) {
+          return large.indexOf(t) >= 0;
+        });
+        if (subset) union(parents, byName[aKey], byName[bKey]);
+      });
     });
 
     var buckets = Object.create(null);

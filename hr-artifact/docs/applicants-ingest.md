@@ -101,7 +101,7 @@ The ingest guard only stops **new** copies. Rows already on live (the May/July/A
 1. Open [https://corcondev-hr.netlify.app](https://corcondev-hr.netlify.app) and sign in.
 2. Go to **Recruitment → Pipeline**.
 3. If copies remain, **Consolidate duplicates (N)** appears next to **Log an applicant** / **Bulk import JSON**.
-4. Open it. Groups with the same normalized name and the same (or blank) role are ticked as **auto-safe**. Groups with different roles or emails stay unticked — only tick those if they are one person.
+4. Open it. Groups with the same normalized name and the same (or blank) role are ticked as **auto-safe**. Groups with different roles, different emails, or an extra middle name (e.g. Luisa vs Luisa Mae) stay unticked — only tick those if they are one person.
 5. Click **Merge selected**. Each merge keeps the earliest applied date, furthest stage, non-empty contact/CV fields, and combined notes; extra applicant documents are deleted.
 6. Refresh Pipeline: one row per person. Re-run the extractor if you want — it should update those rows, not add more.
 
