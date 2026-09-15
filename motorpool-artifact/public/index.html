@@ -160,6 +160,10 @@ th.num{text-align:right}
 .scroll{overflow-x:auto}
 .empty{padding:var(--space-7) var(--space-4);text-align:center;color:var(--text-muted);font-size:14px}
 .hint{font-size:12px;color:var(--text-muted)}
+.pj-manage{display:flex;gap:var(--space-2);align-items:flex-start}
+.pj-manage input{flex:1;min-width:0}
+.checkline{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted);cursor:pointer;user-select:none}
+.checkline input{width:auto;margin:0;accent-color:var(--accent)}
 
 /* stat tiles — the kit's teal cap rule */
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(172px,1fr));gap:var(--space-3)}
@@ -361,7 +365,7 @@ var SIGNATORIES = [
 ];
 var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
 /* Shown on the Ask screen, so a screenshot says which version someone is on. */
-var BUILD = "2026-09-15 b";
+var BUILD = "2026-09-15 c";
 var DAY = 86400000, MO = 30.44;
 
 /* Part categories that were entered under two spellings and so split a unit's
@@ -391,7 +395,7 @@ var S = {
   cfg:{nextVrf:5793, pass:null, varianceTol:0.10, nextReserve:1}, sample:null, chat:[], asking:false, voiceOut:true, voiceLang:"en-PH", hearing:false, micBlocked:false, ttsReady:false,
   voiceName:"", voices:[], photoCounts:{}, reserves:[], rsvYears:[], lens:"job", selUnit:"", selCat:"", selWork:"", regWork:"", regUnit:"", regSrc:"", regStatus:"", logQ:"",
   view:"yard", office:false, db:null, ready:false, sel:null, draft:null, stale:false,
-  hist:[]
+  hist:[], showArchivedProjects:false, logProject:""
 };
 var SID = "s"+Math.random().toString(36).slice(2,9);
 
@@ -443,6 +447,13 @@ function masterList(doc, key){
   if(Array.isArray(doc.types)) return doc.types;
   return [];
 }
+function projectStatusOf(p){
+  if(p==null||typeof p==="string") return "Active";
+  if(p.archived===true||p.active===false) return "Archived";
+  var st=String(p.status||"").trim();
+  if(/^(archived|inactive|closed|retired)$/i.test(st)) return "Archived";
+  return "Active";
+}
 function asProject(p){
   if(p==null||p==="") return null;
   if(typeof p==="string"){
@@ -450,7 +461,80 @@ function asProject(p){
   }
   var code=normProj(p.code||p.name||p.id||"");
   if(!code) return null;
-  return {code:code, name:p.name||code, status:p.status||"Active"};
+  return {code:code, name:(p.name&&String(p.name).trim())||code, status:projectStatusOf(p)};
+}
+function isProjectArchived(p){
+  var row=asProject(p);
+  return Boolean(row&&row.status==="Archived");
+}
+function projectStamp(list){
+  return (list||[]).map(function(p){
+    var row=asProject(p); return row?row.code+"\t"+row.name+"\t"+row.status:"";
+  }).sort().join("\0");
+}
+function harvestProjectCodes(sources){
+  var seen={}, out=[];
+  function add(raw){
+    var row=asProject(raw); if(!row||seen[row.code]) return;
+    seen[row.code]=1; out.push(row.code);
+  }
+  sources=sources||{};
+  (sources.vehicles||[]).forEach(function(v){ if(v&&v.site) add(v.site); });
+  (sources.reserves||[]).forEach(function(r){ if(r&&r.project) add(r.project); });
+  (sources.withdrawals||[]).forEach(function(d){ if(d&&d.project) add(d.project); });
+  (sources.purchases||[]).forEach(function(d){ if(d&&d.project) add(d.project); });
+  Object.keys(sources.ledger||{}).forEach(function(mk){
+    (sources.ledger[mk]||[]).forEach(function(r){ if(r&&r.project) add(r.project); });
+  });
+  (sources.extra||[]).forEach(add);
+  return out;
+}
+function mergeProjectStore(managed, harvestedCodes){
+  var byCode={}, out=[];
+  function put(p){
+    var row=asProject(p); if(!row||byCode[row.code]) return;
+    byCode[row.code]=row; out.push(row);
+  }
+  (managed||[]).forEach(put);
+  (harvestedCodes||[]).forEach(function(code){
+    put(typeof code==="string"?{code:code,name:code,status:"Active"}:code);
+  });
+  out.sort(function(a,b){ return String(a.code).localeCompare(String(b.code)); });
+  return out;
+}
+function pickerProjectList(projects, opts){
+  opts=opts||{};
+  var includeArchived=Boolean(opts.includeArchived);
+  var current=opts.current!=null?normProj(opts.current):"";
+  var out=[];
+  (projects||[]).forEach(function(p){
+    var row=asProject(p); if(!row) return;
+    if(row.status==="Archived"&&!includeArchived&&row.code!==current) return;
+    out.push(row);
+  });
+  return out;
+}
+function upsertManagedProject(managed, patch){
+  var next=asProject(patch);
+  if(!next) return {ok:false, reason:"code required", projects:(managed||[]).map(asProject).filter(Boolean)};
+  if(patch&&patch.archived===true) next.status="Archived";
+  if(patch&&patch.archived===false) next.status="Active";
+  var list=(managed||[]).map(asProject).filter(Boolean);
+  var prevCode=patch&&patch.prevCode?normProj(patch.prevCode):next.code;
+  var idx=-1;
+  for(var i=0;i<list.length;i++){
+    if(list[i].code===prevCode||list[i].code===next.code){ idx=i; break; }
+  }
+  if(idx>=0&&list[idx].code!==next.code){
+    for(var j=0;j<list.length;j++){
+      if(j!==idx&&list[j].code===next.code)
+        return {ok:false, reason:"code already on file", projects:list};
+    }
+    list[idx]=next;
+  }else if(idx>=0) list[idx]=next;
+  else list.push(next);
+  list.sort(function(a,b){ return String(a.code).localeCompare(String(b.code)); });
+  return {ok:true, project:next, projects:list};
 }
 /* Only actual fuel — "Fuel — Diesel", "Fuel — Gasoline". The old test was
    /^Fuel\b/ which also matched "Fuel Filter", so a filter on a change-oil VRF
@@ -1033,7 +1117,7 @@ async function loadAll(){
   var docs = await Promise.all(mks.map(function(m){ return readDoc("ledger/"+m); }));
   S.ledger={};
   mks.forEach(function(m,i){ S.ledger[m]=(docs[i]&&docs[i].rows)||[]; });
-  harvestProjects(false);
+  await harvestProjects(true);
   _vrfs=null; _lw=null;
 }
 
@@ -1100,35 +1184,32 @@ async function refreshAll(btn){
 }
 
 function projectCodeOf(p){ var x=asProject(p); return x?x.code:""; }
-function knownProjects(){
-  var seen={}, out=[];
-  function add(p){
-    var row=asProject(p); if(!row) return;
-    if(seen[row.code]) return;
-    seen[row.code]=1; out.push(row);
+function findProject(code){
+  code=normProj(code); if(!code) return null;
+  for(var i=0;i<(S.projects||[]).length;i++){
+    if(projectCodeOf(S.projects[i])===code) return asProject(S.projects[i]);
   }
-  (S.projects||[]).forEach(add);
-  (S.vehicles||[]).forEach(function(v){ if(v&&v.site) add(v.site); });
-  (S.reserves||[]).forEach(function(r){ if(r&&r.project) add(r.project); });
-  (S.withdrawals||[]).forEach(function(d){ if(d&&d.project) add(d.project); });
-  (S.purchases||[]).forEach(function(d){ if(d&&d.project) add(d.project); });
-  Object.keys(S.ledger||{}).forEach(function(mk){
-    (S.ledger[mk]||[]).forEach(function(r){ if(r&&r.project) add(r.project); });
-  });
-  Object.keys(PROJ_ALIAS).forEach(function(k){ add(k); add(PROJ_ALIAS[k]); });
-  out.sort(function(a,b){ return String(a.code).localeCompare(String(b.code)); });
-  return out;
+  return null;
+}
+function projectSources(){
+  return {
+    vehicles:S.vehicles, reserves:S.reserves, withdrawals:S.withdrawals,
+    purchases:S.purchases, ledger:S.ledger,
+    extra:Object.keys(PROJ_ALIAS).map(function(k){ return PROJ_ALIAS[k]; })
+  };
+}
+function knownProjects(){
+  return mergeProjectStore(S.projects, harvestProjectCodes(projectSources()));
 }
 function harvestProjects(persist){
   var next=knownProjects();
-  var before=(S.projects||[]).map(projectCodeOf).sort().join("\0");
-  var after=next.map(projectCodeOf).sort().join("\0");
+  var before=projectStamp(S.projects);
+  var after=projectStamp(next);
   S.projects=next;
-  if(persist && before!==after) saveProjects();
-  return next;
+  if(persist && before!==after) return saveProjects().then(function(){ return next; });
+  return Promise.resolve(next);
 }
 async function saveProjects(){
-  S.projects=knownProjects();
   await writeDoc(PATHS.projects,{rows:S.projects,projects:S.projects});
 }
 async function ensureProject(code){
@@ -1139,46 +1220,233 @@ async function ensureProject(code){
   }
   return row.code;
 }
+function projectFilterSelect(value,onChange,opts){
+  opts=opts||{};
+  var wrap=el("div");
+  var sel=el("select");
+  function fill(){
+    var keep=sel.value;
+    sel.innerHTML="";
+    sel.appendChild(new Option(opts.allLabel||"— every project —",""));
+    pickerProjectList(S.projects,{
+      includeArchived:S.showArchivedProjects,
+      current:value||keep
+    }).forEach(function(p){
+      sel.appendChild(new Option(
+        p.status==="Archived"?p.code+" (archived)":(p.name&&p.name!==p.code?p.code+" — "+p.name:p.code),
+        p.code));
+    });
+    sel.value=value||keep||"";
+  }
+  fill();
+  sel.addEventListener("change",function(){ if(onChange) onChange(sel.value); });
+  wrap.appendChild(sel);
+  wrap.fill=fill;
+  wrap.getCode=function(){ return sel.value; };
+  wrap.setCode=function(code){ sel.value=normProj(code||""); };
+  return wrap;
+}
 function projectPicker(value,onChange,opts){
   opts=opts||{};
   var wrap=el("div");
+  var row=el("div","pj-manage");
   var inp=el("input");
   inp.placeholder=opts.placeholder||"type a project code or name…";
   inp.setAttribute("autocomplete","off");
   var dlId="pj-"+Math.random().toString(36).slice(2,8);
   var dl=document.createElement("datalist"); dl.id=dlId;
+  var current=normProj(value||"");
+  var show=el("label","checkline");
+  var cb=el("input"); cb.type="checkbox"; cb.checked=Boolean(S.showArchivedProjects);
+  show.appendChild(cb); show.appendChild(document.createTextNode("Show archived"));
   function fillList(){
     dl.innerHTML="";
-    knownProjects().forEach(function(p){
+    pickerProjectList(S.projects,{
+      includeArchived:cb.checked,
+      current:current
+    }).forEach(function(p){
       var o=document.createElement("option");
       o.value=p.code;
-      o.label=p.name&&p.name!==p.code?p.name:"";
+      var bits=[];
+      if(p.name&&p.name!==p.code) bits.push(p.name);
+      if(p.status==="Archived") bits.push("archived");
+      o.label=bits.join(" · ");
       dl.appendChild(o);
     });
   }
+  function paintHint(){
+    var rowP=findProject(current);
+    if(rowP&&rowP.status==="Archived"){
+      hint.textContent="This file uses an archived project. It stays on the record.";
+    }else{
+      hint.textContent=opts.hint||"Pick a project on file. Use Manage to add or archive.";
+    }
+  }
   fillList();
   inp.setAttribute("list",dlId);
-  var current=normProj(value||"");
   inp.value=current;
-  var hint=el("div","hint",opts.hint||"Pick one on file, or type a new project and it is added to the list.");
+  var manage=el("button","btn sm","Manage");
+  manage.type="button";
+  manage.title="Add or edit projects";
+  manage.addEventListener("click",function(ev){
+    ev.preventDefault();
+    openProjectsManager({onClose:function(){ fillList(); paintHint(); }});
+  });
+  var hint=el("div","hint");
   function commit(){
     var code=normProj(inp.value);
     current=code;
     if(code) ensureProject(code);
     fillList();
+    paintHint();
     if(onChange) onChange(code);
   }
   inp.addEventListener("change",commit);
   inp.addEventListener("blur",commit);
-  wrap.appendChild(inp);
+  cb.addEventListener("change",function(){
+    S.showArchivedProjects=cb.checked;
+    fillList();
+  });
+  row.appendChild(inp); row.appendChild(manage);
+  wrap.appendChild(row);
   wrap.appendChild(dl);
+  wrap.appendChild(show);
   wrap.appendChild(hint);
+  paintHint();
   wrap.getCode=function(){ return current; };
   wrap.setCode=function(code){
     current=normProj(code||"");
     inp.value=current;
+    fillList();
+    paintHint();
   };
   return wrap;
+}
+function openProjectsManager(opts){
+  opts=opts||{};
+  var ex=document.getElementById("pjSheet"); if(ex) ex.remove();
+  harvestProjects(false);
+  var m=el("div","modal"); m.id="pjSheet";
+  var sheet=el("div","sheet"); sheet.style.maxWidth="720px";
+  var b=el("div"); b.style.padding="var(--space-5) var(--space-6)";
+  b.appendChild(el("h3",null,"Projects"));
+  b.appendChild(el("div","hint","Add or edit names and codes. Archive a finished job so it drops off the pickers. Old VRF, reserve and ledger rows keep the name they were saved with."));
+
+  var editingPrev="";
+  var form=el("div","f3"); form.style.marginTop="var(--space-4)";
+  function fld(label,node){ var f=el("div","field"); f.appendChild(el("label",null,label)); f.appendChild(node); return f; }
+  var codeIn=el("input"); codeIn.placeholder="code or name";
+  var nameIn=el("input"); nameIn.placeholder="optional display name";
+  var archLab=el("label","checkline");
+  var archCb=el("input"); archCb.type="checkbox";
+  archLab.appendChild(archCb); archLab.appendChild(document.createTextNode("Archived — hide from new picks"));
+  var formHint=el("div","hint");
+  form.appendChild(fld("Code",codeIn));
+  form.appendChild(fld("Name",nameIn));
+  var archF=el("div","field"); archF.appendChild(el("label",null,"Status")); archF.appendChild(archLab);
+  form.appendChild(archF);
+  b.appendChild(form);
+
+  var actions=el("div","row"); actions.style.marginTop="var(--space-3)";
+  var saveBtn=el("button","btn pri","Add project");
+  var cancelEdit=el("button","btn sm","Clear");
+  actions.appendChild(saveBtn); actions.appendChild(cancelEdit);
+  b.appendChild(actions); b.appendChild(formHint);
+
+  var listBar=el("div","row"); listBar.style.margin="var(--space-5) 0 var(--space-2)";
+  var listNote=el("span","hint");
+  var showLab=el("label","checkline");
+  var showCb=el("input"); showCb.type="checkbox"; showCb.checked=Boolean(S.showArchivedProjects);
+  showLab.appendChild(showCb); showLab.appendChild(document.createTextNode("Show archived"));
+  listBar.appendChild(listNote); listBar.appendChild(showLab);
+  b.appendChild(listBar);
+  var listHost=el("div");
+  b.appendChild(listHost);
+
+  function resetForm(){
+    editingPrev="";
+    codeIn.value=""; nameIn.value=""; archCb.checked=false;
+    saveBtn.textContent="Add project";
+    formHint.textContent="";
+  }
+  function startEdit(p){
+    var row=asProject(p); if(!row) return;
+    editingPrev=row.code;
+    codeIn.value=row.code;
+    nameIn.value=row.name&&row.name!==row.code?row.name:"";
+    archCb.checked=row.status==="Archived";
+    saveBtn.textContent="Save changes";
+    formHint.textContent="Editing "+row.code+".";
+    try{ codeIn.focus(); }catch(e){}
+  }
+  function drawList(){
+    listHost.innerHTML="";
+    var all=(S.projects||[]).map(asProject).filter(Boolean);
+    var active=all.filter(function(p){ return p.status!=="Archived"; });
+    var archived=all.filter(function(p){ return p.status==="Archived"; });
+    listNote.textContent=active.length+" active · "+archived.length+" archived";
+    var rows=showCb.checked?all:active;
+    listHost.appendChild(table([
+      {h:"Code",get:function(p){ return el("span","mono",p.code); }},
+      {h:"Name",get:function(p){ return p.name&&p.name!==p.code?p.name:"—"; }},
+      {h:"Status",get:function(p){
+        return el("span","chip "+(p.status==="Archived"?"mute":"ok"),
+          p.status==="Archived"?"Archived":"Active"); }},
+      {h:"",get:function(p){
+        var row=el("div","row");
+        var ed=el("button","btn sm","Edit");
+        ed.addEventListener("click",function(){ startEdit(p); });
+        var tog=el("button","btn sm",p.status==="Archived"?"Restore":"Archive");
+        tog.addEventListener("click",async function(){
+          var res=upsertManagedProject(S.projects,{
+            prevCode:p.code, code:p.code, name:p.name,
+            archived:p.status!=="Archived"
+          });
+          if(!res.ok){ toast(res.reason); return; }
+          S.projects=res.projects;
+          try{ await saveProjects(); }catch(e){}
+          toast(p.code+(p.status==="Archived"?" restored.":" archived."));
+          drawList();
+        });
+        row.appendChild(ed); row.appendChild(tog); return row;
+      }}
+    ],rows,{empty:showCb.checked?"No projects on file yet.":"No active projects — turn on Show archived or add one."}));
+  }
+  saveBtn.addEventListener("click",async function(){
+    var code=normProj(codeIn.value);
+    if(!code){ formHint.textContent="Type the project name or code."; return; }
+    saveBtn.disabled=true;
+    var res=upsertManagedProject(S.projects,{
+      prevCode:editingPrev||code,
+      code:code,
+      name:nameIn.value.trim()||code,
+      archived:archCb.checked
+    });
+    if(!res.ok){ formHint.textContent=res.reason; saveBtn.disabled=false; return; }
+    S.projects=res.projects;
+    try{ await saveProjects(); }catch(e){}
+    toast(code+(archCb.checked?" archived.":" saved."));
+    resetForm();
+    saveBtn.disabled=false;
+    drawList();
+  });
+  cancelEdit.addEventListener("click",resetForm);
+  showCb.addEventListener("change",function(){
+    S.showArchivedProjects=showCb.checked;
+    drawList();
+  });
+  drawList();
+
+  var foot=el("div","row"); foot.style.marginTop="var(--space-5)";
+  var close=el("button","btn","Close");
+  close.addEventListener("click",function(){
+    m.remove();
+    if(opts.onClose) opts.onClose();
+  });
+  foot.appendChild(close);
+  b.appendChild(foot);
+  m.addEventListener("click",function(ev){ if(ev.target===m) close.click(); });
+  sheet.appendChild(b); m.appendChild(sheet); document.body.appendChild(m);
 }
 
 /* VRF numbers are the spine of the paper trail, so the counter is taken under a
@@ -3302,7 +3570,7 @@ function askTools(){
      return {part_categories:Object.keys(cats).sort(),
        work_types:S.worktypes.map(function(w){
          return {code:w.code, name:w.name, family:w.family, interval_months:w.intervalMo}; }),
-       projects:S.projects.map(function(p){return p.code;})};
+       projects:S.projects.filter(function(p){return !isProjectArchived(p);}).map(function(p){return projectCodeOf(p);})};
    }}];
 }
 
@@ -3929,7 +4197,7 @@ function rsvView(){
 
   var r2=el("div","f3"); r2.style.marginTop="var(--space-3)";
   var bg=el("input"); bg.type="number"; bg.min="0"; bg.step="100"; bg.placeholder="0.00";
-  var ps=projectPicker("",null,{hint:"Pick a project, or type a new one."});
+  var ps=projectPicker("",null,{hint:"Pick a project on file. Use Manage to add or archive."});
   var nb=el("input"); nb.type="date";
   var bgF=fld("Estimated budget (PHP)",bg,"Your best estimate — the actual can differ, within tolerance.");
   r2.appendChild(bgF);
@@ -5407,8 +5675,28 @@ function vrfLogView(){
   fs2.value=S.regStatus||"";
   bar.appendChild(f2("Find",q)); bar.appendChild(f2("Type of job",fw)); bar.appendChild(f2("Status",fs2));
   g.appendChild(bar);
+  var barP=el("div","f3");
+  var fp=projectFilterSelect(S.logProject,function(code){ S.logProject=code; draw(); });
+  var showArch=el("label","checkline");
+  var showCb=el("input"); showCb.type="checkbox"; showCb.checked=Boolean(S.showArchivedProjects);
+  showArch.appendChild(showCb); showArch.appendChild(document.createTextNode("Show archived projects"));
+  var manageLog=el("button","btn sm","Manage projects");
+  manageLog.addEventListener("click",function(){
+    openProjectsManager({onClose:function(){ fp.fill(); draw(); }});
+  });
+  var archF=el("div","field");
+  archF.appendChild(el("label",null,"List"));
+  var archRow=el("div","row"); archRow.appendChild(showArch); archRow.appendChild(manageLog);
+  archF.appendChild(archRow);
+  barP.appendChild(f2("Project",fp));
+  barP.appendChild(archF);
+  barP.appendChild(el("div"));
+  g.appendChild(barP);
   fw.addEventListener("change",function(){ S.regWork=fw.value; render(); });
   fs2.addEventListener("change",function(){ S.regStatus=fs2.value; render(); });
+  showCb.addEventListener("change",function(){
+    S.showArchivedProjects=showCb.checked; fp.fill(); draw();
+  });
 
   var host=el("div");
   g.appendChild(host);
@@ -5419,6 +5707,7 @@ function vrfLogView(){
     var list=vrfIndex().filter(function(v){
       if(S.regWork&&v.works.indexOf(S.regWork)<0) return false;
       if(S.regStatus&&v.status!==S.regStatus) return false;
+      if(S.logProject&&normProj(v.project)!==S.logProject) return false;
       if(!term) return true;
       if(vrfSearchHits(v.vrf,term)) return true;
       if(v.units.join(" ").toLowerCase().indexOf(term)>=0) return true;
@@ -6766,7 +7055,7 @@ function vrfView(){
   hb.appendChild(fld("Vehicle",vSel));
 
   var pSel=projectPicker(d.project,function(code){ d.project=code; },
-    {hint:"Pick a project, or type a new one — it is added to the list."});
+    {hint:"Pick a project on file. Use Manage to add or archive."});
   hb.appendChild(fld("Project",pSel));
   g0.appendChild(hb);
 
@@ -6914,8 +7203,10 @@ function vrfView(){
     if(!d.odo){ var pv=lastOdo(d.veh); if(pv!=null){ d.odo=String(pv); oIn.value=d.odo; } }
     odoNote(); refreshGate(); fillReserves(); fillWorkRefs(); drawMeter();
     if(v&&v.site&&!d.project){
-      for(var i=0;i<S.projects.length;i++)
-        if(S.projects[i].code===v.site){ d.project=v.site; pSel.setCode(v.site); }
+      var siteRow=findProject(v.site);
+      if(siteRow&&siteRow.status!=="Archived"){
+        d.project=siteRow.code; pSel.setCode(siteRow.code);
+      }
     }
   }
   if(d.veh){ var v0=vehicle(d.veh); plate.value=v0?(v0.plate||"—"):""; }
@@ -7439,7 +7730,7 @@ function fuelView(){
   fb.appendChild(rfld);
   var dt=el("input"); dt.type="date"; dt.value=iso();
   var vs=unitPicker("",function(){ dcheck(); },{hint:"Search by code, name or plate."});
-  var ps=projectPicker("",null,{hint:"Pick a project, or type a new one."});
+  var ps=projectPicker("",null,{hint:"Pick a project on file. Use Manage to add or archive."});
   form.appendChild(fld("Date",dt)); form.appendChild(fld("Unit",vs)); form.appendChild(fld("Project",ps));
   fb.appendChild(form);
   rsel.addEventListener("change",function(){
@@ -9238,28 +9529,34 @@ function healthView(){
 
   var projCard=el("div","card");
   var projH=el("div","hd");
-  projH.appendChild(el("h3",null,"Projects on file"));
-  projH.appendChild(el("span","note",knownProjects().length+" codes — type a new one to add it"));
+  var allP=(S.projects||[]).map(asProject).filter(Boolean);
+  var activeP=allP.filter(function(p){ return p.status!=="Archived"; });
+  var archivedP=allP.filter(function(p){ return p.status==="Archived"; });
+  projH.appendChild(el("h3",null,"Projects"));
+  projH.appendChild(el("span","note",activeP.length+" active · "+archivedP.length+" archived"));
   projCard.appendChild(projH);
   var projB=el("div","bd");
   var projRow=el("div","row");
-  var projIn=el("input"); projIn.placeholder="new project code or name";
-  projIn.style.maxWidth="280px";
-  var projBtn=el("button","btn pri","Add project");
-  var projHint=el("div","hint");
-  projBtn.addEventListener("click",async function(){
-    var code=normProj(projIn.value);
-    if(!code){ projHint.textContent="Type the project name or code."; return; }
-    projBtn.disabled=true;
-    await ensureProject(code);
-    projBtn.disabled=false; projIn.value="";
-    toast(code+" is on the project list.");
-    render();
+  var projBtn=el("button","btn pri","Manage projects");
+  projBtn.addEventListener("click",function(){
+    openProjectsManager({onClose:function(){ render(); }});
   });
-  projRow.appendChild(projIn); projRow.appendChild(projBtn);
-  projB.appendChild(projRow); projB.appendChild(projHint);
+  var showHealth=el("label","checkline");
+  var showHealthCb=el("input"); showHealthCb.type="checkbox";
+  showHealthCb.checked=Boolean(S.showArchivedProjects);
+  showHealth.appendChild(showHealthCb);
+  showHealth.appendChild(document.createTextNode("Show archived"));
+  showHealthCb.addEventListener("change",function(){
+    S.showArchivedProjects=showHealthCb.checked; render();
+  });
+  projRow.appendChild(projBtn); projRow.appendChild(showHealth);
+  projB.appendChild(projRow);
+  projB.appendChild(el("div","hint","Add or edit names here. Archived codes stay on old VRF and reserve rows but drop off new pickers."));
+  var shown=S.showArchivedProjects?allP:activeP;
   var plist=el("div","hint"); plist.style.marginTop="var(--space-3)";
-  plist.textContent=knownProjects().map(function(p){ return p.code; }).join(" · ")||"None yet.";
+  plist.textContent=shown.map(function(p){
+    return p.status==="Archived"?p.code+" (archived)":p.code;
+  }).join(" · ")||"None yet.";
   projB.appendChild(plist);
   projCard.appendChild(projB);
   g.appendChild(projCard);

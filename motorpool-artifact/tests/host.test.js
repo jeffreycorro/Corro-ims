@@ -167,11 +167,16 @@ describe("motorpool host companion", () => {
     assert.match(html, /function logBypassFuelVrf/);
     assert.match(html, /Bypass — log VRF now/);
     assert.match(html, /Gauge photo is optional/);
-    assert.match(html, /var BUILD = "2026-09-15 b"/);
+    assert.match(html, /var BUILD = "2026-09-15 c"/);
     assert.match(html, /function photoFingerprint/);
     assert.match(html, /function projectPicker/);
     assert.match(html, /function listPhotosMany/);
     assert.match(html, /function harvestProjects/);
+    assert.match(html, /function openProjectsManager/);
+    assert.match(html, /function pickerProjectList/);
+    assert.match(html, /function upsertManagedProject/);
+    assert.match(html, /Show archived/);
+    assert.match(html, /Manage projects/);
     assert.doesNotMatch(html, /Read the gauge before asking for fuel/);
     assert.doesNotMatch(
       html,

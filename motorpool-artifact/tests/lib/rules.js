@@ -596,6 +596,14 @@
     return [];
   }
 
+  function projectStatusOf(p) {
+    if (p == null || typeof p === "string") return "Active";
+    if (p.archived === true || p.active === false) return "Archived";
+    var st = String(p.status || "").trim();
+    if (/^(archived|inactive|closed|retired)$/i.test(st)) return "Archived";
+    return "Active";
+  }
+
   function asProject(p) {
     if (p == null || p === "") return null;
     if (typeof p === "string") {
@@ -604,7 +612,131 @@
     }
     var code = String(p.code || p.name || p.id || "").trim();
     if (!code) return null;
-    return { code: code, name: p.name || code, status: p.status || "Active" };
+    return {
+      code: code,
+      name: (p.name && String(p.name).trim()) || code,
+      status: projectStatusOf(p),
+    };
+  }
+
+  function isProjectArchived(p) {
+    var row = asProject(p);
+    return Boolean(row && row.status === "Archived");
+  }
+
+  function projectCodeOf(p) {
+    var row = asProject(p);
+    return row ? row.code : "";
+  }
+
+  function projectStamp(list) {
+    return (list || [])
+      .map(function (p) {
+        var row = asProject(p);
+        return row ? row.code + "\t" + row.name + "\t" + row.status : "";
+      })
+      .sort()
+      .join("\0");
+  }
+
+  function harvestProjectCodes(sources) {
+    var seen = {};
+    var out = [];
+    function add(raw) {
+      var row = asProject(raw);
+      if (!row || seen[row.code]) return;
+      seen[row.code] = 1;
+      out.push(row.code);
+    }
+    sources = sources || {};
+    (sources.vehicles || []).forEach(function (v) {
+      if (v && v.site) add(v.site);
+    });
+    (sources.reserves || []).forEach(function (r) {
+      if (r && r.project) add(r.project);
+    });
+    (sources.withdrawals || []).forEach(function (d) {
+      if (d && d.project) add(d.project);
+    });
+    (sources.purchases || []).forEach(function (d) {
+      if (d && d.project) add(d.project);
+    });
+    Object.keys(sources.ledger || {}).forEach(function (mk) {
+      (sources.ledger[mk] || []).forEach(function (r) {
+        if (r && r.project) add(r.project);
+      });
+    });
+    (sources.extra || []).forEach(add);
+    return out;
+  }
+
+  function mergeProjectStore(managed, harvestedCodes) {
+    var byCode = {};
+    var out = [];
+    function put(p) {
+      var row = asProject(p);
+      if (!row || byCode[row.code]) return;
+      byCode[row.code] = row;
+      out.push(row);
+    }
+    (managed || []).forEach(put);
+    (harvestedCodes || []).forEach(function (code) {
+      put(typeof code === "string" ? { code: code, name: code, status: "Active" } : code);
+    });
+    out.sort(function (a, b) {
+      return String(a.code).localeCompare(String(b.code));
+    });
+    return out;
+  }
+
+  function pickerProjectList(projects, opts) {
+    opts = opts || {};
+    var includeArchived = Boolean(opts.includeArchived);
+    var current = opts.current != null ? String(opts.current).trim() : "";
+    var out = [];
+    (projects || []).forEach(function (p) {
+      var row = asProject(p);
+      if (!row) return;
+      if (row.status === "Archived" && !includeArchived && row.code !== current) return;
+      out.push(row);
+    });
+    return out;
+  }
+
+  function upsertManagedProject(managed, patch) {
+    var next = asProject(patch);
+    if (!next) return { ok: false, reason: "code required", projects: (managed || []).map(asProject).filter(Boolean) };
+    if (patch && patch.archived === true) next.status = "Archived";
+    if (patch && patch.archived === false) next.status = "Active";
+    var list = (managed || []).map(asProject).filter(Boolean);
+    var prevCode = patch && patch.prevCode ? String(patch.prevCode).trim() : next.code;
+    var idx = -1;
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].code === prevCode || list[i].code === next.code) {
+        idx = i;
+        break;
+      }
+    }
+    if (idx >= 0 && list[idx].code !== next.code) {
+      for (var j = 0; j < list.length; j++) {
+        if (j !== idx && list[j].code === next.code) {
+          return { ok: false, reason: "code already on file", projects: list };
+        }
+      }
+      list[idx] = next;
+    } else if (idx >= 0) {
+      list[idx] = next;
+    } else {
+      list.push(next);
+    }
+    list.sort(function (a, b) {
+      return String(a.code).localeCompare(String(b.code));
+    });
+    return { ok: true, project: next, projects: list };
+  }
+
+  function recordProjectLabel(stored) {
+    return stored == null || stored === "" ? "" : String(stored);
   }
 
   function photoOwnersForReserve(r) {
@@ -810,7 +942,16 @@
     fuelAskApprovalBlockedByPhoto: fuelAskApprovalBlockedByPhoto,
     isFuelBypass: isFuelBypass,
     asProject: asProject,
+    harvestProjectCodes: harvestProjectCodes,
+    isProjectArchived: isProjectArchived,
     masterList: masterList,
+    mergeProjectStore: mergeProjectStore,
+    pickerProjectList: pickerProjectList,
+    projectCodeOf: projectCodeOf,
+    projectStamp: projectStamp,
+    projectStatusOf: projectStatusOf,
+    recordProjectLabel: recordProjectLabel,
+    upsertManagedProject: upsertManagedProject,
     missingFuelApproveFields: missingFuelApproveFields,
     photoOwnersForReserve: photoOwnersForReserve,
     mergePhotoLists: mergePhotoLists,
