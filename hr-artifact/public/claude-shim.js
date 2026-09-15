@@ -842,6 +842,7 @@
     loadCompanion("/hr-recruit.js", "data-hr-recruit");
     loadCompanion("/hr-201-file.js", "data-hr-201-file");
     loadCompanion("/hr-leave-numbers.js", "data-hr-leave-numbers");
+    loadCompanion("/hr-onboarding-links.js", "data-hr-onboarding-links");
   }
 
   var apiObj = {
