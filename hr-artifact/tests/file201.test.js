@@ -418,6 +418,174 @@ describe("hr-201-file recordsFor", () => {
   });
 });
 
+describe("hr-201-file checklist extras and attach-via-link", () => {
+  function loadWithDocs() {
+    const w = {
+      window: {},
+      document: undefined,
+      TODAY: "2026-09-15",
+      DOCS: [
+        { k: "sss", n: "SSS", g: "Statutory" },
+        { k: "benefack", n: "Gov Benefit Deduction — acknowledged", g: "Employment" },
+        { k: "qcrel", n: "Release &amp; Quitclaim", g: "Quitclaim", opt: 1, code: "CLR" },
+        { k: "resign", n: "Resignation Letter", g: "Separation", opt: 1 },
+      ],
+      GUESS: [
+        [/quitclaim|\bqc(?:ls)?\s*-?\s*20\d\d\b|release\s*(and|&)\s*quitclaim/i, "qcrel"],
+        [/benefit.*deduction|refusal.*benefit/i, "benefack"],
+        [/resignation\s*letter|letter\s*of\s*resignation/i, "resign"],
+      ],
+      guessDoc(name) {
+        const t = String(name || "").replace(/[_\-.]+/g, " ");
+        for (const [re, k] of this.GUESS) if (re.test(t)) return k;
+        return "";
+      },
+      docAddLink(v, url, title) {
+        url = String(url || "").trim();
+        if (!url) return false;
+        const links = v.links || [];
+        if (v.link === url || links.some((x) => (x.url || x) === url)) return false;
+        links.push({ url, title: title || "", on: "2026-09-15" });
+        v.links = links;
+        if (!v.link) {
+          v.link = url;
+          v.title = title || "";
+        }
+        return true;
+      },
+      docFiles(v) {
+        if (!v) return [];
+        const out = [];
+        const seen = new Set();
+        const push = (url, title, on) => {
+          url = String(url || "").trim();
+          if (!url || seen.has(url)) return;
+          seen.add(url);
+          out.push({ url, title: title || "", on: on || "" });
+        };
+        push(v.link, v.title, v.filed);
+        (v.links || []).forEach((x) => {
+          if (typeof x === "string") push(x, "", "");
+          else if (x) push(x.url, x.title, x.on);
+        });
+        return out;
+      },
+    };
+    w.window = w;
+    return { w, hr: load201(w) };
+  }
+
+  it("registers refusal, clearance, and the three quitclaim rows without rewriting the artifact", () => {
+    const { w, hr } = loadWithDocs();
+    const out = hr.registerChecklist(w);
+    assert.equal(out.added.slice().sort().join(","), "benref,clrform,qc13th,qclast,qcprorata");
+    const byK = Object.fromEntries(w.DOCS.map((d) => [d.k, d]));
+    assert.equal(byK.benref.n, "Refusal for GovMan Deduction");
+    assert.equal(byK.benref.g, "Statutory");
+    assert.equal(byK.clrform.n, "Employee Clearance Form");
+    assert.equal(byK.clrform.g, "Separation");
+    assert.equal(byK.qclast.n, "Quitclaim — Last Salary");
+    assert.equal(byK.qcprorata.n, "Quitclaim — Pro-Rated 13th Month");
+    assert.equal(byK.qc13th.n, "Quitclaim — 13th Month Pay");
+    assert.equal(byK.benefack.n, "GovMan Deduction — acknowledged");
+    assert.equal(byK.benefack.g, "Statutory");
+    assert.equal(byK.qcrel.n, "Release & Quitclaim");
+    assert.ok(byK.benref.opt);
+    assert.ok(byK.clrform.opt);
+    hr.registerChecklist(w);
+    assert.equal(w.DOCS.filter((d) => d.k === "benref").length, 1);
+  });
+
+  it("guesses Drive file names onto the new rows before the general quitclaim rule", () => {
+    const { w, hr } = loadWithDocs();
+    hr.registerChecklist(w);
+    assert.equal(hr.guessDocKey("1286 - Quitclaim - Last Salary.pdf"), "qclast");
+    assert.equal(hr.guessDocKey("Quitclaim_Pro-Rated_13th_Month.pdf"), "qcprorata");
+    assert.equal(hr.guessDocKey("Quitclaim - 13th Month Pay - Pedrano.pdf"), "qc13th");
+    assert.equal(hr.guessDocKey("Employee Clearance Form R50.pdf"), "clrform");
+    assert.equal(hr.guessDocKey("Refusal for GovMan Deduction.pdf"), "benref");
+    assert.equal(hr.guessDocKey("Decline in Government Mandated Benefits.pdf"), "benref");
+    assert.equal(hr.guessDocKey("Gov Benefit Deduction acknowledged.pdf"), "benefack");
+    assert.equal(hr.guessDocKey("letter of resignation unsigned.pdf"), "resign");
+  });
+
+  it("normalizes Drive share links and file ids", () => {
+    const { hr } = loadWithDocs();
+    assert.equal(
+      hr.normalizeDriveUrl("https://drive.google.com/file/d/1Me4tD2wDWvdWbh84iWFhBvlqOw1QyVlL/view?usp=sharing"),
+      "https://drive.google.com/file/d/1Me4tD2wDWvdWbh84iWFhBvlqOw1QyVlL/view"
+    );
+    assert.equal(
+      hr.normalizeDriveUrl("https://drive.google.com/open?id=1Zpy4tS-PvYBbfRjQb34hXIfKeI77QCCI"),
+      "https://drive.google.com/file/d/1Zpy4tS-PvYBbfRjQb34hXIfKeI77QCCI/view"
+    );
+    assert.equal(
+      hr.normalizeDriveUrl("1VmxgjUIbXpAhd2uQeyQWm-14SLUF5W0K"),
+      "https://drive.google.com/file/d/1VmxgjUIbXpAhd2uQeyQWm-14SLUF5W0K/view"
+    );
+    assert.equal(hr.normalizeDriveUrl("not a link"), "");
+  });
+
+  it("saves a pasted Drive link onto the checklist row", () => {
+    const { hr } = loadWithDocs();
+    const emp = { id: "e1", name: "Pedrano, Jaica M.", docs: {} };
+    const res = hr.applyAttach(
+      emp,
+      "qclast",
+      "https://drive.google.com/file/d/1VmxgjUIbXpAhd2uQeyQWm-14SLUF5W0K/view",
+      "Quitclaim — Last Salary",
+      "2026-09-15"
+    );
+    assert.equal(res.ok, true);
+    assert.equal(emp.docs.qclast.s, "on");
+    assert.equal(emp.docs.qclast.link, "https://drive.google.com/file/d/1VmxgjUIbXpAhd2uQeyQWm-14SLUF5W0K/view");
+    assert.equal(emp.docs.qclast.filed, "2026-09-15");
+    const again = hr.applyAttach(emp, "qclast", "https://drive.google.com/file/d/1VmxgjUIbXpAhd2uQeyQWm-14SLUF5W0K/view");
+    assert.equal(again.ok, false);
+    const refuse = hr.applyAttach(emp, "benref", "https://example.com/refusal.pdf", "Refusal");
+    assert.equal(refuse.ok, true);
+    assert.equal(emp.docs.benref.s, "on");
+    const clr = hr.applyAttach(emp, "clrform", "https://drive.google.com/file/d/1Zpy4tS-PvYBbfRjQb34hXIfKeI77QCCI/view");
+    assert.equal(clr.ok, true);
+  });
+
+  it("lists attached checklist scans on On file for this person", () => {
+    const { w, hr } = loadWithDocs();
+    hr.registerChecklist(w);
+    const S = stores();
+    S.employees.e1.docs = {
+      qclast: {
+        s: "on",
+        filed: "2026-08-01",
+        link: "https://drive.example/last",
+        title: "Quitclaim — Last Salary",
+        links: [{ url: "https://drive.example/last", title: "Quitclaim — Last Salary", on: "2026-08-01" }],
+      },
+      clrform: { s: "on", filed: "2026-08-02", link: "https://drive.example/clr", title: "Clearance" },
+    };
+    const rows = hr.recordsFor("e1", S);
+    assert.ok(rows.some((r) => r.source === "docs" && r.typeKey === "qclast"));
+    assert.ok(rows.some((r) => r.source === "docs" && r.typeKey === "clrform"));
+    const html = hr.sectionHtml(S.employees.e1, rows);
+    assert.match(html, /Quitclaim — Last Salary|Last Salary/);
+    assert.match(html, /Employee Clearance Form|Clearance/);
+  });
+
+  it("widens the paste-link box and adds Attach link when Drive is offline", () => {
+    const { hr } = loadWithDocs();
+    const raw =
+      '<div class="stack"><button class="btn sm" data-upload="sss" title="Upload into this employee\'s 201 folder in Drive">Upload</button>' +
+      '<input type="url" data-addlink="sss" placeholder="paste a Drive link to add" style="width:124px" title="Adds another file to this row — it does not replace what is there"></div>';
+    const html = hr.enhanceDocsHtml(raw, { mcpChecked: true, mcpReady: false });
+    assert.match(html, /hr-201-attach-note/);
+    assert.match(html, /Drive upload and folder match are offline/);
+    assert.match(html, /id="hr-201-attach-any"/);
+    assert.match(html, /data-hr201-attach="sss"/);
+    assert.match(html, /Paste a Drive URL/);
+    assert.doesNotMatch(html, /style="width:124px"/);
+  });
+});
+
 describe("hr-201-file inject", () => {
   it("injects the section on the open 201 folder and follows openEmp", () => {
     const dom = fakeDom();
