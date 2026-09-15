@@ -2,15 +2,16 @@
  * Recruitment helpers for the CorConDev HR artifact.
  * Loaded by claude-shim.js. Does not rewrite the artifact.
  *
- * Adds Pipeline "Bulk import JSON", "Consolidate duplicates", and a
- * "View 201 / application file" action on the applicant editor.
+ * Adds Pipeline "Bulk import JSON", "Consolidate duplicates", a
+ * role filter, and a "View 201 / application file" action on the
+ * applicant editor.
  */
 (function (root) {
   "use strict";
 
-  if (root.hrRecruit && root.hrRecruit.version === "1.1.0") return;
+  if (root.hrRecruit && root.hrRecruit.version === "1.2.0") return;
 
-  var api = { version: "1.1.0", attached: false, openAppId: "" };
+  var api = { version: "1.2.0", attached: false, openAppId: "", roleFilter: "" };
 
   function dedupe() {
     return (
@@ -204,6 +205,261 @@
     var S = store() || {};
     var ro = a && a.roleId && S.roles ? S.roles[a.roleId] : null;
     return (ro && ro.title) || (a && a.position) || "—";
+  }
+
+  function rolesMap() {
+    var S = store() || {};
+    return S.roles || {};
+  }
+
+  function displayRoleTitle(a, roles) {
+    roles = roles || rolesMap();
+    var ro = a && a.roleId ? roles[a.roleId] : null;
+    var title = (ro && ro.title) || (a && a.position) || "";
+    return String(title).trim();
+  }
+
+  function roleFilterKey(a, roles) {
+    roles = roles || rolesMap();
+    if (a && a.roleId && roles[a.roleId]) return String(a.roleId);
+    var title = displayRoleTitle(a, roles);
+    if (title) {
+      var ids = Object.keys(roles);
+      var i;
+      for (i = 0; i < ids.length; i += 1) {
+        if (roles[ids[i]] && String(roles[ids[i]].title || "").trim() === title) {
+          return ids[i];
+        }
+      }
+      return "title:" + title.toLowerCase();
+    }
+    return "unlinked";
+  }
+
+  function applicantMatchesRole(a, filter, roles) {
+    roles = roles || rolesMap();
+    var want = String(filter == null ? "" : filter);
+    if (!want || want === "all") return true;
+    if (want === "unlinked") return roleFilterKey(a, roles) === "unlinked";
+    if (want.indexOf("title:") === 0) return roleFilterKey(a, roles) === want;
+    if (a && String(a.roleId || "") === want) return true;
+    var titled = roles[want] && String(roles[want].title || "").trim();
+    if (titled && displayRoleTitle(a, roles) === titled) return true;
+    return false;
+  }
+
+  function roleFilterOptions(list, roles) {
+    roles = roles || rolesMap();
+    var seen = Object.create(null);
+    var out = [];
+    (list || []).forEach(function (a) {
+      var key = roleFilterKey(a, roles);
+      if (seen[key]) {
+        seen[key].count += 1;
+        return;
+      }
+      seen[key] = {
+        key: key,
+        label: key === "unlinked" ? "Unlinked" : displayRoleTitle(a, roles) || "Unlinked",
+        count: 1,
+      };
+      out.push(seen[key]);
+    });
+    out.sort(function (a, b) {
+      if (a.key === "unlinked") return 1;
+      if (b.key === "unlinked") return -1;
+      return a.label.localeCompare(b.label);
+    });
+    return out;
+  }
+
+  function currentRoleFilter() {
+    var S = store();
+    if (S && S.ui && S.ui.pipelineRoleFilter != null) return String(S.ui.pipelineRoleFilter);
+    return String(api.roleFilter || "");
+  }
+
+  function setRoleFilter(key) {
+    var want = String(key == null ? "" : key);
+    if (want === "all") want = "";
+    api.roleFilter = want;
+    var S = store();
+    if (S) {
+      S.ui = S.ui || {};
+      S.ui.pipelineRoleFilter = want;
+    }
+    applyRoleFilter();
+    paintRoleFilter();
+  }
+
+  function pipelineStageBlocks(doc) {
+    doc = doc || document;
+    var log = doc.getElementById && doc.getElementById("new-app");
+    if (!log) return [];
+    var sect = log.parentNode;
+    var blocks = [];
+    var el = sect && sect.nextElementSibling;
+    while (el) {
+      if (el.id === "hr-recruit-role-filter") {
+        el = el.nextElementSibling;
+        continue;
+      }
+      var cls = String(el.className || "");
+      if (cls.indexOf("sect-h") >= 0) {
+        var card = el.nextElementSibling;
+        if (card && String(card.className || "").indexOf("card") >= 0) {
+          blocks.push({
+            header: el,
+            card: card,
+            pill: el.querySelector ? el.querySelector(".pill") : null,
+          });
+          el = card.nextElementSibling;
+          continue;
+        }
+      }
+      el = el.nextElementSibling;
+    }
+    return blocks;
+  }
+
+  function applyRoleFilter(doc) {
+    doc = doc || document;
+    if (!doc || !doc.getElementById || !doc.getElementById("new-app")) return 0;
+    var filter = currentRoleFilter();
+    var roles = rolesMap();
+    var shown = 0;
+    var total = 0;
+    pipelineStageBlocks(doc).forEach(function (block) {
+      var rows = block.card.querySelectorAll
+        ? Array.prototype.slice.call(block.card.querySelectorAll("tbody tr"))
+        : [];
+      var visible = 0;
+      rows.forEach(function (tr) {
+        var btn = tr.querySelector ? tr.querySelector("[data-open-app]") : null;
+        var id = btn && btn.getAttribute ? btn.getAttribute("data-open-app") : "";
+        var a = findApplicant(id);
+        total += 1;
+        var ok = !a || applicantMatchesRole(a, filter, roles);
+        if (ok) {
+          visible += 1;
+          shown += 1;
+        }
+        if (tr.style) tr.style.display = ok ? "" : "none";
+      });
+      var hide = rows.length > 0 && visible === 0;
+      if (block.header && block.header.style) block.header.style.display = hide ? "none" : "";
+      if (block.card && block.card.style) block.card.style.display = hide ? "none" : "";
+      if (block.pill) block.pill.textContent = String(visible);
+    });
+    var note = doc.getElementById("hr-recruit-role-count");
+    if (note) {
+      note.textContent = filter
+        ? "Showing " + shown + " of " + total
+        : total
+          ? total + " on pipeline"
+          : "";
+    }
+    return shown;
+  }
+
+  function paintRoleFilter(bar) {
+    bar = bar || (typeof document !== "undefined" && document.getElementById("hr-recruit-role-filter"));
+    if (!bar) return bar;
+    var filter = currentRoleFilter();
+    var chips = bar.querySelectorAll ? bar.querySelectorAll("[data-role-filter]") : [];
+    Array.prototype.forEach.call(chips, function (chip) {
+      var key = chip.getAttribute("data-role-filter");
+      var on = (key || "") === (filter || "");
+      var cls = String(chip.className || "").replace(/\bon\b/g, "").replace(/\s+/g, " ").trim();
+      chip.className = on ? cls + " on" : cls;
+    });
+    return bar;
+  }
+
+  function roleFilterHtml() {
+    var options = roleFilterOptions(applicantList(), rolesMap());
+    var filter = currentRoleFilter();
+    var total = applicantList().length;
+    var chips =
+      '<button type="button" class="btn sm' +
+      (!filter ? " on" : "") +
+      '" data-role-filter="">All roles</button>';
+    options.forEach(function (opt) {
+      chips +=
+        '<button type="button" class="btn sm' +
+        (filter === opt.key ? " on" : "") +
+        '" data-role-filter="' +
+        esc(opt.key) +
+        '">' +
+        esc(opt.label) +
+        " (" +
+        opt.count +
+        ")</button>";
+    });
+    return (
+      '<span class="lbl">Role</span>' +
+      chips +
+      '<span class="lbl" id="hr-recruit-role-count">' +
+      (filter ? "" : total ? total + " on pipeline" : "") +
+      "</span>"
+    );
+  }
+
+  function bindRoleFilterClicks(doc) {
+    doc = doc || document;
+    if (!doc || doc.__hrRoleFilterClicks) return;
+    doc.__hrRoleFilterClicks = true;
+    if (!doc.addEventListener) return;
+    doc.addEventListener(
+      "click",
+      function (ev) {
+        var t = ev && ev.target;
+        while (t && t !== doc) {
+          if (t.getAttribute && t.getAttribute("data-role-filter") !== null && t.tagName) {
+            if (ev.preventDefault) ev.preventDefault();
+            setRoleFilter(t.getAttribute("data-role-filter"));
+            return;
+          }
+          t = t.parentNode;
+        }
+      },
+      false
+    );
+  }
+
+  function injectRoleFilter() {
+    if (typeof document === "undefined") return null;
+    var log = document.getElementById("new-app");
+    if (!log || !log.parentNode) {
+      var stale = document.getElementById("hr-recruit-role-filter");
+      if (stale && stale.parentNode) stale.parentNode.removeChild(stale);
+      return null;
+    }
+    bindRoleFilterClicks(document);
+    var bar = document.getElementById("hr-recruit-role-filter");
+    if (!bar) {
+      bar = document.createElement("div");
+      bar.id = "hr-recruit-role-filter";
+      bar.className = "row";
+      bar.setAttribute("data-hr-role-filter", "1");
+      var sect = log.parentNode;
+      if (sect.parentNode) {
+        if (sect.nextSibling) sect.parentNode.insertBefore(bar, sect.nextSibling);
+        else sect.parentNode.appendChild(bar);
+      } else {
+        sect.appendChild(bar);
+      }
+    }
+    bar.innerHTML = roleFilterHtml();
+    if (bar.style) {
+      bar.style.flexWrap = "wrap";
+      bar.style.gap = "6px";
+      bar.style.margin = "0 0 12px";
+      bar.style.alignItems = "center";
+    }
+    applyRoleFilter(document);
+    paintRoleFilter(bar);
+    return bar;
   }
 
   function duplicateGroups() {
@@ -833,6 +1089,7 @@
       wrapPut();
       injectButton();
       injectConsolidateButton();
+      injectRoleFilter();
     } catch (e) {}
   }
 
@@ -861,6 +1118,12 @@
   api.parsePaste = parsePaste;
   api.injectButton = injectButton;
   api.injectConsolidateButton = injectConsolidateButton;
+  api.injectRoleFilter = injectRoleFilter;
+  api.applyRoleFilter = applyRoleFilter;
+  api.setRoleFilter = setRoleFilter;
+  api.roleFilterKey = roleFilterKey;
+  api.roleFilterOptions = roleFilterOptions;
+  api.applicantMatchesRole = applicantMatchesRole;
   api.openPasteDoor = openPasteDoor;
   api.openConsolidateDoor = openConsolidateDoor;
   api.openApplicationFile = openApplicationFile;

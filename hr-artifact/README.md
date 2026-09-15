@@ -22,7 +22,7 @@ Inside `<head>` of that real `index.html`, **before any other scripts**, add:
 <script src="/pwa.js"></script>
 ```
 
-`window.claude.use(name)` is implemented by `public/claude-shim.js` and must load first. Do not rewrite the rest of the artifact. `pwa.js` / `pwa.css` only add iOS Home Screen tags and a scoped mobile overlay. The shim then loads `hr-dictation.js` (hold-to-talk when `OPENAI_API_KEY` is set), `hr-memo.js` (issued / on-paper memoranda open as saved records, not blank drafts), `hr-attendance.js` (manpower tally leave rule, JSON paste/import door, per-person summary, Present/Late Time In and Undertime Time Out), `hr-payroll.js` (Payroll Maker period attendance, +30% / +100% / as-is holiday premium, contributions, holiday calendar, Daily Manpower Hol/OT + change history), `hr-tts.js` (ElevenLabs readback for Ask the records and memo text when `ELEVENLABS_API_KEY` is set), `hr-recruit.js` (Recruitment → Pipeline “Bulk import JSON”, “Consolidate duplicates”, and the applicant “View 201 / application file”), and `hr-201-file.js` (201 profile “On file for this person” — NTEs, memos, incidents, leave, cash advances, and other empId-tagged records). Do not rewrite the artifact to add mic buttons, memo chrome, a second attendance system, a parallel payroll app, a second voice UI, a second recruitment editor, or a second 201 register.
+`window.claude.use(name)` is implemented by `public/claude-shim.js` and must load first. Do not rewrite the rest of the artifact. `pwa.js` / `pwa.css` only add iOS Home Screen tags and a scoped mobile overlay. The shim then loads `hr-dictation.js` (hold-to-talk when `OPENAI_API_KEY` is set), `hr-memo.js` (issued / on-paper memoranda open as saved records, not blank drafts), `hr-attendance.js` (manpower tally leave rule, JSON paste/import door, per-person summary, Present/Late Time In and Undertime Time Out), `hr-payroll.js` (Payroll Maker period attendance, +30% / +100% / as-is holiday premium, contributions, holiday calendar, Daily Manpower Hol/OT + change history), `hr-tts.js` (ElevenLabs readback for Ask the records and memo text when `ELEVENLABS_API_KEY` is set), `hr-recruit.js` (Recruitment → Pipeline “Bulk import JSON”, “Consolidate duplicates”, role filter, and the applicant “View 201 / application file”), and `hr-201-file.js` (201 profile “On file for this person” — NTEs, memos, incidents, leave, cash advances, and other empId-tagged records). Do not rewrite the artifact to add mic buttons, memo chrome, a second attendance system, a parallel payroll app, a second voice UI, a second recruitment editor, or a second 201 register.
 
 ### 3. Apply the SQL migration
 
@@ -213,7 +213,7 @@ hr-artifact/
   public/hr-payroll.js       ← Payroll Maker, contributions, holiday calendar, attendance edit log
   public/hr-tts.js           ← ElevenLabs readback (loaded by the shim)
   public/hr-applicant-dedupe.js ← name keys + merge rules (shim + ingest)
-  public/hr-recruit.js       ← Pipeline bulk import, consolidate duplicates, application file (loaded by the shim)
+  public/hr-recruit.js       ← Pipeline bulk import, consolidate duplicates, role filter, application file (loaded by the shim)
   public/pwa.js              ← apple / manifest tags + viewport-fit
   public/pwa.css             ← mobile / safe-area overlay
   public/manifest.json

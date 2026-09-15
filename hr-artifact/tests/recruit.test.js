@@ -29,6 +29,9 @@ function fakeWindow(applicants) {
       el.parentNode = parent;
       return el;
     },
+    appendChild(el) {
+      return parent.insertBefore(el, null);
+    },
     removeChild(el) {
       const i = created.indexOf(el);
       if (i >= 0) created.splice(i, 1);
@@ -48,12 +51,32 @@ function fakeWindow(applicants) {
     },
     createElement(tag) {
       const el = {
-        tagName: tag,
+        tagName: String(tag).toUpperCase(),
         className: "",
         id: "",
         type: "",
         textContent: "",
+        innerHTML: "",
         onclick: null,
+        style: {},
+        attrs: {},
+        getAttribute(name) {
+          if (name === "id") return this.id;
+          return this.attrs[name] == null ? null : this.attrs[name];
+        },
+        setAttribute(name, value) {
+          this.attrs[name] = String(value);
+          if (name === "id") {
+            this.id = String(value);
+            byId[this.id] = this;
+          }
+        },
+        querySelector() {
+          return null;
+        },
+        querySelectorAll() {
+          return [];
+        },
       };
       return el;
     },
@@ -226,5 +249,48 @@ describe("hr-recruit application file", () => {
     assert.doesNotMatch(html, /Gov \/ Valid ID/);
     assert.match(html, /https:\/\/drive\.example\/luisa/);
     assert.match(html, /application file, not a hired 201/);
+  });
+});
+
+describe("hr-recruit role filter", () => {
+  const applicants = {
+    a1: { id: "a1", name: "Barrios, Luisa G.", roleId: "ro06", position: "Procurement Officer" },
+    a2: { id: "a2", name: "Tristan Sibonga", roleId: "ro02", position: "Project Manager" },
+    a3: { id: "a3", name: "Unlinked Person", roleId: "", position: "Project / Site Engineer" },
+    a4: { id: "a4", name: "No Role", roleId: "", position: "" },
+  };
+
+  it("keys chips by roleId or title so the same job is one tap", () => {
+    const w = fakeWindow(applicants);
+    const hr = loadRecruit(w);
+    const roles = w.S.roles;
+    assert.equal(hr.roleFilterKey(applicants.a1, roles), "ro06");
+    assert.equal(hr.roleFilterKey({ roleId: "", position: "Procurement Officer" }, roles), "ro06");
+    assert.equal(hr.roleFilterKey(applicants.a3, roles), "title:project / site engineer");
+    assert.equal(hr.roleFilterKey(applicants.a4, roles), "unlinked");
+    assert.equal(hr.applicantMatchesRole(applicants.a1, "", roles), true);
+    assert.equal(hr.applicantMatchesRole(applicants.a1, "ro06", roles), true);
+    assert.equal(hr.applicantMatchesRole(applicants.a2, "ro06", roles), false);
+    assert.equal(hr.applicantMatchesRole({ roleId: "", position: "Procurement Officer" }, "ro06", roles), true);
+    assert.equal(hr.applicantMatchesRole(applicants.a3, "title:project / site engineer", roles), true);
+    const opts = hr.roleFilterOptions(Object.values(applicants), roles);
+    const labels = opts.map((o) => o.label);
+    assert.ok(labels.includes("Procurement Officer"));
+    assert.ok(labels.includes("Project Manager"));
+    assert.ok(labels.includes("Project / Site Engineer"));
+    assert.ok(labels.includes("Unlinked"));
+    assert.equal(opts.find((o) => o.key === "ro06").count, 1);
+  });
+
+  it("injects All roles chips on Pipeline next to Log an applicant", () => {
+    const w = fakeWindow(applicants);
+    const hr = loadRecruit(w);
+    hr.injectButton();
+    const bar = hr.injectRoleFilter();
+    assert.equal(bar.id, "hr-recruit-role-filter");
+    assert.match(bar.innerHTML, /All roles/);
+    assert.match(bar.innerHTML, /Procurement Officer/);
+    assert.match(bar.innerHTML, /data-role-filter="ro06"/);
+    assert.match(bar.innerHTML, /Project \/ Site Engineer/);
   });
 });
