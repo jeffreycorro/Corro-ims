@@ -5,6 +5,10 @@
  * Indexes collections already keyed by empId / employee refs and injects
  * an "On file for this person" list on the open 201 profile. No blobs are
  * copied — new tagged records appear after the next save/render.
+ *
+ * Also appends the Collectibles / GovMan rows Cassie asked for (refusal,
+ * clearance, last-salary and 13th-month quitclaims) and an attach-via-link
+ * door that still works when Drive upload is offline.
  */
 (function (root) {
   "use strict";
@@ -52,6 +56,26 @@
     reminder: "reminders",
     wu: "writeups",
   };
+
+  /* Appended — never inserted — so the imported masterlist bit string
+     still lines up with the first 33 columns. */
+  var EXTRA_DOCS = [
+    { k: "benref", n: "Refusal for GovMan Deduction", g: "Statutory", opt: 1 },
+    { k: "clrform", n: "Employee Clearance Form", g: "Separation", opt: 1, code: "R50" },
+    { k: "qclast", n: "Quitclaim — Last Salary", g: "Quitclaim", opt: 1 },
+    { k: "qcprorata", n: "Quitclaim — Pro-Rated 13th Month", g: "Quitclaim", opt: 1 },
+    { k: "qc13th", n: "Quitclaim — 13th Month Pay", g: "Quitclaim", opt: 1 },
+  ];
+
+  /* More specific than the artifact's general quitclaim / benefit rules.
+     Unshifted so "Quitclaim - Last Salary.pdf" does not land on qcrel. */
+  var EXTRA_GUESSES = [
+    [/quitclaim.{0,48}last\s*salar|last\s*salar.{0,48}quitclaim/i, "qclast"],
+    [/quitclaim.{0,48}pro[\s-]*rated|pro[\s-]*rated.{0,40}13/i, "qcprorata"],
+    [/quitclaim.{0,48}13th\s*month\s*pay|13th\s*month\s*pay.{0,48}quitclaim/i, "qc13th"],
+    [/employee\s*clearance|clearance\s*form|\br50\b/i, "clrform"],
+    [/refusal.{0,32}(gov|benefit|deduct)|decline.{0,32}government|gov.?man.{0,24}refus/i, "benref"],
+  ];
 
   function store(S) {
     if (S && typeof S === "object") return S;
@@ -417,12 +441,71 @@
     return out;
   }
 
+  function decodeDocName(n) {
+    return str(n)
+      .replace(/&amp;/g, "&")
+      .replace(/&nbsp;/g, " ")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">");
+  }
+
+  function fallbackFiles(v) {
+    if (!v) return [];
+    var out = [];
+    var seen = {};
+    function pushFile(url, title, on) {
+      url = str(url).trim();
+      if (!url || seen[url]) return;
+      seen[url] = true;
+      out.push({ url: url, title: title || "", on: on || "" });
+    }
+    pushFile(v.link, v.title, v.filed);
+    (v.links || []).forEach(function (x) {
+      if (typeof x === "string") pushFile(x, "", "");
+      else if (x) pushFile(x.url, x.title, x.on);
+    });
+    return out;
+  }
+
+  function filesOf(v) {
+    if (typeof root.docFiles === "function") return root.docFiles(v);
+    return fallbackFiles(v);
+  }
+
+  function collectChecklist(S, empId, existing) {
+    var out = [];
+    var e = (S.employees || {})[empId] || {};
+    var docs = e.docs || {};
+    (root.DOCS || []).forEach(function (d) {
+      if (!d || !d.k) return;
+      filesOf(docs[d.k]).forEach(function (f, i) {
+        if (!f || !f.url) return;
+        if (alreadyHasLink(existing, f.url) || alreadyHasLink(out, f.url)) return;
+        push(out, {
+          date: f.on || (docs[d.k] && docs[d.k].filed) || "",
+          type: decodeDocName(d.n),
+          typeKey: d.k,
+          no: d.code || "",
+          title: f.title || decodeDocName(d.n),
+          status: docs[d.k] && docs[d.k].s === "on" ? "On file" : "Linked",
+          source: "docs",
+          sourceId: d.k + ":" + i,
+          link: f.url,
+          canOpen: true,
+          canPrint: false,
+        });
+      });
+    });
+    return out;
+  }
+
   function recordsFor(empId, S) {
     S = store(S);
     if (!empId) return [];
     var source = collectSource(S, empId);
     var extra = collectRegister(S, empId, source).concat(collectFiled(S, empId, source));
-    var all = source.concat(extra);
+    var checks = collectChecklist(S, empId, source.concat(extra));
+    var all = source.concat(extra).concat(checks);
     all.sort(function (a, b) {
       var ad = str(a.date);
       var bd = str(b.date);
@@ -447,7 +530,11 @@
       h +=
         '<div class="lbl" style="padding:4px 0">Nothing tagged to this record yet. NTEs, notices of ' +
         "decision, write-ups, memos, incidents, leave, cash advances, certificates and other " +
-        "register entries appear here once they name this employee — including after they separate.</div>";
+        "register entries appear here once they name this employee — including after they separate. " +
+        "Paste a Drive share link on the 201 checklist to attach a scan (GovMan refusal, resignation, " +
+        "clearance, quitclaims).</div>" +
+        '<div class="row" style="margin-top:8px"><button type="button" class="btn sm pri" data-hr201-attach-any="1">' +
+        "Attach a Drive link to the 201</button></div>";
     } else {
       h +=
         '<div class="tw hr-201-table"><table><thead><tr>' +
@@ -573,7 +660,7 @@
       else call("regEditor", rec.sourceId);
       return true;
     }
-    if (rec.link && (rec.source === "filed" || rec.source === "genfiles" || rec.source === "linked")) {
+    if (rec.link && (rec.source === "filed" || rec.source === "genfiles" || rec.source === "linked" || rec.source === "docs")) {
       if (root.open) root.open(rec.link, "_blank", "noopener");
       return true;
     }
@@ -652,6 +739,9 @@
       ".hr-201-onfile{margin:10px 0 4px}" +
       ".hr-201-onfile .hr-201-actions{flex-wrap:wrap;gap:6px}" +
       ".hr-201-onfile .btn{min-height:40px}" +
+      ".hr-201-attach-note{margin:0 0 10px}" +
+      ".hr-201-attach-note .btn{margin-top:6px}" +
+      "input[data-addlink]{min-width:180px;width:min(100%,280px)!important}" +
       "@media (max-width:700px){" +
       ".hr-201-onfile .hr-201-table thead{display:none}" +
       ".hr-201-onfile .hr-201-table table,.hr-201-onfile .hr-201-table tbody," +
@@ -723,7 +813,23 @@
 
   function onAction(ev) {
     var t = ev && ev.target;
-    while (t && t !== root.document && !(t.getAttribute && (t.getAttribute("data-hr201-open") || t.getAttribute("data-hr201-print")))) {
+    while (t && t !== root.document) {
+      if (t.getAttribute) {
+        if (t.id === "hr-201-attach-any" || t.getAttribute("data-hr201-attach-any")) {
+          if (ev.preventDefault) ev.preventDefault();
+          var empAny = currentEmp();
+          openAttachModal(empAny && empAny.id, "");
+          return;
+        }
+        var attachKey = t.getAttribute("data-hr201-attach");
+        if (attachKey) {
+          if (ev.preventDefault) ev.preventDefault();
+          var empAtt = currentEmp();
+          openAttachModal(empAtt && empAtt.id, attachKey);
+          return;
+        }
+        if (t.getAttribute("data-hr201-open") || t.getAttribute("data-hr201-print")) break;
+      }
       t = t.parentNode;
     }
     if (!t || !t.getAttribute) return;
@@ -747,6 +853,272 @@
     if (doc.addEventListener) doc.addEventListener("click", onAction, false);
   }
 
+  function registerChecklist(Sroot) {
+    Sroot = Sroot || root;
+    var docs = Sroot.DOCS;
+    var added = [];
+    if (Array.isArray(docs)) {
+      EXTRA_DOCS.forEach(function (d) {
+        if (docs.some(function (x) { return x && x.k === d.k; })) return;
+        var row = { k: d.k, n: d.n, g: d.g, opt: 1 };
+        if (d.code) row.code = d.code;
+        docs.push(row);
+        added.push(d.k);
+      });
+      docs.forEach(function (d) {
+        if (!d) return;
+        if (d.k === "benefack") {
+          d.n = "GovMan Deduction — acknowledged";
+          d.g = "Statutory";
+        }
+        if (d.k === "qcrel") d.n = "Release & Quitclaim";
+        if (d.n) d.n = decodeDocName(d.n);
+      });
+    }
+    var guess = Sroot.GUESS;
+    if (Array.isArray(guess)) {
+      var i;
+      for (i = 0; i < guess.length; i += 1) {
+        var re = guess[i] && guess[i][0];
+        var src = re && (re.source || String(re));
+        if (src && /benefit.*deduction|refusal.*benefit/i.test(src)) {
+          guess[i] = [/benefit.*deduction|gov.?man.*deduct|acknowledged.*benefit/i, "benefack"];
+        }
+      }
+      EXTRA_GUESSES.slice()
+        .reverse()
+        .forEach(function (pair) {
+          if (guess.some(function (x) { return x && x[1] === pair[1]; })) return;
+          guess.unshift(pair);
+        });
+    }
+    return { added: added };
+  }
+
+  function normalizeDriveUrl(raw) {
+    var s = str(raw).trim();
+    if (!s) return "";
+    var m = s.match(/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/);
+    if (m) return "https://drive.google.com/file/d/" + m[1] + "/view";
+    m = s.match(/drive\.google\.com\/open\?id=([a-zA-Z0-9_-]+)/);
+    if (m) return "https://drive.google.com/file/d/" + m[1] + "/view";
+    m = s.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+    if (m && /google\.com/i.test(s)) return "https://drive.google.com/file/d/" + m[1] + "/view";
+    if (/^https?:\/\//i.test(s)) return s;
+    if (/^[a-zA-Z0-9_-]{20,}$/.test(s)) return "https://drive.google.com/file/d/" + s + "/view";
+    return "";
+  }
+
+  function applyAttach(emp, docKey, url, title, today) {
+    url = normalizeDriveUrl(url);
+    if (!emp || !docKey) return { ok: false, error: "Choose a checklist row." };
+    if (!url) return { ok: false, error: "Paste a Drive share link or file id." };
+    emp.docs = emp.docs || {};
+    emp.docs[docKey] = emp.docs[docKey] || { s: "miss", link: "", links: [], filed: "", expiry: "" };
+    var added;
+    if (typeof root.docAddLink === "function") {
+      added = root.docAddLink(emp.docs[docKey], url, title || "");
+    } else {
+      var have = filesOf(emp.docs[docKey]).some(function (x) { return x.url === url; });
+      if (have) added = false;
+      else {
+        var v = emp.docs[docKey];
+        v.links = (v.links || []).concat([{ url: url, title: title || "", on: today || "" }]);
+        if (!v.link) {
+          v.link = url;
+          v.title = title || "";
+        }
+        added = true;
+      }
+    }
+    if (!added) return { ok: false, error: "That file is already on this row." };
+    if (emp.docs[docKey].s === "miss" || emp.docs[docKey].s === "na") emp.docs[docKey].s = "on";
+    if (!emp.docs[docKey].filed) emp.docs[docKey].filed = today || root.TODAY || "";
+    return { ok: true, url: url, docKey: docKey, empId: emp.id };
+  }
+
+  function attachLink(empId, docKey, url, title) {
+    var S = store();
+    var emp = (S.employees || {})[empId];
+    if (!emp) return Promise.resolve({ ok: false, error: "No employee is open." });
+    var c = typeof root.clone === "function" ? root.clone(emp) : JSON.parse(JSON.stringify(emp));
+    var res = applyAttach(c, docKey, url, title, root.TODAY);
+    if (!res.ok) return Promise.resolve(res);
+    if (typeof root.put === "function") {
+      return Promise.resolve(root.put("employees", c.id, c)).then(function () {
+        return res;
+      });
+    }
+    S.employees[empId] = c;
+    return Promise.resolve(res);
+  }
+
+  function guessDocKey(name) {
+    if (typeof root.guessDoc === "function") return root.guessDoc(name);
+    var t = str(name).replace(/[_\-.]+/g, " ");
+    var guess = root.GUESS || [];
+    var i;
+    for (i = 0; i < guess.length; i += 1) {
+      if (guess[i] && guess[i][0] && guess[i][0].test(t)) return guess[i][1];
+    }
+    return "";
+  }
+
+  function attachBanner(S) {
+    S = store(S);
+    var offline = !!(S && S.mcpChecked && !S.mcpReady);
+    var h = '<div class="note hr-201-attach-note" id="hr-201-attach-note">';
+    if (offline) {
+      h += "<b>Drive upload and folder match are offline on this site.</b> ";
+    }
+    h += "Attach a 201 scan by pasting a Drive share link on the row, or use <b>Attach link</b>. ";
+    h += "Open the file in Drive → Share → Copy link. ";
+    h += "GovMan refusal, resignation, employee clearance and quitclaims each have their own row.";
+    h += ' <button type="button" class="btn sm pri" id="hr-201-attach-any">Attach a Drive link</button></div>';
+    return h;
+  }
+
+  function enhanceDocsHtml(html, S) {
+    var h = str(html);
+    if (!/hr-201-attach-note/.test(h)) {
+      h = h.replace('<div class="stack">', '<div class="stack">' + attachBanner(S));
+    }
+    h = h.replace(
+      /placeholder="paste a Drive link to add" style="width:124px"/g,
+      'placeholder="Paste a Drive URL" style="width:min(100%,280px);min-width:180px"'
+    );
+    h = h.replace(
+      /(<button class="btn sm" data-upload="([^"]+)"[^>]*>Upload<\/button>)/g,
+      '$1<button type="button" class="btn sm" data-hr201-attach="$2" title="Paste a Drive share link — works when upload is offline">Attach link</button>'
+    );
+    return h;
+  }
+
+  function wrapEmpDocs() {
+    if (typeof root.empDocs !== "function" || root.empDocs.__hr201) return;
+    var orig = root.empDocs;
+    root.empDocs = function (e, c) {
+      registerChecklist();
+      return enhanceDocsHtml(orig.call(this, e, c), store());
+    };
+    root.empDocs.__hr201 = true;
+  }
+
+  function driveOffline(S) {
+    S = store(S);
+    return !!(S && S.mcpChecked && !S.mcpReady);
+  }
+
+  function wrapPickFor() {
+    if (typeof root.pickFor !== "function" || root.pickFor.__hr201) return;
+    var orig = root.pickFor;
+    root.pickFor = function (empId, docKey) {
+      if (driveOffline()) {
+        openAttachModal(empId, docKey);
+        return;
+      }
+      return orig.apply(this, arguments);
+    };
+    root.pickFor.__hr201 = true;
+  }
+
+  function wrapMatchFiles() {
+    if (typeof root.matchFilesToRows !== "function" || root.matchFilesToRows.__hr201) return;
+    var orig = root.matchFilesToRows;
+    root.matchFilesToRows = function () {
+      if (driveOffline()) {
+        if (typeof root.toast === "function") {
+          root.toast("Drive match is offline. Paste a Drive share link instead.", "err");
+        }
+        var emp = currentEmp();
+        openAttachModal(emp && emp.id, "");
+        return;
+      }
+      return orig.apply(this, arguments);
+    };
+    root.matchFilesToRows.__hr201 = true;
+  }
+
+  function openAttachModal(empId, presetKey) {
+    var S = store();
+    var emp = (S.employees || {})[empId] || currentEmp(S);
+    if (!emp) {
+      if (typeof root.toast === "function") root.toast("Open a 201 file first.", "err");
+      return false;
+    }
+    if (typeof root.openModal !== "function") return false;
+    registerChecklist();
+    var groups = {};
+    (root.DOCS || []).forEach(function (d) {
+      if (!d) return;
+      groups[d.g] = groups[d.g] || [];
+      groups[d.g].push(d);
+    });
+    var opts = Object.keys(groups).map(function (g) {
+      return (
+        '<optgroup label="' +
+        esc(g) +
+        '">' +
+        groups[g]
+          .map(function (d) {
+            return (
+              '<option value="' +
+              esc(d.k) +
+              '"' +
+              (d.k === presetKey ? " selected" : "") +
+              ">" +
+              esc(decodeDocName(d.n)) +
+              "</option>"
+            );
+          })
+          .join("") +
+        "</optgroup>"
+      );
+    }).join("");
+    root.openModal({
+      title: "Attach a Drive file — " + (emp.name || ""),
+      body:
+        '<div class="stack">' +
+        '<div class="note">Paste a Google Drive share link. The file stays in Drive; this only records it on the 201. ' +
+        "Works when Drive upload is offline.</div>" +
+        '<div class="f"><label>Checklist row</label><select id="hr201-att-key">' +
+        opts +
+        "</select></div>" +
+        '<div class="f"><label>Drive link or file id</label>' +
+        '<input id="hr201-att-url" type="url" placeholder="https://drive.google.com/file/d/…"></div>' +
+        '<div class="f"><label>File name (optional)</label>' +
+        '<input id="hr201-att-title" placeholder="e.g. Quitclaim — Last Salary"></div></div>',
+      foot:
+        '<button class="btn" type="button" id="hr201-att-cancel">Cancel</button>' +
+        '<button class="btn pri" type="button" id="hr201-att-save">Attach</button>',
+    });
+    var doc = root.document;
+    var cancel = doc && doc.getElementById && doc.getElementById("hr201-att-cancel");
+    var save = doc && doc.getElementById && doc.getElementById("hr201-att-save");
+    if (cancel) {
+      cancel.onclick = function () {
+        if (typeof root.closeModal === "function") root.closeModal();
+      };
+    }
+    if (save) {
+      save.onclick = function () {
+        var keyEl = doc.getElementById("hr201-att-key");
+        var urlEl = doc.getElementById("hr201-att-url");
+        var titleEl = doc.getElementById("hr201-att-title");
+        attachLink(emp.id, keyEl && keyEl.value, urlEl && urlEl.value, titleEl && titleEl.value).then(function (res) {
+          if (!res.ok) {
+            if (typeof root.toast === "function") root.toast(res.error, "err");
+            return;
+          }
+          if (typeof root.closeModal === "function") root.closeModal();
+          if (typeof root.toast === "function") root.toast("Attached to the 201 checklist", "ok");
+          if (typeof root.render === "function") root.render();
+        });
+      };
+    }
+    return true;
+  }
+
   function wrapRender() {
     if (typeof root.render !== "function" || root.render.__hr201) return;
     var orig = root.render;
@@ -763,7 +1135,11 @@
 
   function attach() {
     if (api.attached) return api;
+    registerChecklist();
     wrapPaperTrail();
+    wrapEmpDocs();
+    wrapPickFor();
+    wrapMatchFiles();
     wrapRender();
     bindClicks();
     if (typeof root.document !== "undefined") {
@@ -787,6 +1163,15 @@
   api.inject = inject;
   api.takeOpenEmp = takeOpenEmp;
   api.install = attach;
+  api.EXTRA_DOCS = EXTRA_DOCS;
+  api.registerChecklist = registerChecklist;
+  api.normalizeDriveUrl = normalizeDriveUrl;
+  api.applyAttach = applyAttach;
+  api.attachLink = attachLink;
+  api.guessDocKey = guessDocKey;
+  api.enhanceDocsHtml = enhanceDocsHtml;
+  api.openAttachModal = openAttachModal;
+  api.collectChecklist = collectChecklist;
   root.hr201File = api;
 
   if (typeof root.document !== "undefined") {
