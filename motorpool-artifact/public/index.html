@@ -365,7 +365,7 @@ var SIGNATORIES = [
 ];
 var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
 /* Shown on the Ask screen, so a screenshot says which version someone is on. */
-var BUILD = "2026-09-15 c";
+var BUILD = "2026-09-15 d";
 var DAY = 86400000, MO = 30.44;
 
 /* Part categories that were entered under two spellings and so split a unit's
@@ -1496,21 +1496,20 @@ async function replaceRows(key,rows){
 }
 
 /* ============================ reserves ============================
-   A reserve is the ask that comes BEFORE the money is spent: this unit needs
-   this job done, here is what we think it will cost. It is approved on its own
-   merits, the work is then carried out against it, and the VRF that lands is
-   liquidated back onto it. Actuals never match estimates exactly, so the gate
-   is a tolerance, not equality — and going past it needs a justification a
-   person signs, not a silent adjustment. */
+   Reserves is a LOG of approved, not-yet-liquidated VRFs. The only way a
+   reserve row is created is by passing through the VRF maker (Send for
+   approval). Staff do not invent a reserve as a free-standing document.
+   Actuals never match estimates exactly, so the liquidation gate is a
+   tolerance, not equality — going past it needs a justification a person
+   signs, not a silent adjustment. */
 var VARIANCE_TOL_DEFAULT=0.10;
 function varianceTol(){
   var v=(S.cfg&&S.cfg.varianceTol);
   return (typeof v==="number"&&v>=0)?v:VARIANCE_TOL_DEFAULT;
 }
-/* Fuel goes through the same gate as everything else: nothing is drawn from a
-   pump or from the drums without an approved reserve behind it, and a fuel
-   reserve cannot be closed on a number alone — the gauge or the meter has to be
-   photographed. Bulk deliveries into the reserve are approved the same way. */
+/* Fuel spend is raised on the VRF maker like any other line. A reserve row
+   is only the log entry for an approved, not-yet-liquidated VRF — never a
+   free-standing document staff author on the Reserves screen. */
 var RSV_KINDS={
   "job":       {label:"Job / repair",              evidence:false},
   "fuel-issue":{label:"Fuel for a unit",           evidence:true},
@@ -2746,8 +2745,8 @@ function reminders(){
         since:r.date,ago:d,go:"rsv"});
       return;
     }
-    out.push({sev:(d!=null&&d>2)?"crit":"warn",kind:"Reserve waiting for approval",unit:r.veh,
-      what:"RSV-"+r.no+" — "+(r.work?workName(r.work):"job")+" for "+peso(r.budget)+
+    out.push({sev:(d!=null&&d>2)?"crit":"warn",kind:"VRF waiting for approval",unit:r.veh,
+      what:"VRF "+(r.vrfNo||"—")+" — "+(r.work?workName(r.work):"job")+" for "+peso(r.budget)+
         ", raised by "+(r.requestedBy||"—"),
       since:r.date,ago:d,go:"rsv"});
   });
@@ -2761,9 +2760,9 @@ function reminders(){
   approvedReserves().forEach(function(r){
     var d=daysSince(r.approvedAt||r.date);
     if(d==null||d<14||(r.vrfs||[]).length) return;
-    out.push({sev:"warn",kind:"Approved reserve unused",unit:r.veh,
-      what:"RSV-"+r.no+" was approved "+d+" days ago at "+
-        peso(r.approvedBudget!=null?r.approvedBudget:r.budget)+" and nothing has been spent against it",
+    out.push({sev:"warn",kind:"Approved VRF not yet liquidated",unit:r.veh,
+      what:"VRF "+(r.vrfNo||r.no)+" was approved "+d+" days ago at "+
+        peso(r.approvedBudget!=null?r.approvedBudget:r.budget)+" and is still on the reserve log",
       since:r.approvedAt||r.date,ago:d,go:"rsv"});
   });
 
@@ -3085,7 +3084,7 @@ var YARD=[
       return reminders().filter(function(r){return r.sev!=="info";}).length; }},
   {id:"rsv",    ic:"₱", label:"Reserves", count:function(){
       return S.reserves.filter(function(r){
-        return r.status==="Requested"||r.status==="Flagged"; }).length; }},
+        return r.status==="Requested"||r.status==="Approved"||r.status==="Flagged"; }).length; }},
   {id:"vrf",    ic:"✎", label:"New VRF"},
   {id:"fuel",   ic:"⛽", label:"Fuel reserve"},
   {id:"down",   ic:"⚠", label:"Workshop", count:function(){
@@ -4088,8 +4087,8 @@ function budgetBar(rv){
 
 function rsvView(){
   var w=el("div");
-  w.appendChild(pageHead("Reserves","Ask before the money is spent",
-    "A reserve is the request: this unit needs this job, and this is what we think it will cost. Once it is approved the work can start, the VRF is raised against it, and the reserve is closed by liquidating the actual."));
+  w.appendChild(pageHead("Reserve log","Approved VRFs waiting to be liquidated",
+    "This is the reserve log — approved VRFs that are not yet liquidated. Raise new spend on New VRF. There is no form here to invent a reserve."));
   var g=el("div","grid"); g.style.gap="var(--space-5)";
 
   var mine=S.reserves.slice().sort(function(a,b){ return (parseDate(b.date)||0)-(parseDate(a.date)||0); });
@@ -4098,195 +4097,19 @@ function rsvView(){
   var flg=mine.filter(function(r){ return r.status==="Flagged"; });
   var reserved=app.reduce(function(a,r){ return a+((r.approvedBudget!=null?r.approvedBudget:r.budget)||0); },0);
   g.appendChild(stats([
-    ["Waiting for approval", String(req.length), "raised, not yet decided", false,
+    ["Waiting for approval", String(req.length), "VRF sent from the maker, not yet decided", false,
       req.length?"var(--warn)":"var(--ok)"],
-    ["Approved and open", String(app.length), "work may start"],
+    ["Approved — not liquidated", String(app.length), "on the reserve log"],
     ["Over budget", String(flg.length), "needs a justification", false,
       flg.length?"var(--danger)":"var(--ok)"],
-    ["Budget held", peso(reserved), "on approved reserves", true]
+    ["Budget held", peso(reserved), "on approved VRFs", true]
   ]));
 
-  var c=el("div","card"), h=el("div","hd");
-  h.appendChild(el("h3",null,"Raise a reserve"));
-  h.appendChild(el("span","note","Approved by the office before any purchase — unless you apply a bypass, which logs the VRF now."));
-  c.appendChild(h);
-  var b=el("div","bd");
-  function fld(l,n,hint){ var x=el("div","field"); x.appendChild(el("label",null,l)); x.appendChild(n);
-    if(hint) x.appendChild(el("div","hint",hint)); return x; }
-  var sc=el("textarea"); sc.rows=3;
-  var kindSel=el("select");
-  Object.keys(RSV_KINDS).forEach(function(k){ kindSel.appendChild(new Option(RSV_KINDS[k].label,k)); });
-  var kf=fld("What is being asked for",kindSel,
-    "Fuel — whether from a pump or from the drums — needs a reserve like any other spend, and closes only against a photo.");
-  b.appendChild(kf);
-
-  var r1=el("div","f3"); r1.style.marginTop="var(--space-3)";
-  var dt=el("input"); dt.type="date"; dt.value=iso();
-  var vs=unitPicker("",function(){ fcheck(); },{hint:"Search by code, name or plate."});
-  var ws=workSelect("","— what job is this for? —");
-  var wsWrap=fld("Type of job",ws);
-  var vsWrap=fld("Unit",vs);
-  r1.appendChild(fld("Date",dt)); r1.appendChild(vsWrap); r1.appendChild(wsWrap);
-  b.appendChild(r1);
-
-  /* fuel-specific block */
-  var fr=el("div","f3"); fr.style.marginTop="var(--space-3)";
-  var lt2=el("input"); lt2.type="number"; lt2.min="0"; lt2.step="1"; lt2.placeholder="0";
-  var pl=el("input"); pl.type="number"; pl.min="0"; pl.step="0.01"; pl.placeholder="0.00";
-  var sup=el("select"); sup.appendChild(new Option("— supplier —",""));
-  S.suppliers.forEach(function(x){ sup.appendChild(new Option(x.name,x.name)); });
-  fr.appendChild(fld("Litres",lt2));
-  fr.appendChild(fld("Estimated price / litre",pl));
-  fr.appendChild(fld("Supplier",sup));
-  b.appendChild(fr);
-  var odoW=el("div","f3"); odoW.style.marginTop="var(--space-3)";
-  var rodo=el("input"); rodo.className="mono"; rodo.inputMode="numeric";
-  var rgauge=el("select");
-  rgauge.appendChild(new Option("— what does the gauge read? —",""));
-  GAUGE_LEVELS.forEach(function(x){ rgauge.appendChild(new Option(x.label,x.v)); });
-  var rtank=el("input"); rtank.type="number"; rtank.min="0"; rtank.step="1"; rtank.className="mono";
-  odoW.appendChild(fld("Meter reading now",rodo));
-  odoW.appendChild(fld("Gauge level now",rgauge,"Optional — what the needle or the readout shows before filling."));
-  odoW.appendChild(fld("Litres left, if known",rtank,"Optional — for units with a digital readout."));
-  b.appendChild(odoW);
-
-  /* the picture of the gauge, staged and saved with the reserve */
-  var rphotos=[];
-  var gcard=el("div"); gcard.style.marginTop="var(--space-3)";
-  gcard.appendChild(el("div","hint","Picture of the gauge (optional). Attach it if you have it — it does not block sending for approval."));
-  var gstrip=el("div","pgrid"); gstrip.style.margin="var(--space-2) 0";
-  function gdraw(){
-    gstrip.innerHTML="";
-    if(!rphotos.length){ gstrip.appendChild(el("div","hint","No gauge photo yet.")); return; }
-    rphotos.forEach(function(x,i){
-      var c=el("div","pcell");
-      var im=document.createElement("img"); im.src=x.data;
-      im.addEventListener("click",function(){ lightbox(x.data); });
-      c.appendChild(im);
-      var cp=el("div","cap");
-      cp.appendChild(el("div",null,x.caption||"gauge"));
-      var rm=el("button","btn sm","Remove"); rm.style.marginTop="4px";
-      rm.addEventListener("click",function(){ rphotos.splice(i,1); gdraw(); });
-      cp.appendChild(rm); c.appendChild(cp); gstrip.appendChild(c);
-    });
-  }
-  gdraw(); gcard.appendChild(gstrip);
-  var gfi=el("input"); gfi.type="file"; gfi.accept="image/*"; gfi.multiple=true; gfi.capture="environment";
-  var gfw=fld("Gauge photo",gfi); gfw.style.maxWidth="360px"; gcard.appendChild(gfw);
-  var gst=el("div","hint"); gcard.appendChild(gst);
-  gfi.addEventListener("change",async function(){
-    var files=Array.prototype.slice.call(gfi.files||[]);
-    for(var i=0;i<files.length;i++){
-      gst.textContent="Preparing "+(i+1)+" of "+files.length+"…";
-      try{ var sh=await shrinkImage(files[i]);
-        rphotos.push({data:sh.data,w:sh.w,h:sh.h,bytes:sh.bytes,
-          caption:"Gauge before filling"+(rgauge.value?" — "+gaugeLabel(rgauge.value):"")}); }catch(e){}
-    }
-    gst.textContent=""; gfi.value=""; gdraw();
-  });
-  b.appendChild(gcard);
-  var fgate={check:null,override:null};
-  var sv;
-  function syncSendLabel(){
-    if(!sv) return;
-    sv.textContent=isFuelBypass(fgate.override)?"Bypass — log VRF now":"Send for approval";
-  }
-  var fpanel=fuelGatePanel(fgate,syncSendLabel,{bypass:true});
-  var fgwGate=el("div"); fgwGate.style.marginTop="var(--space-3)"; fgwGate.appendChild(fpanel);
-  b.appendChild(fgwGate);
-
-  var r2=el("div","f3"); r2.style.marginTop="var(--space-3)";
-  var bg=el("input"); bg.type="number"; bg.min="0"; bg.step="100"; bg.placeholder="0.00";
-  var ps=projectPicker("",null,{hint:"Pick a project on file. Use Manage to add or archive."});
-  var nb=el("input"); nb.type="date";
-  var bgF=fld("Estimated budget (PHP)",bg,"Your best estimate — the actual can differ, within tolerance.");
-  r2.appendChild(bgF);
-  r2.appendChild(fld("Project",ps));
-  r2.appendChild(fld("Needed by",nb));
-  b.appendChild(r2);
-
-  function syncKind(){
-    var k=kindSel.value;
-    var isFuelK=(k!=="job");
-    wsWrap.style.display=isFuelK?"none":"";
-    vsWrap.style.display=(k==="fuel-bulk")?"none":"";
-    fr.style.display=isFuelK?"":"none";
-    odoW.style.display=isFuelK?"":"none";
-    gcard.style.display=isFuelK?"":"none";
-    rodo.parentNode.style.display=(k==="fuel-issue")?"":"none";
-    rgauge.parentNode.querySelector("label").textContent =
-      (k==="fuel-bulk")?"Drum level now":"Gauge level now";
-    gfw.querySelector("label").textContent =
-      (k==="fuel-bulk")?"Photo of the drums / delivery slip":"Gauge photo";
-    fgwGate.style.display=(k==="fuel-issue")?"":"none";
-    sup.parentNode.style.display=isFuelK?"":"none";
-    if(isFuelK){
-      var L=parseFloat(lt2.value)||0, pr=parseFloat(pl.value)||0;
-      if(L&&pr) bg.value=(L*pr).toFixed(2);
-      sc.placeholder = k==="fuel-bulk"
-        ? "Why the reserve needs topping up, and where the drums are going."
-        : "What the fuel is for — which site, what work.";
-    }else{
-      sc.placeholder="What needs doing and why. The approver reads this and nothing else.";
-    }
-    fcheck();
-  }
-  function fcheck(){
-    if(kindSel.value!=="fuel-issue"||!vs.getCode()){ fgate.check=null; fpanel.redraw(); return; }
-    fgate.check=fuelCheck(vs.getCode(),rodo.value,parseFloat(lt2.value)||0);
-    fpanel.redraw();
-  }
-  kindSel.addEventListener("change",syncKind);
-  [lt2,pl].forEach(function(x){ x.addEventListener("input",function(){ syncKind(); }); });
-  rodo.addEventListener("input",fcheck);
-  var sf=fld("Scope of work",sc); sf.style.marginTop="var(--space-3)"; b.appendChild(sf);
-  var rq=el("input"); rq.placeholder="your name";
-  var rf=fld("Requested by",rq); rf.style.marginTop="var(--space-3)"; rf.style.maxWidth="300px";
-  b.appendChild(rf);
-  var act=el("div","row"); act.style.marginTop="var(--space-4)";
-  sv=el("button","btn pri","Send for approval");
-  sv.addEventListener("click",async function(){
-    var k=kindSel.value;
-    if(k!=="fuel-bulk"&&!vs.getCode()){ toast("Pick a unit."); return; }
-    if(!sc.value.trim()){ toast("Describe what this is for — the approver reads only this."); return; }
-    if(k!=="job"&&!(parseFloat(lt2.value)>0)){ toast("Put the litres on it."); return; }
-    var amount=parseFloat(bg.value)||0;
-    if(amount<=0){ toast("Put an estimated budget on it — that is what is being approved."); return; }
-    if(!rq.value.trim()){ toast("The request has to carry a name."); return; }
-    sv.disabled=true; sv.textContent=isFuelBypass(fgate.override)?"Logging VRF…":"Sending…";
-    var no=await claimReserveNo();
-    var vno=await claimVrf();
-    var rec={no:String(no),vrfNo:String(vno),date:dt.value,kind:k,veh:(k==="fuel-bulk"?"":vs.getCode()),
-      work: k==="fuel-issue"?"FUEL-RES":(k==="fuel-bulk"?"FUEL-BULK":(ws.value||"")),
-      litres:parseFloat(lt2.value)||null, pricePerL:parseFloat(pl.value)||null,
-      supplier:sup.value||"", odoAtRequest:parseFloat(String(rodo.value).replace(/,/g,""))||null,
-      gauge:rgauge.value||"", gaugePct:gaugePct(rgauge.value),
-      tankLeft:parseFloat(rtank.value)||null,
-      fuelOverride:fgate.override||null,
-      project:ps.getCode(),budget:amount,needBy:nb.value,scope:sc.value.trim(),
-      requestedBy:rq.value.trim(),status:"Requested",
-      approvedBudget:null,approvedBy:"",approvedAt:"",decisionNote:"",
-      vrfs:[],jo:"",actual:null,liquidatedAt:"",
-      justification:"",justifiedBy:"",varianceBy:"",varianceAt:"",varianceNote:""};
-    S.reserves.push(rec);
-    for(var gi=0;gi<rphotos.length;gi++){
-      try{ await addPhotoToOwners([rsvOwner(no),String(vno)],{data:rphotos[gi].data,w:rphotos[gi].w,h:rphotos[gi].h,
-        bytes:rphotos[gi].bytes,caption:rphotos[gi].caption,by:rq.value.trim()}); }catch(e){
-        toast("Photo could not be saved: "+((e&&e.message)||"try again")); }
-    }
-    if(k!=="job"&&isFuelBypass(fgate.override)){
-      var logged=await logBypassFuelVrf(rec,fgate.override);
-      toast("Bypass — VRF "+(logged||vno)+" logged"+(rec.veh?" for "+rec.veh:"")+
-        (rec.litres?" · "+nnum(rec.litres,0)+" L":"")+". No office approval.");
-    }else{
-      await saveReserves();
-      toast("VRF "+vno+" sent for approval"+(rphotos.length?" with the gauge photo.":"."));
-    }
-    render();
-  });
-  act.appendChild(sv); b.appendChild(act);
-  c.appendChild(b); g.appendChild(c);
-  syncKind();
+  var path=el("div","banner info");
+  path.innerHTML="<div><b>Reserves is a log, not a maker.</b> Open <b>New VRF</b> to raise fuel or any other spend. "+
+    "When the office approves that VRF it lands here until it is liquidated. "+
+    "There is no “new reserve” or “ask approval to create reserve” path on this screen.</div>";
+  g.appendChild(path);
 
   function rtable(list,note){
     return table([
@@ -4310,11 +4133,10 @@ function rsvView(){
         if(r.approvedBudget!=null&&r.approvedBudget!==r.budget)
           d.appendChild(el("div","hint","asked "+peso(r.budget)));
         return d; }},
-      {h:"Gauge",get:function(r){
-        if(rsvKind(r)==="job") return "—";
-        var d=el("div"); d.style.cssText="display:flex;flex-wrap:wrap;gap:3px";
-        d.appendChild(el("span","chip "+(r.gauge?"ok":"crit"),r.gauge?gaugeLabel(r.gauge):"not read"));
-        if(!photoCount(rsvOwner(r.no))) d.appendChild(el("span","chip mute","no photo"));
+      {h:"Source",get:function(r){
+        var d=el("div");
+        d.appendChild(el("span","chip mute",r.vrfNo?"VRF maker":"legacy"));
+        if(r.bypass) d.appendChild(el("span","chip warn","bypass"));
         return d; }},
       {h:"Spent",num:true,get:function(r){
         var rv=reserveVariance(r);
@@ -4338,8 +4160,8 @@ function rsvView(){
     ],list,{empty:note||"Nothing here."});
   }
   if(flg.length) g.appendChild(card("Over budget",flg.length+" needing a justification",rtable(flg)));
-  g.appendChild(card("Waiting for approval",req.length+" open",rtable(req,"Nothing waiting.")));
-  g.appendChild(card("Approved — work may start",app.length+" open",rtable(app,"Nothing approved and open.")));
+  g.appendChild(card("Waiting for approval",req.length+" VRF"+(req.length===1?"":"s"),rtable(req,"Nothing waiting — raise spend on New VRF.")));
+  g.appendChild(card("Approved — not yet liquidated",app.length+" on the log",rtable(app,"No approved VRFs waiting to be liquidated.")));
   var done=mine.filter(function(r){ return r.status==="Closed"||r.status==="Rejected"; });
   if(done.length) g.appendChild(card("Settled",done.length+" closed or rejected",rtable(done.slice(0,60))));
   w.appendChild(g);
@@ -4805,8 +4627,8 @@ function openReserve(no,asApprover){
 /* ---- office: approvals ---- */
 function approveView(){
   var w=el("div");
-  w.appendChild(pageHead("Office · Approvals","Reserves and overruns",
-    "Every request for budget before it is spent, and every job that came in over what was approved."));
+  w.appendChild(pageHead("Office · Approvals","VRFs waiting on the reserve log",
+    "Approve VRFs raised on New VRF, then liquidate them from the reserve log. Overruns are notices, not a separate invent-a-reserve form."));
   var g=el("div","grid"); g.style.gap="var(--space-5)";
   var pend=openReserves(), flg=flaggedReserves();
   var asked=pend.reduce(function(a,r){ return a+(r.budget||0); },0);
@@ -4816,7 +4638,7 @@ function approveView(){
       pend.length?"var(--warn)":"var(--ok)"],
     ["Notices to close", String(flg.length), peso(over)+" above approval", false,
       flg.length?"var(--danger)":"var(--ok)"],
-    ["Approved and open", String(approvedReserves().length), "work may start"],
+    ["Approved — not liquidated", String(approvedReserves().length), "on the reserve log"],
     ["Tolerance", Math.round(varianceTol()*100)+"%", "before a liquidation is flagged", true]
   ]));
 
@@ -4887,13 +4709,10 @@ function approveView(){
       {h:flagged?"Justified":"Evidence",get:function(r){
         if(flagged) return el("span","chip "+(r.justification?"ok":"warn"),
           r.justification?"explained":"no explanation yet");
-        if(!needsEvidence(r)) return el("span","chip mute","not required");
-        var rd=rsvReadyToApprove(r);
         var d=el("div"); d.style.cssText="display:flex;flex-wrap:wrap;gap:3px";
-        d.appendChild(el("span","chip "+(r.gauge?"ok":"crit"),
-          r.gauge?"gauge "+gaugeLabel(r.gauge):"no gauge reading"));
-        d.appendChild(el("span","chip "+(photoCount(rsvOwner(r.no))?"ok":"mute"),
-          photoCount(rsvOwner(r.no))?"📎 photo":"no photo"));
+        d.appendChild(el("span","chip mute","from VRF maker"));
+        if(photoCount(rsvOwner(r.no))||(r.vrfNo&&photoCount(String(r.vrfNo))))
+          d.appendChild(el("span","chip ok","📎 photo"));
         return d; }},
       {h:"",get:function(r){
         var bt=el("button","btn sm pri",flagged?"Close the notice":"Review");
@@ -4902,7 +4721,7 @@ function approveView(){
     ],list,{empty:flagged?"Nothing over budget.":"Nothing waiting for approval."});
   }
   g.appendChild(card("Over-budget notices",flg.length+" to close",atable(flg,true)));
-  g.appendChild(card("Waiting for approval",pend.length+" reserve"+(pend.length===1?"":"s"),
+  g.appendChild(card("Waiting for approval",pend.length+" VRF"+(pend.length===1?"":"s"),
     atable(pend,false)));
 
   var settled=S.reserves.filter(function(r){ return r.status==="Closed"||r.status==="Rejected"; })
@@ -7027,11 +6846,9 @@ function vrfView(){
   var d=S.draft;
   var g=el("div","grid"); g.style.gap="var(--space-4)";
   var path=el("div","banner info");
-  path.innerHTML="<div><b>Two ways out of this form.</b> "+
-    "<b>Send for approval</b> turns what you have typed into a reserve — the unit, the job and the "+
-    "total become the budget the office decides on, and the lines are kept so you post them in one "+
-    "click once it is approved. <b>Post VRF</b> records it straight away, for something already "+
-    "bought and settled. Fuel can go this way too — a gauge photo is optional, and Bypass logs the VRF now.</div>";
+  path.innerHTML="<div><b>Raise the VRF here.</b> Fuel does not need a gauge reading, a gauge photo, or a fuel check. "+
+    "<b>Send for approval</b> holds the number until the office approves it — then it appears on the reserve log. "+
+    "<b>Post VRF</b> records it now. Reserves is only that log; do not invent a reserve there.</div>";
   g.appendChild(path);
 
   var head=el("div","card");
@@ -7081,8 +6898,8 @@ function vrfView(){
         na
           ? (d.veh ? na+" approved and unspent for "+d.veh+" — pick one to spend against its budget."
                    : na+" approved across the yard — pick a unit above to narrow it.")
-          : (d.veh ? "Nothing approved for "+d.veh+" yet. Raise it under Reserves and get it approved first."
-                   : "Nothing approved anywhere yet. Only reserves that have been approved appear here.")));
+          : (d.veh ? "Nothing approved for "+d.veh+" yet. Send this VRF for approval — it will appear on the reserve log after the office decides."
+                   : "Nothing approved anywhere yet. Optional — send this VRF for approval to put it on the reserve log.")));
       return;
     }
     var rr=reserveBy(d.reserve); if(!rr) return;
@@ -7178,7 +6995,7 @@ function vrfView(){
 
   var hb2=el("div","f3");
   var oIn=el("input"); oIn.className="mono"; oIn.inputMode="numeric"; oIn.value=d.odo;
-  oIn.addEventListener("input",function(){ d.odo=oIn.value; odoNote(); refreshGate(); });
+  oIn.addEventListener("input",function(){ d.odo=oIn.value; odoNote(); });
   var oWrap=fld("Odometer",oIn);
   var oHint=el("div","hint"); oWrap.appendChild(oHint);
   hb2.appendChild(oWrap);
@@ -7201,7 +7018,7 @@ function vrfView(){
     var v=vehicle(d.veh);
     plate.value=v?(v.plate||"—"):"";
     if(!d.odo){ var pv=lastOdo(d.veh); if(pv!=null){ d.odo=String(pv); oIn.value=d.odo; } }
-    odoNote(); refreshGate(); fillReserves(); fillWorkRefs(); drawMeter();
+    odoNote(); fillReserves(); fillWorkRefs(); drawMeter();
     if(v&&v.site&&!d.project){
       var siteRow=findProject(v.site);
       if(siteRow&&siteRow.status!=="Archived"){
@@ -7216,17 +7033,9 @@ function vrfView(){
   pu.addEventListener("input",function(){ d.purpose=pu.value; });
   g0.appendChild(fld("Purpose",pu));
 
-  /* fuel limits */
-  var gstate={check:null,override:d.gateOverride||null};
-  var gpanel=fuelGatePanel(gstate,function(){ d.gateOverride=gstate.override; },{bypass:true});
-  function refreshGate(){
-    var fl=d.lines.filter(function(l){ return isFuel(l.cat); });
-    if(!d.veh||!fl.length){ gstate.check=null; gpanel.redraw(); return; }
-    var L=fl.reduce(function(a,l){
-      return a+(parseFloat(l.liters)||parseFloat(l.qty)||0); },0);
-    gstate.check=fuelCheck(d.veh,d.odo,L);
-    gpanel.redraw();
-  }
+  /* Fuel check / gauge walls do not gate this form. Office still has the
+     consumption record under Fuel economics. */
+  function refreshGate(){ }
 
   /* line items */
   var lt=el("table","lines");
@@ -7405,10 +7214,12 @@ function vrfView(){
   g.appendChild(lc);
 
   var gc=el("div","card");
-  var gh=el("div","hd"); gh.appendChild(el("h3",null,"Fuel check"));
-  gh.appendChild(el("span","note","Runs against this unit's own consumption history."));
+  var gh=el("div","hd"); gh.appendChild(el("h3",null,"Fuel"));
+  gh.appendChild(el("span","note","Gauge reading, gauge photo and fuel-check stops do not block this form."));
   gc.appendChild(gh);
-  var gb=el("div","bd"); gb.appendChild(gpanel); gc.appendChild(gb);
+  var gb=el("div","bd");
+  gb.appendChild(el("div","hint","Raise a fuel line the same way as any other line. Send it for approval or post it now. The reserve log only lists the approved VRF afterwards."));
+  gc.appendChild(gb);
   g.appendChild(gc);
 
   /* attachments staged now, saved once the VRF has its number */
@@ -7475,8 +7286,7 @@ async function sendForApproval(d,btn){
   var total=rows.reduce(function(a,l){
     return a+((parseFloat(l.qty)||0)*(parseFloat(l.price)||0)); },0);
   if(total<=0){ toast("Put the estimated amounts on the lines — that is what is being approved."); return; }
-  /* Fuel lines stay on this form. A gauge photo is optional. Bypass on the
-     fuel-check card logs the VRF now instead of waiting for the office. */
+  /* Fuel lines stay on this form. Gauge / fuel-check walls do not apply. */
   /* No window.prompt here: this page runs in a sandboxed frame that blocks
      modals outright, and a blocked prompt returns null — which silently killed
      every request. The name comes from the form field instead. */
@@ -7491,7 +7301,12 @@ async function sendForApproval(d,btn){
     var vno=await claimVrf();
     var summary=rows.map(function(l){
       return (l.item||normCat(l.cat))+" ×"+(l.qty||1); }).join(", ");
-    S.reserves.push({no:String(no),vrfNo:String(vno),date:d.date||iso(),kind:"job",veh:d.veh,work:d.work,
+    var fuelish=rows.some(function(l){ return isFuel(l.cat); });
+    var litres=rows.reduce(function(a,l){
+      return a+(isFuel(l.cat)?(parseFloat(l.liters)||parseFloat(l.qty)||0):0); },0);
+    S.reserves.push({no:String(no),vrfNo:String(vno),date:d.date||iso(),
+      kind:fuelish?"fuel-issue":"job",veh:d.veh,work:d.work,
+      litres:fuelish?litres:null,
       project:d.project,budget:total,needBy:"",
       scope:(d.purpose?d.purpose+" — ":"")+summary,
       requestedBy:who,status:"Requested",
@@ -7523,19 +7338,8 @@ async function sendForApproval(d,btn){
 async function postVrf(d,btn){
   if(!d.veh){ toast("Pick a unit first."); return; }
   if(!d.work){ toast("Pick the type of job — it is what makes this VRF findable later."); return; }
-  var fuelLines=d.lines.filter(function(l){ return isFuel(l.cat)&&(parseFloat(l.qty)||parseFloat(l.liters)); });
-  if(fuelLines.length&&!d.reserve&&!isFuelBypass(d.gateOverride)){
-    toast("Fuel needs an approved reserve behind it — pick one at the top of the form, or apply a bypass.");
-    return;
-  }
-  if(fuelLines.length&&!d.gateOverride){
-    var LL=fuelLines.reduce(function(a,l){ return a+(parseFloat(l.liters)||parseFloat(l.qty)||0); },0);
-    var chk=fuelCheck(d.veh,d.odo,LL);
-    if(chk.stops&&chk.stops.length){
-      toast("The fuel check has stopped this request — read it and override with a reason.");
-      return;
-    }
-  }
+  /* Fuel is a normal VRF. No approved-reserve prerequisite, no fuel-check stop,
+     no gauge / photo wall, no parallel bypass-to-create-reserve path. */
   var rows=d.lines.filter(function(l){ return l.cat && (parseFloat(l.qty)||parseFloat(l.price)); });
   if(!rows.length){ toast("Add at least one line with a category and a figure."); return; }
   btn.disabled=true; btn.textContent="Posting…";
@@ -7724,8 +7528,8 @@ function fuelView(){
     });
   }
   fillRsv();
-  var rfld=fld("Against an approved reserve",rsel,
-    "Normal path: pick an approved reserve. Bypass (below) logs the VRF now and does not wait for approval.");
+  var rfld=fld("Against an approved VRF on the reserve log",rsel,
+    "Dispense against a VRF that was raised on New VRF and approved. This screen does not invent a reserve.");
   rfld.style.gridColumn="1 / -1";
   fb.appendChild(rfld);
   var dt=el("input"); dt.type="date"; dt.value=iso();
@@ -7748,34 +7552,24 @@ function fuelView(){
   var op=el("input"); op.placeholder="operator / driver";
   form2.appendChild(fld("Containers",cn)); form2.appendChild(fld("Litres",lt)); form2.appendChild(fld("Released to",op));
   fb.appendChild(form2);
-  var dgate={check:null,override:null};
   var sub;
-  function syncDispenseLabel(){
-    if(!sub) return;
-    sub.textContent=isFuelBypass(dgate.override)?"Bypass — log VRF now":"Record dispense";
-  }
-  var dpanel=fuelGatePanel(dgate,syncDispenseLabel,{bypass:true});
   var dodo=el("input"); dodo.className="mono"; dodo.inputMode="numeric";
   var dodoW=fld("Meter reading now",dodo);
   var dhint=el("div","hint"); dodoW.appendChild(dhint);
   form2.appendChild(dodoW);
   function dcheck(){
-    if(!vs.getCode()){ dgate.check=null; dpanel.redraw(); dhint.textContent=""; return; }
+    if(!vs.getCode()){ dhint.textContent=""; return; }
     var lf=lastFuel(vs.getCode());
     dhint.textContent = lf&&lf.odo!=null
-      ? "Last fill "+lf.date+" at "+nnum(lf.odo)+(meterOf(vs.getCode())==="hr"?" hrs":" km")
+      ? "Last fill "+lf.date+" at "+nnum(lf.odo)+(meterOf(vs.getCode())==="hr"?" hrs":" km")+" — informational only, not a gate."
       : "No previous reading on file.";
-    dgate.check=fuelCheck(vs.getCode(),dodo.value,(parseFloat(cn.value)||0)*CONTAINER_L);
-    dpanel.redraw();
   }
   dodo.addEventListener("input",dcheck);
   cn.addEventListener("input",dcheck);
-  var gwrap=el("div"); gwrap.style.marginTop="var(--space-3)"; gwrap.appendChild(dpanel);
-  fb.appendChild(gwrap);
 
   var dphotos=[];
   var pcard=el("div"); pcard.style.marginTop="var(--space-4)";
-  pcard.appendChild(el("div","hint","Photo of the gauge or the meter after the fill — a dispense cannot be liquidated without one."));
+  pcard.appendChild(el("div","hint","Photo of the gauge or the meter after the fill (optional). It does not block recording the dispense."));
   var pstrip=el("div","pgrid"); pstrip.style.margin="var(--space-2) 0";
   function drawStrip(){
     pstrip.innerHTML="";
@@ -7809,49 +7603,25 @@ function fuelView(){
   var act=el("div","row"); act.style.marginTop="12px";
   sub=el("button","btn pri","Record dispense");
   sub.addEventListener("click",async function(){
-    var bypass=isFuelBypass(dgate.override);
-    if(!rsel.value&&!bypass){ toast("Pick the approved reserve this fuel is going against, or apply a bypass."); return; }
+    if(!rsel.value){ toast("Pick the approved VRF on the reserve log this fuel is going against. Raise new fuel spend on New VRF — this screen does not invent a reserve."); return; }
     if(!vs.getCode()){ toast("Pick a unit."); return; }
     var L=(parseFloat(cn.value)||0)*CONTAINER_L;
     if(L<=0){ toast("Containers must be at least 1."); return; }
     if(L>f.onHand){ toast("Only "+nnum(f.onHand,0)+" L on hand — record a delivery first."); return; }
-    var ck=fuelCheck(vs.getCode(),dodo.value,L);
-    if(ck.stops&&ck.stops.length&&!dgate.override){
-      dgate.check=ck; dpanel.redraw();
-      toast("The fuel check has stopped this dispense — read it and override with a reason.");
-      return;
-    }
     sub.disabled=true; sub.textContent="Recording…";
     var no=await claimVrf();
     var rsvNo=rsel.value;
-    if(!rsvNo&&bypass){
-      rsvNo=String(await claimReserveNo());
-      S.reserves.push({no:rsvNo,vrfNo:String(no),date:dt.value,kind:"fuel-issue",
-        veh:vs.getCode(),work:"FUEL-RES",litres:L,pricePerL:null,supplier:"FUEL RESERVE",
-        odoAtRequest:parseFloat(String(dodo.value).replace(/,/g,""))||null,
-        gauge:"",gaugePct:null,tankLeft:null,fuelOverride:dgate.override,bypass:true,
-        project:ps.getCode(),budget:0,needBy:"",
-        scope:bypassAttribution(dgate.override,{unit:vs.getCode(),litres:L,by:op.value}),
-        requestedBy:op.value.trim()||dgate.override.by,status:"Approved",
-        approvedBudget:0,approvedBy:dgate.override.by,approvedAt:dgate.override.at,
-        decisionNote:bypassAttribution(dgate.override,{unit:vs.getCode(),litres:L,by:op.value}),
-        vrfs:[String(no)],jo:"",actual:null,liquidatedAt:"",
-        justification:"",justifiedBy:"",varianceBy:"",varianceAt:"",varianceNote:""});
-    }
-    var attr=bypass
-      ? bypassAttribution(dgate.override,{unit:vs.getCode(),litres:L,by:op.value})
-      : "Reserve dispense";
     await appendRows("withdrawals",[{date:dt.value,vrf:String(no),vehicle:vs.getCode(),project:ps.getCode(),
       fuel:"Diesel",cont:parseFloat(cn.value)||0,liters:L,cost:null,rate:null,
-      operator:op.value,override:dgate.override||null,reserve:rsvNo,bypass:bypass}]);
+      operator:op.value,override:null,reserve:rsvNo,bypass:false}]);
     var mk=monthKey(dt.value)||iso().slice(0,7);
     var v=vehicle(vs.getCode());
     await appendLedger(mk,[{month:mk,date:dt.value,vrf:String(no),veh:vs.getCode(),name:v?v.desc:"",
       cat:"Fuel — Diesel",sub:"Fuel",grp:"Fuel",work:"FUEL-RES",item:"Fuel Reserve dispense",qty:L,price:null,total:null,
       supplier:"FUEL RESERVE",project:ps.getCode(),liters:L,
       odo:parseFloat(String(dodo.value).replace(/,/g,""))||null,
-      override:dgate.override||null,reserve:rsvNo,vstatus:"Open",bypass:bypass,
-      notes:attr}]);
+      override:null,reserve:rsvNo,vstatus:"Open",bypass:false,
+      notes:"Reserve dispense"}]);
     for(var pi=0;pi<dphotos.length;pi++){
       try{ await addPhoto(no,{data:dphotos[pi].data,w:dphotos[pi].w,h:dphotos[pi].h,
         bytes:dphotos[pi].bytes,caption:dphotos[pi].caption,by:op.value}); }catch(e){}
@@ -7859,12 +7629,9 @@ function fuelView(){
     var rr=reserveBy(rsvNo);
     if(rr){
       if((rr.vrfs||[]).indexOf(String(no))<0) rr.vrfs=(rr.vrfs||[]).concat([String(no)]);
-      if(bypass){ rr.bypass=true; rr.fuelOverride=rr.fuelOverride||dgate.override; }
       await saveReserves();
     }
-    toast(bypass
-      ? "Bypass — VRF "+no+" logged for "+vs.getCode()+" · "+nnum(L,0)+" L. No office approval."
-      : "Dispensed "+nnum(L,0)+" L on VRF "+no+" against RSV-"+rsvNo+".");
+    toast("Dispensed "+nnum(L,0)+" L on VRF "+no+" against RSV-"+rsvNo+".");
     render();
   });
   act.appendChild(sub);
@@ -7876,7 +7643,7 @@ function fuelView(){
   /* bulk purchase into the reserve — approved the same way, evidenced the same way */
   var bc=el("div","card");
   var bh=el("div","hd"); bh.appendChild(el("h3",null,"Record a bulk delivery"));
-  bh.appendChild(el("span","note","Buying fuel into the drums is spend too — it goes through an approved reserve."));
+  bh.appendChild(el("span","note","Buying fuel into the drums is spend — raise that VRF on New VRF, then record the delivery here against the approved entry on the reserve log."));
   bc.appendChild(bh);
   var bbd=el("div","bd");
   function bfld(l,n,h){ var x=el("div","field"); x.appendChild(el("label",null,l)); x.appendChild(n);
@@ -7887,7 +7654,7 @@ function fuelView(){
   bopen.forEach(function(r){
     brs.appendChild(new Option("RSV-"+r.no+"  ·  "+nnum(r.litres||0,0)+" L  ·  "+
       peso(r.approvedBudget!=null?r.approvedBudget:r.budget),r.no)); });
-  var brw=bfld("Against an approved reserve",brs); brw.style.marginBottom="var(--space-3)";
+  var brw=bfld("Against an approved VRF on the reserve log",brs); brw.style.marginBottom="var(--space-3)";
   bbd.appendChild(brw);
   var b1=el("div","f3");
   var bdt=el("input"); bdt.type="date"; bdt.value=iso();
@@ -7934,7 +7701,7 @@ function fuelView(){
   bdraw(); bbd.appendChild(bstrip);
   var bfi=el("input"); bfi.type="file"; bfi.accept="image/*"; bfi.multiple=true;
   var bfw=bfld("Delivery slip / drum gauge photo",bfi,
-    "Required — this is what liquidates the bulk reserve.");
+    "Optional — attach the slip if you have it. It does not block the record.");
   bfw.style.maxWidth="380px"; bbd.appendChild(bfw);
   bfi.addEventListener("change",async function(){
     var files=Array.prototype.slice.call(bfi.files||[]);
@@ -7947,7 +7714,7 @@ function fuelView(){
   var bact=el("div","row"); bact.style.marginTop="var(--space-3)";
   var bsv=el("button","btn pri","Record delivery");
   bsv.addEventListener("click",async function(){
-    if(!brs.value){ toast("Pick the approved bulk reserve this delivery is against."); return; }
+    if(!brs.value){ toast("Pick the approved VRF on the reserve log this delivery is against. Raise the bulk fuel spend on New VRF first."); return; }
     var L=(parseFloat(bcn.value)||0)*CONTAINER_L, pr=parseFloat(bpl.value)||0;
     if(!(L>0)||!(pr>0)){ toast("Containers and price per litre are both needed."); return; }
     bsv.disabled=true; bsv.textContent="Recording…";
@@ -9309,7 +9076,7 @@ function consumeView(){
   var rules=fuelRules();
   var lim=el("div","card");
   var lh=el("div","hd"); lh.appendChild(el("h3",null,"Limits on a fuel request"));
-  lh.appendChild(el("span","note","Applied on the VRF form and on a reserve dispense."));
+  lh.appendChild(el("span","note","Shown on Fuel economics only. These limits do not block raising a VRF."));
   lim.appendChild(lh);
   var lb2=el("div","bd");
   var lr=el("div","f3");
