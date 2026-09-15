@@ -107,7 +107,7 @@ The ingest guard only stops **new** copies. Rows already on live (the May/July/A
 
 Do this once after deploy. You do not need a curl cleanup; the button writes through the same `applicants` collection the site already uses.
 
-On Pipeline, **Role** chips (All roles, then each title — Procurement Officer, Project / Site Engineer, …) filter the staged tables. Stage groups stay; empty stages hide. The filter is one tap on `roleId` or the role title, including unlinked rows that only have a position.
+On Pipeline, **Role** chips (All roles, then each title — Procurement Officer, Project / Site Engineer, …) filter the staged tables. A search box in the Pipeline header filters as you type by applicant name, email, mobile, and position / role title. Search and the role chip apply together (AND). Stage groups stay; empty stages hide. Clear the search box (or its Clear button) to show every role-matching row again.
 
 ## Field map
 

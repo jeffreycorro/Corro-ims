@@ -294,3 +294,83 @@ describe("hr-recruit role filter", () => {
     assert.match(bar.innerHTML, /Project \/ Site Engineer/);
   });
 });
+
+describe("hr-recruit pipeline search", () => {
+  const applicants = {
+    a1: {
+      id: "a1",
+      name: "Barrios, Luisa G.",
+      roleId: "ro06",
+      position: "Procurement Officer",
+      email: "luisa@example.com",
+      mobile: "0917 000 0000",
+    },
+    a2: {
+      id: "a2",
+      name: "Tristan Sibonga",
+      roleId: "ro02",
+      position: "Project Manager",
+      email: "tristan@example.com",
+      mobile: "0918 111 2222",
+    },
+    a3: {
+      id: "a3",
+      name: "Unlinked Person",
+      roleId: "",
+      position: "Project / Site Engineer",
+      email: "",
+      mobile: "",
+    },
+  };
+
+  it("matches name, Last-First flip, email, mobile, and role title", () => {
+    const w = fakeWindow(applicants);
+    const hr = loadRecruit(w);
+    const roles = w.S.roles;
+    assert.equal(hr.applicantMatchesSearch(applicants.a1, "", roles), true);
+    assert.equal(hr.applicantMatchesSearch(applicants.a1, "luisa", roles), true);
+    assert.equal(hr.applicantMatchesSearch(applicants.a1, "Luisa Barrios", roles), true);
+    assert.equal(hr.applicantMatchesSearch(applicants.a1, "luisa@example", roles), true);
+    assert.equal(hr.applicantMatchesSearch(applicants.a1, "0917", roles), true);
+    assert.equal(hr.applicantMatchesSearch(applicants.a1, "09170000000", roles), true);
+    assert.equal(hr.applicantMatchesSearch(applicants.a1, "procurement", roles), true);
+    assert.equal(hr.applicantMatchesSearch(applicants.a1, "tristan", roles), false);
+    assert.equal(hr.applicantMatchesSearch(applicants.a2, "project manager", roles), true);
+    assert.equal(hr.applicantMatchesSearch(applicants.a3, "site engineer", roles), true);
+  });
+
+  it("ANDs search words and ANDs with the role filter", () => {
+    const w = fakeWindow(applicants);
+    const hr = loadRecruit(w);
+    const roles = w.S.roles;
+    assert.equal(hr.applicantMatchesSearch(applicants.a1, "luisa barrios", roles), true);
+    assert.equal(hr.applicantMatchesSearch(applicants.a1, "luisa tristan", roles), false);
+    assert.equal(hr.applicantMatchesPipeline(applicants.a1, "ro06", "luisa", roles), true);
+    assert.equal(hr.applicantMatchesPipeline(applicants.a1, "ro02", "luisa", roles), false);
+    assert.equal(hr.applicantMatchesPipeline(applicants.a2, "ro06", "tristan", roles), false);
+    assert.equal(hr.applicantMatchesPipeline(applicants.a2, "", "tristan", roles), true);
+  });
+
+  it("injects a clearable search input in the Pipeline header", () => {
+    const w = fakeWindow(applicants);
+    const hr = loadRecruit(w);
+    hr.injectButton();
+    const wrap = hr.injectSearch();
+    assert.equal(wrap.id, "hr-recruit-search-wrap");
+    assert.match(wrap.innerHTML, /id="hr-recruit-search"/);
+    assert.match(wrap.innerHTML, /Search name, email, mobile, role/);
+    assert.match(wrap.innerHTML, /hr-recruit-search-clear/);
+    assert.match(wrap.innerHTML, /hidden/);
+    assert.equal(hr.injectSearch(), wrap);
+  });
+
+  it("persists the query and clears it", () => {
+    const w = fakeWindow(applicants);
+    const hr = loadRecruit(w);
+    hr.setPipelineSearch("luisa");
+    assert.equal(hr.currentSearch(), "luisa");
+    assert.equal(w.S.ui.pipelineSearch, "luisa");
+    hr.setPipelineSearch("");
+    assert.equal(hr.currentSearch(), "");
+  });
+});

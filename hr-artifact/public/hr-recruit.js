@@ -3,15 +3,15 @@
  * Loaded by claude-shim.js. Does not rewrite the artifact.
  *
  * Adds Pipeline "Bulk import JSON", "Consolidate duplicates", a
- * role filter, and a "View 201 / application file" action on the
- * applicant editor.
+ * role filter, a live search bar, and a "View 201 / application file"
+ * action on the applicant editor.
  */
 (function (root) {
   "use strict";
 
-  if (root.hrRecruit && root.hrRecruit.version === "1.2.0") return;
+  if (root.hrRecruit && root.hrRecruit.version === "1.3.0") return;
 
-  var api = { version: "1.2.0", attached: false, openAppId: "", roleFilter: "" };
+  var api = { version: "1.3.0", attached: false, openAppId: "", roleFilter: "", pipelineSearch: "" };
 
   function dedupe() {
     return (
@@ -248,6 +248,53 @@
     return false;
   }
 
+  function searchHaystack(a, roles) {
+    roles = roles || rolesMap();
+    var name = String((a && a.name) || "");
+    var flipped = "";
+    if (name.indexOf(",") >= 0) {
+      flipped = name
+        .split(",")
+        .map(function (part) {
+          return part.trim();
+        })
+        .filter(Boolean)
+        .reverse()
+        .join(" ");
+    }
+    var nameLoose = name.replace(/[.,]/g, " ");
+    var mobile = String((a && a.mobile) || "");
+    var mobileLoose = mobile.replace(/[\s().+-]/g, "");
+    return [
+      name,
+      nameLoose,
+      flipped,
+      a && a.email,
+      mobile,
+      mobileLoose,
+      a && a.position,
+      displayRoleTitle(a, roles),
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+  }
+
+  function applicantMatchesSearch(a, query, roles) {
+    var q = String(query == null ? "" : query)
+      .trim()
+      .toLowerCase();
+    if (!q) return true;
+    var hay = searchHaystack(a, roles);
+    return q.split(/\s+/).every(function (word) {
+      return hay.indexOf(word) >= 0;
+    });
+  }
+
+  function applicantMatchesPipeline(a, filter, query, roles) {
+    return applicantMatchesRole(a, filter, roles) && applicantMatchesSearch(a, query, roles);
+  }
+
   function roleFilterOptions(list, roles) {
     roles = roles || rolesMap();
     var seen = Object.create(null);
@@ -279,6 +326,12 @@
     return String(api.roleFilter || "");
   }
 
+  function currentSearch() {
+    var S = store();
+    if (S && S.ui && S.ui.pipelineSearch != null) return String(S.ui.pipelineSearch);
+    return String(api.pipelineSearch || "");
+  }
+
   function setRoleFilter(key) {
     var want = String(key == null ? "" : key);
     if (want === "all") want = "";
@@ -288,8 +341,19 @@
       S.ui = S.ui || {};
       S.ui.pipelineRoleFilter = want;
     }
-    applyRoleFilter();
+    applyPipelineFilters();
     paintRoleFilter();
+  }
+
+  function setPipelineSearch(query) {
+    var next = String(query == null ? "" : query);
+    api.pipelineSearch = next;
+    var S = store();
+    if (S) {
+      S.ui = S.ui || {};
+      S.ui.pipelineSearch = next;
+    }
+    applyPipelineFilters();
   }
 
   function pipelineStageBlocks(doc) {
@@ -300,7 +364,7 @@
     var blocks = [];
     var el = sect && sect.nextElementSibling;
     while (el) {
-      if (el.id === "hr-recruit-role-filter") {
+      if (el.id === "hr-recruit-role-filter" || el.id === "hr-recruit-search-wrap") {
         el = el.nextElementSibling;
         continue;
       }
@@ -322,10 +386,11 @@
     return blocks;
   }
 
-  function applyRoleFilter(doc) {
+  function applyPipelineFilters(doc) {
     doc = doc || document;
     if (!doc || !doc.getElementById || !doc.getElementById("new-app")) return 0;
     var filter = currentRoleFilter();
+    var query = currentSearch();
     var roles = rolesMap();
     var shown = 0;
     var total = 0;
@@ -339,7 +404,7 @@
         var id = btn && btn.getAttribute ? btn.getAttribute("data-open-app") : "";
         var a = findApplicant(id);
         total += 1;
-        var ok = !a || applicantMatchesRole(a, filter, roles);
+        var ok = !a || applicantMatchesPipeline(a, filter, query, roles);
         if (ok) {
           visible += 1;
           shown += 1;
@@ -353,13 +418,20 @@
     });
     var note = doc.getElementById("hr-recruit-role-count");
     if (note) {
-      note.textContent = filter
+      var active = !!filter || !!String(query).trim();
+      note.textContent = active
         ? "Showing " + shown + " of " + total
         : total
           ? total + " on pipeline"
           : "";
     }
+    var clear = doc.getElementById("hr-recruit-search-clear");
+    if (clear) clear.hidden = !String(query).trim();
     return shown;
+  }
+
+  function applyRoleFilter(doc) {
+    return applyPipelineFilters(doc);
   }
 
   function paintRoleFilter(bar) {
@@ -425,6 +497,84 @@
       },
       false
     );
+  }
+
+  function bindSearchEvents(doc) {
+    doc = doc || document;
+    if (!doc || doc.__hrSearchEvents) return;
+    doc.__hrSearchEvents = true;
+    if (!doc.addEventListener) return;
+    doc.addEventListener(
+      "input",
+      function (ev) {
+        var t = ev && ev.target;
+        if (t && t.id === "hr-recruit-search") setPipelineSearch(t.value);
+      },
+      false
+    );
+    doc.addEventListener(
+      "click",
+      function (ev) {
+        var t = ev && ev.target;
+        if (!t || t.id !== "hr-recruit-search-clear") return;
+        if (ev.preventDefault) ev.preventDefault();
+        var input = doc.getElementById("hr-recruit-search");
+        if (input) input.value = "";
+        setPipelineSearch("");
+        if (input && input.focus) input.focus();
+      },
+      false
+    );
+  }
+
+  function searchHtml(query) {
+    query = String(query == null ? "" : query);
+    return (
+      '<input type="search" id="hr-recruit-search" class="search" placeholder="Search name, email, mobile, role…" autocomplete="off" aria-label="Search applicants" value="' +
+      esc(query) +
+      '">' +
+      '<button type="button" class="btn sm ghost" id="hr-recruit-search-clear"' +
+      (query.trim() ? "" : " hidden") +
+      ">Clear</button>"
+    );
+  }
+
+  function injectSearch() {
+    if (typeof document === "undefined") return null;
+    var log = document.getElementById("new-app");
+    if (!log || !log.parentNode) {
+      var leftover = document.getElementById("hr-recruit-search-wrap");
+      if (leftover && leftover.parentNode) leftover.parentNode.removeChild(leftover);
+      return null;
+    }
+    bindSearchEvents(document);
+    var wrap = document.getElementById("hr-recruit-search-wrap");
+    if (!wrap) {
+      wrap = document.createElement("div");
+      wrap.id = "hr-recruit-search-wrap";
+      wrap.className = "row";
+      wrap.setAttribute("data-hr-search", "1");
+      log.parentNode.insertBefore(wrap, log);
+    }
+    var q = currentSearch();
+    var input = document.getElementById("hr-recruit-search");
+    var focused = input && typeof document.activeElement !== "undefined" && document.activeElement === input;
+    if (!input) {
+      wrap.innerHTML = searchHtml(q);
+    } else if (!focused) {
+      input.value = q;
+    }
+    var clear = document.getElementById("hr-recruit-search-clear");
+    if (clear) clear.hidden = !String(q).trim();
+    if (wrap.style) {
+      wrap.style.flex = "1 1 220px";
+      wrap.style.minWidth = "180px";
+      wrap.style.maxWidth = "420px";
+      wrap.style.gap = "6px";
+      wrap.style.alignItems = "center";
+      wrap.style.margin = "0";
+    }
+    return wrap;
   }
 
   function injectRoleFilter() {
@@ -1089,6 +1239,7 @@
       wrapPut();
       injectButton();
       injectConsolidateButton();
+      injectSearch();
       injectRoleFilter();
     } catch (e) {}
   }
@@ -1119,11 +1270,18 @@
   api.injectButton = injectButton;
   api.injectConsolidateButton = injectConsolidateButton;
   api.injectRoleFilter = injectRoleFilter;
+  api.injectSearch = injectSearch;
   api.applyRoleFilter = applyRoleFilter;
+  api.applyPipelineFilters = applyPipelineFilters;
   api.setRoleFilter = setRoleFilter;
+  api.setPipelineSearch = setPipelineSearch;
+  api.currentSearch = currentSearch;
   api.roleFilterKey = roleFilterKey;
   api.roleFilterOptions = roleFilterOptions;
   api.applicantMatchesRole = applicantMatchesRole;
+  api.applicantMatchesSearch = applicantMatchesSearch;
+  api.applicantMatchesPipeline = applicantMatchesPipeline;
+  api.searchHaystack = searchHaystack;
   api.openPasteDoor = openPasteDoor;
   api.openConsolidateDoor = openConsolidateDoor;
   api.openApplicationFile = openApplicationFile;
