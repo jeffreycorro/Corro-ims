@@ -92,12 +92,13 @@ describe("applicants ingest validation", () => {
     );
   });
 
-  it("blank applicant records start with empty exam, interview, history, and background arrays", () => {
+  it("blank applicant records start with empty exam, interview, history, background, and staffNotes arrays", () => {
     const doc = blankApplicant("a_test", "2026-09-14");
     assert.deepEqual(doc.exams, []);
     assert.deepEqual(doc.interviews, []);
     assert.deepEqual(doc.history, []);
     assert.deepEqual(doc.background, []);
+    assert.deepEqual(doc.staffNotes, []);
     assert.equal(doc.stage, "Applied");
     assert.equal(doc.source, "Email");
   });

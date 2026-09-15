@@ -107,7 +107,9 @@ The ingest guard only stops **new** copies. Rows already on live (the May/July/A
 
 Do this once after deploy. You do not need a curl cleanup; the button writes through the same `applicants` collection the site already uses.
 
-On Pipeline, **Role** chips (All roles, then each title — Procurement Officer, Project / Site Engineer, …) filter the staged tables. A search box in the Pipeline header filters as you type by applicant name, email, mobile, and position / role title. Search and the role chip apply together (AND). Stage groups stay; empty stages hide. Clear the search box (or its Clear button) to show every role-matching row again.
+On Pipeline, **Role** chips sit in the header row next to **Log an applicant** / **Bulk import JSON** (All roles, then each title — Procurement Officer, Project / Site Engineer, …). A search box in the same header filters as you type by applicant name, email, mobile, and position / role title. Search and the role chip apply together (AND). Stage groups stay; empty stages hide. Clear the search box (or its Clear button) to show every role-matching row again.
+
+On the applicant editor, a dated **Background check and observations** log sits under Internal notes. Add a background-check comment or an observation; earlier entries stay (they are not overwritten). Entries store on the applicant as `staffNotes` (`kind`, `text`, `on`, `by`) through the usual `put("applicants")`. This is separate from Internal notes and from the RFFI `background` employer-call list.
 
 ## Field map
 

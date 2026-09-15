@@ -9,9 +9,22 @@
 (function (root) {
   "use strict";
 
-  if (root.hrRecruit && root.hrRecruit.version === "1.3.0") return;
+  if (root.hrRecruit && root.hrRecruit.version === "1.4.0") return;
 
-  var api = { version: "1.3.0", attached: false, openAppId: "", roleFilter: "", pipelineSearch: "" };
+  var api = {
+    version: "1.4.0",
+    attached: false,
+    openAppId: "",
+    roleFilter: "",
+    pipelineSearch: "",
+    draftStaffNotes: [],
+  };
+
+  var STAFF_NOTE_KINDS = [
+    { key: "background", label: "Background check" },
+    { key: "observation", label: "Observation" },
+    { key: "other", label: "Other" },
+  ];
 
   function dedupe() {
     return (
@@ -586,26 +599,30 @@
       return null;
     }
     bindRoleFilterClicks(document);
+    var sect = log.parentNode;
+    if (sect && sect.style) {
+      sect.style.flexWrap = "wrap";
+      sect.style.alignItems = "center";
+      sect.style.rowGap = "8px";
+    }
     var bar = document.getElementById("hr-recruit-role-filter");
     if (!bar) {
       bar = document.createElement("div");
       bar.id = "hr-recruit-role-filter";
       bar.className = "row";
       bar.setAttribute("data-hr-role-filter", "1");
-      var sect = log.parentNode;
-      if (sect.parentNode) {
-        if (sect.nextSibling) sect.parentNode.insertBefore(bar, sect.nextSibling);
-        else sect.parentNode.appendChild(bar);
-      } else {
-        sect.appendChild(bar);
-      }
+    }
+    if (bar.parentNode !== sect || bar.nextSibling !== log) {
+      sect.insertBefore(bar, log);
     }
     bar.innerHTML = roleFilterHtml();
     if (bar.style) {
+      bar.style.flex = "1 1 280px";
       bar.style.flexWrap = "wrap";
       bar.style.gap = "6px";
-      bar.style.margin = "0 0 12px";
+      bar.style.margin = "0";
       bar.style.alignItems = "center";
+      bar.style.minWidth = "200px";
     }
     applyRoleFilter(document);
     paintRoleFilter(bar);
@@ -1154,6 +1171,188 @@
     };
   }
 
+  function staffNoteKindLabel(kind) {
+    var i;
+    for (i = 0; i < STAFF_NOTE_KINDS.length; i += 1) {
+      if (STAFF_NOTE_KINDS[i].key === kind) return STAFF_NOTE_KINDS[i].label;
+    }
+    return "Note";
+  }
+
+  function currentAuthor() {
+    var S = store() || {};
+    var st = S.settings || {};
+    return String(st.hrStaff || st.hrHead || "").trim();
+  }
+
+  function newStaffNoteId() {
+    return "sn_" + Math.random().toString(36).slice(2, 10);
+  }
+
+  function normalizeStaffNote(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    var text = String(raw.text || "").trim();
+    if (!text) return null;
+    var kind = raw.kind === "observation" || raw.kind === "other" ? raw.kind : "background";
+    return {
+      id: String(raw.id || newStaffNoteId()),
+      kind: kind,
+      text: text,
+      on: String(raw.on || today()),
+      by: String(raw.by || "").trim(),
+    };
+  }
+
+  function mergeStaffNotes() {
+    var out = [];
+    var seen = Object.create(null);
+    Array.prototype.forEach.call(arguments, function (list) {
+      (list || []).forEach(function (raw) {
+        var n = normalizeStaffNote(raw);
+        if (!n || seen[n.id]) return;
+        seen[n.id] = true;
+        out.push(n);
+      });
+    });
+    out.sort(function (a, b) {
+      return String(a.on).localeCompare(String(b.on)) || String(a.id).localeCompare(String(b.id));
+    });
+    return out;
+  }
+
+  function staffNotesOf(a) {
+    return mergeStaffNotes((a && a.staffNotes) || [], api.draftStaffNotes || []);
+  }
+
+  function appendStaffNote(a, kind, text, by) {
+    var entry = normalizeStaffNote({
+      kind: kind,
+      text: text,
+      by: by == null ? currentAuthor() : by,
+      on: today(),
+      id: newStaffNoteId(),
+    });
+    if (!entry) return null;
+    if (a && a.id && findApplicant(a.id)) {
+      a.staffNotes = mergeStaffNotes(a.staffNotes, [entry]);
+    } else {
+      api.draftStaffNotes = mergeStaffNotes(api.draftStaffNotes, [entry]);
+    }
+    return entry;
+  }
+
+  function staffNoteEntriesHtml(list) {
+    if (!list || !list.length) {
+      return '<div class="lbl" id="hr-recruit-staff-log-empty" style="padding:4px 0">No background-check comments or observations yet.</div>';
+    }
+    return (
+      '<div class="chklist" id="hr-recruit-staff-log">' +
+      list
+        .map(function (n) {
+          return (
+            '<div class="chk"><span class="idx">' +
+            esc(n.on) +
+            '</span><span class="n"><b>' +
+            esc(staffNoteKindLabel(n.kind)) +
+            "</b>" +
+            (n.by ? '<span class="lbl">by ' + esc(n.by) + "</span>" : "") +
+            "<span>" +
+            esc(n.text) +
+            "</span></span></div>"
+          );
+        })
+        .join("") +
+      "</div>"
+    );
+  }
+
+  function staffNotesHtml(a) {
+    var list = staffNotesOf(a || {});
+    var by = currentAuthor();
+    var kinds = STAFF_NOTE_KINDS.map(function (k) {
+      return '<option value="' + esc(k.key) + '">' + esc(k.label) + "</option>";
+    }).join("");
+    return (
+      '<div class="stack" id="hr-recruit-staff-notes" data-hr-staff-notes="1">' +
+      '<div class="sect-h" style="margin:10px 0 0"><h2 style="font-size:12.5px">Background check and observations</h2><span class="rule"></span></div>' +
+      '<div class="note">A dated log — add a background-check comment or an observation. Earlier entries stay; this does not overwrite Internal notes.</div>' +
+      staffNoteEntriesHtml(list) +
+      '<div class="grid2">' +
+      '<div class="f"><label>Kind</label><select id="hr-recruit-staff-kind">' +
+      kinds +
+      "</select></div>" +
+      '<div class="f"><label>Recorded by</label><input id="hr-recruit-staff-by" value="' +
+      esc(by) +
+      '" placeholder="Your name"></div></div>' +
+      '<div class="f"><label>New entry</label><textarea id="hr-recruit-staff-text" style="min-height:72px" placeholder="What you found, or what you observed."></textarea></div>' +
+      '<div class="row"><button type="button" class="btn" id="hr-recruit-staff-add">Add to log</button>' +
+      '<span class="lbl" id="hr-recruit-staff-status"></span></div></div>'
+    );
+  }
+
+  function refreshStaffNotesPanel(a) {
+    var panel = document.getElementById("hr-recruit-staff-notes");
+    if (!panel) return;
+    var list = staffNotesOf(a || applicantFromEditor() || {});
+    var slot = document.getElementById("hr-recruit-staff-log") || document.getElementById("hr-recruit-staff-log-empty");
+    if (slot) slot.outerHTML = staffNoteEntriesHtml(list);
+  }
+
+  async function addStaffNoteFromForm() {
+    var textEl = $("#hr-recruit-staff-text");
+    var kindEl = $("#hr-recruit-staff-kind");
+    var byEl = $("#hr-recruit-staff-by");
+    var st = $("#hr-recruit-staff-status");
+    var text = textEl ? String(textEl.value || "").trim() : "";
+    if (!text) {
+      if (st) st.textContent = "Write the comment first.";
+      return null;
+    }
+    var a = applicantFromEditor();
+    var entry = appendStaffNote(a, kindEl ? kindEl.value : "background", text, byEl ? byEl.value : "");
+    if (!entry) {
+      if (st) st.textContent = "Could not add that note.";
+      return null;
+    }
+    if (a && a.id && findApplicant(a.id)) {
+      await persistApplicant(a);
+    }
+    if (textEl) textEl.value = "";
+    refreshStaffNotesPanel(a);
+    if (st) st.textContent = "Added " + entry.on + ".";
+    toast("Note added to the applicant log.", "ok");
+    return entry;
+  }
+
+  function bindStaffNotes() {
+    var add = $("#hr-recruit-staff-add");
+    if (!add || add.getAttribute("data-bound") === "1") return;
+    add.setAttribute("data-bound", "1");
+    add.onclick = function (ev) {
+      if (ev && ev.preventDefault) ev.preventDefault();
+      addStaffNoteFromForm();
+    };
+  }
+
+  function injectStaffNotesPanel() {
+    if (typeof document === "undefined") return null;
+    if (document.getElementById("hr-recruit-staff-notes")) {
+      bindStaffNotes();
+      return document.getElementById("hr-recruit-staff-notes");
+    }
+    var notes = document.getElementById("a-notes");
+    if (!notes) return null;
+    var host = notes.closest ? notes.closest(".f") : notes.parentNode;
+    var panel = document.createElement("div");
+    panel.innerHTML = staffNotesHtml(applicantFromEditor() || {});
+    var node = panel.firstChild;
+    if (!node) return null;
+    if (host && host.parentNode) host.parentNode.insertBefore(node, host.nextSibling);
+    else if (notes.parentNode) notes.parentNode.appendChild(node);
+    bindStaffNotes();
+    return document.getElementById("hr-recruit-staff-notes");
+  }
+
   function wrapOpenModal() {
     if (typeof root.openModal !== "function" || root.openModal.__hrRecruitFile) return;
     var orig = root.openModal;
@@ -1170,6 +1369,7 @@
       var out = orig.call(this, opts);
       try {
         bindApplicantFileButton();
+        if (opts && isApplicantEditorModal(opts)) injectStaffNotesPanel();
       } catch (e) {}
       return out;
     };
@@ -1225,6 +1425,18 @@
       if (coll === "employees" && obj && obj.applicantId) {
         try {
           carryApplicantDocs(obj);
+        } catch (e) {}
+      }
+      if (coll === "applicants" && obj) {
+        try {
+          var S = store();
+          var cur = S && S.applicants ? S.applicants[id] : null;
+          obj.staffNotes = mergeStaffNotes(
+            cur && cur.staffNotes,
+            obj.staffNotes,
+            api.draftStaffNotes
+          );
+          if (api.draftStaffNotes && api.draftStaffNotes.length) api.draftStaffNotes = [];
         } catch (e) {}
       }
       return orig.apply(this, arguments);
@@ -1290,6 +1502,11 @@
   api.duplicateGroups = duplicateGroups;
   api.mergeGroup = mergeGroup;
   api.carryApplicantDocs = carryApplicantDocs;
+  api.staffNotesHtml = staffNotesHtml;
+  api.appendStaffNote = appendStaffNote;
+  api.mergeStaffNotes = mergeStaffNotes;
+  api.normalizeStaffNote = normalizeStaffNote;
+  api.injectStaffNotesPanel = injectStaffNotesPanel;
   api.install = attach;
   root.hrRecruit = api;
 

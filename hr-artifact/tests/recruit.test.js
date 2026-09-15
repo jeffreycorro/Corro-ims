@@ -282,12 +282,14 @@ describe("hr-recruit role filter", () => {
     assert.equal(opts.find((o) => o.key === "ro06").count, 1);
   });
 
-  it("injects All roles chips on Pipeline next to Log an applicant", () => {
+  it("injects All roles chips in the Pipeline header next to Log an applicant", () => {
     const w = fakeWindow(applicants);
     const hr = loadRecruit(w);
     hr.injectButton();
     const bar = hr.injectRoleFilter();
+    const log = w.document.getElementById("new-app");
     assert.equal(bar.id, "hr-recruit-role-filter");
+    assert.equal(bar.parentNode, log.parentNode);
     assert.match(bar.innerHTML, /All roles/);
     assert.match(bar.innerHTML, /Procurement Officer/);
     assert.match(bar.innerHTML, /data-role-filter="ro06"/);
@@ -372,5 +374,68 @@ describe("hr-recruit pipeline search", () => {
     assert.equal(w.S.ui.pipelineSearch, "luisa");
     hr.setPipelineSearch("");
     assert.equal(hr.currentSearch(), "");
+  });
+});
+
+describe("hr-recruit applicant staff notes", () => {
+  it("renders a dated Background check / Observations log", () => {
+    const w = fakeWindow({
+      a1: {
+        id: "a1",
+        name: "Barrios, Luisa G.",
+        staffNotes: [
+          { id: "sn1", kind: "background", text: "Rang previous employer — confirmed dates.", on: "2026-09-14", by: "Domingo" },
+          { id: "sn2", kind: "observation", text: "Arrived 20 minutes late.", on: "2026-09-15", by: "Maria" },
+        ],
+      },
+    });
+    w.S.settings = { hrHead: "Domingo C. Monte Jr." };
+    const hr = loadRecruit(w);
+    const html = hr.staffNotesHtml(w.S.applicants.a1);
+    assert.match(html, /Background check and observations/);
+    assert.match(html, /Background check/);
+    assert.match(html, /Rang previous employer/);
+    assert.match(html, /Observation/);
+    assert.match(html, /Arrived 20 minutes late/);
+    assert.match(html, /hr-recruit-staff-add/);
+    assert.match(html, /does not overwrite Internal notes/);
+  });
+
+  it("appends dated entries without overwriting earlier ones", () => {
+    const w = fakeWindow({
+      a1: {
+        id: "a1",
+        name: "Barrios, Luisa G.",
+        staffNotes: [{ id: "sn1", kind: "background", text: "First call", on: "2026-09-14", by: "A" }],
+      },
+    });
+    w.S.settings = { hrStaff: "Maria" };
+    const hr = loadRecruit(w);
+    const a = w.S.applicants.a1;
+    const added = hr.appendStaffNote(a, "observation", "Second look", "Maria");
+    assert.ok(added);
+    assert.equal(a.staffNotes.length, 2);
+    assert.equal(a.staffNotes[0].text, "First call");
+    assert.equal(a.staffNotes[1].kind, "observation");
+    assert.equal(a.staffNotes[1].text, "Second look");
+    assert.equal(a.staffNotes[1].on, "2026-09-15");
+    assert.equal(a.staffNotes[1].by, "Maria");
+  });
+
+  it("keeps staffNotes when Save puts an editor copy without the log", async () => {
+    const w = fakeWindow({
+      a1: {
+        id: "a1",
+        name: "Barrios, Luisa G.",
+        notes: "Walk-in",
+        staffNotes: [{ id: "sn1", kind: "background", text: "NBI clear", on: "2026-09-14", by: "HR" }],
+      },
+    });
+    const hr = loadRecruit(w);
+    hr.install();
+    await w.put("applicants", "a1", { id: "a1", name: "Barrios, Luisa G.", notes: "Walk-in" });
+    assert.equal(w.S.applicants.a1.staffNotes.length, 1);
+    assert.equal(w.S.applicants.a1.staffNotes[0].text, "NBI clear");
+    assert.equal(w.S.applicants.a1.notes, "Walk-in");
   });
 });

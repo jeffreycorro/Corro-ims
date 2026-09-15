@@ -56,7 +56,7 @@
     "empNo",
   ];
 
-  var ARRAY_FIELDS = ["exams", "interviews", "history", "background", "linkedDocs"];
+  var ARRAY_FIELDS = ["exams", "interviews", "history", "background", "linkedDocs", "staffNotes"];
 
   var SUFFIX_RE = /^(jr|sr|ii|iii|iv|junior|senior)$/;
 
@@ -594,6 +594,7 @@
       history: [],
       background: [],
       linkedDocs: [],
+      staffNotes: [],
     };
   }
 

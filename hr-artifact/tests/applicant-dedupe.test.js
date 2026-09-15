@@ -109,6 +109,7 @@ describe("applicant merge", () => {
           exams: [],
           interviews: [],
           history: [],
+          staffNotes: [{ id: "sn1", kind: "background", text: "Rang last employer", on: "2026-05-16", by: "HR" }],
         },
         {
           id: "new",
@@ -123,6 +124,7 @@ describe("applicant merge", () => {
           exams: [{ examId: "x1", score: 40 }],
           interviews: [],
           history: [],
+          staffNotes: [{ id: "sn2", kind: "observation", text: "Soft-spoken", on: "2026-08-11", by: "HR" }],
         },
       ],
       { today: "2026-09-15" }
@@ -139,6 +141,7 @@ describe("applicant merge", () => {
     assert.match(result.keeper.notes, /Emailed CV/);
     assert.match(result.keeper.notes, /2026-05-15/);
     assert.equal(result.keeper.exams.length, 1);
+    assert.equal(result.keeper.staffNotes.length, 2);
     assert.equal(result.extras[0].id, "old");
   });
 

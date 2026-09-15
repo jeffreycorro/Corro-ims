@@ -111,6 +111,7 @@ function blankApplicant(id, today) {
     years: "",
     history: [],
     background: [],
+    staffNotes: [],
     rffiNote: "",
     hrVerdict: "",
     hrRating: "3",
@@ -343,7 +344,7 @@ async function ingestApplicants(items, deps) {
         doc.stage = norm.stage;
         Object.assign(doc, norm.fields);
       }
-      for (const key of ["exams", "interviews", "history", "background"]) {
+      for (const key of ["exams", "interviews", "history", "background", "staffNotes"]) {
         if (!Array.isArray(doc[key])) doc[key] = [];
       }
 
