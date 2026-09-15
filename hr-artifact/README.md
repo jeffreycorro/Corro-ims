@@ -22,7 +22,7 @@ Inside `<head>` of that real `index.html`, **before any other scripts**, add:
 <script src="/pwa.js"></script>
 ```
 
-`window.claude.use(name)` is implemented by `public/claude-shim.js` and must load first. Do not rewrite the rest of the artifact. `pwa.js` / `pwa.css` only add iOS Home Screen tags and a scoped mobile overlay. The shim then loads `hr-dictation.js` (hold-to-talk when `OPENAI_API_KEY` is set), `hr-memo.js` (issued / on-paper memoranda open as saved records, not blank drafts), `hr-attendance.js` (manpower tally leave rule, JSON paste/import door, per-person summary, Present/Late Time In and Undertime Time Out), `hr-payroll.js` (Payroll Maker period attendance, +30% / +100% / as-is holiday premium, contributions, holiday calendar, Daily Manpower Hol/OT + change history), `hr-tts.js` (ElevenLabs readback for Ask the records and memo text when `ELEVENLABS_API_KEY` is set), `hr-recruit.js` (Recruitment → Pipeline “Bulk import JSON”, “Consolidate duplicates”, role filter, search, applicant staff notes, and the applicant “View 201 / application file”), and `hr-201-file.js` (201 profile “On file for this person” — NTEs, memos, incidents, leave, cash advances, and other empId-tagged records). Do not rewrite the artifact to add mic buttons, memo chrome, a second attendance system, a parallel payroll app, a second voice UI, a second recruitment editor, or a second 201 register.
+`window.claude.use(name)` is implemented by `public/claude-shim.js` and must load first. Do not rewrite the rest of the artifact. `pwa.js` / `pwa.css` only add iOS Home Screen tags and a scoped mobile overlay. The shim then loads `hr-dictation.js` (hold-to-talk when `OPENAI_API_KEY` is set), `hr-memo.js` (issued / on-paper memoranda open as saved records, not blank drafts), `hr-attendance.js` (manpower tally leave rule, JSON paste/import door, per-person summary, Present/Late Time In and Undertime Time Out), `hr-payroll.js` (Payroll Maker period attendance, +30% / +100% / as-is holiday premium, contributions, holiday calendar, Daily Manpower Hol/OT + change history), `hr-tts.js` (ElevenLabs readback for Ask the records and memo text when `ELEVENLABS_API_KEY` is set), `hr-recruit.js` (Recruitment → Pipeline “Bulk import JSON”, “Consolidate duplicates”, role filter, search, applicant staff notes, and the applicant “View 201 / application file”), `hr-201-file.js` (201 profile “On file for this person” — NTEs, memos, incidents, leave, cash advances, and other empId-tagged records), and `hr-leave-numbers.js` (unique LRF / LV series numbers on New leave, Import signed forms, and allocate; Leave → **Renumber leave**). Do not rewrite the artifact to add mic buttons, memo chrome, a second attendance system, a parallel payroll app, a second voice UI, a second recruitment editor, a second 201 register, or a second leave-numbering counter.
 
 ### 3. Apply the SQL migration
 
@@ -30,7 +30,11 @@ In the Supabase SQL editor for the project this site will use, run:
 
 `supabase/migrations/20260907000002_hr_artifact_docs.sql`
 
-That creates `docs`, `locks`, `hr_allowed_collections`, RLS (no anonymous reads), and `acquire_doc_lock`. Locks are real: `acquire({ holder })` does **not** always return `acquired: true`.
+and, after the live LRF2026-0169 duplicate has been renumbered:
+
+`supabase/migrations/20260915000001_lv_unique_leave_numbers.sql`
+
+The first file creates `docs`, `locks`, `hr_allowed_collections`, RLS (no anonymous reads), and `acquire_doc_lock`. Locks are real: `acquire({ holder })` does **not** always return `acquired: true`. The second file unique-indexes normalised leave numbers on `leaves` and LV `docreg` rows — it will fail if two records still share an LRF.
 
 Timestamps are `timestamptz` (UTC). Display in **Asia/Manila**.
 
@@ -141,6 +145,14 @@ Privacy headers (`X-Robots-Tag: noindex, nofollow`, `X-Frame-Options: DENY`, `Re
 
 After deploy, open the site, sign in with a portal HR/admin account, and restore the backup JSON from **Settings in the artifact**. Never commit backup JSON.
 
+**Duplicate LRF2026-0169 (Jaranilla / Cartuciano).** The leave number field is not editable. After this host ships, sign in, open **Leave**, and either click **Renumber leave** (Jaranilla is preselected; new number defaults to the next free LRF, likely `LRF2026-0171`) or, in the browser console:
+
+```js
+await hrLeaveNumbers.fixLiveDuplicate169()
+```
+
+That keeps Cartuciano on `LRF2026-0169`, moves Jaranilla to the next free number, updates her LV register row / signed-copy titles, and leaves the next new application at max(seq)+1. Then run `20260915000001_lv_unique_leave_numbers.sql` in Supabase.
+
 ---
 
 ## What the shim provides
@@ -198,7 +210,7 @@ This HR site is a Progressive Web App. Add it from **Safari** only.
 
 If a Netlify visitor password is also enabled, Safari may prompt for that before the in-app login. Avoid that extra prompt for staff; the in-app form is the real door.
 
-The optional service worker caches icons and `pwa.css` only. It does **not** cache `index.html`, `claude-shim.js`, `hr-dictation.js`, `hr-memo.js`, `hr-attendance.js`, `hr-payroll.js`, `hr-tts.js`, `hr-applicant-dedupe.js`, `hr-recruit.js`, or `/.netlify/functions/*`, so auth, db, sample, Drive, dictation, memo chrome, attendance import, payroll, voice, and applicant ingest stay on the network.
+The optional service worker caches icons and `pwa.css` only. It does **not** cache `index.html`, `claude-shim.js`, `hr-dictation.js`, `hr-memo.js`, `hr-attendance.js`, `hr-payroll.js`, `hr-tts.js`, `hr-applicant-dedupe.js`, `hr-recruit.js`, `hr-201-file.js`, `hr-leave-numbers.js`, or `/.netlify/functions/*`, so auth, db, sample, Drive, dictation, memo chrome, attendance import, payroll, voice, applicant ingest, and leave numbering stay on the network.
 
 ## Files
 
@@ -214,6 +226,8 @@ hr-artifact/
   public/hr-tts.js           ← ElevenLabs readback (loaded by the shim)
   public/hr-applicant-dedupe.js ← name keys + merge rules (shim + ingest)
   public/hr-recruit.js       ← Pipeline bulk import, consolidate, role filter, search, staff notes, application file (loaded by the shim)
+  public/hr-201-file.js      ← 201 profile “On file for this person”
+  public/hr-leave-numbers.js ← unique LRF / LV numbers + Renumber leave (shim + db)
   public/pwa.js              ← apple / manifest tags + viewport-fit
   public/pwa.css             ← mobile / safe-area overlay
   public/manifest.json

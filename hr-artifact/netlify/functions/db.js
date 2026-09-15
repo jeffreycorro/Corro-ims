@@ -10,6 +10,26 @@ const {
   setDoc,
 } = require("../lib/supabase");
 const { formatManilaIso } = require("../lib/manila");
+const leaveNumbers = require("../../public/hr-leave-numbers");
+
+function storeFromRows(rows) {
+  return leaveNumbers.rowsToStore(rows);
+}
+
+async function rejectDuplicateLeaveNumber(collection, id, data) {
+  if (!data || !data.no) return null;
+  if (collection !== "leaves" && collection !== "docreg") return null;
+  if (collection === "docreg" && !leaveNumbers.isLvDocreg(data)) return null;
+  const [leaveRows, regRows] = await Promise.all([
+    listCollection("leaves"),
+    listCollection("docreg"),
+  ]);
+  const stores = {
+    leaves: storeFromRows(leaveRows),
+    docreg: storeFromRows(regRows),
+  };
+  return leaveNumbers.conflictForWrite(collection, id, data, stores);
+}
 
 function snapshotFromRow(id, row) {
   if (!row) {
@@ -48,6 +68,23 @@ exports.handler = async (event) => {
       const { collection, id } = parsePath(body.path, body.id);
       if (body.data === undefined) {
         return json(400, { error: "data is required" });
+      }
+      let payload = body.data;
+      if (body.merge) {
+        const existing = await getDoc(collection, id);
+        payload = {
+          ...(existing && existing.data && typeof existing.data === "object"
+            ? existing.data
+            : {}),
+          ...body.data,
+        };
+      }
+      const conflict = await rejectDuplicateLeaveNumber(collection, id, payload);
+      if (conflict) {
+        return json(409, {
+          error: conflict.message,
+          code: leaveNumbers.DUP_CODE,
+        });
       }
       const row = await setDoc(collection, id, body.data, {
         merge: Boolean(body.merge),
