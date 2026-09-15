@@ -841,6 +841,7 @@
     loadCompanion("/hr-applicant-dedupe.js", "data-hr-applicant-dedupe");
     loadCompanion("/hr-recruit.js", "data-hr-recruit");
     loadCompanion("/hr-201-file.js", "data-hr-201-file");
+    loadCompanion("/hr-leave-numbers.js", "data-hr-leave-numbers");
   }
 
   var apiObj = {
