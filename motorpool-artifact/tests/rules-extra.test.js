@@ -116,6 +116,7 @@ describe("infer job and gates", () => {
     assert.deepEqual(masterList({ rows: [{ code: "Pardo" }] }, "projects"), [{ code: "Pardo" }]);
     assert.equal(asProject("  CTU Barili Vet Med ").code, "CTU Barili Vet Med");
     assert.equal(asProject({ name: "BFP San Remigio", status: "Active" }).code, "BFP San Remigio");
+    assert.equal(asProject({ code: "Old Road", archived: true }).status, "Archived");
     assert.deepEqual(photoOwnersForReserve({ no: "3", vrfNo: "5795", vrfs: ["5795"] }), [
       "RSV-3",
       "5795",
