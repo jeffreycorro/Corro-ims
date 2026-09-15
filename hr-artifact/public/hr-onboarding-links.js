@@ -3,9 +3,11 @@
  * Loaded by claude-shim.js.
  *
  * The artifact PROGRAMMES row is also updated, but a pasted Claude export
- * can bring the old Drive file back. This companion remaps that file id on
- * programme records, resource-library rows, and rendered links. Other role
- * orientation videos are left alone unless they literally share the same id.
+ * can bring an older Drive file back. This companion remaps those file ids
+ * (retired MP4 and the interim Transitions_1 file) to Corcondev Onboarding
+ * final 2026.mp4 on programme records, resource-library rows, and rendered
+ * links. Other role orientation videos are left alone unless they literally
+ * share one of those ids.
  *
  * Dynamically injected companions can run before function render / programme
  * exist. Poll until they do, then wrap render. Click capture rewrites leftover
@@ -22,7 +24,9 @@
   }
 
   var OLD_ID = "11wX350zj31ybmtagU9P8TTA71gIX2i3Y";
-  var NEW_ID = "1SaURmAToj3CiSpVYagFHXCtdq3A-z2_d";
+  var INTERIM_ID = "1SaURmAToj3CiSpVYagFHXCtdq3A-z2_d";
+  var NEW_ID = "1KjKPYMuDarowOeZauaVeronpXaMPTZV6";
+  var LEGACY_IDS = [OLD_ID, INTERIM_ID];
   var NEW_URL = "https://drive.google.com/file/d/" + NEW_ID + "/view";
   var OLD_NAME = "CORCONDEV Onboarding";
   var NEW_NAME = "CORCONDEV Onboarding (2026)";
@@ -35,10 +39,22 @@
   var observer = null;
   var pollTries = 0;
 
+  function hasLegacy(s) {
+    s = String(s == null ? "" : s);
+    var i;
+    for (i = 0; i < LEGACY_IDS.length; i += 1) {
+      if (s.indexOf(LEGACY_IDS[i]) !== -1) return true;
+    }
+    return false;
+  }
+
   function rewriteUrl(url) {
     var s = String(url == null ? "" : url);
-    if (s.indexOf(OLD_ID) === -1) return s;
-    return s.split(OLD_ID).join(NEW_ID);
+    var i;
+    for (i = 0; i < LEGACY_IDS.length; i += 1) {
+      if (s.indexOf(LEGACY_IDS[i]) !== -1) s = s.split(LEGACY_IDS[i]).join(NEW_ID);
+    }
+    return s;
   }
 
   function looksLikeOldName(name) {
@@ -63,7 +79,7 @@
     var i;
     for (i = 0; i < LINK_KEYS.length; i += 1) {
       var k = LINK_KEYS[i];
-      if (typeof obj[k] !== "string" || obj[k].indexOf(OLD_ID) === -1) continue;
+      if (typeof obj[k] !== "string" || !hasLegacy(obj[k])) continue;
       obj[k] = rewriteUrl(obj[k]);
       changed = true;
     }
@@ -143,7 +159,7 @@
   function rewriteName(el) {
     if (!el) return;
     var href = el.getAttribute ? String(el.getAttribute("href") || "") : "";
-    if (href.indexOf(OLD_ID) === -1 && href.indexOf(NEW_ID) === -1) return;
+    if (!hasLegacy(href) && href.indexOf(NEW_ID) === -1) return;
     var nodes = el.childNodes;
     var i;
     if (nodes && nodes.length) {
@@ -170,7 +186,7 @@
     var i;
     for (i = 0; i < names.length; i += 1) {
       var v = el.getAttribute(names[i]);
-      if (!v || String(v).indexOf(OLD_ID) === -1) continue;
+      if (!v || !hasLegacy(v)) continue;
       el.setAttribute(names[i], rewriteUrl(v));
       changed = true;
     }
@@ -317,6 +333,7 @@
   var api = {
     attached: false,
     OLD_FILE_ID: OLD_ID,
+    INTERIM_FILE_ID: INTERIM_ID,
     NEW_FILE_ID: NEW_ID,
     NEW_URL: NEW_URL,
     NEW_NAME: NEW_NAME,

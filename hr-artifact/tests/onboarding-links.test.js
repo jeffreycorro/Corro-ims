@@ -7,7 +7,8 @@ const path = require("path");
 const vm = require("node:vm");
 
 const OLD_ID = "11wX350zj31ybmtagU9P8TTA71gIX2i3Y";
-const NEW_ID = "1SaURmAToj3CiSpVYagFHXCtdq3A-z2_d";
+const INTERIM_ID = "1SaURmAToj3CiSpVYagFHXCtdq3A-z2_d";
+const NEW_ID = "1KjKPYMuDarowOeZauaVeronpXaMPTZV6";
 const NEW_URL = "https://drive.google.com/file/d/" + NEW_ID + "/view";
 const PURCHASER_ID = "1CN_GDRrLeF8ufXUncv4Qn4S227UMMXA5";
 const OE_ID = "1Pzt5aFR9seylgY_rLAmRkQpyYeFx2Bsi";
@@ -55,18 +56,22 @@ describe("hr-onboarding-links companion wiring", () => {
     assert.match(html, new RegExp('D_FILE\\("' + NEW_ID + '"\\)'));
     assert.match(html, /CORCONDEV Onboarding \(2026\)/);
     assert.doesNotMatch(html, new RegExp('D_FILE\\("' + OLD_ID + '"\\)'));
+    assert.doesNotMatch(html, new RegExp('D_FILE\\("' + INTERIM_ID + '"\\)'));
     assert.match(html, new RegExp('D_FILE\\("' + PURCHASER_ID + '"\\)'));
     assert.match(html, new RegExp('D_FILE\\("' + OE_ID + '"\\)'));
   });
 });
 
 describe("hr-onboarding-links rewriteUrl", () => {
-  it("replaces only the retired company onboarding Drive file id", () => {
+  it("replaces the retired and interim company onboarding Drive file ids", () => {
     const hr = loadLinks(bareWindow());
     assert.equal(hr.rewriteUrl("https://drive.google.com/file/d/" + OLD_ID + "/view"), NEW_URL);
+    assert.equal(hr.rewriteUrl("https://drive.google.com/file/d/" + INTERIM_ID + "/view"), NEW_URL);
     assert.equal(hr.rewriteUrl("https://drive.google.com/file/d/" + OLD_ID + "/preview"),
       "https://drive.google.com/file/d/" + NEW_ID + "/preview");
     assert.equal(hr.NEW_URL, NEW_URL);
+    assert.equal(hr.NEW_FILE_ID, NEW_ID);
+    assert.equal(hr.INTERIM_FILE_ID, INTERIM_ID);
   });
 
   it("leaves Purchaser and Office Engineer orientation videos alone", () => {
@@ -155,11 +160,11 @@ describe("hr-onboarding-links programme patch", () => {
     assert.equal(w.render.__hrOnboardingLinks, true);
   });
 
-  it("patches resource-library rows that still hold the old Drive id", () => {
+  it("patches resource-library rows that still hold a legacy Drive id", () => {
     const rec = {
       id: "r1",
       title: "CORCONDEV Onboarding",
-      link: "https://drive.google.com/file/d/" + OLD_ID + "/view",
+      link: "https://drive.google.com/file/d/" + INTERIM_ID + "/view",
     };
     const other = {
       id: "r2",
