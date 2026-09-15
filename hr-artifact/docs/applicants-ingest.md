@@ -74,11 +74,42 @@ curl -sS -X POST 'https://corcondev-hr.netlify.app/.netlify/functions/applicants
 ```json
 {
   "overwrite": false,
+  "forceNew": false,
   "applicants": [ { "name": "…", "…": "…" } ]
 }
 ```
 
 `overwrite` at the top level only applies to rows that also send an explicit `id`.
+
+`forceNew: true` (batch or per row) skips the name/email soft-dedupe and always creates a new applicant.
+
+## Soft-dedupe
+
+Without `forceNew`, a row that matches an existing applicant **updates that record** instead of creating another:
+
+1. Same email (if both sides have one), else
+2. Same normalized name (case, punctuation, diacritics, `Last, First` vs `First Last`, middle initials dropped) when emails do not conflict
+
+The update keeps the **earliest** `appliedOn`, the **furthest** stage, prefers non-empty email / mobile / resumeLink / roleId, and appends a re-application note plus a `history` entry. Same-name rows with **different** emails are treated as different people (ingest has no confirm step).
+
+This is why a second GoDaddy load of the same inbox should not multiply Pipeline rows.
+
+## One-shot cleanup of rows already duplicated
+
+The ingest guard only stops **new** copies. Rows already on live (the May/July/August Tristan / Cañete / Dela Cerna / Barrios copies) need one pass in the UI after this deploy:
+
+1. Open [https://corcondev-hr.netlify.app](https://corcondev-hr.netlify.app) and sign in.
+2. Go to **Recruitment → Pipeline**.
+3. If copies remain, **Consolidate duplicates (N)** appears next to **Log an applicant** / **Bulk import JSON**.
+4. Open it. Groups with the same normalized name and the same (or blank) role are ticked as **auto-safe**. Groups with different roles, different emails, or an extra middle name (e.g. Luisa vs Luisa Mae) stay unticked — only tick those if they are one person.
+5. Click **Merge selected**. Each merge keeps the earliest applied date, furthest stage, non-empty contact/CV fields, and combined notes; extra applicant documents are deleted.
+6. Refresh Pipeline: one row per person. Re-run the extractor if you want — it should update those rows, not add more.
+
+Do this once after deploy. You do not need a curl cleanup; the button writes through the same `applicants` collection the site already uses.
+
+On Pipeline, **Role** chips sit in the header row next to **Log an applicant** / **Bulk import JSON** (All roles, then each title — Procurement Officer, Project / Site Engineer, …). A search box in the same header filters as you type by applicant name, email, mobile, and position / role title. Search and the role chip apply together (AND). Stage groups stay; empty stages hide. Clear the search box (or its Clear button) to show every role-matching row again.
+
+On the applicant editor, a dated **Background check and observations** log sits under Internal notes. Add a background-check comment or an observation; earlier entries stay (they are not overwritten). Entries store on the applicant as `staffNotes` (`kind`, `text`, `on`, `by`) through the usual `put("applicants")`. This is separate from Internal notes and from the RFFI `background` employer-call list.
 
 ## Field map
 
@@ -100,6 +131,7 @@ curl -sS -X POST 'https://corcondev-hr.netlify.app/.netlify/functions/applicants
 | `stage` | no | `"Applied"` | Unknown values default to Applied (warning). |
 | `id` | no | new `a_…` id | Never overwrites an existing id unless `overwrite: true` on that row (or batch `overwrite` **and** an explicit `id`). |
 | `overwrite` | no | `false` | Requires an explicit `id`. |
+| `forceNew` | no | `false` | Create a new row even when the name/email already exists. |
 
 Each created record also gets empty `exams`, `interviews`, `history`, and `background` arrays so the pipeline editor can open it.
 
@@ -111,6 +143,7 @@ Persistence is the same as the artifact `put("applicants", id, data)` path (`doc
 {
   "ok": true,
   "created": [{ "id": "a_ab12cd34wxyz", "name": "Dela Cruz, Juan" }],
+  "updated": [{ "id": "a_existing", "name": "Sibonga, Tristan", "matchedBy": "name" }],
   "errors": [{ "index": 1, "error": "name is required" }],
   "timezone": "Asia/Manila",
   "serverTime": "2026-09-14T08:00:00+08:00"
@@ -118,8 +151,9 @@ Persistence is the same as the artifact `put("applicants", id, data)` path (`doc
 ```
 
 - HTTP **200** means the request was authenticated and parsed. `ok` is true only when every row succeeded.
-- Per-row failures go in `errors` (`index` is the position in `applicants`). Other rows still create.
-- A missing `roleId` match adds `warning` on that `created` item; the applicant is still stored.
+- New people land in `created`. Re-applications of someone already on file land in `updated` (`matchedBy` is `name` or `email`).
+- Per-row failures go in `errors` (`index` is the position in `applicants`). Other rows still create or update.
+- A missing `roleId` match adds `warning` on that `created` / `updated` item; the applicant is still stored.
 - HTTP **401** — no session and no valid ingest key.
 - HTTP **400** — not JSON, missing `applicants`, empty batch, or more than 100 rows.
 - HTTP **405** — not POST.

@@ -21,3 +21,6 @@ exports/
 # Dependencies / OS
 node_modules/
 .DS_Store
+
+# Local agent preview (not shipped)
+public/_agent-preview.html

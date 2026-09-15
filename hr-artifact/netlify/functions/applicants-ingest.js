@@ -1,7 +1,7 @@
 "use strict";
 
 const { json } = require("../lib/session");
-const { getDoc, setDoc } = require("../lib/supabase");
+const { getDoc, setDoc, listCollection } = require("../lib/supabase");
 const { formatManilaDate, formatManilaIso } = require("../lib/manila");
 const { createLimiter } = require("../lib/rate-limit");
 const {
@@ -19,6 +19,7 @@ const checkIngestLimit = createLimiter({
 function createHandler(deps = {}) {
   const load = deps.getDoc || getDoc;
   const save = deps.setDoc || setDoc;
+  const list = deps.listCollection || listCollection;
   const todayFn = deps.today || formatManilaDate;
 
   return async function handler(event) {
@@ -39,8 +40,10 @@ function createHandler(deps = {}) {
       const result = await ingestApplicants(parsed.applicants, {
         getDoc: load,
         setDoc: save,
+        listCollection: list,
         today: todayFn(),
         batchOverwrite: parsed.overwrite,
+        batchForceNew: parsed.forceNew,
       });
 
       return json(200, {
