@@ -14,6 +14,9 @@ const {
   workRefStates,
   checkOfficeHash,
   sha256hexSync,
+  masterList,
+  asProject,
+  photoOwnersForReserve,
 } = require("./lib/rules");
 const { TYPES } = require("./lib/worktypes");
 
@@ -66,7 +69,7 @@ describe("infer job and gates", () => {
     ]);
   });
 
-  it("fuel ask-approval is not blocked by a missing gauge photo", () => {
+  it("fuel ask-approval is not blocked by a missing gauge photo or reading", () => {
     assert.equal(fuelAskApprovalBlockedByPhoto(), false);
     assert.deepEqual(
       missingFuelApproveFields({
@@ -81,9 +84,7 @@ describe("infer job and gates", () => {
         gauge: "1/4",
       }).includes("Gauge photo")
     );
-    assert.ok(
-      missingFuelApproveFields({ kind: "fuel-issue", gauge: "" }).includes("Gauge level")
-    );
+    assert.deepEqual(missingFuelApproveFields({ kind: "fuel-issue", gauge: "" }), []);
   });
 
   it("bypass override skips approval and names who / when / unit / litres / reason", () => {
@@ -105,6 +106,19 @@ describe("infer job and gates", () => {
     assert.match(note, /40 L/);
     assert.match(note, /Emergency dispatch/);
     assert.match(note, /night pour/);
+  });
+
+  it("reads project masters from rows or projects[] and harvests reserve owners", () => {
+    assert.deepEqual(masterList({ projects: [{ code: "CTU Barili" }] }, "projects"), [
+      { code: "CTU Barili" },
+    ]);
+    assert.deepEqual(masterList({ rows: [{ code: "Pardo" }] }, "projects"), [{ code: "Pardo" }]);
+    assert.equal(asProject("  CTU Barili Vet Med ").code, "CTU Barili Vet Med");
+    assert.equal(asProject({ name: "BFP San Remigio", status: "Active" }).code, "BFP San Remigio");
+    assert.deepEqual(photoOwnersForReserve({ no: "3", vrfNo: "5795", vrfs: ["5795"] }), [
+      "RSV-3",
+      "5795",
+    ]);
   });
 
   it("office hash compare is hex-only and never stores plaintext", () => {

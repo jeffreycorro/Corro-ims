@@ -73,10 +73,63 @@ function requiresFullWrite(collection, id) {
   return collection === "config" && id === "app";
 }
 
+function sanitizeFilterField(field) {
+  return String(field || "").replace(/[^A-Za-z0-9_]/g, "");
+}
+
+function normalizeListFilters(raw) {
+  const out = [];
+  const list = Array.isArray(raw) ? raw.slice() : [];
+  if (raw && !Array.isArray(raw) && raw.field) list.push(raw);
+  list.forEach(function (f) {
+    if (!f || !f.field) return;
+    const field = sanitizeFilterField(f.field);
+    const rawOp = String(f.op || "eq");
+    const op = rawOp === "==" || rawOp === "eq" ? "eq" : rawOp === "like" ? "like" : "";
+    if (!field || !op) return;
+    out.push({ field, op, value: f.value == null ? "" : String(f.value) });
+  });
+  return out;
+}
+
+function listFilterQuery(filters) {
+  return normalizeListFilters(filters)
+    .map(function (f) {
+      const value = encodeURIComponent(f.value);
+      if (f.field === "id") return "&id=" + f.op + "." + value;
+      return "&data->>" + f.field + "=" + f.op + "." + value;
+    })
+    .join("");
+}
+
+function rowMatchesFilters(row, filters) {
+  return normalizeListFilters(filters).every(function (f) {
+    const data = row && row.data && typeof row.data === "object" ? row.data : {};
+    const actual = f.field === "id" ? String((row && row.id) || "") : data[f.field];
+    const have = actual == null ? "" : String(actual);
+    if (f.op === "like") {
+      const re = new RegExp(
+        "^" +
+          String(f.value)
+            .replace(/[.+?^${}()|[\]\\]/g, "\\$&")
+            .replace(/\*/g, ".*")
+            .replace(/%/g, ".*") +
+          "$"
+      );
+      return re.test(have);
+    }
+    return have === String(f.value);
+  });
+}
+
 module.exports = {
   ALLOWED_COLLECTIONS,
   assertCollection,
   isAllowedCollection,
+  listFilterQuery,
+  normalizeListFilters,
   parsePath,
   requiresFullWrite,
+  rowMatchesFilters,
+  sanitizeFilterField,
 };

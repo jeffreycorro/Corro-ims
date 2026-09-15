@@ -413,33 +413,63 @@
         };
       },
       collection: function (name) {
-        return {
-          get: function () {
-            return dbCall("list", { collection: name }).then(function (row) {
-              var docs = (row.docs || []).map(function (d) {
-                return makeDocSnap(d.id, d.data, d.exists);
-              });
-              return makeColSnap(docs);
-            }).catch(function (err) {
-              if (name === "builds") return makeColSnap([]);
-              throw err;
+        function applyWhere(docs, filters) {
+          return (docs || []).filter(function (doc) {
+            var data = (doc && typeof doc.data === "function" ? doc.data() : null) || {};
+            return (filters || []).every(function (f) {
+              var actual = f.field === "id" ? String((doc && doc.id) || "") : data[f.field];
+              var have = actual == null ? "" : String(actual);
+              var want = f.value == null ? "" : String(f.value);
+              if (f.op === "like") {
+                var re = new RegExp(
+                  "^" +
+                    want.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/%/g, ".*") +
+                    "$"
+                );
+                return re.test(have);
+              }
+              return have === want;
             });
-          },
-          onSnapshot: function (observer) {
-            var cancelled = false;
-            var cb = typeof observer === "function" ? observer : observer && observer.next;
-            this.get()
-              .then(function (snap) {
-                if (!cancelled && cb) cb(snap);
-              })
-              .catch(function (err) {
-                if (!cancelled && observer && observer.error) observer.error(err);
-              });
-            return function unsubscribe() {
-              cancelled = true;
-            };
-          },
-        };
+          });
+        }
+        function query(filters) {
+          return {
+            where: function (field, op, value) {
+              var next = filters.concat([
+                { field: String(field || ""), op: op === "==" ? "eq" : String(op || "eq"), value: value },
+              ]);
+              return query(next);
+            },
+            get: function () {
+              return dbCall("list", { collection: name, filters: filters })
+                .then(function (row) {
+                  var docs = (row.docs || []).map(function (d) {
+                    return makeDocSnap(d.id, d.data, d.exists);
+                  });
+                  return makeColSnap(applyWhere(docs, filters));
+                })
+                .catch(function (err) {
+                  if (name === "builds") return makeColSnap([]);
+                  throw err;
+                });
+            },
+            onSnapshot: function (observer) {
+              var cancelled = false;
+              var cb = typeof observer === "function" ? observer : observer && observer.next;
+              this.get()
+                .then(function (snap) {
+                  if (!cancelled && cb) cb(snap);
+                })
+                .catch(function (err) {
+                  if (!cancelled && observer && observer.error) observer.error(err);
+                });
+              return function unsubscribe() {
+                cancelled = true;
+              };
+            },
+          };
+        }
+        return query([]);
       },
     });
   }
