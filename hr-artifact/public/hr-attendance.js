@@ -170,6 +170,169 @@
     return x.trim();
   }
 
+  /* Cassie / HR: stop typing free-text reasons. Each pick is a type and
+     already flagged excused or not excused. "Other" keeps a note. */
+  var REASON_CATALOG = [
+    { k: "sick", n: "Sick / medical", g: "Health", excused: true, for: ["Absent", "Present/Late", "Undertime"] },
+    { k: "clinic", n: "Company clinic / check-up", g: "Health", excused: true, for: ["Absent", "Present/Late", "Undertime"] },
+    { k: "fit", n: "Fit-to-work / medical clearance", g: "Health", excused: true, for: ["Absent"] },
+    { k: "al", n: "Approved leave", g: "Approved leave", excused: true, for: ["Absent"] },
+    { k: "vl", n: "Vacation / SIL", g: "Approved leave", excused: true, for: ["Absent"] },
+    { k: "el", n: "Emergency leave", g: "Approved leave", excused: true, for: ["Absent"] },
+    { k: "bl", n: "Bereavement", g: "Approved leave", excused: true, for: ["Absent"] },
+    { k: "ml", n: "Maternity / paternity", g: "Approved leave", excused: true, for: ["Absent"] },
+    { k: "ob", n: "Official business", g: "Company", excused: true, for: ["Absent", "Present/Late", "Undertime"] },
+    { k: "assign", n: "Pulled to another site", g: "Company", excused: true, for: ["Absent", "Present/Late", "Undertime"] },
+    { k: "weather", n: "Weather / typhoon", g: "Company", excused: true, for: ["Absent", "Present/Late", "Undertime"] },
+    { k: "calamity", n: "Flood / calamity", g: "Company", excused: true, for: ["Absent", "Present/Late", "Undertime"] },
+    { k: "power", n: "Power / site shutdown", g: "Company", excused: true, for: ["Absent", "Undertime"] },
+    { k: "suspension", n: "Suspension", g: "Company", excused: false, for: ["Absent"] },
+    { k: "traffic", n: "Traffic", g: "Travel", excused: false, for: ["Present/Late", "Undertime"] },
+    { k: "transport", n: "No ride / transportation", g: "Travel", excused: false, for: ["Absent", "Present/Late", "Undertime"] },
+    { k: "family", n: "Family matter", g: "Personal", excused: false, for: ["Absent", "Present/Late", "Undertime"] },
+    { k: "personal", n: "Personal matter", g: "Personal", excused: false, for: ["Absent", "Present/Late", "Undertime"] },
+    { k: "oversleep", n: "Overslept", g: "Personal", excused: false, for: ["Present/Late"] },
+    { k: "left-early", n: "Left early — personal", g: "Personal", excused: false, for: ["Undertime"] },
+    { k: "awol", n: "AWOL / no call, no show", g: "Unexcused", excused: false, for: ["Absent"] },
+    { k: "nonotice", n: "Left without notice", g: "Unexcused", excused: false, for: ["Absent", "Undertime"] },
+    { k: "other", n: "Other", g: "Other", excused: false, for: ["Absent", "Present/Late", "Undertime"], other: true },
+  ];
+
+  var REASON_ALIASES = {
+    awol: "awol",
+    "no show": "awol",
+    "no call no show": "awol",
+    ncns: "awol",
+    sick: "sick",
+    sickness: "sick",
+    illness: "sick",
+    medical: "sick",
+    clinic: "clinic",
+    traffic: "traffic",
+    "official business": "ob",
+    ob: "ob",
+    "approved leave": "al",
+    vacation: "vl",
+    sil: "vl",
+    emergency: "el",
+    bereavement: "bl",
+    overslept: "oversleep",
+    oversleep: "oversleep",
+    "no ride": "transport",
+    transportation: "transport",
+    transport: "transport",
+    typhoon: "weather",
+    weather: "weather",
+    flood: "calamity",
+    calamity: "calamity",
+    suspension: "suspension",
+    personal: "personal",
+    "family emergency": "family",
+    family: "family",
+  };
+
+  function statusNeedsReason(st) {
+    return st === "Absent" || st === "Present/Late" || st === "Undertime";
+  }
+
+  function foldReason(s) {
+    return String(s || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function reasonByKey(k) {
+    var key = String(k || "");
+    var i;
+    for (i = 0; i < REASON_CATALOG.length; i++) {
+      if (REASON_CATALOG[i].k === key) return REASON_CATALOG[i];
+    }
+    return null;
+  }
+
+  function reasonsForStatus(st) {
+    return REASON_CATALOG.filter(function (r) {
+      return !r.for || !r.for.length || r.for.indexOf(st) >= 0;
+    });
+  }
+
+  function matchReasonKey(status, text) {
+    var t = foldReason(text);
+    if (!t) return "";
+    var list = status ? reasonsForStatus(status) : REASON_CATALOG.slice();
+    if (!list.some(function (r) { return r.k === "other"; })) {
+      var other = reasonByKey("other");
+      if (other) list = list.concat([other]);
+    }
+    var i;
+    for (i = 0; i < list.length; i++) {
+      if (list[i].k === t || foldReason(list[i].n) === t) return list[i].k;
+    }
+    for (i = 0; i < list.length; i++) {
+      var n = foldReason(list[i].n);
+      if (n && n !== "other" && t.indexOf(n) === 0) return list[i].k;
+    }
+    if (REASON_ALIASES[t]) return REASON_ALIASES[t];
+    var keys = Object.keys(REASON_ALIASES);
+    for (i = 0; i < keys.length; i++) {
+      if (t.indexOf(keys[i]) === 0 && keys[i].length >= 4) return REASON_ALIASES[keys[i]];
+    }
+    return "";
+  }
+
+  function reasonLabel(key, fallback) {
+    var spec = reasonByKey(key);
+    if (spec && spec.k !== "other") return spec.n;
+    return fallback || (spec ? spec.n : "") || "";
+  }
+
+  function catalogExcuse(row, status, reason) {
+    row = row || {};
+    reason = reason != null ? reason : row.r || row.reason || "";
+    status = status || row.s || row.status || "";
+    var key = row.rk || matchReasonKey(status, reason);
+    var spec = reasonByKey(key);
+    var flagged;
+    if (row.ex != null && row.ex !== "") flagged = Number(row.ex) ? 1 : 0;
+    else if (spec && spec.k !== "other") flagged = spec.excused ? 1 : 0;
+    else flagged = null;
+    if (flagged !== 1) return null;
+    return {
+      kind: "reason",
+      key: key || "",
+      label: (spec && spec.n) || reason || "excused",
+      paid: false,
+    };
+  }
+
+  function applyReasonFields(row, status) {
+    row = row || {};
+    status = status || row.s || row.status || "";
+    var text = row.r != null ? row.r : row.reason || "";
+    var key = row.rk || matchReasonKey(status, text);
+    if (key) {
+      row.rk = key;
+      var spec = reasonByKey(key);
+      if (spec && spec.k !== "other" && (row.r == null || row.r === "" || foldReason(row.r) === foldReason(spec.n))) {
+        row.r = spec.n;
+      }
+      if (row.ex == null || row.ex === "") {
+        if (spec && spec.k !== "other") row.ex = spec.excused ? 1 : 0;
+      } else {
+        row.ex = Number(row.ex) ? 1 : 0;
+      }
+    }
+    return row;
+  }
+
+  function dailyRowOf(empId, date, ctx) {
+    ctx = ctx || defaultCtx();
+    var rec = ctx.daily && ctx.daily[dailyId(date)];
+    return (rec && rec.rows && rec.rows[empId]) || null;
+  }
+
   function parseManpower(text) {
     var flat = String(text || "").replace(/\s+/g, " ");
     var starts = [];
@@ -336,6 +499,10 @@
 
   function absenceExcuse(empId, date, reason, ctx) {
     ctx = ctx || defaultCtx();
+    var row = dailyRowOf(empId, date, ctx);
+    if (reason == null || reason === "") {
+      reason = (row && (row.r || row.reason)) || "";
+    }
     var l = leaveCovers(empId, date, ctx);
     if (l) {
       return {
@@ -347,40 +514,54 @@
       };
     }
     var ref = citedLeaveRef(reason, ctx);
-    if (!ref) return null;
-    var saysSo =
-      reportSaysApproved(reason) ||
-      !!lrfIndex(ctx).approved[empId + "|" + String(parseInt(ref.seq, 10))];
-    if (!saysSo) return null;
-    var rec = null;
-    Object.keys(ctx.leaves || {}).some(function (k) {
-      var x = ctx.leaves[k];
-      if (x && x.no && sameLeaveNo(x.no, ref.no)) {
-        rec = x;
-        return true;
+    if (ref) {
+      var saysSo =
+        reportSaysApproved(reason) ||
+        !!lrfIndex(ctx).approved[empId + "|" + String(parseInt(ref.seq, 10))];
+      if (saysSo) {
+        var rec = null;
+        Object.keys(ctx.leaves || {}).some(function (k) {
+          var x = ctx.leaves[k];
+          if (x && x.no && sameLeaveNo(x.no, ref.no)) {
+            rec = x;
+            return true;
+          }
+          return false;
+        });
+        if (rec && (rec.status === "Approved" || rec.status === "Availed")) {
+          return {
+            kind: "register",
+            leave: rec,
+            no: rec.no,
+            label: "approved leave on file",
+            paid: leaveIsPaid(rec, ctx),
+          };
+        }
+        return {
+          kind: "report",
+          ref: ref,
+          no: ref.no,
+          record: rec || null,
+          wrapped: !reportSaysApproved(reason),
+          paid: false,
+          label: rec
+            ? "the report cites " + ref.no + ", and that leave is still " + (rec.status || "unapproved")
+            : "the report says approved leave " + ref.no + " — not yet in the leave register",
+        };
       }
-      return false;
-    });
-    if (rec && (rec.status === "Approved" || rec.status === "Availed")) {
-      return {
-        kind: "register",
-        leave: rec,
-        no: rec.no,
-        label: "approved leave on file",
-        paid: leaveIsPaid(rec, ctx),
-      };
     }
-    return {
-      kind: "report",
-      ref: ref,
-      no: ref.no,
-      record: rec || null,
-      wrapped: !reportSaysApproved(reason),
-      paid: false,
-      label: rec
-        ? "the report cites " + ref.no + ", and that leave is still " + (rec.status || "unapproved")
-        : "the report says approved leave " + ref.no + " — not yet in the leave register",
-    };
+    if (reportSaysNotFiled(reason)) return null;
+    return catalogExcuse(row, "Absent", reason);
+  }
+
+  function rowExcuse(empId, date, row, ctx) {
+    ctx = ctx || defaultCtx();
+    row = row || dailyRowOf(empId, date, ctx) || {};
+    var raw = row.s || row.status || "";
+    var reason = row.r || row.reason || "";
+    if (raw === "Absent") return absenceExcuse(empId, date, reason, ctx);
+    if (reportSaysNotFiled(reason)) return null;
+    return catalogExcuse(row, raw, reason);
   }
 
   function effectiveStatus(empId, date, raw, reason, ctx) {
@@ -678,8 +859,9 @@
       if (!row) return;
       allDates.push(rec.date);
       var st = effectiveStatus(empId, rec.date, row.s, row.r, ctx);
-      if (st === "Present/Late") lates.push(rec.date);
-      if (st === "Absent") absents.push(rec.date);
+      var excuse = rowExcuse(empId, rec.date, row, ctx);
+      if (st === "Present/Late" && !excuse) lates.push(rec.date);
+      if (st === "Absent" && !excuse) absents.push(rec.date);
     });
     allDates.sort();
     absents.sort();
@@ -838,6 +1020,11 @@
     } else if (prev.day != null) next.day = prev.day;
     if (incoming.hol != null) next.hol = !!incoming.hol;
     else if (prev.hol != null) next.hol = prev.hol;
+    if (incoming.rk != null && incoming.rk !== "") next.rk = incoming.rk;
+    else if (prev.rk != null) next.rk = prev.rk;
+    if (incoming.ex != null && incoming.ex !== "") next.ex = Number(incoming.ex) ? 1 : 0;
+    else if (prev.ex != null && prev.ex !== "") next.ex = Number(prev.ex) ? 1 : 0;
+    applyReasonFields(next, next.s);
     return next;
   }
 
@@ -1018,6 +1205,17 @@
     importAttendanceJson: importAttendanceJson,
     applyPayrollDaysToAttendance: applyPayrollDaysToAttendance,
     payrollMustNotOverride: payrollMustNotOverride,
+    REASON_CATALOG: REASON_CATALOG,
+    statusNeedsReason: statusNeedsReason,
+    reasonByKey: reasonByKey,
+    reasonsForStatus: reasonsForStatus,
+    matchReasonKey: matchReasonKey,
+    reasonLabel: reasonLabel,
+    catalogExcuse: catalogExcuse,
+    applyReasonFields: applyReasonFields,
+    rowExcuse: rowExcuse,
+    collectReasonFromUi: collectReasonFromUi,
+    mergeDayRow: mergeDayRow,
     empSeparatedAsOf: empSeparatedAsOf,
     firstAttendanceDate: firstAttendanceDate,
     firstAttendanceIndex: firstAttendanceIndex,
@@ -1059,7 +1257,15 @@
       ".hr-att-paste textarea{min-height:220px;font-family:var(--f-mono,ui-monospace,monospace);font-size:12px}" +
       ".hr-att-q{min-height:40px;min-width:180px}" +
       ".hr-att-door .btn{min-height:40px}" +
-      "@media (max-width:980px){.hr-att-door .btn,.hr-att-hol{min-height:44px}}";
+      ".hr-att-reason{display:flex;flex-direction:column;gap:4px;min-width:150px}" +
+      ".hr-att-reason select,.hr-att-reason input{width:100%;min-height:40px;padding:3px 6px;border:1px solid var(--line2,#d5d5d0);border-radius:4px;background:var(--surface,#fff);font-size:12px}" +
+      ".hr-att-reason[data-open='0']{opacity:.55}" +
+      ".hr-att-reason .hr-att-reason-note{display:none}" +
+      ".hr-att-reason[data-other='1'] .hr-att-reason-note{display:block}" +
+      ".hr-att-reason .hr-att-expick{display:none}" +
+      ".hr-att-reason[data-other='1'] .hr-att-expick{display:block}" +
+      ".hr-att-reason .hr-att-ex{align-self:flex-start}" +
+      "@media (max-width:980px){.hr-att-door .btn,.hr-att-hol,.hr-att-reason select,.hr-att-reason input{min-height:44px}}";
     (document.head || document.documentElement).appendChild(style);
   }
 
@@ -1664,6 +1870,166 @@
     }
   }
 
+  function collectReasonFromUi(id, row) {
+    row = row || {};
+    var pick = typeof document !== "undefined"
+      ? document.querySelector('[data-dmrk="' + id + '"]')
+      : null;
+    var note = typeof document !== "undefined"
+      ? document.querySelector('[data-dmr="' + id + '"]')
+      : null;
+    var exEl = typeof document !== "undefined"
+      ? document.querySelector('[data-dmexpick="' + id + '"]')
+      : null;
+    var key = pick ? String(pick.value || "") : row.rk || "";
+    var spec = reasonByKey(key);
+    var text = note ? String(note.value || "") : row.r || row.reason || "";
+    if (spec && spec.k !== "other") text = spec.n;
+    var ex;
+    if (spec && spec.k !== "other") ex = spec.excused ? 1 : 0;
+    else if (exEl && exEl.value !== "") ex = Number(exEl.value) ? 1 : 0;
+    else if (row.ex != null && row.ex !== "") ex = Number(row.ex) ? 1 : 0;
+    else ex = null;
+    var out = { r: text, rk: key, ex: ex };
+    applyReasonFields(out, row.s || row.status || "");
+    return out;
+  }
+
+  function fillReasonOptions(pick, status, row, typed) {
+    if (!pick) return;
+    var list = reasonsForStatus(status);
+    var key = (row && row.rk) || matchReasonKey(status, typed);
+    if (!key && typed) key = "other";
+    var groups = [];
+    var seen = {};
+    list.forEach(function (r) {
+      if (!seen[r.g]) {
+        seen[r.g] = true;
+        groups.push(r.g);
+      }
+    });
+    var html = '<option value="">— pick a reason —</option>';
+    groups.forEach(function (g) {
+      html += '<optgroup label="' + esc(g) + '">';
+      list.forEach(function (r) {
+        if (r.g !== g) return;
+        html +=
+          '<option value="' +
+          esc(r.k) +
+          '"' +
+          (r.k === key ? " selected" : "") +
+          ">" +
+          esc(r.n) +
+          (r.excused ? " · excused" : " · not excused") +
+          "</option>";
+      });
+      html += "</optgroup>";
+    });
+    pick.innerHTML = html;
+    if (key) pick.value = key;
+  }
+
+  function syncReasonChrome(id) {
+    if (typeof document === "undefined") return;
+    var wrap = document.querySelector('[data-dmreason="' + id + '"]');
+    var pick = document.querySelector('[data-dmrk="' + id + '"]');
+    var note = document.querySelector('[data-dmr="' + id + '"]');
+    var pill = document.querySelector('[data-dmex="' + id + '"]');
+    var exEl = document.querySelector('[data-dmexpick="' + id + '"]');
+    var sel = document.querySelector('[data-dms="' + id + '"]');
+    if (!wrap || !pick) return;
+    var status = sel ? sel.value : "";
+    var need = statusNeedsReason(status);
+    wrap.setAttribute("data-open", need ? "1" : "0");
+    pick.disabled = !need;
+    var key = pick.value || "";
+    var spec = reasonByKey(key);
+    var other = !!(spec && spec.other) || (!key && need && note && note.value);
+    wrap.setAttribute("data-other", other ? "1" : "0");
+    if (note) {
+      note.className = String(note.className || "").replace(/\bhr-att-reason-note\b/g, "").trim() + " hr-att-reason-note";
+      if (spec && spec.k !== "other") note.value = spec.n;
+      note.placeholder = other ? "Type the reason" : "Pick a reason";
+    }
+    var excused;
+    if (spec && spec.k !== "other") excused = spec.excused;
+    else if (exEl && exEl.value !== "") excused = Number(exEl.value) === 1;
+    else excused = null;
+    if (pill) {
+      if (!need || (!key && !(note && note.value))) {
+        pill.textContent = need ? "Needs a reason" : "";
+        pill.className = "pill mut hr-att-ex";
+        pill.style.display = need ? "" : "none";
+      } else if (excused) {
+        pill.textContent = "Excused";
+        pill.className = "pill ok hr-att-ex";
+        pill.style.display = "";
+      } else {
+        pill.textContent = "Not excused";
+        pill.className = "pill crit hr-att-ex";
+        pill.style.display = "";
+      }
+    }
+  }
+
+  function enhanceDailyReasons() {
+    if (typeof document === "undefined") return;
+    document.querySelectorAll("#view [data-dmr]").forEach(function (inp) {
+      if (inp.getAttribute("data-hr-reason") === "1") return;
+      var id = inp.getAttribute("data-dmr");
+      if (!id) return;
+      inp.setAttribute("data-hr-reason", "1");
+      var td = inp.closest ? inp.closest("td") : inp.parentNode;
+      var tr = inp.closest ? inp.closest("tr") : null;
+      var sel = tr && tr.querySelector ? tr.querySelector("[data-dms]") : document.querySelector('[data-dms="' + id + '"]');
+      var rec = typeof root.dailyGet === "function"
+        ? root.dailyGet((root.S && root.S.ui && root.S.ui.dailyDate) || root.TODAY)
+        : null;
+      var row = rec && rec.rows && rec.rows[id];
+      var wrap = document.createElement("div");
+      wrap.className = "hr-att-reason";
+      wrap.setAttribute("data-dmreason", id);
+      if (inp.parentNode) inp.parentNode.insertBefore(wrap, inp);
+      wrap.appendChild(inp);
+      var pick = document.createElement("select");
+      pick.setAttribute("data-dmrk", id);
+      pick.title = "Reason type — each pick is already excused or not excused";
+      wrap.insertBefore(pick, inp);
+      var pill = document.createElement("span");
+      pill.setAttribute("data-dmex", id);
+      pill.className = "pill mut hr-att-ex";
+      wrap.appendChild(pill);
+      var exEl = document.createElement("select");
+      exEl.setAttribute("data-dmexpick", id);
+      exEl.className = "hr-att-expick";
+      exEl.title = "For Other: mark excused or not excused";
+      exEl.innerHTML =
+        '<option value="0"' +
+        (row && Number(row.ex) === 1 ? "" : " selected") +
+        ">Other — not excused</option>" +
+        '<option value="1"' +
+        (row && Number(row.ex) === 1 ? " selected" : "") +
+        ">Other — excused</option>";
+      wrap.appendChild(exEl);
+      fillReasonOptions(pick, sel ? sel.value : "", row, inp.value);
+      if (row && row.ex != null) exEl.value = Number(row.ex) ? "1" : "0";
+      syncReasonChrome(id);
+      pick.addEventListener("change", function () { syncReasonChrome(id); });
+      exEl.addEventListener("change", function () { syncReasonChrome(id); });
+      inp.addEventListener("input", function () { syncReasonChrome(id); });
+      if (sel && !sel.__hrAttReason) {
+        sel.__hrAttReason = true;
+        sel.addEventListener("change", function () {
+          var cur = document.querySelector('[data-dmrk="' + id + '"]');
+          var note = document.querySelector('[data-dmr="' + id + '"]');
+          fillReasonOptions(cur, sel.value, row, note ? note.value : "");
+          syncReasonChrome(id);
+        });
+      }
+      if (td) td.title = "Pick a reason type. Excused or not excused is set on the type; Other can go either way.";
+    });
+  }
+
   function wrapDailyCollect() {
     if (typeof root.dailyCollect !== "function" || root.dailyCollect.__hrAtt) return;
     var orig = root.dailyCollect;
@@ -1698,6 +2064,10 @@
         var tout = document.querySelector('[data-dmout="' + id + '"]');
         if (tin) rec.rows[id].in = tin.value;
         if (tout) rec.rows[id].out = tout.value;
+        var collected = collectReasonFromUi(id, rec.rows[id]);
+        rec.rows[id].r = collected.r;
+        rec.rows[id].rk = collected.rk;
+        if (collected.ex != null) rec.rows[id].ex = collected.ex;
       });
       return rec;
     };
@@ -1797,6 +2167,7 @@
     injectInsightsSummary();
     injectAttendanceNote();
     enhanceDailyHolColumn();
+    enhanceDailyReasons();
     wrapDailySaveTimes();
   }
 

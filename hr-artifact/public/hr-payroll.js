@@ -1144,6 +1144,151 @@
     return list;
   }
 
+  function todayISO() {
+    if (typeof root.TODAY === "string" && root.TODAY) return root.TODAY;
+    if (root.hrAttendance && typeof root.hrAttendance.manilaToday === "function") {
+      return root.hrAttendance.manilaToday();
+    }
+    return isoDate(new Date());
+  }
+
+  function liveAttendanceIndex(S) {
+    S = S || store();
+    if (root.hrAttendance && typeof root.hrAttendance.firstAttendanceIndex === "function") {
+      return root.hrAttendance.firstAttendanceIndex({
+        daily: S.daily || {},
+        employees: S.employees || {},
+      });
+    }
+    var map = {};
+    Object.keys(S.daily || {}).forEach(function (id) {
+      var rec = S.daily[id];
+      if (!rec) return;
+      Object.keys(rec.rows || {}).forEach(function (empId) {
+        if (!map[empId] || (rec.date && rec.date < map[empId])) map[empId] = rec.date || "";
+      });
+      (rec.extra || []).forEach(function (empId) {
+        if (!map[empId] || (rec.date && rec.date < map[empId])) map[empId] = rec.date || "";
+      });
+    });
+    return map;
+  }
+
+  function ensureEmpRate(e, today) {
+    if (!e) return e;
+    today = today || todayISO();
+    var rate = Number(e.dailyRate) || 0;
+    if ((!e.rates || !e.rates.length) && rate) {
+      e.rates = [{
+        rate: rate,
+        rateType: e.rateType || "Daily",
+        allowance: Number(e.allowance) || 0,
+        from: e.dateHired || today,
+        source: "on the employee record",
+        on: today,
+      }];
+    }
+    return e;
+  }
+
+  function markOnPeoplePay(e, source) {
+    if (!e || e.status === "Separated") return e;
+    var today = todayISO();
+    if (!e.rosterConfirmed) e.rosterConfirmed = today;
+    ensureEmpRate(e, today);
+    if (source && !e.payIncludedFrom) e.payIncludedFrom = source;
+    return e;
+  }
+
+  function mergePeoplePay(standing, S) {
+    S = S || store();
+    var first = liveAttendanceIndex(S);
+    var have = {};
+    var list = [];
+    (standing || []).forEach(function (e) {
+      if (!e || !e.id || have[e.id] || e.status === "Separated") return;
+      have[e.id] = true;
+      ensureEmpRate(e);
+      list.push(e);
+    });
+    Object.keys(S.employees || {}).forEach(function (id) {
+      var e = S.employees[id];
+      if (!e || have[id] || e.status === "Separated") return;
+      if (e.rosterConfirmed || first[id]) {
+        ensureEmpRate(e);
+        list.push(e);
+      }
+    });
+    list.sort(function (a, b) {
+      var an = String(a.empNo || "").replace(/[^0-9]/g, "");
+      var bn = String(b.empNo || "").replace(/[^0-9]/g, "");
+      if (!!an !== !!bn) return an ? -1 : 1;
+      return an ? an.localeCompare(bn) : String(a.name || "").localeCompare(String(b.name || ""));
+    });
+    return list;
+  }
+
+  function peopleAndPayList(S) {
+    S = S || store();
+    var standing = [];
+    var orig = typeof root.atWork === "function"
+      ? (root.atWork.__hrPayOrig || (!root.atWork.__hrPayPeople && root.atWork))
+      : null;
+    if (orig) {
+      try {
+        standing = orig.call(root) || [];
+      } catch (err) {
+        standing = [];
+      }
+    }
+    return mergePeoplePay(standing, S);
+  }
+
+  function adoptNewEmployee(obj, id) {
+    if (!obj || obj.status === "Separated") return obj;
+    var key = id || obj.id || "";
+    /* Seeded 201s are e1250; a hand-added 201 or hire is uid("e") → e_…. */
+    if (!obj.rosterConfirmed && /^e_/.test(String(key))) markOnPeoplePay(obj, "201");
+    else ensureEmpRate(obj);
+    return obj;
+  }
+
+  function adoptDailyPeople(rec, putFn) {
+    if (!rec) return;
+    var S = store();
+    var ids = (rec.extra || []).slice();
+    Object.keys(rec.rows || {}).forEach(function (id) {
+      if (ids.indexOf(id) < 0) ids.push(id);
+    });
+    ids.forEach(function (empId) {
+      var e = S.employees && S.employees[empId];
+      if (!e || e.status === "Separated" || e.rosterConfirmed) return;
+      var parked = false;
+      if (typeof root.parkedIds === "function") {
+        try {
+          var set = root.parkedIds();
+          parked = !!(set && (set.has ? set.has(empId) : set[empId]));
+        } catch (err) {
+          parked = false;
+        }
+      }
+      if (!parked && !(rec.extra || []).some(function (x) { return x === empId; })) return;
+      var c = JSON.parse(JSON.stringify(e));
+      markOnPeoplePay(c, "attendance");
+      S.employees[c.id] = c;
+      if (typeof putFn === "function") putFn.call(root, "employees", c.id, c);
+    });
+  }
+
+  api.peopleForKind = peopleForKind;
+  api.peopleAndPayList = peopleAndPayList;
+  api.mergePeoplePay = mergePeoplePay;
+  api.ensureEmpRate = ensureEmpRate;
+  api.markOnPeoplePay = markOnPeoplePay;
+  api.liveAttendanceIndex = liveAttendanceIndex;
+  api.adoptNewEmployee = adoptNewEmployee;
+  api.adoptDailyPeople = adoptDailyPeople;
+
   function buildLine(e, kind, from, to, saved, ctx, settings) {
     var rate = payRate(e, kind);
     var tally = tallyPersonPeriod(e.id, from, to, ctx);
@@ -2648,8 +2793,11 @@
     if (typeof root.put === "function" && !root.put.__hrPay) {
       var orig = root.put;
       root.put = function (coll, id, obj) {
+        if (coll === "employees" && obj) adoptNewEmployee(obj, id);
         if (coll === "daily" && obj) stampDailyLog(obj, id);
-        return orig.apply(this, arguments);
+        var out = orig.apply(this, arguments);
+        if (coll === "daily" && obj) adoptDailyPeople(obj, orig);
+        return out;
       };
       root.put.__hrPay = true;
     }
@@ -2665,6 +2813,27 @@
       };
       root.putMany.__hrPay = true;
     }
+  }
+
+  function wrapAtWork() {
+    if (typeof root.atWork !== "function" || root.atWork.__hrPayPeople) return;
+    var orig = root.atWork;
+    root.atWork = function () {
+      var list = orig.apply(this, arguments) || [];
+      return mergePeoplePay(list, store());
+    };
+    root.atWork.__hrPayPeople = true;
+    root.atWork.__hrPayOrig = orig;
+  }
+
+  function wrapViewSalaries() {
+    if (typeof root.viewSalaries !== "function" || root.viewSalaries.__hrPayPeople) return;
+    var orig = root.viewSalaries;
+    root.viewSalaries = function () {
+      wrapAtWork();
+      return orig.apply(this, arguments);
+    };
+    root.viewSalaries.__hrPayPeople = true;
   }
 
   function wrapDailySaveWarn() {
@@ -2757,6 +2926,8 @@
     injectDailyExtras();
     injectAnalyticsEdits();
     wrapDailySaveWarn();
+    wrapAtWork();
+    wrapViewSalaries();
     var S = store();
     var view = S.ui && S.ui.view;
     if (view === "paymaker") wirePayMaker();
@@ -2821,6 +2992,8 @@
     bindStore();
     wrapDailyCollect();
     wrapPut();
+    wrapAtWork();
+    wrapViewSalaries();
     wrapRender();
     wrapNavClicks();
     if (typeof document !== "undefined") {

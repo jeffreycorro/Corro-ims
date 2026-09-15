@@ -598,6 +598,111 @@ describe("manpower attendance core", () => {
   });
 });
 
+describe("attendance reason types", () => {
+  let hr;
+  let S;
+
+  beforeEach(() => {
+    const windowLike = { window: {}, document: undefined };
+    windowLike.window = windowLike;
+    hr = loadAttendance(windowLike);
+    S = stores();
+  });
+
+  it("catalogues absence / late / undertime picks with an excused flag", () => {
+    assert.ok(hr.REASON_CATALOG.length >= 10);
+    assert.ok(hr.REASON_CATALOG.every((r) => typeof r.excused === "boolean"));
+    assert.ok(hr.statusNeedsReason("Absent"));
+    assert.ok(hr.statusNeedsReason("Present/Late"));
+    assert.ok(hr.statusNeedsReason("Undertime"));
+    assert.equal(hr.statusNeedsReason("Present"), false);
+    const late = hr.reasonsForStatus("Present/Late");
+    assert.ok(late.some((r) => r.k === "traffic" && r.excused === false));
+    assert.ok(late.some((r) => r.k === "ob" && r.excused === true));
+    assert.ok(late.some((r) => r.k === "other"));
+    const absent = hr.reasonsForStatus("Absent");
+    assert.ok(absent.some((r) => r.k === "sick" && r.excused === true));
+    assert.ok(absent.some((r) => r.k === "awol" && r.excused === false));
+  });
+
+  it("matches imported free-text onto a pick", () => {
+    assert.equal(hr.matchReasonKey("Present/Late", "traffic"), "traffic");
+    assert.equal(hr.matchReasonKey("Absent", "AWOL"), "awol");
+    assert.equal(hr.matchReasonKey("Absent", "Sick / medical"), "sick");
+    assert.equal(hr.matchReasonKey("Absent", "Approved Leave (LRF2026 - 0123)"), "al");
+    assert.equal(hr.matchReasonKey("Present/Late", ""), "");
+  });
+
+  it("excuses a catalog sick day and leaves AWOL unexcused", () => {
+    const ctx = ctxFrom(S);
+    S.daily.d20260829 = {
+      id: "d20260829",
+      date: "2026-08-29",
+      rows: {
+        e1353: { s: "Absent", r: "Sick / medical", rk: "sick", ex: 1 },
+        e1250: { s: "Absent", r: "AWOL / no call, no show", rk: "awol", ex: 0 },
+      },
+    };
+    assert.equal(hr.effectiveStatus("e1353", "2026-08-29", "Absent", "Sick / medical", ctx), "Leave");
+    const sick = hr.absenceExcuse("e1353", "2026-08-29", "Sick / medical", ctx);
+    assert.equal(sick.kind, "reason");
+    assert.equal(sick.key, "sick");
+    assert.equal(hr.effectiveStatus("e1250", "2026-08-29", "Absent", "AWOL / no call, no show", ctx), "Absent");
+    assert.equal(hr.absenceExcuse("e1250", "2026-08-29", "AWOL / no call, no show", ctx), null);
+  });
+
+  it("Other can be flagged excused without a leave form", () => {
+    const ctx = ctxFrom(S);
+    S.daily.d20260829 = {
+      id: "d20260829",
+      date: "2026-08-29",
+      rows: { e1353: { s: "Absent", r: "barangay meeting", rk: "other", ex: 1 } },
+    };
+    const excuse = hr.rowExcuse("e1353", "2026-08-29", S.daily.d20260829.rows.e1353, ctx);
+    assert.ok(excuse);
+    assert.equal(excuse.kind, "reason");
+    assert.equal(hr.effectiveStatus("e1353", "2026-08-29", "Absent", "barangay meeting", ctx), "Leave");
+  });
+
+  it("does not count an excused late toward an NTE strand", () => {
+    S.daily.d20260824 = {
+      id: "d20260824",
+      date: "2026-08-24",
+      rows: { e1353: { s: "Present/Late", r: "Official business", rk: "ob", ex: 1 } },
+    };
+    S.daily.d20260825 = {
+      id: "d20260825",
+      date: "2026-08-25",
+      rows: { e1353: { s: "Present/Late", r: "Traffic", rk: "traffic", ex: 0 } },
+    };
+    const ctx = ctxFrom(S);
+    const strands = hr.noticeStrands("e1353", ["2026-08"], ctx, { lateReminder: 1, lateNTE: 99 });
+    assert.equal(strands.lates.length, 1);
+    assert.equal(strands.lates[0], "2026-08-25");
+    assert.ok(strands.acts.some((a) => a.key === "late"));
+  });
+
+  it("keeps reason key and excused flag when merging a day row", () => {
+    const next = hr.mergeDayRow
+      ? hr.mergeDayRow({ s: "Absent", r: "old" }, { status: "Absent", reason: "Sick / medical", rk: "sick" })
+      : null;
+    if (!hr.mergeDayRow) {
+      const row = hr.applyReasonFields({ s: "Absent", r: "Sick / medical", rk: "sick" });
+      assert.equal(row.rk, "sick");
+      assert.equal(row.ex, 1);
+      return;
+    }
+    assert.equal(next.rk, "sick");
+    assert.equal(next.ex, 1);
+    assert.equal(next.r, "Sick / medical");
+  });
+
+  it("collects Other text plus the excused pick from the overlay", () => {
+    const got = hr.collectReasonFromUi("e1", { s: "Absent", r: "typed later" });
+    assert.equal(got.r, "typed later");
+  });
+});
+
 describe("hr-attendance companion wiring", () => {
   it("is loaded by the shim and not referenced from the artifact HTML", () => {
     const shim = fs.readFileSync(path.join(__dirname, "../public/claude-shim.js"), "utf8");
