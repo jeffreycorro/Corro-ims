@@ -717,6 +717,97 @@
     };
   }
 
+  /* Parked new hires are not on atWork() — Add someone puts them on that day's
+     extra only. Staff expect them to keep showing from that first day until
+     the 201 status is Separated. Use the existing status / separatedOn fields. */
+  function empSeparatedAsOf(e, date) {
+    if (!e || e.status !== "Separated") return false;
+    var on = isoDate(e.separatedOn);
+    if (!on) return true;
+    return on < isoDate(date);
+  }
+
+  function firstAttendanceIndex(ctx) {
+    ctx = ctx || defaultCtx();
+    var map = {};
+    Object.keys(ctx.daily || {}).forEach(function (id) {
+      var rec = ctx.daily[id];
+      if (!rec || !rec.date) return;
+      var d = isoDate(rec.date);
+      if (!d) return;
+      var seen = {};
+      Object.keys(rec.rows || {}).forEach(function (empId) {
+        seen[empId] = true;
+      });
+      (rec.extra || []).forEach(function (empId) {
+        seen[empId] = true;
+      });
+      Object.keys(seen).forEach(function (empId) {
+        if (!map[empId] || d < map[empId]) map[empId] = d;
+      });
+    });
+    return map;
+  }
+
+  function firstAttendanceDate(empId, ctx) {
+    if (!empId) return "";
+    return firstAttendanceIndex(ctx)[empId] || "";
+  }
+
+  function sortByEmpNo(a, b) {
+    return String((a && a.empNo) || "").localeCompare(String((b && b.empNo) || "")) ||
+      String((a && a.name) || "").localeCompare(String((b && b.name) || ""));
+  }
+
+  function standingEmployees(ctx) {
+    ctx = ctx || defaultCtx();
+    if (ctx.standing) return ctx.standing.slice();
+    if (typeof root.atWork === "function") {
+      try {
+        var live = root.atWork();
+        if (Array.isArray(live)) return live.slice();
+      } catch (e) {}
+    }
+    return Object.keys(ctx.employees || {})
+      .map(function (id) { return ctx.employees[id]; })
+      .filter(function (e) { return e && e.status !== "Separated"; });
+  }
+
+  function rosterPeopleForDay(rec, ctx) {
+    ctx = ctx || defaultCtx();
+    rec = rec || {};
+    var date = isoDate(rec.date);
+    var emps = ctx.employees || {};
+    if (rec.fixed) {
+      return Object.keys(rec.rows || {})
+        .map(function (id) { return emps[id]; })
+        .filter(Boolean)
+        .sort(sortByEmpNo);
+    }
+    var omit = {};
+    (rec.omit || []).forEach(function (id) { omit[id] = true; });
+    var have = {};
+    var list = [];
+    function add(e) {
+      if (!e || !e.id || have[e.id] || omit[e.id]) return;
+      have[e.id] = true;
+      list.push(e);
+    }
+    standingEmployees(ctx).forEach(add);
+    (rec.extra || []).forEach(function (id) { add(emps[id]); });
+    if (date) {
+      var first = firstAttendanceIndex(ctx);
+      Object.keys(emps).forEach(function (id) {
+        var e = emps[id];
+        var start = first[id];
+        if (!e || !start || start > date) return;
+        if (empSeparatedAsOf(e, date)) return;
+        add(e);
+      });
+    }
+    return list.sort(sortByEmpNo);
+  }
+
   function employeeByNo(ctx) {
     var byNo = {};
     Object.keys(ctx.employees || {}).forEach(function (id) {
@@ -927,6 +1018,10 @@
     importAttendanceJson: importAttendanceJson,
     applyPayrollDaysToAttendance: applyPayrollDaysToAttendance,
     payrollMustNotOverride: payrollMustNotOverride,
+    empSeparatedAsOf: empSeparatedAsOf,
+    firstAttendanceDate: firstAttendanceDate,
+    firstAttendanceIndex: firstAttendanceIndex,
+    rosterPeopleForDay: rosterPeopleForDay,
     nameMatches: nameMatches,
     flipName: flipName,
     invalidateLrf: invalidateLrf,
@@ -1609,6 +1704,34 @@
     root.dailyCollect.__hrAtt = true;
   }
 
+  function wrapDailyPeople() {
+    if (root.dailyPeople && root.dailyPeople.__hrAttRoster) return;
+    root.dailyPeople = function (rec) {
+      return rosterPeopleForDay(rec, defaultCtx());
+    };
+    root.dailyPeople.__hrAttRoster = true;
+  }
+
+  function wrapDailyAddPerson() {
+    if (typeof root.dailyAddPerson !== "function" || root.dailyAddPerson.__hrAttRoster) return;
+    var orig = root.dailyAddPerson;
+    root.dailyAddPerson = function () {
+      var r = orig.apply(this, arguments);
+      if (typeof document === "undefined") return r;
+      document.querySelectorAll(".modal .note").forEach(function (el) {
+        if (/changes this report only/i.test(el.textContent || "")) {
+          el.innerHTML =
+            "Anyone not on today’s standing list — a new hire, someone lent from another site, " +
+            "or a separated employee brought back for the day. Once added they stay on later days " +
+            "from this date, until they are marked <b>Separated</b> on their 201 file. " +
+            "A separated callback stays on this day only.";
+        }
+      });
+      return r;
+    };
+    root.dailyAddPerson.__hrAttRoster = true;
+  }
+
   function wrapArtifact() {
     if (typeof root.normStatus === "function") {
       root.normStatus = function (t) {
@@ -1648,6 +1771,8 @@
       };
     }
     wrapDailyCollect();
+    wrapDailyPeople();
+    wrapDailyAddPerson();
     if (typeof root.put === "function" && !root.put.__hrAtt) {
       var origPut = root.put;
       root.put = function (coll, id, obj) {

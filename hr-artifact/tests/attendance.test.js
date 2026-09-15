@@ -433,6 +433,164 @@ describe("manpower attendance core", () => {
     );
   });
 
+  it("rolls a newly added person onto later days until they are marked Separated", () => {
+    S.employees.e1400 = emp("e1400", "1400", "Nuevo, Ana");
+    S.daily.d20260824 = {
+      id: "d20260824",
+      date: "2026-08-24",
+      extra: ["e1400"],
+      rows: { e1400: { s: "Present", r: "", site: "ADMINS" } },
+    };
+    const standing = [S.employees.e1250];
+    const mon = hr.rosterPeopleForDay(
+      { date: "2026-08-24", extra: ["e1400"], rows: S.daily.d20260824.rows },
+      Object.assign(ctxFrom(S), { standing })
+    );
+    const tue = hr.rosterPeopleForDay(
+      { date: "2026-08-25", rows: {} },
+      Object.assign(ctxFrom(S), { standing })
+    );
+    const wed = hr.rosterPeopleForDay(
+      { date: "2026-08-26", rows: {} },
+      Object.assign(ctxFrom(S), { standing })
+    );
+    const sun = hr.rosterPeopleForDay(
+      { date: "2026-08-23", rows: {} },
+      Object.assign(ctxFrom(S), { standing })
+    );
+    assert.ok(mon.some((e) => e.id === "e1400"), "added person is on the day they were added");
+    assert.ok(tue.some((e) => e.id === "e1400"), "added person carries to Tuesday");
+    assert.ok(wed.some((e) => e.id === "e1400"), "added person carries to Wednesday");
+    assert.ok(!sun.some((e) => e.id === "e1400"), "must not appear before the add date");
+    assert.ok(tue.some((e) => e.id === "e1250"), "standing staff still appear");
+
+    S.employees.e1400.status = "Separated";
+    S.employees.e1400.separatedOn = "2026-08-26";
+    const tueStill = hr.rosterPeopleForDay(
+      { date: "2026-08-25", rows: {} },
+      Object.assign(ctxFrom(S), { standing })
+    );
+    const lastDay = hr.rosterPeopleForDay(
+      { date: "2026-08-26", extra: [], rows: {} },
+      Object.assign(ctxFrom(S), { standing })
+    );
+    const thuGone = hr.rosterPeopleForDay(
+      { date: "2026-08-27", rows: {} },
+      Object.assign(ctxFrom(S), { standing })
+    );
+    assert.ok(tueStill.some((e) => e.id === "e1400"), "still on the day before separatedOn");
+    assert.ok(lastDay.some((e) => e.id === "e1400"), "separatedOn is the last day they still appear");
+    assert.ok(!thuGone.some((e) => e.id === "e1400"));
+  });
+
+  it("does not resurrect someone who was already separated before the add date", () => {
+    S.employees.e1401 = Object.assign(emp("e1401", "1401", "Luma, Ben"), {
+      status: "Separated",
+      separatedOn: "2026-08-01",
+    });
+    S.daily.d20260815 = {
+      id: "d20260815",
+      date: "2026-08-15",
+      extra: ["e1401"],
+      rows: { e1401: { s: "Present", r: "", site: "ADMINS" } },
+    };
+    const standing = [S.employees.e1250];
+    const before = hr.rosterPeopleForDay(
+      { date: "2026-08-10", rows: {} },
+      Object.assign(ctxFrom(S), { standing })
+    );
+    const callback = hr.rosterPeopleForDay(
+      { date: "2026-08-15", extra: ["e1401"], rows: S.daily.d20260815.rows },
+      Object.assign(ctxFrom(S), { standing })
+    );
+    const after = hr.rosterPeopleForDay(
+      { date: "2026-08-16", rows: {} },
+      Object.assign(ctxFrom(S), { standing })
+    );
+    assert.ok(!before.some((e) => e.id === "e1401"));
+    assert.ok(callback.some((e) => e.id === "e1401"), "separated callback stays on the extra day");
+    assert.ok(!after.some((e) => e.id === "e1401"), "separated callback does not roll forward");
+  });
+
+  it("does not invent people on a filed (fixed) historical day", () => {
+    S.employees.e1400 = emp("e1400", "1400", "Nuevo, Ana");
+    S.daily.d20260810 = {
+      id: "d20260810",
+      date: "2026-08-10",
+      fixed: true,
+      rows: { e1250: { s: "Present", r: "" } },
+    };
+    S.daily.d20260824 = {
+      id: "d20260824",
+      date: "2026-08-24",
+      extra: ["e1400"],
+      rows: { e1400: { s: "Present", r: "" } },
+    };
+    const filed = hr.rosterPeopleForDay(S.daily.d20260810, Object.assign(ctxFrom(S), {
+      standing: [S.employees.e1250, S.employees.e1400],
+    }));
+    assert.equal(filed.length, 1);
+    assert.equal(filed[0].id, "e1250");
+    assert.ok(!filed.some((e) => e.id === "e1400"));
+  });
+
+  it("omit hides a person that day only; they still roll forward afterwards", () => {
+    S.employees.e1400 = emp("e1400", "1400", "Nuevo, Ana");
+    S.daily.d20260824 = {
+      id: "d20260824",
+      date: "2026-08-24",
+      extra: ["e1400"],
+      rows: { e1400: { s: "Present", r: "" } },
+    };
+    const standing = [S.employees.e1250];
+    const tue = hr.rosterPeopleForDay(
+      { date: "2026-08-25", omit: ["e1400"], rows: {} },
+      Object.assign(ctxFrom(S), { standing })
+    );
+    const wed = hr.rosterPeopleForDay(
+      { date: "2026-08-26", rows: {} },
+      Object.assign(ctxFrom(S), { standing })
+    );
+    assert.ok(!tue.some((e) => e.id === "e1400"));
+    assert.ok(wed.some((e) => e.id === "e1400"));
+  });
+
+  it("wraps artifact dailyPeople so a parked extra appears on the next blank day", () => {
+    const employees = {
+      e1250: emp("e1250", "1250", "Armenio, Toribio D."),
+      e1400: emp("e1400", "1400", "Nuevo, Ana"),
+    };
+    const daily = {
+      d20260824: {
+        id: "d20260824",
+        date: "2026-08-24",
+        extra: ["e1400"],
+        rows: { e1400: { s: "Present", r: "" } },
+      },
+    };
+    const windowLike = {
+      S: { employees, daily, leaves: {} },
+      atWork() {
+        return [employees.e1250];
+      },
+      dailyPeople(rec) {
+        const omit = new Set(rec.omit || []);
+        const list = this.atWork().filter((e) => !omit.has(e.id));
+        (rec.extra || []).forEach((id) => {
+          const e = employees[id];
+          if (e && !list.some((x) => x.id === e.id)) list.push(e);
+        });
+        return list;
+      },
+    };
+    windowLike.window = windowLike;
+    const live = loadAttendance(windowLike);
+    live.install();
+    const tue = windowLike.dailyPeople({ date: "2026-08-25", rows: {} });
+    assert.ok(tue.some((e) => e.id === "e1400"));
+    assert.equal(typeof windowLike.dailyPeople.__hrAttRoster, "boolean");
+  });
+
   it("rejects invalid JSON paste payloads", () => {
     assert.throws(() => hr.normalizeImportPayload("not json"), /not valid JSON/);
     assert.throws(() => hr.normalizeImportPayload({ foo: 1 }), /array of daily reports/);
