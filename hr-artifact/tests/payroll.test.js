@@ -515,6 +515,81 @@ describe("acceptance helpers", () => {
   });
 });
 
+describe("People & Pay auto-include", () => {
+  it("copies a 201 dailyRate onto the rate register", () => {
+    const e = { id: "e_new1", empNo: "1401", name: "Nuevo, Ana", dailyRate: 520, rateType: "Daily" };
+    P.ensureEmpRate(e, "2026-09-15");
+    assert.equal(e.rates.length, 1);
+    assert.equal(e.rates[0].rate, 520);
+    assert.equal(e.rates[0].rateType, "Daily");
+    assert.equal(e.rates[0].from, "2026-09-15");
+  });
+
+  it("marks a hand-added 201 so People & Pay lists them with their rate", () => {
+    const e = P.adoptNewEmployee({
+      id: "e_abc1234wxyz",
+      empNo: "1402",
+      name: "Santos, Ben",
+      dailyRate: 19000,
+      rateType: "Monthly",
+      dateHired: "2026-09-10",
+    });
+    assert.ok(e.rosterConfirmed);
+    assert.match(String(e.rosterConfirmed), /^\d{4}-\d{2}-\d{2}$/);
+    assert.equal(e.rates[0].rate, 19000);
+    assert.equal(e.payIncludedFrom, "201");
+    const parked = {
+      id: "e1400",
+      empNo: "1400",
+      name: "Ghost, Old",
+      dailyRate: 500,
+    };
+    P.adoptNewEmployee(parked);
+    assert.equal(parked.rosterConfirmed, undefined);
+  });
+
+  it("includes a parked attendance extra on People & Pay with their rate", () => {
+    const employees = {
+      e1250: { id: "e1250", empNo: "1250", name: "Armenio, Toribio D.", dailyRate: 550, status: "Regular" },
+      e1400: { id: "e1400", empNo: "1400", name: "Nuevo, Ana", dailyRate: 480, rateType: "Daily" },
+    };
+    const S = {
+      employees,
+      daily: {
+        d20260914: {
+          id: "d20260914",
+          date: "2026-09-14",
+          extra: ["e1400"],
+          rows: { e1400: { s: "Present", r: "" } },
+        },
+      },
+    };
+    const list = P.mergePeoplePay([employees.e1250], S);
+    assert.ok(list.some((e) => e.id === "e1250"));
+    const ana = list.find((e) => e.id === "e1400");
+    assert.ok(ana, "new attendance extra must appear");
+    assert.equal(ana.rates[0].rate, 480);
+  });
+
+  it("confirms extras on a saved daily report", () => {
+    const employees = {
+      e1400: { id: "e1400", empNo: "1400", name: "Nuevo, Ana", dailyRate: 480 },
+    };
+    const root = { S: { employees, daily: {} }, TODAY: "2026-09-15" };
+    const src = fs.readFileSync(path.join(__dirname, "../public/hr-payroll.js"), "utf8");
+    const live = { console };
+    vm.runInNewContext(src, { window: root, globalThis: root, console, Date, Math, JSON, Intl, Number, String, Object, Array, isNaN });
+    const rec = { extra: ["e1400"], rows: { e1400: { s: "Present" } } };
+    const saved = [];
+    root.hrPayroll.adoptDailyPeople(rec, function (coll, id, obj) {
+      saved.push([coll, id, obj]);
+    });
+    assert.ok(employees.e1400.rosterConfirmed);
+    assert.equal(employees.e1400.rates[0].rate, 480);
+    assert.equal(saved[0][0], "employees");
+  });
+});
+
 describe("hr-payroll companion wiring", () => {
   it("is loaded by the shim after attendance and not referenced from the artifact HTML", () => {
     const shim = fs.readFileSync(path.join(__dirname, "../public/claude-shim.js"), "utf8");
