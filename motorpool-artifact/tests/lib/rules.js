@@ -584,9 +584,81 @@
   function missingFuelApproveFields(doc) {
     var fuel = doc && (doc.kind === "fuel-issue" || doc.kind === "fuel-bulk");
     if (!fuel) return [];
-    return missingList([
-      { ok: doc.gauge != null && String(doc.gauge) !== "", label: "Gauge level" },
-    ]);
+    return missingList([]);
+  }
+
+  function masterList(doc, key) {
+    if (!doc) return [];
+    if (Array.isArray(doc.rows)) return doc.rows;
+    if (key && Array.isArray(doc[key])) return doc[key];
+    if (Array.isArray(doc.projects)) return doc.projects;
+    if (Array.isArray(doc.suppliers)) return doc.suppliers;
+    return [];
+  }
+
+  function asProject(p) {
+    if (p == null || p === "") return null;
+    if (typeof p === "string") {
+      var s = String(p).trim();
+      return s ? { code: s, name: s, status: "Active" } : null;
+    }
+    var code = String(p.code || p.name || p.id || "").trim();
+    if (!code) return null;
+    return { code: code, name: p.name || code, status: p.status || "Active" };
+  }
+
+  function photoOwnersForReserve(r) {
+    if (!r) return [];
+    var owners = ["RSV-" + r.no];
+    if (r.vrfNo) owners.push(String(r.vrfNo));
+    (r.vrfs || []).forEach(function (no) {
+      if (no) owners.push(String(no));
+    });
+    return owners.filter(function (x, i, a) {
+      return x && a.indexOf(x) === i;
+    });
+  }
+
+  function photoFingerprint(x) {
+    if (!x) return "";
+    if (x.data) {
+      return (
+        "img:" +
+        (x.bytes || 0) +
+        "|" +
+        (x.w || "") +
+        "x" +
+        (x.h || "") +
+        "|" +
+        String(x.caption || "") +
+        "|" +
+        String(x.data).length +
+        "|" +
+        String(x.data).slice(-48)
+      );
+    }
+    if (x.url) return "url:" + String(x.url);
+    return String(x.id || x.vrf + "__" + (x.idx || "") + "__" + (x.at || ""));
+  }
+
+  function mergePhotoLists(lists) {
+    var seen = {};
+    var out = [];
+    (lists || []).forEach(function (list) {
+      (list || []).forEach(function (x) {
+        if (!x) return;
+        var id = String(x.id || x.vrf + "__" + (x.idx || "") + "__" + (x.at || ""));
+        var fp = photoFingerprint(x);
+        if (seen[id] || seen[fp]) return;
+        seen[id] = 1;
+        seen[fp] = 1;
+        out.push(x);
+      });
+    });
+    out.sort(function (a, b) {
+      return (a.idx || 0) - (b.idx || 0);
+    });
+    return out;
   }
 
   function isFuelBypass(override) {
@@ -737,7 +809,11 @@
     bypassAttribution: bypassAttribution,
     fuelAskApprovalBlockedByPhoto: fuelAskApprovalBlockedByPhoto,
     isFuelBypass: isFuelBypass,
+    asProject: asProject,
+    masterList: masterList,
     missingFuelApproveFields: missingFuelApproveFields,
+    photoOwnersForReserve: photoOwnersForReserve,
+    mergePhotoLists: mergePhotoLists,
     missingJoCloseFields: missingJoCloseFields,
     missingList: missingList,
     missingPapers: missingPapers,

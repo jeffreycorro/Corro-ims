@@ -361,7 +361,7 @@ var SIGNATORIES = [
 ];
 var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
 /* Shown on the Ask screen, so a screenshot says which version someone is on. */
-var BUILD = "2026-09-14 h";
+var BUILD = "2026-09-15 b";
 var DAY = 86400000, MO = 30.44;
 
 /* Part categories that were entered under two spellings and so split a unit's
@@ -426,6 +426,32 @@ function monthLabel(k){ var p=String(k).split("-");
   return ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][+p[1]-1]+" "+p[0]; }
 function normCat(c){ c=(c||"").trim(); return CAT_ALIAS[c]||c; }
 function normProj(p){ p=(p||"").trim(); return PROJ_ALIAS[p]||p; }
+/* master/* documents have been written as {rows}, {projects}, {suppliers}
+   and so on. Read every known shape so a list added in another spelling still
+   appears in the pickers. */
+function masterList(doc, key){
+  if(!doc) return [];
+  if(Array.isArray(doc.rows)) return doc.rows;
+  if(key && Array.isArray(doc[key])) return doc[key];
+  if(Array.isArray(doc.projects)) return doc.projects;
+  if(Array.isArray(doc.suppliers)) return doc.suppliers;
+  if(Array.isArray(doc.drivers)) return doc.drivers;
+  if(Array.isArray(doc.vehicles)) return doc.vehicles;
+  if(Array.isArray(doc.parts)) return doc.parts;
+  if(Array.isArray(doc.items)) return doc.items;
+  if(Array.isArray(doc.worktypes)) return doc.worktypes;
+  if(Array.isArray(doc.types)) return doc.types;
+  return [];
+}
+function asProject(p){
+  if(p==null||p==="") return null;
+  if(typeof p==="string"){
+    var s=normProj(p); return s?{code:s,name:s,status:"Active"}:null;
+  }
+  var code=normProj(p.code||p.name||p.id||"");
+  if(!code) return null;
+  return {code:code, name:p.name||code, status:p.status||"Active"};
+}
 /* Only actual fuel — "Fuel — Diesel", "Fuel — Gasoline". The old test was
    /^Fuel\b/ which also matched "Fuel Filter", so a filter on a change-oil VRF
    was read as a tank of diesel: it triggered the fuel gate, demanded a reserve,
@@ -723,7 +749,7 @@ function openVrfs(){ return vrfIndex().filter(function(v){ return v.status==="Op
 function vrfEvidence(v){
   var r=v.reserve?reserveBy(v.reserve):null;
   var need = r ? needsEvidence(r) : v.rows.some(function(x){ return isFuel(x.cat); });
-  var n=photoCount(v.vrf);
+  var n=photoCountMany(photoOwnersForVrf(v));
   return {need:need,count:n,ok:!need||n>0};
 }
 /* Liquidating is where the estimate meets the receipt. Amounts move, a part
@@ -807,6 +833,7 @@ async function postReserveVrf(r){
       notes:note};
   });
   await appendLedger(mk,rows);
+  try{ await copyPhotos(rsvOwner(r.no), String(no)); }catch(e){}
   return String(no);
 }
 
@@ -980,7 +1007,11 @@ async function writeDoc(path,body){
 async function loadAll(){
   var keys=["vehicles","parts","suppliers","projects","drivers","worktypes","items","purchases","withdrawals","breakdowns","mechanic","tasks","papers"];
   var got = await Promise.all(keys.map(function(k){ return readDoc(PATHS[k]); }));
-  keys.forEach(function(k,i){ S[k] = (got[i]&&got[i].rows)||[]; });
+  keys.forEach(function(k,i){
+    var rows=masterList(got[i], k);
+    if(k==="projects") rows=rows.map(asProject).filter(Boolean);
+    S[k]=rows;
+  });
   var rix = await readDoc("reserves/index");
   var yrs = (rix&&rix.years)||[String(new Date().getFullYear())];
   var rdocs = await Promise.all(yrs.map(function(y){ return readDoc("reserves/"+y); }));
@@ -1002,6 +1033,7 @@ async function loadAll(){
   var docs = await Promise.all(mks.map(function(m){ return readDoc("ledger/"+m); }));
   S.ledger={};
   mks.forEach(function(m,i){ S.ledger[m]=(docs[i]&&docs[i].rows)||[]; });
+  harvestProjects(false);
   _vrfs=null; _lw=null;
 }
 
@@ -1065,6 +1097,88 @@ async function refreshAll(btn){
   if(btn){ btn.disabled=false; btn.textContent="↻ Refresh"; }
   render();
   toast("Re-read the shared workbook.");
+}
+
+function projectCodeOf(p){ var x=asProject(p); return x?x.code:""; }
+function knownProjects(){
+  var seen={}, out=[];
+  function add(p){
+    var row=asProject(p); if(!row) return;
+    if(seen[row.code]) return;
+    seen[row.code]=1; out.push(row);
+  }
+  (S.projects||[]).forEach(add);
+  (S.vehicles||[]).forEach(function(v){ if(v&&v.site) add(v.site); });
+  (S.reserves||[]).forEach(function(r){ if(r&&r.project) add(r.project); });
+  (S.withdrawals||[]).forEach(function(d){ if(d&&d.project) add(d.project); });
+  (S.purchases||[]).forEach(function(d){ if(d&&d.project) add(d.project); });
+  Object.keys(S.ledger||{}).forEach(function(mk){
+    (S.ledger[mk]||[]).forEach(function(r){ if(r&&r.project) add(r.project); });
+  });
+  Object.keys(PROJ_ALIAS).forEach(function(k){ add(k); add(PROJ_ALIAS[k]); });
+  out.sort(function(a,b){ return String(a.code).localeCompare(String(b.code)); });
+  return out;
+}
+function harvestProjects(persist){
+  var next=knownProjects();
+  var before=(S.projects||[]).map(projectCodeOf).sort().join("\0");
+  var after=next.map(projectCodeOf).sort().join("\0");
+  S.projects=next;
+  if(persist && before!==after) saveProjects();
+  return next;
+}
+async function saveProjects(){
+  S.projects=knownProjects();
+  await writeDoc(PATHS.projects,{rows:S.projects,projects:S.projects});
+}
+async function ensureProject(code){
+  var row=asProject(code); if(!row) return "";
+  if(!S.projects.some(function(p){ return projectCodeOf(p)===row.code; })){
+    S.projects=S.projects.concat([row]);
+    try{ await saveProjects(); }catch(e){}
+  }
+  return row.code;
+}
+function projectPicker(value,onChange,opts){
+  opts=opts||{};
+  var wrap=el("div");
+  var inp=el("input");
+  inp.placeholder=opts.placeholder||"type a project code or name…";
+  inp.setAttribute("autocomplete","off");
+  var dlId="pj-"+Math.random().toString(36).slice(2,8);
+  var dl=document.createElement("datalist"); dl.id=dlId;
+  function fillList(){
+    dl.innerHTML="";
+    knownProjects().forEach(function(p){
+      var o=document.createElement("option");
+      o.value=p.code;
+      o.label=p.name&&p.name!==p.code?p.name:"";
+      dl.appendChild(o);
+    });
+  }
+  fillList();
+  inp.setAttribute("list",dlId);
+  var current=normProj(value||"");
+  inp.value=current;
+  var hint=el("div","hint",opts.hint||"Pick one on file, or type a new project and it is added to the list.");
+  function commit(){
+    var code=normProj(inp.value);
+    current=code;
+    if(code) ensureProject(code);
+    fillList();
+    if(onChange) onChange(code);
+  }
+  inp.addEventListener("change",commit);
+  inp.addEventListener("blur",commit);
+  wrap.appendChild(inp);
+  wrap.appendChild(dl);
+  wrap.appendChild(hint);
+  wrap.getCode=function(){ return current; };
+  wrap.setCode=function(code){
+    current=normProj(code||"");
+    inp.value=current;
+  };
+  return wrap;
 }
 
 /* VRF numbers are the spine of the paper trail, so the counter is taken under a
@@ -1141,8 +1255,7 @@ function needsEvidence(r){
 }
 /* Photos live on the VRFs attached to the reserve; that is the liquidation file. */
 function reserveEvidence(r){
-  var n=0;
-  (r.vrfs||[]).forEach(function(no){ n+=photoCount(no); });
+  var n=photoCountMany(photoOwnersForReserve(r));
   return {need:needsEvidence(r), count:n, ok: !needsEvidence(r) || n>0};
 }
 
@@ -1205,12 +1318,11 @@ function fuelReserveDraftLines(r){
     work:(r&&r.work)||(bulk?"FUEL-BULK":"FUEL-RES")
   }];
 }
-/* Gauge photo is optional. It must not block ask-approval or office approve. */
+/* Gauge photo is optional. Gauge reading is optional too. Neither may block
+   ask-approval or office approve — staff were stuck raising a fuel VRF on those
+   two fields. */
 function rsvReadyToApprove(r){
-  if(rsvKind(r)==="job") return {ok:true,missing:[]};
-  var miss=[];
-  if(!r.gauge) miss.push("no gauge reading");
-  return {ok:!miss.length, missing:miss};
+  return {ok:true,missing:[]};
 }
 async function logBypassFuelVrf(r, override){
   r.fuelOverride=override||r.fuelOverride||null;
@@ -1365,16 +1477,75 @@ function shrinkImage(file){
   });
 }
 function photoKey(vrf,n){ return "vrf-"+String(vrf).replace(/[^A-Za-z0-9_.~:@+-]/g,"_")+"__"+n; }
-async function listPhotos(vrf){
-  if(!S.db){
-    var loc=lsGet("photos/"+vrf,null);
-    return (loc&&loc.items)||[];
+/* The same clip is written under RSV-{no} and the VRF number so either
+   file can find it. Treat matching image bytes as one picture. */
+function photoFingerprint(x){
+  if(!x) return "";
+  if(x.data) return "img:"+(x.bytes||0)+"|"+(x.w||"")+"x"+(x.h||"")+"|"+String(x.caption||"")+"|"+String(x.data).length+"|"+String(x.data).slice(-48);
+  if(x.url) return "url:"+String(x.url);
+  return String(x.id||(x.vrf+"__"+(x.idx||"")+"__"+(x.at||"")));
+}
+function mergePhotoLists(lists){
+  var seen={}, out=[];
+  (lists||[]).forEach(function(list){
+    (list||[]).forEach(function(x){
+      if(!x) return;
+      var id=String(x.id||(x.vrf+"__"+(x.idx||"")+"__"+(x.at||"")));
+      var fp=photoFingerprint(x);
+      if(seen[id]||seen[fp]) return;
+      seen[id]=1; seen[fp]=1; out.push(x);
+    });
+  });
+  out.sort(function(a,b){ return (a.idx||0)-(b.idx||0); });
+  return out;
+}
+function photoOwnersForReserve(r){
+  if(!r) return [];
+  var owners=[rsvOwner(r.no)];
+  if(r.vrfNo) owners.push(String(r.vrfNo));
+  (r.vrfs||[]).forEach(function(no){ if(no) owners.push(String(no)); });
+  return owners.filter(function(x,i,a){ return x&&a.indexOf(x)===i; });
+}
+function photoOwnersForVrf(entry){
+  var owners=[];
+  if(!entry) return owners;
+  if(entry.vrf) owners.push(String(entry.vrf));
+  if(entry.reserve) owners.push(rsvOwner(entry.reserve));
+  var r=entry.reserve?reserveBy(entry.reserve):null;
+  if(r){
+    photoOwnersForReserve(r).forEach(function(o){ owners.push(o); });
+  }else{
+    (S.reserves||[]).forEach(function(rr){
+      if(String(rr.vrfNo)===String(entry.vrf)) photoOwnersForReserve(rr).forEach(function(o){ owners.push(o); });
+      (rr.vrfs||[]).forEach(function(no){
+        if(String(no)===String(entry.vrf)) photoOwnersForReserve(rr).forEach(function(o){ owners.push(o); });
+      });
+    });
   }
+  return owners.filter(function(x,i,a){ return x&&a.indexOf(x)===i; });
+}
+async function listPhotos(vrf){
+  var owner=String(vrf);
+  var loc=(lsGet("photos/"+owner,null)||{}).items||[];
+  if(!S.db) return loc.slice();
   try{
-    var snap=await S.db.collection("photos").where("vrf","==",String(vrf)).get();
-    return snap.docs.map(function(d){ return Object.assign({id:d.id},d.data()); })
-      .sort(function(a,b){ return (a.idx||0)-(b.idx||0); });
-  }catch(e){ return []; }
+    var snap=await S.db.collection("photos").where("vrf","==",owner).get();
+    var remote=snap.docs.map(function(d){ return Object.assign({id:d.id},d.data()); });
+    return mergePhotoLists([remote, loc]);
+  }catch(e){
+    return loc.slice();
+  }
+}
+async function listPhotosMany(owners){
+  var lists=[];
+  var seen={};
+  for(var i=0;i<(owners||[]).length;i++){
+    var o=String(owners[i]||"");
+    if(!o||seen[o]) continue;
+    seen[o]=1;
+    lists.push(await listPhotos(o));
+  }
+  return mergePhotoLists(lists);
 }
 async function bumpPhotoCount(vrf,delta){
   var c=Object.assign({},S.photoCounts);
@@ -1400,11 +1571,11 @@ async function addLink(owner,rec){
   var body={vrf:String(owner), idx:idx, kind:"link", url:rec.url,
     linkKind:rec.linkKind||guessLinkKind(rec.url),
     caption:rec.caption||"", by:rec.by||"", at:iso()};
-  if(!S.db){
-    var loc=lsGet("photos/"+owner,{items:[]});
-    loc.items.push(Object.assign({id:photoKey(owner,idx)},body));
-    lsSet("photos/"+owner,loc);
-  }else{
+  var row=Object.assign({id:photoKey(owner,idx)},body);
+  var loc=lsGet("photos/"+owner,{items:[]});
+  loc.items=mergePhotoLists([loc.items||[],[row]]);
+  lsSet("photos/"+owner,loc);
+  if(S.db){
     await S.db.doc("photos/"+photoKey(owner,idx)).set(body);
   }
   await bumpPhotoCount(String(owner),1);
@@ -1415,16 +1586,44 @@ async function addPhoto(vrf,rec){
   if(existing.length>=PHOTO_PER_VRF) throw new Error("This VRF already has "+PHOTO_PER_VRF+" photos.");
   var idx=existing.reduce(function(a,x){ return Math.max(a,x.idx||0); },0)+1;
   var body={vrf:String(vrf),idx:idx,caption:rec.caption||"",by:rec.by||"",at:iso(),
-    data:rec.data,w:rec.w,h:rec.h,bytes:rec.bytes,link:rec.link||""};
-  if(!S.db){
-    var loc=lsGet("photos/"+vrf,{items:[]});
-    loc.items.push(Object.assign({id:photoKey(vrf,idx)},body));
-    lsSet("photos/"+vrf,loc);
-  }else{
+    data:rec.data,w:rec.w,h:rec.h,bytes:rec.bytes,link:rec.link||"",kind:rec.kind||"photo"};
+  var row=Object.assign({id:photoKey(vrf,idx)},body);
+  var loc=lsGet("photos/"+vrf,{items:[]});
+  loc.items=mergePhotoLists([loc.items||[],[row]]);
+  lsSet("photos/"+vrf,loc);
+  if(S.db){
     await S.db.doc("photos/"+photoKey(vrf,idx)).set(body);
   }
   await bumpPhotoCount(String(vrf),1);
   return idx;
+}
+async function addPhotoToOwners(owners,rec){
+  var last=null;
+  var seen={};
+  for(var i=0;i<(owners||[]).length;i++){
+    var o=String(owners[i]||"");
+    if(!o||seen[o]) continue;
+    seen[o]=1;
+    last=await addPhoto(o,rec);
+  }
+  return last;
+}
+async function copyPhotos(from,to){
+  if(!from||!to||String(from)===String(to)) return 0;
+  var items=await listPhotos(from);
+  var n=0;
+  for(var i=0;i<items.length;i++){
+    var x=items[i];
+    try{
+      if(x.kind==="link"){
+        await addLink(to,{url:x.url,linkKind:x.linkKind,caption:x.caption,by:x.by});
+      }else if(x.data){
+        await addPhoto(to,{data:x.data,w:x.w,h:x.h,bytes:x.bytes,caption:x.caption,by:x.by});
+      }else continue;
+      n++;
+    }catch(e){}
+  }
+  return n;
 }
 async function removePhoto(vrf,id){
   if(!S.db){
@@ -1436,7 +1635,22 @@ async function removePhoto(vrf,id){
   }
   await bumpPhotoCount(String(vrf),-1);
 }
-function photoCount(vrf){ return S.photoCounts[String(vrf)]||0; }
+function photoCount(vrf){
+  var n=S.photoCounts[String(vrf)]||0;
+  if(n) return n;
+  try{
+    var loc=lsGet("photos/"+vrf,null);
+    return (loc&&loc.items&&loc.items.length)||0;
+  }catch(e){ return 0; }
+}
+function photoCountMany(owners){
+  var n=0, seen={};
+  (owners||[]).forEach(function(o){
+    if(!o||seen[o]) return;
+    seen[o]=1; n+=photoCount(o);
+  });
+  return n;
+}
 
 /* A unit picker you can type into. Eighty-nine codes in a dropdown is a scroll;
    the yard thinks in plates and names as often as codes, so the list carries
@@ -3664,7 +3878,7 @@ function rsvView(){
   GAUGE_LEVELS.forEach(function(x){ rgauge.appendChild(new Option(x.label,x.v)); });
   var rtank=el("input"); rtank.type="number"; rtank.min="0"; rtank.step="1"; rtank.className="mono";
   odoW.appendChild(fld("Meter reading now",rodo));
-  odoW.appendChild(fld("Gauge level now",rgauge,"What the needle or the readout shows before filling."));
+  odoW.appendChild(fld("Gauge level now",rgauge,"Optional — what the needle or the readout shows before filling."));
   odoW.appendChild(fld("Litres left, if known",rtank,"Optional — for units with a digital readout."));
   b.appendChild(odoW);
 
@@ -3715,8 +3929,7 @@ function rsvView(){
 
   var r2=el("div","f3"); r2.style.marginTop="var(--space-3)";
   var bg=el("input"); bg.type="number"; bg.min="0"; bg.step="100"; bg.placeholder="0.00";
-  var ps=el("select"); ps.appendChild(new Option("— project —",""));
-  S.projects.forEach(function(pp){ ps.appendChild(new Option(pp.code,pp.code)); });
+  var ps=projectPicker("",null,{hint:"Pick a project, or type a new one."});
   var nb=el("input"); nb.type="date";
   var bgF=fld("Estimated budget (PHP)",bg,"Your best estimate — the actual can differ, within tolerance.");
   r2.appendChild(bgF);
@@ -3769,9 +3982,6 @@ function rsvView(){
     if(k!=="fuel-bulk"&&!vs.getCode()){ toast("Pick a unit."); return; }
     if(!sc.value.trim()){ toast("Describe what this is for — the approver reads only this."); return; }
     if(k!=="job"&&!(parseFloat(lt2.value)>0)){ toast("Put the litres on it."); return; }
-    if(k!=="job"&&!rgauge.value){
-      toast(k==="fuel-bulk"?"Read the drum level before asking for a delivery."
-        :"Read the gauge before asking for fuel — it is what the approver decides on."); return; }
     var amount=parseFloat(bg.value)||0;
     if(amount<=0){ toast("Put an estimated budget on it — that is what is being approved."); return; }
     if(!rq.value.trim()){ toast("The request has to carry a name."); return; }
@@ -3785,15 +3995,16 @@ function rsvView(){
       gauge:rgauge.value||"", gaugePct:gaugePct(rgauge.value),
       tankLeft:parseFloat(rtank.value)||null,
       fuelOverride:fgate.override||null,
-      project:ps.value,budget:amount,needBy:nb.value,scope:sc.value.trim(),
+      project:ps.getCode(),budget:amount,needBy:nb.value,scope:sc.value.trim(),
       requestedBy:rq.value.trim(),status:"Requested",
       approvedBudget:null,approvedBy:"",approvedAt:"",decisionNote:"",
       vrfs:[],jo:"",actual:null,liquidatedAt:"",
       justification:"",justifiedBy:"",varianceBy:"",varianceAt:"",varianceNote:""};
     S.reserves.push(rec);
     for(var gi=0;gi<rphotos.length;gi++){
-      try{ await addPhoto(rsvOwner(no),{data:rphotos[gi].data,w:rphotos[gi].w,h:rphotos[gi].h,
-        bytes:rphotos[gi].bytes,caption:rphotos[gi].caption,by:rq.value.trim()}); }catch(e){}
+      try{ await addPhotoToOwners([rsvOwner(no),String(vno)],{data:rphotos[gi].data,w:rphotos[gi].w,h:rphotos[gi].h,
+        bytes:rphotos[gi].bytes,caption:rphotos[gi].caption,by:rq.value.trim()}); }catch(e){
+        toast("Photo could not be saved: "+((e&&e.message)||"try again")); }
     }
     if(k!=="job"&&isFuelBypass(fgate.override)){
       var logged=await logBypassFuelVrf(rec,fgate.override);
@@ -3953,7 +4164,7 @@ function openReserve(no,asApprover){
     pcb.appendChild(pgal);
     pcard.appendChild(pcb);
     b.appendChild(pcard);
-    listPhotos(rsvOwner(r.no)).then(function(list){
+    listPhotosMany(photoOwnersForReserve(r)).then(function(list){
       pgal.innerHTML="";
       list=list.filter(function(x){ return x.kind!=="link"&&x.data; });
       if(!list.length){
@@ -4251,7 +4462,7 @@ function openReserve(no,asApprover){
     if(!ready.ok){
       var rb=el("div","banner crit"); rb.style.marginTop="var(--space-3)";
       rb.innerHTML="<b>This fuel request cannot be approved yet — "+esc(ready.missing.join(" and "))+
-        ".</b> The gauge reading has to be on the request. A gauge photo is optional.";
+        ".</b> A gauge reading and photo are optional.";
       acb.appendChild(rb);
     }
     var arow=el("div","row"); arow.style.marginTop="var(--space-3)";
@@ -5949,7 +6160,7 @@ function askDriveLink(entry,after){
 }
 async function printVrfNo(entry){
   var ph=[];
-  try{ ph=await listPhotos(entry.vrf); }catch(e){}
+  try{ ph=await listPhotosMany(photoOwnersForVrf(entry)); }catch(e){}
   printVrf(entry,ph);
 }
 
@@ -5989,7 +6200,7 @@ function openVrf(entry,tab){
 
   var tabs=el("div","row"); tabs.style.margin="var(--space-4) 0";
   [["lines","Lines & jobs"],
-   ["photos","Attachments"+(photoCount(entry.vrf)?" ("+photoCount(entry.vrf)+")":"")],
+   ["photos","Attachments"+(photoCountMany(photoOwnersForVrf(entry))?" ("+photoCountMany(photoOwnersForVrf(entry))+")":"")],
    ["jo","Job order"+(joForVrf(entry.vrf).length?" ("+joForVrf(entry.vrf).length+")":"")],
    ["liq","Liquidate"+(entry.status==="Open"?" ●":"")]]
     .forEach(function(o){
@@ -6001,7 +6212,7 @@ function openVrf(entry,tab){
   var pr=el("button","btn","Print / save as PDF");
   pr.addEventListener("click",async function(){
     pr.disabled=true; pr.textContent="Preparing…";
-    var ph=await listPhotos(entry.vrf);
+    var ph=await listPhotosMany(photoOwnersForVrf(entry));
     pr.disabled=false; pr.textContent="Print / save as PDF";
     printVrf(entry,ph);
   });
@@ -6432,7 +6643,7 @@ function openVrf(entry,tab){
         status.textContent="Adding "+(i+1)+" of "+files.length+"…";
         try{
           var shrunk=await shrinkImage(files[i]);
-          await addPhoto(entry.vrf,{data:shrunk.data,w:shrunk.w,h:shrunk.h,bytes:shrunk.bytes,
+          await addPhotoToOwners(photoOwnersForVrf(entry),{data:shrunk.data,w:shrunk.w,h:shrunk.h,bytes:shrunk.bytes,
             caption:cap.value.trim()||files[i].name,by:by.value.trim()});
           ok++;
         }catch(e){ failed++; }
@@ -6443,7 +6654,7 @@ function openVrf(entry,tab){
       openVrf(entry,"photos");
     });
 
-    listPhotos(entry.vrf).then(function(list){
+    listPhotosMany(photoOwnersForVrf(entry)).then(function(list){
       gal.innerHTML="";
       var links=list.filter(function(x){ return x.kind==="link"; });
       list=list.filter(function(x){ return x.kind!=="link"; });
@@ -6531,7 +6742,7 @@ function vrfView(){
     "<b>Send for approval</b> turns what you have typed into a reserve — the unit, the job and the "+
     "total become the budget the office decides on, and the lines are kept so you post them in one "+
     "click once it is approved. <b>Post VRF</b> records it straight away, for something already "+
-    "bought and settled. Fuel always needs a reserve first.</div>";
+    "bought and settled. Fuel can go this way too — a gauge photo is optional, and Bypass logs the VRF now.</div>";
   g.appendChild(path);
 
   var head=el("div","card");
@@ -6554,11 +6765,8 @@ function vrfView(){
     {hint:"Search by code, name or plate."});
   hb.appendChild(fld("Vehicle",vSel));
 
-  var pSel=el("select");
-  pSel.appendChild(new Option("— pick a project —",""));
-  S.projects.forEach(function(p){ pSel.appendChild(new Option(p.code,p.code)); });
-  pSel.value=d.project;
-  pSel.addEventListener("change",function(){ d.project=pSel.value; });
+  var pSel=projectPicker(d.project,function(code){ d.project=code; },
+    {hint:"Pick a project, or type a new one — it is added to the list."});
   hb.appendChild(fld("Project",pSel));
   g0.appendChild(hb);
 
@@ -6608,7 +6816,7 @@ function vrfView(){
     var rr=reserveBy(d.reserve);
     if(rr){
       if(rr.work&&!d.work){ d.work=rr.work; }
-      if(rr.project&&!d.project){ d.project=rr.project; pSel.value=rr.project; }
+      if(rr.project&&!d.project){ d.project=rr.project; pSel.setCode(rr.project); }
       if(rr.veh&&!d.veh){ d.veh=rr.veh; vSel.setCode(rr.veh); }
     }
     drawMeter();
@@ -6707,7 +6915,7 @@ function vrfView(){
     odoNote(); refreshGate(); fillReserves(); fillWorkRefs(); drawMeter();
     if(v&&v.site&&!d.project){
       for(var i=0;i<S.projects.length;i++)
-        if(S.projects[i].code===v.site){ d.project=v.site; pSel.value=v.site; }
+        if(S.projects[i].code===v.site){ d.project=v.site; pSel.setCode(v.site); }
     }
   }
   if(d.veh){ var v0=vehicle(d.veh); plate.value=v0?(v0.plate||"—"):""; }
@@ -6719,7 +6927,7 @@ function vrfView(){
 
   /* fuel limits */
   var gstate={check:null,override:d.gateOverride||null};
-  var gpanel=fuelGatePanel(gstate,function(){ d.gateOverride=gstate.override; });
+  var gpanel=fuelGatePanel(gstate,function(){ d.gateOverride=gstate.override; },{bypass:true});
   function refreshGate(){
     var fl=d.lines.filter(function(l){ return isFuel(l.cat); });
     if(!d.veh||!fl.length){ gstate.check=null; gpanel.redraw(); return; }
@@ -6976,10 +7184,8 @@ async function sendForApproval(d,btn){
   var total=rows.reduce(function(a,l){
     return a+((parseFloat(l.qty)||0)*(parseFloat(l.price)||0)); },0);
   if(total<=0){ toast("Put the estimated amounts on the lines — that is what is being approved."); return; }
-  if(rows.some(function(l){ return isFuel(l.cat); })){
-    toast("Fuel is raised on the Reserves screen — pick the litres and the gauge reading there. A gauge photo is optional.");
-    S.view="rsv"; render(); return;
-  }
+  /* Fuel lines stay on this form. A gauge photo is optional. Bypass on the
+     fuel-check card logs the VRF now instead of waiting for the office. */
   /* No window.prompt here: this page runs in a sandboxed frame that blocks
      modals outright, and a blocked prompt returns null — which silently killed
      every request. The name comes from the form field instead. */
@@ -7008,8 +7214,9 @@ async function sendForApproval(d,btn){
     if(d.photos&&d.photos.length){
       btn.textContent="Saving photos…";
       for(var pi=0;pi<d.photos.length;pi++){
-        try{ await addPhoto(rsvOwner(no),{data:d.photos[pi].data,w:d.photos[pi].w,
-          h:d.photos[pi].h,bytes:d.photos[pi].bytes,caption:d.photos[pi].caption,by:who}); }catch(e){}
+        try{ await addPhotoToOwners([rsvOwner(no),String(vno)],{data:d.photos[pi].data,w:d.photos[pi].w,
+          h:d.photos[pi].h,bytes:d.photos[pi].bytes,caption:d.photos[pi].caption,by:who}); }catch(e){
+          toast("Photo could not be saved: "+((e&&e.message)||"try again")); }
       }
     }
     S.draft=null;
@@ -7077,9 +7284,12 @@ async function postVrf(d,btn){
     }
     if(d.photos&&d.photos.length){
       btn.textContent="Saving photos…";
+      var owners=[String(no)];
+      if(d.reserve) owners.push(rsvOwner(d.reserve));
       for(var pi=0;pi<d.photos.length;pi++){
-        try{ await addPhoto(no,{data:d.photos[pi].data,w:d.photos[pi].w,h:d.photos[pi].h,
-          bytes:d.photos[pi].bytes,caption:d.photos[pi].caption,by:d.requestedBy}); }catch(e){}
+        try{ await addPhotoToOwners(owners,{data:d.photos[pi].data,w:d.photos[pi].w,h:d.photos[pi].h,
+          bytes:d.photos[pi].bytes,caption:d.photos[pi].caption,by:d.requestedBy}); }catch(e){
+          toast("Photo could not be saved: "+((e&&e.message)||"try again")); }
       }
     }
     if(d.reserve){
@@ -7229,14 +7439,13 @@ function fuelView(){
   fb.appendChild(rfld);
   var dt=el("input"); dt.type="date"; dt.value=iso();
   var vs=unitPicker("",function(){ dcheck(); },{hint:"Search by code, name or plate."});
-  var ps=el("select"); ps.appendChild(new Option("— project —",""));
-  S.projects.forEach(function(p){ ps.appendChild(new Option(p.code,p.code)); });
+  var ps=projectPicker("",null,{hint:"Pick a project, or type a new one."});
   form.appendChild(fld("Date",dt)); form.appendChild(fld("Unit",vs)); form.appendChild(fld("Project",ps));
   fb.appendChild(form);
   rsel.addEventListener("change",function(){
     var r=reserveBy(rsel.value); if(!r) return;
     vs.setCode(r.veh||"");
-    if(r.project) ps.value=r.project;
+    if(r.project) ps.setCode(r.project);
     if(r.litres) cn.value=String(Math.max(1,Math.round(r.litres/CONTAINER_L)));
     lt.value=((parseFloat(cn.value)||0)*CONTAINER_L).toFixed(2)+" L";
     dcheck();
@@ -7312,7 +7521,6 @@ function fuelView(){
     var bypass=isFuelBypass(dgate.override);
     if(!rsel.value&&!bypass){ toast("Pick the approved reserve this fuel is going against, or apply a bypass."); return; }
     if(!vs.getCode()){ toast("Pick a unit."); return; }
-    if(!dphotos.length&&!bypass){ toast("Attach the gauge or meter photo — it is what closes the reserve."); return; }
     var L=(parseFloat(cn.value)||0)*CONTAINER_L;
     if(L<=0){ toast("Containers must be at least 1."); return; }
     if(L>f.onHand){ toast("Only "+nnum(f.onHand,0)+" L on hand — record a delivery first."); return; }
@@ -7331,7 +7539,7 @@ function fuelView(){
         veh:vs.getCode(),work:"FUEL-RES",litres:L,pricePerL:null,supplier:"FUEL RESERVE",
         odoAtRequest:parseFloat(String(dodo.value).replace(/,/g,""))||null,
         gauge:"",gaugePct:null,tankLeft:null,fuelOverride:dgate.override,bypass:true,
-        project:ps.value,budget:0,needBy:"",
+        project:ps.getCode(),budget:0,needBy:"",
         scope:bypassAttribution(dgate.override,{unit:vs.getCode(),litres:L,by:op.value}),
         requestedBy:op.value.trim()||dgate.override.by,status:"Approved",
         approvedBudget:0,approvedBy:dgate.override.by,approvedAt:dgate.override.at,
@@ -7342,14 +7550,14 @@ function fuelView(){
     var attr=bypass
       ? bypassAttribution(dgate.override,{unit:vs.getCode(),litres:L,by:op.value})
       : "Reserve dispense";
-    await appendRows("withdrawals",[{date:dt.value,vrf:String(no),vehicle:vs.getCode(),project:ps.value,
+    await appendRows("withdrawals",[{date:dt.value,vrf:String(no),vehicle:vs.getCode(),project:ps.getCode(),
       fuel:"Diesel",cont:parseFloat(cn.value)||0,liters:L,cost:null,rate:null,
       operator:op.value,override:dgate.override||null,reserve:rsvNo,bypass:bypass}]);
     var mk=monthKey(dt.value)||iso().slice(0,7);
     var v=vehicle(vs.getCode());
     await appendLedger(mk,[{month:mk,date:dt.value,vrf:String(no),veh:vs.getCode(),name:v?v.desc:"",
       cat:"Fuel — Diesel",sub:"Fuel",grp:"Fuel",work:"FUEL-RES",item:"Fuel Reserve dispense",qty:L,price:null,total:null,
-      supplier:"FUEL RESERVE",project:ps.value,liters:L,
+      supplier:"FUEL RESERVE",project:ps.getCode(),liters:L,
       odo:parseFloat(String(dodo.value).replace(/,/g,""))||null,
       override:dgate.override||null,reserve:rsvNo,vstatus:"Open",bypass:bypass,
       notes:attr}]);
@@ -7451,7 +7659,6 @@ function fuelView(){
     if(!brs.value){ toast("Pick the approved bulk reserve this delivery is against."); return; }
     var L=(parseFloat(bcn.value)||0)*CONTAINER_L, pr=parseFloat(bpl.value)||0;
     if(!(L>0)||!(pr>0)){ toast("Containers and price per litre are both needed."); return; }
-    if(!bphotos.length){ toast("Attach the delivery slip or the drum gauge photo."); return; }
     bsv.disabled=true; bsv.textContent="Recording…";
     var no=await claimVrf();
     await appendRows("purchases",[{date:bdt.value,vrf:String(no),supplier:bsup.value,
@@ -9028,6 +9235,34 @@ function healthView(){
   var noDriverDetail=S.drivers.filter(function(d){return !d.lic;}).length;
   if(noDriverDetail) issues.push(["Drivers with no licence on file",noDriverDetail,
     "Licence numbers and expiry dates are blank in the master list.","mute"]);
+
+  var projCard=el("div","card");
+  var projH=el("div","hd");
+  projH.appendChild(el("h3",null,"Projects on file"));
+  projH.appendChild(el("span","note",knownProjects().length+" codes — type a new one to add it"));
+  projCard.appendChild(projH);
+  var projB=el("div","bd");
+  var projRow=el("div","row");
+  var projIn=el("input"); projIn.placeholder="new project code or name";
+  projIn.style.maxWidth="280px";
+  var projBtn=el("button","btn pri","Add project");
+  var projHint=el("div","hint");
+  projBtn.addEventListener("click",async function(){
+    var code=normProj(projIn.value);
+    if(!code){ projHint.textContent="Type the project name or code."; return; }
+    projBtn.disabled=true;
+    await ensureProject(code);
+    projBtn.disabled=false; projIn.value="";
+    toast(code+" is on the project list.");
+    render();
+  });
+  projRow.appendChild(projIn); projRow.appendChild(projBtn);
+  projB.appendChild(projRow); projB.appendChild(projHint);
+  var plist=el("div","hint"); plist.style.marginTop="var(--space-3)";
+  plist.textContent=knownProjects().map(function(p){ return p.code; }).join(" · ")||"None yet.";
+  projB.appendChild(plist);
+  projCard.appendChild(projB);
+  g.appendChild(projCard);
 
   g.appendChild(card("Open issues",issues.length+" found",
     table([

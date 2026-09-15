@@ -167,7 +167,16 @@ describe("motorpool host companion", () => {
     assert.match(html, /function logBypassFuelVrf/);
     assert.match(html, /Bypass — log VRF now/);
     assert.match(html, /Gauge photo is optional/);
-    assert.match(html, /var BUILD = "2026-09-14 h"/);
+    assert.match(html, /var BUILD = "2026-09-15 b"/);
+    assert.match(html, /function photoFingerprint/);
+    assert.match(html, /function projectPicker/);
+    assert.match(html, /function listPhotosMany/);
+    assert.match(html, /function harvestProjects/);
+    assert.doesNotMatch(html, /Read the gauge before asking for fuel/);
+    assert.doesNotMatch(
+      html,
+      /Fuel is raised on the Reserves screen — pick the litres and the gauge reading there/
+    );
   });
 
   it("registers the current BUILD once when the doc is missing", async () => {

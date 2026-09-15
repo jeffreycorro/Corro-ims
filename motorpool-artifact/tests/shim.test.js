@@ -307,6 +307,51 @@ describe("claude shim", () => {
     assert.ok(ops.includes("list"));
   });
 
+  it("collection.where filters photos by vrf so attached files show on the form", async () => {
+    const w = fakeWindow();
+    w.fetch = (url, opts) => {
+      if (String(url).includes("/auth")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ authenticated: true, methods: [] }),
+          text: async () => JSON.stringify({ authenticated: true, open: true }),
+        });
+      }
+      const body = JSON.parse((opts && opts.body) || "{}");
+      if (body.op === "list") {
+        assert.deepEqual(body.filters, [{ field: "vrf", op: "eq", value: "5795" }]);
+        return Promise.resolve({
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              docs: [
+                {
+                  id: "vrf-5795__1",
+                  exists: true,
+                  data: { vrf: "5795", data: "data:image/jpeg;base64,xx" },
+                },
+                {
+                  id: "vrf-RSV-3__1",
+                  exists: true,
+                  data: { vrf: "RSV-3", data: "data:image/jpeg;base64,yy" },
+                },
+              ],
+            }),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        text: async () => JSON.stringify({ id: "1", exists: true, data: {} }),
+      });
+    };
+    loadShim(w);
+    const db = await w.claude.use("db");
+    const snap = await db.collection("photos").where("vrf", "==", "5795").get();
+    assert.equal(snap.size, 1);
+    assert.equal(snap.docs[0].id, "vrf-5795__1");
+    assert.equal(snap.docs[0].data().vrf, "5795");
+  });
+
   it("treats a missing auth function as an open local yard", async () => {
     const w = fakeWindow();
     const appended = [];

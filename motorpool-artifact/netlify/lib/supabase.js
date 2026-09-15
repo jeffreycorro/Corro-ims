@@ -116,13 +116,16 @@ async function deleteDoc(collection, id) {
   return { ok: true };
 }
 
-async function listCollection(collection) {
+async function listCollection(collection, filters) {
+  const { listFilterQuery, rowMatchesFilters } = require("./collections");
+  const extra = listFilterQuery(filters);
   const rows = await rest({
     method: "GET",
     path: "/rest/v1/motorpool_docs",
-    query: `collection=eq.${encodeURIComponent(collection)}&select=collection,id,data,updated_at&order=id.asc`,
+    query: `collection=eq.${encodeURIComponent(collection)}&select=collection,id,data,updated_at&order=id.asc${extra}`,
   });
-  return Array.isArray(rows) ? rows : [];
+  const list = Array.isArray(rows) ? rows : [];
+  return extra ? list.filter((row) => rowMatchesFilters(row, filters)) : list;
 }
 
 async function acquireLock(collection, id, holder, ttlSeconds) {

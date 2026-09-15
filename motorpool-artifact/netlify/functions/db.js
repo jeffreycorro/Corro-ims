@@ -1,7 +1,7 @@
 "use strict";
 
 const { json, requireSession } = require("../lib/session");
-const { parsePath, assertCollection, requiresFullWrite } = require("../lib/collections");
+const { parsePath, assertCollection, requiresFullWrite, normalizeListFilters } = require("../lib/collections");
 const {
   acquireLock,
   deleteDoc,
@@ -87,10 +87,12 @@ exports.handler = async (event) => {
 
     if (op === "list") {
       const collection = assertCollection(body.collection || body.name);
-      const rows = await listCollection(collection);
+      const filters = normalizeListFilters(body.filters || body.where);
+      const rows = await listCollection(collection, filters);
       return json(200, {
         collection,
         docs: rows.map((row) => snapshotFromRow(row.id, row)),
+        filters,
         ...tz,
       });
     }
