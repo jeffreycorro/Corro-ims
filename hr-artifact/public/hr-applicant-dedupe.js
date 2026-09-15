@@ -222,10 +222,11 @@
     if (sameName && !emailOk) {
       return { autoSafe: false, reason: "conflicting-emails" };
     }
-    var sharedEmail = (emails || []).some(function (em) {
-      return emailKey(em);
-    }) && emailOk;
-    if (!sameName && sharedEmail) {
+    var emailCount = 0;
+    (emails || []).forEach(function (em) {
+      if (emailKey(em)) emailCount += 1;
+    });
+    if (!sameName && emailOk && emailCount >= 2) {
       return { autoSafe: false, reason: "same-email-different-names" };
     }
     return { autoSafe: false, reason: "similar-names" };
