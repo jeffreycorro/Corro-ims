@@ -7,6 +7,8 @@ const {
   applyIngestOnto,
   emailKey,
   findIngestMatch,
+  ingestFileFields,
+  mergeDocs,
 } = require("../../public/hr-applicant-dedupe");
 
 const MAX_BATCH = 100;
@@ -112,6 +114,8 @@ function blankApplicant(id, today) {
     history: [],
     background: [],
     staffNotes: [],
+    linkedDocs: [],
+    docs: {},
     rffiNote: "",
     hrVerdict: "",
     hrRating: "3",
@@ -216,8 +220,26 @@ function normalizeItem(item, index, { today, batchOverwrite } = {}) {
     stage,
     source: asString(item.source) || "Email",
     fields,
+    item,
     warnings,
   };
+}
+
+function applyIngestFiles(doc, item) {
+  if (!doc || !item) return doc;
+  const files = ingestFileFields(item);
+  if (files.resumeLink && !asString(doc.resumeLink)) doc.resumeLink = files.resumeLink;
+  const seen = new Set(
+    (doc.linkedDocs || [])
+      .map((x) => asString((x && (x.url || x.link)) || (typeof x === "string" ? x : "")))
+      .filter(Boolean)
+  );
+  const extra = (files.linkedDocs || []).filter((x) => x && x.url && !seen.has(x.url));
+  if (extra.length) doc.linkedDocs = (doc.linkedDocs || []).concat(extra);
+  if (files.docs && Object.keys(files.docs).length) {
+    doc.docs = mergeDocs([doc.docs || {}, files.docs]);
+  }
+  return doc;
 }
 
 function existingData(row) {
@@ -344,9 +366,11 @@ async function ingestApplicants(items, deps) {
         doc.stage = norm.stage;
         Object.assign(doc, norm.fields);
       }
-      for (const key of ["exams", "interviews", "history", "background", "staffNotes"]) {
+      for (const key of ["exams", "interviews", "history", "background", "staffNotes", "linkedDocs"]) {
         if (!Array.isArray(doc[key])) doc[key] = [];
       }
+      if (!doc.docs || typeof doc.docs !== "object") doc.docs = {};
+      applyIngestFiles(doc, items[i]);
 
       const incomingRoleId = asString(norm.fields.roleId);
       const roleId = incomingRoleId || asString(doc.roleId);
