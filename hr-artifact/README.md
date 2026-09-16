@@ -8,7 +8,7 @@ Do **not** rewrite, minify, or modernize the HTML artifact. Paste the Claude exp
 
 ### 1. Paste the real artifact
 
-`public/index.html` should be the Claude artifact HTML export. If you replace it, keep the shim script tag in `<head>`.
+`public/index.html` should be the Claude artifact HTML export. Current deploy is **build 2026-09-16b**. If you replace it, keep the shim script tag in `<head>`.
 
 ### 2. Inject the shim (one-line change)
 
