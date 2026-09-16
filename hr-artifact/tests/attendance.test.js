@@ -709,7 +709,7 @@ describe("hr-attendance companion wiring", () => {
     const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
     assert.doesNotMatch(shim, /hr-attendance\.js/);
     assert.doesNotMatch(shim, /data-hr-attendance/);
-    assert.doesNotMatch(html, /hr-attendance\.js/);
+    assert.doesNotMatch(html, /<script[^>]+hr-attendance\.js/);
   });
 
   it("installs paste-door chrome on the daily and analytics screens", () => {

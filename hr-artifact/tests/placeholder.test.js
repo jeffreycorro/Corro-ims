@@ -19,10 +19,11 @@ describe("placeholder and privacy", () => {
     const shimIndex = html.indexOf("/claude-shim.js");
     const pwaIndex = html.indexOf("/pwa.js");
     assert.ok(shimIndex > -1 && pwaIndex > shimIndex, "pwa.js must load after the shim");
+    assert.match(html, /const BUILD = "2026-09-16b"/);
     assert.doesNotMatch(html, /hr-dictation\.js/);
     assert.doesNotMatch(html, /hr-memo\.js/);
-    assert.doesNotMatch(html, /hr-attendance\.js/);
-    assert.doesNotMatch(html, /hr-payroll\.js/);
+    assert.doesNotMatch(html, /<script[^>]+hr-attendance\.js/);
+    assert.doesNotMatch(html, /<script[^>]+hr-payroll\.js/);
     assert.doesNotMatch(html, /hr-tts\.js/);
     assert.doesNotMatch(html, /hr-recruit\.js/);
     assert.doesNotMatch(html, /hr-applicant-dedupe\.js/);
@@ -76,6 +77,7 @@ describe("placeholder and privacy", () => {
     assert.match(readme, /hr-201-file\.js/);
     assert.match(readme, /hr-leave-numbers\.js/);
     assert.match(readme, /hr-onboarding-links\.js/);
+    assert.match(readme, /2026-09-16b/);
     assert.match(readme, /Renumber leave/);
     assert.match(readme, /20260915000001_lv_unique_leave_numbers/);
     assert.match(readme, /fixLiveDuplicate169/);

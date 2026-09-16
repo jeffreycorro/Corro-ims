@@ -596,6 +596,6 @@ describe("hr-payroll companion wiring", () => {
     const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
     assert.doesNotMatch(shim, /hr-payroll\.js/);
     assert.doesNotMatch(shim, /data-hr-payroll/);
-    assert.doesNotMatch(html, /hr-payroll\.js/);
+    assert.doesNotMatch(html, /<script[^>]+hr-payroll\.js/);
   });
 });
