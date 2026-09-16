@@ -20,7 +20,7 @@ Do these in order on site **corcondev-hr**, then trigger a production redeploy.
 6. Keep `HR_APPLICANTS_INGEST_KEY` on **Functions** (Production). Generate with `openssl rand -hex 32` if unset.
 7. **Redeploy** production. Confirm the deploy publishes functions (no 4KB error).
 8. Sign in once (session cookies are re-issued if the HMAC key changed).
-9. `GET /.netlify/functions/auth` while signed in should show `capabilities.mcp: true` after Drive credentials are available (step 2).
+9. `GET /.netlify/functions/auth` should show both `mcp: true` and `capabilities.mcp: true` after Drive credentials are available (step 2). Live `mcp: false` with sample/tts/transcribe true usually means the SA JSON is not in Blobs and was not Builds-bundled — upload the blob (preferred) or set `GOOGLE_SERVICE_ACCOUNT_JSON` to **Builds only** and redeploy. Do not Functions-scope that JSON.
 
 Staff may need to sign in again after `HR_GATE_SECRET` is removed.
 
@@ -41,7 +41,7 @@ npx netlify blobs:set hr-secrets google-service-account --input ./google-sa.json
 
 Then **delete** `GOOGLE_SERVICE_ACCOUNT_JSON` entirely (Builds and Functions). Redeploy so cold functions read the blob.
 
-Optional tiny Functions flag (not required): `GOOGLE_SERVICE_ACCOUNT_BLOB=1`.
+`hr-artifact/netlify.toml` already sets `GOOGLE_SERVICE_ACCOUNT_BLOB=1` (one byte). That flag is enough to make functions try Blobs even when `NETLIFY=true` is missing at Lambda runtime. You can still set the same flag in the Netlify UI.
 
 ### 3. Also supported: Builds-only env → function bundle
 

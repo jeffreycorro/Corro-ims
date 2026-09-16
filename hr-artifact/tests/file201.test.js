@@ -418,6 +418,22 @@ describe("hr-201-file recordsFor", () => {
   });
 });
 
+describe("hr-201-file Drive folder settings", () => {
+  it("keeps folder ids as long strings and repairs number-input damage", () => {
+    const w = { window: {}, document: { readyState: "loading", addEventListener() {} } };
+    w.window = w;
+    const hr = load201(w);
+    const settings = hr.ensureFolderSettings({
+      settings: { hr201Active: 1, hr201Separated: "", hr201Inbox: "short" },
+    });
+    assert.equal(settings.hr201Active, hr.FOLDER_DEFAULTS.hr201Active);
+    assert.equal(settings.hr201Separated, hr.FOLDER_DEFAULTS.hr201Separated);
+    assert.equal(settings.hr201Inbox, hr.FOLDER_DEFAULTS.hr201Inbox);
+    assert.ok(hr.looksLikeDriveId(settings.hr201Active));
+    assert.ok(settings.hr201Active.length > 20);
+  });
+});
+
 describe("hr-201-file inject", () => {
   it("injects the section on the open 201 folder and follows openEmp", () => {
     const dom = fakeDom();

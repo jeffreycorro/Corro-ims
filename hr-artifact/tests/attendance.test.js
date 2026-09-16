@@ -704,11 +704,11 @@ describe("attendance reason types", () => {
 });
 
 describe("hr-attendance companion wiring", () => {
-  it("is loaded by the shim and not referenced from the artifact HTML", () => {
+  it("is not loaded by the shim and not referenced from the artifact HTML", () => {
     const shim = fs.readFileSync(path.join(__dirname, "../public/claude-shim.js"), "utf8");
     const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
-    assert.match(shim, /hr-attendance\.js/);
-    assert.match(shim, /data-hr-attendance/);
+    assert.doesNotMatch(shim, /hr-attendance\.js/);
+    assert.doesNotMatch(shim, /data-hr-attendance/);
     assert.doesNotMatch(html, /hr-attendance\.js/);
   });
 

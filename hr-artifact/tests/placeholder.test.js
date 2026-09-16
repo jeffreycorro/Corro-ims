@@ -33,8 +33,8 @@ describe("placeholder and privacy", () => {
       path.join(__dirname, "../public/claude-shim.js"),
       "utf8"
     );
-    assert.match(shim, /hr-attendance\.js/);
-    assert.match(shim, /hr-payroll\.js/);
+    assert.doesNotMatch(shim, /hr-attendance\.js/);
+    assert.doesNotMatch(shim, /hr-payroll\.js/);
     assert.match(shim, /hr-tts\.js/);
     assert.match(shim, /hr-applicant-dedupe\.js/);
     assert.match(shim, /hr-recruit\.js/);
@@ -94,6 +94,7 @@ describe("placeholder and privacy", () => {
     const toml = fs.readFileSync(path.join(__dirname, "../netlify.toml"), "utf8");
     assert.match(toml, /prepare-google-sa\.js/);
     assert.match(toml, /@netlify\/blobs/);
+    assert.match(toml, /GOOGLE_SERVICE_ACCOUNT_BLOB/);
     assert.match(toml, /publish = "public"/);
     assert.match(toml, /X-Robots-Tag = "noindex, nofollow"/);
     assert.match(toml, /X-Frame-Options = "DENY"/);

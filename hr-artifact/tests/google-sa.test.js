@@ -13,6 +13,7 @@ const {
   parseServiceAccount,
   resetServiceAccountCache,
   setTestBlobLoader,
+  shouldTryBlobs,
 } = require("../netlify/lib/google-sa");
 
 const SAMPLE = JSON.stringify({
@@ -29,6 +30,11 @@ describe("google service account loader", () => {
     delete process.env.GOOGLE_SERVICE_ACCOUNT_FILE;
     delete process.env.GOOGLE_SERVICE_ACCOUNT_BLOB;
     delete process.env.GOOGLE_SERVICE_ACCOUNT_BLOB_KEY;
+    delete process.env.NETLIFY;
+    delete process.env.AWS_LAMBDA_FUNCTION_NAME;
+    delete process.env.NETLIFY_BLOBS_CONTEXT;
+    delete process.env.NETLIFY_DEV;
+    delete process.env.CONTEXT;
     setTestBlobLoader(null);
     resetServiceAccountCache();
   });
@@ -79,6 +85,25 @@ describe("google service account loader", () => {
   it("is not configured when no source is present", async () => {
     setTestBlobLoader(async () => "");
     assert.equal(await driveConfigured(), false);
+  });
+
+  it("tries Blobs on Lambda and when the tiny BLOB flag is set", () => {
+    assert.equal(shouldTryBlobs(), false);
+    process.env.AWS_LAMBDA_FUNCTION_NAME = "auth";
+    assert.equal(shouldTryBlobs(), true);
+    delete process.env.AWS_LAMBDA_FUNCTION_NAME;
+    process.env.GOOGLE_SERVICE_ACCOUNT_BLOB = "1";
+    assert.equal(shouldTryBlobs(), true);
+  });
+
+  it("does not cache a Blobs miss so a later connectLambda can retry", async () => {
+    let n = 0;
+    setTestBlobLoader(async () => {
+      n += 1;
+      return n === 1 ? "" : SAMPLE;
+    });
+    assert.equal(await driveConfigured(), false);
+    assert.equal(await driveConfigured(), true);
   });
 
   it("prepare script bundles Builds-only JSON only when forced or on Netlify", () => {

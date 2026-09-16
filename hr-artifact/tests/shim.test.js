@@ -129,6 +129,23 @@ describe("claude shim", () => {
     assert.equal(await w.claude.use("nope"), null);
   });
 
+  it("exposes mcp when auth reports a top-level mcp flag", async () => {
+    const w = fakeWindow();
+    w.fetch = (url) => {
+      if (String(url).includes("/auth")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ authenticated: true, methods: ["password"], mcp: true }),
+          text: async () => JSON.stringify({ authenticated: true, mcp: true }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}), text: async () => "{}" });
+    };
+    loadShim(w);
+    const mcp = await w.claude.use("mcp");
+    assert.equal(typeof mcp.callTool, "function");
+  });
+
   it("exposes sample and mcp when auth reports those capabilities", async () => {
     const w = fakeWindow();
     const calls = [];

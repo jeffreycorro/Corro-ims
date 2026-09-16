@@ -9,6 +9,7 @@ const DEFAULT_BLOB_KEY = "google-service-account";
 
 let accountCache;
 let testBlobLoader = null;
+let lastFunctionEvent = null;
 
 function parseServiceAccount(raw) {
   let text = String(raw || "").trim();
@@ -79,6 +80,7 @@ function blobStoreAndKey() {
 
 function attachFunctionEvent(event) {
   if (!event) return;
+  lastFunctionEvent = event;
   try {
     const blobs = require("@netlify/blobs");
     if (typeof blobs.connectLambda === "function") {
@@ -89,19 +91,55 @@ function attachFunctionEvent(event) {
   }
 }
 
+function onNetlifyRuntime() {
+  return (
+    process.env.NETLIFY === "true" ||
+    process.env.NETLIFY === "1" ||
+    Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME) ||
+    Boolean(process.env.NETLIFY_BLOBS_CONTEXT) ||
+    Boolean(process.env.NETLIFY_DEV) ||
+    process.env.CONTEXT === "production" ||
+    process.env.CONTEXT === "deploy-preview" ||
+    process.env.CONTEXT === "branch-deploy"
+  );
+}
+
+function shouldTryBlobs() {
+  if (String(process.env.GOOGLE_SERVICE_ACCOUNT_BLOB || "").trim()) return true;
+  return onNetlifyRuntime();
+}
+
+async function readBlobValue(getStore, store, key) {
+  const attempts = [];
+  try {
+    attempts.push(getStore(store));
+  } catch {
+    // string form rejected
+  }
+  try {
+    attempts.push(getStore({ name: store }));
+  } catch {
+    // object form rejected
+  }
+  for (const blobStore of attempts) {
+    if (!blobStore || typeof blobStore.get !== "function") continue;
+    const value = await blobStore.get(key);
+    if (value) return String(value).trim();
+  }
+  return "";
+}
+
 async function loadFromBlobs() {
   if (typeof testBlobLoader === "function") {
     const value = await testBlobLoader();
     return value ? String(value).trim() : "";
   }
-  const onNetlify = process.env.NETLIFY === "true";
-  const hinted = String(process.env.GOOGLE_SERVICE_ACCOUNT_BLOB || "").trim();
-  if (!onNetlify && !hinted) return "";
+  if (!shouldTryBlobs()) return "";
+  if (lastFunctionEvent) attachFunctionEvent(lastFunctionEvent);
   try {
     const { getStore } = require("@netlify/blobs");
     const { store, key } = blobStoreAndKey();
-    const value = await getStore(store).get(key);
-    return value ? String(value).trim() : "";
+    return await readBlobValue(getStore, store, key);
   } catch {
     return "";
   }
@@ -118,15 +156,18 @@ function loadServiceAccountSync() {
 }
 
 async function loadServiceAccount() {
-  if (accountCache !== undefined) return accountCache;
+  if (accountCache) return accountCache;
   const sync = loadServiceAccountSync();
   if (sync) {
     accountCache = sync;
     return accountCache;
   }
   const fromBlobs = await loadFromBlobs();
-  accountCache = fromBlobs ? parseServiceAccount(fromBlobs) : null;
-  return accountCache;
+  if (fromBlobs) {
+    accountCache = parseServiceAccount(fromBlobs);
+    return accountCache;
+  }
+  return null;
 }
 
 function driveHintConfigured() {
@@ -148,6 +189,7 @@ async function driveConfigured() {
 
 function resetServiceAccountCache() {
   accountCache = undefined;
+  lastFunctionEvent = null;
 }
 
 function setTestBlobLoader(fn) {
@@ -165,7 +207,9 @@ module.exports = {
   driveHintConfigured,
   loadServiceAccount,
   loadServiceAccountSync,
+  onNetlifyRuntime,
   parseServiceAccount,
   resetServiceAccountCache,
   setTestBlobLoader,
+  shouldTryBlobs,
 };
