@@ -48,6 +48,13 @@
     if (prev.fromDrive && next.fromDrive == null) next.fromDrive = prev.fromDrive;
     if (prev.link && !next.link) next.link = prev.link;
     if (prev.fileTitle && !next.fileTitle) next.fileTitle = prev.fileTitle;
+    if (prev.signedLink && !next.signedLink) {
+      next.signedLink = prev.signedLink;
+      next.signedTitle = next.signedTitle || prev.signedTitle;
+      next.signedOn = next.signedOn || prev.signedOn;
+    }
+    if (prev.signedTitle && !next.signedTitle) next.signedTitle = prev.signedTitle;
+    if (prev.signedOn && !next.signedOn) next.signedOn = prev.signedOn;
     if (shouldLockIdentity(prev)) {
       if (prev.no) next.no = prev.no;
       if (prev.date) next.date = prev.date;
@@ -146,6 +153,8 @@
       fromDrive: fromDrive,
       link: link,
       signedLink: stored && stored.signedLink,
+      signedTitle: stored && stored.signedTitle,
+      signedOn: stored && stored.signedOn,
     };
   }
 
@@ -178,6 +187,25 @@
       }
     }
     return null;
+  }
+
+  function insertSignedBanner(editor, m) {
+    if (!m.signedLink || editor.querySelector("#hr-memo-signed")) return null;
+    var stack = editor.querySelector(".stack") || editor;
+    var note = document.createElement("div");
+    note.id = "hr-memo-signed";
+    note.className = "note";
+    note.innerHTML =
+      '<b>Signed copy on file.</b> ' +
+      (m.signedOn ? "Uploaded " + escapeHtml(m.signedOn) + ". " : "") +
+      '<a href="' +
+      escapeAttr(m.signedLink) +
+      '" target="_blank" rel="noopener noreferrer"><b>Open the signed memorandum</b></a>' +
+      (m.signedTitle ? " — " + escapeHtml(m.signedTitle) : "") +
+      ".";
+    if (stack.firstChild) stack.insertBefore(note, stack.firstChild);
+    else stack.appendChild(note);
+    return note;
   }
 
   function insertScanBanner(editor, m) {
@@ -317,6 +345,7 @@
     editor.className = String(editor.className || "") + " hr-memo-filed";
     hideAiCard(editor);
     insertScanBanner(editor, m);
+    insertSignedBanner(editor, m);
     offerDraftToggle(editor, m);
     promoteSigned(editor);
     if (shouldLockIdentity(m)) lockIdentityFields(editor);
