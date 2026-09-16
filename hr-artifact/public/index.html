@@ -147,7 +147,7 @@ td.mono{font-family:var(--f-mono);font-size:11.5px}
 .f>label{font-family:var(--f-mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink3)}
 .f input,.f select,.f textarea{padding:6px 8px;border:1px solid var(--line2);border-radius:5px;background:var(--surface);font-size:13px;width:100%;min-width:0}
 .f textarea{resize:vertical;min-height:64px;line-height:1.5}
-.f input:disabled,.f select:disabled,.f textarea:disabled{background:var(--surface2);color:var(--ink2)}
+.f input:disabled{background:var(--surface2);color:var(--ink2)}
 .f .hint{font-size:10.5px;color:var(--ink3)}
 .f.mono input{font-family:var(--f-mono);font-size:12.5px}
 
@@ -216,6 +216,19 @@ td.mono{font-family:var(--f-mono);font-size:11.5px}
 /* a dashed rule wherever A4 would break: 297mm less 12mm top and 10mm bottom */
 .pf-sheet.guides .pf{background:#fff repeating-linear-gradient(to bottom,
    transparent 0, transparent 274mm, rgba(156,49,49,.55) 274mm, rgba(156,49,49,.55) 275mm) }
+/* A register is wider than it is tall. 297mm less 12mm each side = 273mm. */
+.pf.land{width:273mm}
+.pf-sheet.guides .pf.land{background:#fff repeating-linear-gradient(to bottom,
+   transparent 0, transparent 187mm, rgba(156,49,49,.55) 187mm, rgba(156,49,49,.55) 188mm) }
+/* The register: columns sized by colgroup, figures never wrapped, and names
+   allowed to break between words only — never inside one. */
+.pf-t.reg{font-size:8.8pt}
+.pf-t.reg td{padding:2px 4px;word-wrap:normal;overflow-wrap:normal;word-break:normal;vertical-align:middle}
+.pf-t.reg td.n{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+.pf-t.reg td.c{text-align:center;white-space:nowrap}
+.pf-t.reg td.nm{font-weight:700;line-height:1.2}
+.pf-t.reg td.nm small{display:block;font-weight:400;font-size:7.6pt;color:#333}
+.pf-t.reg .hd{font-weight:700;text-align:center;font-size:8.4pt;white-space:nowrap;background:#ececec}
 .pf *{box-sizing:border-box}
 .pf-head{display:flex;align-items:center;gap:0;border:1.4px solid #000;padding:7px 10px}
 .pf-head img{width:100%;max-width:430px;height:auto;display:block}
@@ -432,6 +445,15 @@ button.pill.drill:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
 <script>
 "use strict";
 
+/* The Payroll Maker, the attendance rules and the per-day holiday choice that
+   the Netlify build layered on through hr-payroll.js and hr-attendance.js now
+   live in this file. Those overlays check for these markers and stand down,
+   instead of wrapping screens they were written against a week earlier. */
+try{
+  if(!(window.hrPayroll && window.hrPayroll.version)) window.hrPayroll = {version:"in-portal", native:true};
+  if(!(window.hrAttendance && window.hrAttendance.attached)) window.hrAttendance = {attached:true, native:true};
+}catch(e){}
+
 /* ============ reference data ============ */
 /* toISOString() reports UTC. Cebu is UTC+8, so between midnight and eight in
    the morning it names YESTERDAY — every document filed before office hours
@@ -499,7 +521,14 @@ const DOCS = [
   {k:"resign",  n:"Resignation Letter",                        g:"Separation", opt:1},
   {k:"resignacc",n:"Acceptance of Resignation",                g:"Separation", opt:1, code:"ALR"},
   {k:"exitint", n:"Exit Interview",                            g:"Separation", opt:1},
-  {k:"notterm", n:"Notice of Termination",                     g:"Separation", opt:1}
+  {k:"notterm", n:"Notice of Termination",                     g:"Separation", opt:1},
+  /* Asked for through the concerns log, September 2026 — separation paperwork and the
+     statutory-deduction waiver had nowhere to be filed. */
+  {k:"clearance", n:"Employee Clearance Form",                    g:"Separation", opt:1},
+  {k:"qclast",    n:"Quitclaim — Last Salary",                    g:"Quitclaim", opt:1},
+  {k:"qc13pr",    n:"Quitclaim — Pro-rated 13th Month",           g:"Quitclaim", opt:1},
+  {k:"qc13",      n:"Quitclaim — 13th Month Pay",                 g:"Quitclaim", opt:1},
+  {k:"govrefuse", n:"Refusal of Government-mandated Deductions",  g:"Statutory", opt:1}
 ];
 const DOCG = ["Recruitment","Identification","Clearances","Statutory","Employment","Records on file","Separation","Quitclaim"];
 const DSTAT = {on:"On file", miss:"Missing", exp:"For renewal", na:"N/A"};
@@ -813,6 +842,7 @@ const S = {
   employees:{}, nte:{}, writeups:{}, tasks:{}, templates:{}, reminders:{},
   memos:{}, resources:{}, onboarding:{}, series:{}, docreg:{}, applicants:{}, exams:{}, roles:{},
   advances:{}, leaves:{}, projects:{}, incidents:{}, genfiles:{}, decisions:{}, daily:{},
+  payruns:{},                       // a saved payroll run, keyed kind|from
   filed:{},                         // forms issued on paper before the portal, read back off Drive
   compliance:{},                    // statutory filings recorded, keyed obligation|period
   forms:{},                         // controlled-form master list (ISO 9001 cl. 7.5)
@@ -825,6 +855,7 @@ const S = {
     signatory:"Jeffrey James M. Corro", signatoryTitle:"CEO / President",
     adminHead:"Marian U. Corro", adminTitle:"Administrative Head",
     financeHead:"", financeTitle:"Finance Officer",
+    payrollBy:"Catherine A. Largo", payrollTitle:"Safety Officer",
     president:"Jeffrey James M. Corro", presidentTitle:"CEO / President",
     workdaysPerPeriod:13, otPolicy:1.0, explainDays:5, lookbackMonths:12,
     ded:{sss:325,phic:131.25,hdmf:100},
@@ -861,7 +892,8 @@ const clone = typeof structuredClone==="function"
 
 const COLLS = ["employees","nte","writeups","tasks","templates","periods",
                "memos","resources","onboarding","series","docreg","applicants","exams","roles",
-               "advances","leaves","projects","incidents","genfiles","decisions","daily"];
+               "advances","leaves","projects","incidents","genfiles","decisions","daily",
+               "payruns","reminders","filed","compliance","forms"];
 
 /* lsSave stringifies every collection, so calling it once per write turned a
    300-record seed into 300 full serialisations of a growing megabyte. */
@@ -869,6 +901,10 @@ let LS_T=null;
 function lsSaveSoon(){ if(LS_T) return; LS_T=setTimeout(()=>{ LS_T=null; lsSave(); },800); }
 
 async function put(coll,id,obj){
+  /* A hire added after start-up belongs on People & Pay straight away rather
+     than waiting to be adopted from a manpower report. */
+  if(coll==="employees" && obj && S.ready && !S.employees[id] && obj.status!=="Separated" && !obj.rosterConfirmed)
+    obj.rosterConfirmed=TODAY;
   S[coll][id]=obj; lsSaveSoon();
   if(!S.db) return;
   try{ await S.db.doc(coll+"/"+id).set(obj); }
@@ -1058,7 +1094,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-09-07g";
+const BUILD = "2026-09-16b";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -1863,21 +1899,27 @@ function pfRev(rev){
 let PF_TIGHT = 0;
 const PF_TIGHT_N = ["as written","tighter","tighter still","tightest"];
 function pfTightClass(){ return PF_TIGHT ? " t"+PF_TIGHT : ""; }
-function pfWrap(inner){
+/* Which way up the sheet is. It has to reach the print layer and the PDF as
+   well, or the preview would be a lie — same reason PF_TIGHT is module-level. */
+let PF_LAND = false;
+function pfWrap(inner, o){
   PF_TIGHT = 0;                       /* every preview opens at full size */
-  return '<div class="pf-sheet guides" id="pf-sheet"><div class="pf" id="pf-page">'+inner+'</div></div>'
+  PF_LAND = !!(o && o.land);
+  return '<div class="pf-sheet guides" id="pf-sheet"><div class="pf'+(PF_LAND?" land":"")+'" id="pf-page">'+inner+'</div></div>'
    + '<div class="row" id="pf-gauge" style="margin-top:8px"></div>';
 }
-const A4_CONTENT_MM = 275;      /* 297 less 12mm top and 10mm bottom */
+/* portrait: 297 less 12mm top and 10mm bottom. landscape: 210 less the same. */
+const A4_PORTRAIT_MM = 275, A4_LAND_MM = 188;
+function pfPageMM(){ return PF_LAND ? A4_LAND_MM : A4_PORTRAIT_MM; }
 function pfMeasure(){
   const el=document.getElementById("pf-page"), g=document.getElementById("pf-gauge");
   if(!el || !g) return;
   /* 1mm at 96dpi = 3.7795px */
   const mm = el.getBoundingClientRect().height / 3.7795;
-  const pages = Math.max(1, Math.ceil((mm - 0.5) / A4_CONTENT_MM));
+  const pages = Math.max(1, Math.ceil((mm - 0.5) / pfPageMM()));
   g.innerHTML = (pages===1
     ? '<span class="pill ok">Fits one A4 page</span>'
-      + '<span class="hint">'+Math.round(mm)+'mm of '+A4_CONTENT_MM+'mm used</span>'
+      + '<span class="hint">'+Math.round(mm)+'mm of '+pfPageMM()+'mm used</span>'
     : '<span class="pill warn">Runs to '+pages+' A4 pages</span>'
       + '<span class="hint">'+Math.round(mm)+'mm — the dashed line marks where the page ends</span>')
    + (pages>1 && PF_TIGHT<3
@@ -1890,7 +1932,7 @@ function pfMeasure(){
   const fit=document.getElementById("pf-fit");
   if(fit) fit.onclick=()=>pfFit();
   const loose=document.getElementById("pf-loose");
-  if(loose) loose.onclick=()=>{ PF_TIGHT=0; el.className="pf"; pfMeasure(); };
+  if(loose) loose.onclick=()=>{ PF_TIGHT=0; el.className="pf"+(PF_LAND?" land":""); pfMeasure(); };
 }
 /* Step the sheet down a level at a time and stop the moment it fits, so a memo
    that only just spills is barely touched and one that spills badly is not
@@ -1898,8 +1940,8 @@ function pfMeasure(){
 function pfFit(){
   const el=document.getElementById("pf-page");
   if(!el) return;
-  const over = () => (el.getBoundingClientRect().height/3.7795) - 0.5 > A4_CONTENT_MM;
-  while(PF_TIGHT<3 && over()){ PF_TIGHT++; el.className="pf t"+PF_TIGHT; }
+  const over = () => (el.getBoundingClientRect().height/3.7795) - 0.5 > pfPageMM();
+  while(PF_TIGHT<3 && over()){ PF_TIGHT++; el.className="pf t"+PF_TIGHT+(PF_LAND?" land":""); }
   pfMeasure();
   if(over()) toast("Even at the tightest setting it runs over. Shorten the wording — "
     + "past this point the print stops being comfortable to read.","err");
@@ -2771,6 +2813,8 @@ const VIEWS = [
   {k:"daily",    n:"Daily Manpower",   i:"i-check",  g:"Payroll"},
   {k:"attendance",n:"Attendance",     i:"i-clock",  g:"Payroll"},
   {k:"salaries", n:"People & Pay",     i:"i-peso",   g:"Payroll"},
+  {k:"payrun",   n:"Payroll Maker",   i:"i-peso",   g:"Payroll"},
+  {k:"contrib",  n:"Contributions",   i:"i-peso",   g:"Payroll"},
   {k:"payroll",  n:"Payroll Data",    i:"i-peso",   g:"Payroll"},
   {k:"general",  n:"General Files",   i:"i-folder", g:"Work"},
   {k:"training", n:"Training",        i:"i-check",  g:"Hiring"},
@@ -4020,7 +4064,7 @@ function memoPaper(m, no){
        ["Confirmed by:", st.hrHead||"",    "HR Dept. Head"],
        ["Noted by:",     st.adminHead||"", st.adminTitle||"Administrative Head / Corp. Secretary"],
        ["Conformed:",    st.president||"", st.presidentTitle||"CEO"]])
-   + pfISO("memo", {formNo: no||m.no||""});
+   + pfISO("memo");
   return body;
 }
 function printCompanyMemo(m, no){
@@ -4799,16 +4843,20 @@ function payloadText(r){
    of status words, then the reason. The site bands come out of the extraction
    jumbled, so the area is taken from the employee's own record instead of
    guessed from the text. */
-const DAY_STATUS_RX = /(Present\s*\/\s*Late|Present|Absent|Regular\s+Holiday|Special\s+Holiday|Half\s*Day|Rest\s*Day|Leave)/i;
+/* "Regular Day - Off" is how the timekeeper marks a Sunday nobody worked. It was
+   missing from this list, so those rows had no status word and were filed as
+   Present — 184 of them over five Sundays before it was caught. */
+const DAY_STATUS_RX = /(Present\s*\/\s*Late|Under\s*time|Present|Absent|Regular\s+Holiday|Special\s+Holiday|Half\s*Day|Rest\s*Day|Day\s*[-–]?\s*Off|Leave)/i;
 function normStatus(t){
   const x=String(t||"").toLowerCase().replace(/\s+/g," ").trim();
   if(/present\s*\/\s*late/.test(x)) return "Present/Late";
+  if(/under\s*time/.test(x)) return "Undertime";
   if(/^present/.test(x)) return "Present";
   if(/^absent/.test(x)) return "Absent";
   if(/regular holiday/.test(x)) return "Regular Holiday";
-  if(/special holiday/.test(x)) return "Regular Holiday";
+  if(/special holiday/.test(x)) return "Special Holiday";
   if(/half\s*day/.test(x)) return "Half Day";
-  if(/rest\s*day/.test(x)) return "Rest Day";
+  if(/rest\s*day|day\s*[-–]?\s*off/.test(x)) return "Rest Day";
   if(/leave/.test(x)) return "Leave";
   return "";
 }
@@ -5062,11 +5110,11 @@ async function importAttendance(only){
       parsed.forEach(r=>{
         const e=byNo[normNo(r.empNo)];
         if(!e){ stats.unknown[r.empNo]=(stats.unknown[r.empNo]||0)+1; return; }
-        rec.rows[e.id]={ s:r.status||"Present", r:r.reason||"", site:e.project||"ADMINS" };
+        rec.rows[e.id]={ s:r.status||normStatus(r.reason)||"Present", r:r.reason||"", site:e.project||"ADMINS" };
         used++;
       });
       if(!used){ stats.unread.push(f.title+" (no employee matched)"); continue; }
-      await put("daily", rec.id, rec);
+      await dailySave(rec, "read in from "+(f.title||"a filed scan"));
       stats.files++; stats.days++; stats.rows+=used;
     }
   }catch(e){
@@ -5215,19 +5263,30 @@ function absenceExcuse(empId, date, reason){
   const l=leaveCovers(empId, date);
   if(l) return {kind:"register", leave:l, no:l.no||"", label:"approved leave on file"};
   const ref=citedLeaveRef(reason);
-  if(!ref) return null;
-  /* Either this row says "approved leave" itself, or it is the wrapped tail of
-     a row that did — same employee, same number. */
-  const saysSo = reportSaysApproved(reason)
-    || !!lrfIndex().approved[empId+"|"+String(parseInt(ref.seq,10))];
-  if(saysSo){
-    const rec=Object.values(S.leaves||{}).find(x=>x.no && sameLeaveNo(x.no, ref.no));
-    if(rec && (rec.status==="Approved"||rec.status==="Availed"))
-      return {kind:"register", leave:rec, no:rec.no, label:"approved leave on file"};
-    return {kind:"report", ref, no:ref.no, record:rec||null,
-      wrapped: !reportSaysApproved(reason),
-      label: rec ? ("the report cites "+ref.no+", and that leave is still "+(rec.status||"unapproved"))
-                 : ("the report says approved leave "+ref.no+" — not yet in the leave register")};
+  if(ref){
+    /* Either this row says "approved leave" itself, or it is the wrapped tail of
+       a row that did — same employee, same number. */
+    const saysSo = reportSaysApproved(reason)
+      || !!lrfIndex().approved[empId+"|"+String(parseInt(ref.seq,10))];
+    if(saysSo){
+      const rec=Object.values(S.leaves||{}).find(x=>x.no && sameLeaveNo(x.no, ref.no));
+      if(rec && (rec.status==="Approved"||rec.status==="Availed"))
+        return {kind:"register", leave:rec, no:rec.no, label:"approved leave on file"};
+      return {kind:"report", ref, no:ref.no, record:rec||null,
+        wrapped: !reportSaysApproved(reason),
+        label: rec ? ("the report cites "+ref.no+", and that leave is still "+(rec.status||"unapproved"))
+                   : ("the report says approved leave "+ref.no+" — not yet in the leave register")};
+    }
+  }
+  /* Weakest of all: HR sorted the absence on the day under an excused reason —
+     sick, official business, a typhoon. It is not a leave form and it pays
+     nothing, but it is not an unexplained absence either. */
+  if(reportSaysNotFiled(reason)) return null;
+  const row=((dailyGet(date)||{}).rows||{})[empId];
+  if(row && row.s==="Absent" && rowExcused(row)===true){
+    const spec=reasonByKey(row.rk);
+    return {kind:"reason", key:row.rk||"", no:"",
+      label:((spec && spec.k!=="other") ? spec.n : (row.r||"excused"))+" — excused on the report"};
   }
   return null;
 }
@@ -5245,7 +5304,7 @@ function offenders(months){
     Object.entries(rec.rows||{}).forEach(([id,r])=>{
       const t=(tally[id]=tally[id]||{late:0,absent:0,leave:0,excused:0});
       const st=effectiveStatus(id, rec.date, r.s, r.r);
-      if(st==="Present/Late") t.late++;
+      if(st==="Present/Late"){ if(rowExcused(r)!==true) t.late++; }
       else if(st==="Absent") t.absent++;
       else if(st==="Leave"){ t.leave++; if(r.s==="Absent") t.excused++; }
     });
@@ -5307,7 +5366,8 @@ function drillRows(o){
       const raw=r.s||"";
       const cover = raw==="Absent" ? absenceExcuse(id, rec.date, r.r) : null;
       const st = cover ? "Leave" : raw;
-      const isLate=st==="Present/Late", isAbsent=st==="Absent", isLeave=st==="Leave";
+      const isLate=st==="Present/Late", isAbsent=st==="Absent", isLeave=st==="Leave", isUT=st==="Undertime";
+      if(want==="undertime" && !isUT) return;
       if(want==="late"   && !isLate)   return;
       if(want==="absent" && !isAbsent) return;
       if(want==="leave"  && !isLeave)  return;
@@ -5317,6 +5377,7 @@ function drillRows(o){
       out.push({ date:rec.date, name:e.name, empNo:e.empNo||"", empId:id,
                  status:st, rawStatus:raw, cover:cover||null,
                  reason: r.r||"",
+                 lateExcused: st==="Present/Late" && rowExcused(r)===true,
                  excuse: cover||null,
                  site:siteOf[id]||e.project||"",
                  source:rec.source||"", link:rec.driveLink||"" });
@@ -5329,6 +5390,8 @@ function leaveVerdictCell(r){
   const x=r.excuse;
   if(x && x.kind==="register")
     return '<span class="pill ok" title="Matched to the leave register">'+esc(x.no||"approved leave")+'</span>';
+  if(x && x.kind==="reason")
+    return '<span class="pill ok" title="'+esc(x.label)+'">excused on the report</span>';
   if(x && x.kind==="report")
     return '<span class="pill warn" title="'+esc(x.label)+'">'+esc(x.no)+' — not on file</span>';
   const ref = r.rawStatus==="Absent" ? citedLeaveRef(r.reason) : null;
@@ -5881,6 +5944,38 @@ function viewInsights(){
      + 'a judgement, not a rule. The section below sets out what the record would support.</div></div>'
      + '</div>';
   }
+  /* Attendance is edited after it is filed — overtime typed in, a status
+     corrected — and every figure above moves when it is. So the edits belong
+     on the same page as the counts they change. */
+  const eds=dailyEdits({month:one||"", changesOnly:true})
+    .filter(x=>one || months.indexOf(monthKey(x.date))>=0);
+  h+='<div class="sect-h" style="margin-top:22px"><h2>Attendance edited after filing</h2>'
+   + '<span class="rule"></span><span class="lbl">'+eds.length+' in this window</span></div>';
+  if(!eds.length){
+    h+='<div class="card"><div class="empty">No day in this window has been changed since it was filed. '
+     + 'Every count above is the report as it came in.</div></div>';
+  }else{
+    h+='<div class="card"><div class="card-b"><div class="note">Each of these moved a figure the counts '
+     + 'above are built from. The report as filed is still underneath — this is the record of what was '
+     + 'changed, by whom and when.</div></div>'
+     + '<div class="tw" style="max-height:40vh;overflow:auto"><table><thead><tr>'
+     + '<th style="width:120px">Day</th><th style="width:126px">Edited</th><th style="width:140px">By</th>'
+     + '<th>What changed</th><th style="width:80px"></th></tr></thead><tbody>';
+    eds.slice(0,40).forEach(x=>{
+      h+='<tr><td><b>'+esc(longDate(x.date))+'</b></td>'
+       + '<td class="mono" style="font-size:11.5px">'+esc(x.at||"")+'</td>'
+       + '<td>'+esc(x.by||"")+'</td>'
+       + '<td style="font-size:12px">'+(x.ch||[]).slice(0,4).map(c=>esc(dailyChangeText(c))).join('<br>')
+       + ((x.n>4)?'<br><span class="lbl">and '+(x.n-4)+' more</span>':"")
+       + (x.why?'<div class="lbl">'+esc(x.why)+'</div>':"")+'</td>'
+       + '<td style="text-align:right"><button class="btn sm" data-dmopen="'+esc(x.date)+'">Open</button></td></tr>';
+    });
+    h+='</tbody></table></div>'
+     + (eds.length>40?'<div class="card-b lbl">Showing 40 of '+eds.length+'.</div>':"")
+     + '</div>';
+  }
+
+  h+=attendanceSummaryCard(months);
   h+=escalationPanel(months);
   return h;
 }
@@ -5936,7 +6031,7 @@ function priorNotices(empId){
 function attendanceCase(empId, months){
   const R=attRules();
   const rows=drillRows({empId, months});
-  const lates  = rows.filter(r=>r.status==="Present/Late");
+  const lates  = rows.filter(r=>r.status==="Present/Late" && !r.lateExcused);
   /* drillRows has already turned a covered absence into leave; these are the
      ones it did that to, kept so the panel can say so out loud */
   const excused= rows.filter(r=>r.excuse);
@@ -7445,7 +7540,7 @@ const PROGRAMMES = [
    materials:[
      {k:"Presentation",    n:"New Employee Orientation (v1.2, 44 pages) — CCDTC-HR-ONB-000-PRES", url:D_FILE("15hkQXxE50ZNLb3EjxGk5vpxOolwC5h8f"), kind:"pdf"},
      {k:"Full edition",    n:"New Employee Orientation (v1.1, full)", url:D_FILE("1jQYDbrPlqNxtZMRfRxQzeb7xe36AFhaz"), kind:"pdf"},
-     {k:"Onboarding video",n:"CORCONDEV Onboarding (2026)", url:D_FILE("1KjKPYMuDarowOeZauaVeronpXaMPTZV6"), kind:"video"},
+     {k:"Onboarding video",n:"CORCONDEV Onboarding", url:D_FILE("11wX350zj31ybmtagU9P8TTA71gIX2i3Y"), kind:"video"},
      {k:"Narrated deck",   n:"CORCONDEV Onboarding (with audio)", url:"https://docs.google.com/presentation/d/1sUCeZ8J4bFg36G9nE3o-vUntq3Q-8NRcN54WpZi8tO0/edit", kind:"slides"},
      {k:"Safety orientation", n:"Safety Orientation deck", url:D_FILE("14VxwfWB6JEh1Olg2_xP2QNsDDEEsqqYd"), kind:"slides"},
      {k:"Review log",      n:"Onboarding Review Log", url:D_FILE("1Pch8HHAHlbhfGuWMkhR0Kf_rEzcxOBSr"), kind:"sheet"}
@@ -7684,7 +7779,10 @@ async function browseFolder(id, name, trail){
    prints in the same shape, and the file goes back to the same folder.
    Everyone is Present until someone says otherwise, because that is how the
    day actually goes. */
-const DAY_STATUS = ["Present","Present/Late","Absent","Leave","Regular Holiday","Rest Day","Half Day"];
+/* "Special Holiday" and "Leave with Pay" carry different money from their
+   near-neighbours, so payroll needs them named separately. */
+const DAY_STATUS = ["Present","Present/Late","Undertime","Absent","Leave","Leave with Pay",
+                    "Regular Holiday","Special Holiday","Rest Day","Half Day"];
 const DAY_REASON = { "Absent":"AWOL", "Leave":"Approved Leave", "Present/Late":"" };
 function dailyId(d){ return "d"+String(d||"").replace(/-/g,""); }
 /* A month with no reports reads on every chart as a month when nobody was
@@ -7740,11 +7838,40 @@ function dailyPeople(rec){
   const omit=new Set(rec.omit||[]);
   const list=atWork().filter(e=>!omit.has(e.id));
   (rec.extra||[]).forEach(id=>{ const e=S.employees[id]; if(e && !list.some(x=>x.id===e.id)) list.push(e); });
+  /* Somebody added to a day by hand stays on the days after it until they are
+     marked Separated — a new hire or a worker lent to a site is on tomorrow too. */
+  if(rec.date){
+    const first=firstAddedIndex();
+    Object.keys(first).forEach(id=>{
+      if(first[id]>rec.date || omit.has(id) || list.some(x=>x.id===id)) return;
+      const e=S.employees[id]; if(!e) return;
+      if(e.status==="Separated" && (!e.separatedOn || e.separatedOn<rec.date)) return;
+      list.push(e);
+    });
+  }
   return list.sort((a,b)=>String(a.empNo).localeCompare(String(b.empNo)));
 }
 function dailySiteOf(rec,e){
   const r=(rec.rows||{})[e.id];
-  return (r && r.site) || e.project || "ADMINS";
+  if(r && r.site) return r.site;
+  /* A day not filed yet starts each person where they were last put, not back
+     on the project their 201 file names — HR moved them for a reason, and
+     resetting it every morning was the complaint. */
+  return lastSiteBefore(e.id, rec.date) || e.project || "ADMINS";
+}
+let LAST_SITE_IX=null;
+function lastSiteBefore(empId, date){
+  if(!date) return "";
+  if(!LAST_SITE_IX){
+    LAST_SITE_IX={};
+    Object.values(S.daily).forEach(rec=>{ if(!rec || !rec.date) return;
+      Object.entries(rec.rows||{}).forEach(([id,r])=>{ if(!r || !r.site) return;
+        (LAST_SITE_IX[id]=LAST_SITE_IX[id]||[]).push([rec.date, r.site]); }); });
+    Object.values(LAST_SITE_IX).forEach(a=>a.sort((x,y)=>x[0].localeCompare(y[0])));
+  }
+  let site="";
+  for(const [d,st] of (LAST_SITE_IX[empId]||[])){ if(d<date) site=st; else break; }
+  return site;
 }
 /* Site order follows the report: projects first, admin last. */
 function dailyGroups(rec){
@@ -7762,8 +7889,94 @@ function dailyGroups(rec){
   });
   return keys.map(k=>({site:k, people:g.get(k)}));
 }
+/* What a day counts as for pay, read off the status the timekeeper set.
+   HR can type over any of it on the Daily Manpower screen — the typed value
+   always wins, which is why these are shown as placeholders, not values. */
+function dayCredit(r){
+  const st=(r&&r.s)||"";
+  if(st==="Absent") return 0;
+  if(st==="Half Day") return 0.5;
+  if(st==="Leave") return 0;                 /* plain leave is unpaid */
+  if(st==="Leave with Pay") return 1;
+  if(st==="Rest Day") return 0;
+  /* A special non-working day nobody worked is no work, no pay; a regular
+     holiday is paid worked or not. Anyone who worked either one reads Present. */
+  if(st==="Special Holiday") return 0;
+  return 1;                                   /* Present, Present/Late, Undertime, Regular Holiday */
+}
+/* The 30% premium: a special non-working holiday, or a Sunday, that was
+   actually worked. Catherine's sheets carry it as 0.3 of a day. */
+/* Whether a 30% premium COULD apply to this day — a special holiday, a
+   regular holiday, or a Sunday, that was actually worked. Being eligible is
+   not the same as being granted: whether the premium is paid is a decision
+   HR makes per person, so nothing here awards it. */
+/* The company's own holiday calendar. Telling the portal a date is a holiday
+   once is the whole point — otherwise somebody has to change the status on
+   fifty rows by hand before the premium can even be offered.
+   Only the fixed-date regular holidays are shipped. Maundy Thursday, Good
+   Friday, National Heroes Day and every special non-working day move each year
+   and arrive by proclamation, so they are added here as they are declared. */
+const HOLIDAY_FIXED = [
+  {md:"01-01", n:"New Year's Day",        t:"Regular"},
+  {md:"04-09", n:"Araw ng Kagitingan",    t:"Regular"},
+  {md:"05-01", n:"Labor Day",             t:"Regular"},
+  {md:"06-12", n:"Independence Day",      t:"Regular"},
+  {md:"11-30", n:"Bonifacio Day",         t:"Regular"},
+  {md:"12-25", n:"Christmas Day",         t:"Regular"},
+  {md:"12-30", n:"Rizal Day",             t:"Regular"}
+];
+function holidayList(){
+  return (S.settings.holidays||[]).slice().sort((a,b)=>String(a.d).localeCompare(String(b.d)));
+}
+/* A date the company treats as a holiday: one HR added, or one of the fixed
+   regular holidays that falls on that day of that month. */
+function holidayOn(date){
+  if(!date) return null;
+  const own=(S.settings.holidays||[]).find(x=>x.d===date);
+  if(own) return own;
+  const f=HOLIDAY_FIXED.find(x=>x.md===String(date).slice(5));
+  return f ? {d:date, n:f.n, t:f.t, fixed:true} : null;
+}
+function holEligible(date, r){
+  const st=(r&&r.s)||"";
+  if(dayCredit(r)<=0) return false;
+  if(st==="Special Holiday" || st==="Regular Holiday") return true;
+  if(holidayOn(date)) return true;                              /* on the calendar */
+  return !!(date && new Date(date+"T00:00:00").getDay()===0);   /* Sunday worked */
+}
+/* Why this day can carry a premium, in words, for the banner. */
+function holReason(date){
+  const h=holidayOn(date);
+  if(h) return h.n + " — a " + String(h.t||"Regular").toLowerCase() + " holiday";
+  if(date && new Date(date+"T00:00:00").getDay()===0) return "a Sunday";
+  return "marked a holiday on the report";
+}
+/* Never granted automatically. HR ticks it per head on the Daily Manpower
+   screen; an untouched day pays no premium. */
+function holCredit(date, r){ return 0; }
+const HOL_PREMIUM = 0.3;
+/* Per day the premium is one of three: as is, +30% (a special day or a worked
+   Sunday) or +100% (a regular holiday worked). Stored 0, 1 or 2 — the rows the
+   old 30% tick box wrote as 1 read exactly the same. */
+const HOL_CHOICES = [[0,"As is"],[1,"+30%"],[2,"+100%"]];
+function holCode(r){
+  const h=r&&r.hol;
+  if(h===2||h==="2"||h===100||h==="100") return 2;
+  if(h===1||h===true||h==="1"||h===0.3||h==="0.3"||h==="30") return 1;
+  return 0;
+}
+function holRate(r){ const c=holCode(r); return c===2 ? 1 : c===1 ? HOL_PREMIUM : 0; }
+function holLabel(c){ return c===2 ? "+100%" : c===1 ? "+30%" : "As is"; }
+function holSelect(attr, id, code, disabled){
+  return '<select '+attr+'="'+esc(id)+'"'+(disabled?' disabled':'')
+    + ' title="Holiday treatment for this day" style="width:100%;padding:3px 4px;border:1px solid var(--line2);'
+    + 'border-radius:4px;background:var(--surface);font-size:11.5px">'
+    + HOL_CHOICES.map(([v,n])=>'<option value="'+v+'"'+(code===v?" selected":"")+'>'+n+'</option>').join("")+'</select>';
+}
+function dayVal(r,k,fallback){ return (r && r[k]!=null && r[k]!=="") ? Number(r[k]) : fallback; }
+
 function dailyRow(rec,e){
-  return (rec.rows||{})[e.id] || {s:"Present", r:""};
+  return (rec.rows||{})[e.id] || {s:"Present", r:"", in:"", out:"", ot:null, day:null, hol:null};
 }
 function dailyTally(rec){
   const t={present:0,late:0,absent:0,leave:0,holiday:0,other:0};
@@ -7772,6 +7985,7 @@ function dailyTally(rec){
     const r=effectiveStatus(e.id, rec.date, row.s, row.r);
     if(r==="Present") t.present++;
     else if(r==="Present/Late") { t.present++; t.late++; }
+    else if(r==="Undertime") { t.present++; t.undertime=(t.undertime||0)+1; }
     else if(r==="Absent") t.absent++;
     else if(r==="Leave") t.leave++;
     else if(r==="Regular Holiday") t.holiday++;
@@ -7789,7 +8003,9 @@ function viewDaily(){
   setCrumb("Daily Manpower Report", longDate(d)+(saved?" · saved":" · not saved yet"));
 
   let h='<div class="row" style="margin-bottom:14px">'
+   + '<button class="btn sm" data-dmshift="-1" title="The day before">◂</button>'
    + '<div class="f" style="margin:0"><label>Date</label><input id="dm-date" type="date" value="'+esc(d)+'"></div>'
+   + '<button class="btn sm" data-dmshift="1" title="The day after">▸</button>'
    + '<button class="btn" id="dm-allpresent">Everyone present</button>'
    + '<button class="btn" id="dm-print">Print the report</button>'
    + '<button class="btn pri" id="dm-save">Save</button>'
@@ -7797,6 +8013,7 @@ function viewDaily(){
    + '<button class="btn" id="dm-apply" title="Copy today\'s areas onto the 201 records">Make areas permanent</button>'
    + '<button class="btn" data-goto="salaries">Edit positions</button>'
    + '<button class="btn" id="dm-archive">The filed scans</button>'
+   + '<button class="btn" id="dm-paste">Paste manpower JSON</button>'
    + (saved?'<button class="btn danger" id="dm-del">Delete</button>':"")
    + '</div>';
 
@@ -7806,6 +8023,37 @@ function viewDaily(){
    + tile(t.leave,"On leave","approved leave","acc")
    + tile(t.holiday+t.other,"Holiday or rest day","","acc")
    + '</div>';
+
+  if(!saved){
+    const head=groups.reduce((n2,g)=>n2+g.people.length,0);
+    h+='<div class="note" style="border-left-color:var(--warn);margin:14px 0">'
+     + '<b>No report has been filed for '+esc(longDate(d))+' yet.</b> The '+head+' people below are the '
+     + 'standing list, and every one of them is showing Present because that is where the form starts — '
+     + 'not because anybody has said so. Save it as it stands and that is what the day will say, and what '
+     + 'payroll will pay. Change the exceptions first.</div>';
+  }
+
+  const leavers=leaversOnList();
+  if(leavers.length){
+    h+='<div class="card" style="margin:14px 0;border-left:3px solid var(--warn)">'
+     + '<div class="card-h"><b>'+leavers.length+' '+(leavers.length===1?"person has":"people have")
+     + ' separation paperwork on file but are still on this list</b></div><div class="card-b">'
+     + '<div class="note" style="margin:0 0 10px">Their 201 record still reads active, so the report keeps '
+     + 'bringing them back every morning. Marking somebody separated takes them off this list from '
+     + 'today on — reports already filed keep them, and a payroll for a period they worked still pays '
+     + 'them. Nothing is deleted.</div>'
+     + '<table class="t"><thead><tr><th>No.</th><th>Name</th><th>Why this is showing</th><th></th></tr></thead><tbody>';
+    leavers.forEach(x=>{
+      h+='<tr><td class="mono">'+esc(x.e.empNo||"")+'</td>'
+       + '<td>'+esc(flipName(x.e.name))+'</td>'
+       + '<td class="mut">'+esc(x.why)+'</td>'
+       + '<td><button class="btn sm" data-dmsep="'+esc(x.e.id)+'">Mark separated</button></td></tr>';
+    });
+    h+='</tbody></table>'
+     + '<div class="row" style="margin-top:10px"><button class="btn danger" id="dm-sep-all">'
+     + 'Mark all '+leavers.length+' separated</button></div>'
+     + '</div></div>';
+  }
 
   h+='<div class="note" style="margin:14px 0">Everyone starts as <b>Present</b> — change only the exceptions, '
    + 'then Save. <b>Drag a name</b> onto another area, or use the Area column, when someone works somewhere '
@@ -7879,7 +8127,10 @@ function viewDaily(){
       rows.forEach(r=>{
         const t2=dailyTally(r);
         h+='<tr'+(r.date===d?' style="background:var(--accent-soft)"':'')+'>'
-         + '<td><b>'+esc(longDate(r.date))+'</b></td>'
+         + '<td><b>'+esc(longDate(r.date))+'</b>'
+         + ((r.log||[]).some(L=>!L.first && L.n)
+            ? ' <span class="pill acc" title="'+esc("Last edited "+(r.editedOn||"")+" by "+(r.editedBy||""))+'">edited</span>' : "")
+         + '</td>'
          + '<td class="mono">'+t2.present+'</td>'
          + '<td class="mono">'+(t2.late?'<span class="pill warn">'+t2.late+'</span>':'0')+'</td>'
          + '<td class="mono">'+(t2.absent?'<span class="pill crit">'+t2.absent+'</span>':'0')+'</td>'
@@ -7895,6 +8146,30 @@ function viewDaily(){
     h+='</div>';
   }
 
+  /* A holiday or a Sunday is a decision to make, so say so once at the top of
+     the day rather than leaving HR to spot it row by row. */
+  const anyEligible = groups.some(g=>g.people.some(e=>holEligible(rec.date, dailyRow(rec,e))));
+  if(anyEligible){
+    const on = groups.reduce((n2,g)=>n2+g.people.filter(e=>holCode(dailyRow(rec,e))>0).length,0);
+    const can= groups.reduce((n2,g)=>n2+g.people.filter(e=>holEligible(rec.date, dailyRow(rec,e))).length,0);
+    h+='<div class="note" style="border-left-color:var(--warn);margin-bottom:12px">'
+     + '<b>'+esc(longDate(rec.date))+' can carry a holiday premium</b> — '+esc(holReason(rec.date))
+     + ', and '+can+' '+(can===1?'person':'people')+' worked. It is eligible, not granted: choose '
+     + '<b>+30%</b> for a special day or Sunday, <b>+100%</b> for a regular holiday worked, or <b>As is</b>, '
+     + 'person by person. <b>'+on+' of '+can+' have a premium.</b> '
+     + '<button class="btn sm" id="dm-hol30">Give all +30%</button> '
+     + '<button class="btn sm" id="dm-hol100">Give all +100%</button> '
+     + '<button class="btn sm" id="dm-holnone">Clear all (as is)</button> '
+     + '<button class="btn sm" id="dm-holcal">Holiday calendar</button></div>';
+  }
+
+  if(!anyEligible){
+    h+='<div class="row" style="margin-bottom:12px"><span class="lbl">'
+     + 'No premium applies to this day</span>'
+     + '<button class="btn sm" id="dm-holmark">Declare '+esc(longDate(rec.date))+' a holiday</button>'
+     + '<button class="btn sm" id="dm-holcal">Holiday calendar</button></div>';
+  }
+
   let n=0;
   groups.forEach(g=>{
     h+='<div class="card" style="margin-bottom:12px" data-drop="'+esc(g.site)+'">'
@@ -7903,8 +8178,12 @@ function viewDaily(){
      + '<button class="btn sm" data-siterename="'+esc(g.site)+'">Rename</button></div></div>'
      + '<div class="tw"><table><thead><tr><th style="width:26px"></th><th style="width:40px">No.</th>'
      + '<th style="width:66px">ID</th>'
-     + '<th>Employee</th><th style="width:130px">Position</th><th style="width:136px">Status</th>'
-     + '<th>Reason</th><th style="width:150px">Area</th><th style="width:34px"></th></tr></thead><tbody>';
+     + '<th>Employee</th><th style="width:120px">Position</th><th style="width:130px">Status</th>'
+     + '<th style="width:78px" title="Time in">In</th><th style="width:78px" title="Time out">Out</th>'
+     + '<th style="width:62px" title="Overtime hours — this is what payroll pays">OT hrs</th>'
+     + '<th style="width:56px" title="1 for a full day, 0.5 for a half day">Day</th>'
+     + '<th style="width:86px" title="As is, +30% or +100% — chosen per person, never automatic">Holiday</th>'
+     + '<th style="min-width:330px" title="Absent, late and undertime need a reason; each reason is already excused or not">Reason</th><th style="width:140px">Area</th><th style="width:34px"></th></tr></thead><tbody>';
     g.people.forEach(e=>{
       n++;
       const r=dailyRow(rec,e);
@@ -7916,7 +8195,26 @@ function viewDaily(){
        + '<td style="font-size:11.5px">'+esc(e.position||"—")+'</td>'
        + '<td><select data-dms="'+esc(e.id)+'" style="'+sty+'">'
        + DAY_STATUS.map(x=>'<option'+(r.s===x?" selected":"")+'>'+x+'</option>').join("")+'</select></td>'
-       + '<td><input data-dmr="'+esc(e.id)+'" value="'+esc(r.r||"")+'" placeholder="'+esc(DAY_REASON[r.s]||"")+'" style="'+sty+'"></td>'
+       + '<td><input data-dmin="'+esc(e.id)+'" value="'+esc(r.in||"")+'" placeholder="8:00 AM" title="Required for Present/Late" style="'+sty
+       +   ((r.s==="Present/Late" && !String(r.in||"").trim())?';border-color:var(--crit)':'')+'"></td>'
+       + '<td><input data-dmout="'+esc(e.id)+'" value="'+esc(r.out||"")+'" placeholder="5:00 PM" title="Required for Undertime" style="'+sty
+       +   ((r.s==="Undertime" && !String(r.out||"").trim())?';border-color:var(--crit)':'')+'"></td>'
+       + '<td><input data-dmot="'+esc(e.id)+'" type="number" step="0.5" min="0" value="'+esc(r.ot!=null?r.ot:"")+'" placeholder="0" style="'+sty+';text-align:right"></td>'
+       + '<td><input data-dmday="'+esc(e.id)+'" type="number" step="0.5" min="0" max="1" value="'+esc(r.day!=null?r.day:"")+'" placeholder="'+dayCredit(r)+'" style="'+sty+';text-align:right"></td>'
+       + '<td'+(holEligible(rec.date,r)?' style="background:var(--warn-soft)"':'')+'>'
+       + ((holEligible(rec.date,r) || holCode(r))
+          ? holSelect("data-dmhol", e.id, holCode(r))
+          : '<span class="lbl" title="Not a holiday or Sunday worked">—</span>')
+       + '</td>'
+       + '<td><div style="display:flex;gap:4px;align-items:center">'
+       +   '<select data-dmrk="'+esc(e.id)+'" style="'+sty+';max-width:158px"'+(statusNeedsReason(r.s)?'':' disabled')+'>'
+       +     reasonOptions(r.s, r.rk || (statusNeedsReason(r.s) ? matchReasonKey(r.s, r.r) : ""))+'</select>'
+       +   '<input data-dmr="'+esc(e.id)+'" value="'+esc(r.r||"")+'" placeholder="'+esc(DAY_REASON[r.s]||"")+'" style="'+sty+'">'
+       +   '<select data-dmexpick="'+esc(e.id)+'" style="'+sty+';max-width:112px'+(r.rk==="other"?'':';display:none')+'">'
+       +     '<option value="0"'+(Number(r.ex)===1?'':' selected')+'>not excused</option>'
+       +     '<option value="1"'+(Number(r.ex)===1?' selected':'')+'>excused</option></select>'
+       +   '<span data-dmex="'+esc(e.id)+'">'+reasonPill(r)+'</span>'
+       + '</div></td>'
        + '<td><select data-dmsite="'+esc(e.id)+'" style="'+sty+'">'
        + dailySites().map(x=>'<option'+(dailySiteOf(rec,e)===x?" selected":"")+'>'+esc(x)+'</option>').join("")
        + '<option value="__new">+ new area…</option></select></td>'
@@ -7924,6 +8222,7 @@ function viewDaily(){
     });
     h+='</tbody></table></div></div>';
   });
+  h+=dailyLogCard(rec);
   return h;
 }
 
@@ -7936,7 +8235,26 @@ function dailyCollect(){
     const reason=(document.querySelector('[data-dmr="'+id+'"]')||{}).value||"";
     const siteSel=document.querySelector('[data-dmsite="'+id+'"]');
     const site=(siteSel && siteSel.value!=="__new") ? siteSel.value : ((rec.rows[id]||{}).site||"");
-    rec.rows[id]={s:sel.value, r:reason, site};
+    const g=(sel2)=>{ const el=document.querySelector('['+sel2+'="'+id+'"]'); return el?el.value:""; };
+    const num=(v)=>v===""?null:(parseFloat(v)||0);
+    const prevRow=rec.rows[id]||{};
+    const rkEl=document.querySelector('[data-dmrk="'+id+'"]');
+    let rk = rkEl ? (rkEl.value||"") : (prevRow.rk||"");
+    let ex = "";
+    if(!statusNeedsReason(sel.value)){ rk=""; }
+    else{
+      const spec=reasonByKey(rk);
+      if(spec && spec.k!=="other") ex = spec.excused ? 1 : 0;
+      else if(spec){ const xp=document.querySelector('[data-dmexpick="'+id+'"]');
+        ex = xp ? (Number(xp.value)?1:0) : (prevRow.ex!=null?prevRow.ex:""); }
+    }
+    rec.rows[id]={ s:sel.value, r:reason, site,
+      in:g("data-dmin"), out:g("data-dmout"),
+      ot:num(g("data-dmot")), day:num(g("data-dmday")),
+      hol:(function(){ const el=document.querySelector('[data-dmhol="'+id+'"]');
+        if(el) return Number(el.value)||0;
+        return prevRow.hol!=null ? holCode(prevRow) : null; })(),
+      rk, ex };
   });
   return rec;
 }
@@ -7967,7 +8285,7 @@ function dailyAddPerson(){
     rec.extra=(rec.extra||[]).concat([id]).filter((v,i,a)=>a.indexOf(v)===i);
     rec.omit=(rec.omit||[]).filter(x=>x!==id);
     rec.rows[id]={s:"Present", r:"", site:$("#da-site").value};
-    await put("daily",rec.id,rec);
+    await dailySave(rec, "added to the day by hand");
     closeModal(); toast(flipName((S.employees[id]||{}).name||"")+" added","ok"); render();
   };
 }
@@ -7987,7 +8305,7 @@ function dailyRenameSite(from){
     dailyPeople(rec).forEach(e=>{
       if(dailySiteOf(rec,e)===from){ rec.rows[e.id]=Object.assign({s:"Present",r:""},rec.rows[e.id]||{},{site:to}); }
     });
-    await put("daily",rec.id,rec); closeModal(); render();
+    await dailySave(rec, "area renamed to "+to); closeModal(); render();
   };
 }
 /* Make the day's moves stick on the 201 records. */
@@ -8496,6 +8814,51 @@ function parkedIds(){
   return set;
 }
 function atWork(){ const p=parkedIds(); return activeEmps().filter(e=>!p.has(e.id)); }
+/* A leaver whose 201 record was never switched to Separated stays on every
+   report for ever, because the roster only drops an exact "Separated". HR files
+   the resignation or the clearance as a document and the status never moves —
+   that is the complaint from the concerns log. Nothing here hides anybody by
+   itself: a person's status is HR's to set, and a filed document is evidence,
+   not a decision. These are listed, with the evidence, and only change when
+   somebody presses the button. */
+/* Quitclaims are deliberately NOT here. "Release & Quitclaim" is ticked on 32
+   people who are plainly still at work — this company has active staff sign one
+   every year, so it says nothing about leaving. Only paperwork that exists for
+   no other reason counts. */
+const SEPARATION_DOCS = [
+  ["resign",    "a resignation letter is filed"],
+  ["resignacc", "an acceptance of resignation is filed"],
+  ["notterm",   "a notice of termination is filed"],
+  ["exitint",   "an exit interview is filed"],
+  ["clearance", "an employee clearance form is filed"]
+];
+function leaverEvidence(e){
+  if(!e || e.status==="Separated") return "";
+  if(e.separatedOn)      return "a separation date of "+e.separatedOn+" is on the record";
+  if(e.separationReason) return "a separation reason is on the record";
+  const d=e.docs||{};
+  for(const [k,why] of SEPARATION_DOCS){ const v=d[k]; if(v && v.s==="on") return why; }
+  return "";
+}
+/* Only people actually on the standing list — somebody already parked is not
+   cluttering anybody's report. */
+function leaversOnList(){
+  return atWork().map(e=>({e, why:leaverEvidence(e)})).filter(x=>x.why)
+    .sort((a,b)=>String(a.e.empNo||"").localeCompare(String(b.e.empNo||"")));
+}
+/* Marks the person separated and takes them off the standing list from that day
+   on. Past reports keep them: they did work those days, and payroll for a
+   finished period still has to pay them. */
+async function markSeparated(id, on, why){
+  const e=S.employees[id]; if(!e) return false;
+  const n=clone(e);
+  n.status="Separated";
+  n.statusBasis="Marked separated on the Daily Manpower screen"+(why?" — "+why:"");
+  if(!n.separatedOn) n.separatedOn=on||TODAY;
+  if(!n.separationReason) n.separationReason=why||"Separation paperwork on file";
+  await put("employees", id, n);
+  return true;
+}
 function rosterUndecided(){
   return activeEmps()
     .filter(e=>normNo(e.empNo) && !lastSeenAt(e) && !rosterSettled(e))
@@ -9089,6 +9452,29 @@ function fmtNo(s,seq,year){
     .replace(/\{NNNN\}/g, String(seq).padStart(s.pad||4,"0"));
 }
 function regList(){ return Object.values(S.docreg).sort((a,b)=>(b.date||"").localeCompare(a.date||"")||(b.no||"").localeCompare(a.no||"")); }
+/* Numbers are compared the way a person reads them, not the way they happen to
+   be typed: "LRF2026 - 0123", "lrf 2026-123" and "LRF2026-0123" are one number. */
+function parseDocNo(no){
+  const m=String(no||"").toUpperCase().match(/([A-Z][A-Z.]*)\s*-?\s*((?:19|20)\d{2})\s*[-–]\s*(\d{1,6})(?!\d)/);
+  return m ? {prefix:m[1].replace(/\./g,""), year:+m[2], seq:parseInt(m[3],10)} : null;
+}
+function docNoKey(no){
+  const p=parseDocNo(no);
+  return p ? p.prefix+"|"+p.year+"|"+p.seq : String(no||"").toUpperCase().replace(/\s+/g,"");
+}
+/* the records that carry a series' numbers themselves */
+const SERIES_RECORDS = {LV:["leaves"], CA:["advances"], NTE:["nte"], RM:["reminders"], CM:["memos"], IR:["incidents"]};
+function seriesPrefix(key){ const ser=S.series[key]; return String((ser&&ser.prefix)||key).replace(/\./g,"").toUpperCase(); }
+/* Every number of this series that exists anywhere — the register, the records
+   that hold one (imported or typed), and forms read back off Drive. */
+function numbersInUse(key){
+  const pre=seriesPrefix(key), set=new Set();
+  const take=no=>{ const p=parseDocNo(no); if(p && p.prefix===pre) set.add(docNoKey(no)); };
+  Object.values(S.docreg||{}).forEach(d=>take(d && d.no));
+  (SERIES_RECORDS[key]||[]).forEach(c=>Object.values(S[c]||{}).forEach(r=>take(r && r.no)));
+  Object.values(S.filed||{}).forEach(f=>take(f && f.no));
+  return set;
+}
 function nextSeq(key,year){
   let mx=0;
   Object.values(S.docreg).forEach(d=>{
@@ -9098,6 +9484,13 @@ function nextSeq(key,year){
   });
   const paper=paperHigh(key,year);
   if(paper>mx) mx=paper;
+  /* A register entry imported with seq 0, or a leave that kept its paper number
+     and never reached the register, still holds its number. Read the number
+     itself, so the next one cannot land on it. */
+  const pre=seriesPrefix(key);
+  const scan=no=>{ const p=parseDocNo(no); if(p && p.prefix===pre && p.year===(year|0) && p.seq>mx) mx=p.seq; };
+  Object.values(S.docreg).forEach(d=>scan(d && d.no));
+  (SERIES_RECORDS[key]||[]).forEach(c=>Object.values(S[c]||{}).forEach(r=>scan(r && r.no)));
   return mx+1;
 }
 /* Most of these series did not start in this portal. Contracts run to 2026 - 90
@@ -9135,7 +9528,8 @@ function peekNo(key){
   const s=S.series[key]; if(!s) return "";
   const year=new Date().getFullYear();
   let seq=nextSeq(key,year), no=fmtNo(s,seq,year), guard=0;
-  while(Object.values(S.docreg).some(d=>d.no===no) && guard++<50){ seq++; no=fmtNo(s,seq,year); }
+  const inUse=numbersInUse(key);
+  while(inUse.has(docNoKey(no)) && guard++<500){ seq++; no=fmtNo(s,seq,year); }
   return no;
 }
 
@@ -9163,13 +9557,32 @@ async function allocate(key, meta){
     }catch(e){}
   }
   let seq = nextSeq(key,year), no = fmtNo(s,seq,year), guard=0;
-  while(Object.values(S.docreg).some(d=>d.no===no) && guard++<50){ seq++; no=fmtNo(s,seq,year); }
+  const inUse=numbersInUse(key);
+  while(inUse.has(docNoKey(no)) && guard++<500){ seq++; no=fmtNo(s,seq,year); }
   const entry = Object.assign({
     id:uid("d"), no, seriesKey:key, year, seq, title:"", tags:[], empId:"",
     date:TODAY, status:"Draft", module:"", refId:"", link:"", notes:"", issuedBy:S.settings.hrHead||""
   }, meta||{});
   entry.no=no; entry.seriesKey=key; entry.year=year; entry.seq=seq;
   await put("docreg", entry.id, entry);
+  /* Two people saving at the same moment can still land on one number when the
+     lock was not available. Read the register back; if somebody else holds it,
+     move this one on before anything is printed with it. */
+  if(S.db){
+    for(let tries=0; tries<5; tries++){
+      let clash=false;
+      try{
+        const snap=await S.db.collection("docreg").get();
+        snap.docs.forEach(d=>{ const x=d.data(); S.docreg[d.id]=clone(x);
+          if(x && d.id!==entry.id && docNoKey(x.no)===docNoKey(entry.no)) clash=true; });
+      }catch(e){ break; }
+      if(!clash) break;
+      const used2=numbersInUse(key); let g2=0;
+      do{ seq++; no=fmtNo(s,seq,year); }while(used2.has(docNoKey(no)) && g2++<500);
+      entry.no=no; entry.seq=seq;
+      await put("docreg", entry.id, entry);
+    }
+  }
   return entry;
 }
 /* A number that was drawn and never issued is not part of the sequence in any
@@ -9570,6 +9983,9 @@ const FORM_MASTER_SEED = [
  {k:"interview", no:"R36", title:"Interview Evaluation Form",                rev:"1.0", eff:"", owner:"HR"},
  {k:"handbook",  no:"R30", title:"Employee Handbook Acknowledgement",        rev:"1.0", eff:"", owner:"HR"},
  {k:"ncr",       no:"R16", title:"Non-Conformance Report",                   rev:"1.0", eff:"", owner:"QMS"},
+ {k:"payweek",   no:"",    title:"Weekly Payroll — Site",                    rev:"1.0", eff:"", owner:"HR"},
+ {k:"payadmin",  no:"",    title:"Admin Payroll — Semi-monthly",             rev:"1.0", eff:"", owner:"HR"},
+ {k:"payslip",   no:"",    title:"Payslip",                                 rev:"1.0", eff:"", owner:"HR"},
  {k:"memo",      no:"",    title:"Company Memorandum",                       rev:"1.0", eff:"", owner:"HR"},
  {k:"minutes",   no:"",    title:"Minutes of the Meeting",                   rev:"1.0", eff:"", owner:"HR"},
  {k:"coe",       no:"",    title:"Certificate of Employment",                rev:"1.0", eff:"", owner:"HR"},
@@ -10034,16 +10450,19 @@ async function savePDF(no, body, preview){
     const {html2canvas, jsPDF} = await pdfLib();
     /* 186mm at 96dpi = 703px — the same width the sheet prints at */
     stage=document.createElement("div");
-    stage.setAttribute("style","position:fixed;left:-10000px;top:0;width:703px;background:#fff;z-index:-1");
+    /* 273mm at 96dpi = 1032px for a landscape register */
+    const PX = PF_LAND ? 1032 : 703;
+    stage.setAttribute("style","position:fixed;left:-10000px;top:0;width:"+PX+"px;background:#fff;z-index:-1");
     /* whatever tightening the preview is showing has to be what is saved */
-    stage.innerHTML='<div class="pf'+pfTightClass()+'" style="width:703px;max-width:703px;box-shadow:none;margin:0">'+body+'</div>';
+    stage.innerHTML='<div class="pf'+pfTightClass()+(PF_LAND?" land":"")+'" style="width:'+PX+'px;max-width:'+PX+'px;box-shadow:none;margin:0">'+body+'</div>';
     document.body.appendChild(stage);
     await new Promise(r=>setTimeout(r,120));            /* let the logo decode */
     const canvas=await html2canvas(stage.firstChild,{
       scale:2.5, backgroundColor:"#ffffff", useCORS:true, logging:false,
-      windowWidth:703, width:703 });
-    const pdf=new jsPDF({unit:"mm", format:"a4", orientation:"portrait", compress:true});
-    const M=12, PW=210, PH=297;
+      windowWidth:PX, width:PX });
+    const pdf=new jsPDF({unit:"mm", format:"a4",
+      orientation: PF_LAND ? "landscape" : "portrait", compress:true});
+    const M=12, PW=PF_LAND?297:210, PH=PF_LAND?210:297;
     const w=PW-M*2;                                     /* 186mm */
     const h=canvas.height*w/canvas.width;
     const usable=PH-M-10;
@@ -10141,7 +10560,11 @@ function printDoc(no, body, kind){
     layer.id="print-layer";
     document.body.appendChild(layer);
   }
-  layer.innerHTML='<div class="pf'+pfTightClass()+'">'+body+'</div>';
+  /* @page cannot be conditioned on a class, so the rule is injected with the
+     sheet and taken away with it. */
+  layer.innerHTML=(PF_LAND
+      ? '<style id="pf-page-rule">@page{size:A4 landscape;margin:12mm 12mm 10mm}</style>' : "")
+    + '<div class="pf'+pfTightClass()+(PF_LAND?" land":"")+'">'+body+'</div>';
   document.documentElement.classList.add("printing");
   const done=()=>{
     document.documentElement.classList.remove("printing");
@@ -10399,93 +10822,64 @@ async function memoEditor(id){
 }
 async function memoDraw(m){
   const id = S.memos[m.id] ? m.id : null;
-  const kept = id ? S.memos[m.id] : null;
-  if(kept && kept.no && !m.no) m.no = kept.no;
-  const filed = !!(m.no || m.fromDrive || m.status==="Issued");
-  /* Numbered drafts stay editable. Issued / Drive-imported paper memos keep
-     the filed identity — number, date and effective date cannot be retouched. */
-  const lockIdentity = !!(m.fromDrive || m.status==="Issued");
-  const lockAttr = lockIdentity ? " disabled" : "";
   const sample = await getSample();
   const draw = ()=>{
     const detail = m.audience==="Department"
-      ? '<select id="m-detail"'+lockAttr+'>'+DEPTS.map(d=>'<option'+(m.audienceDetail===d?" selected":"")+'>'+esc(d)+'</option>').join("")+'</select>'
+      ? '<select id="m-detail">'+DEPTS.map(d=>'<option'+(m.audienceDetail===d?" selected":"")+'>'+esc(d)+'</option>').join("")+'</select>'
       : m.audience==="Individual"
-      ? (lockIdentity
-          ? '<input value="'+esc(empLabel(m.audienceDetail))+'" disabled>'
-            + '<input type="hidden" id="m-detail" value="'+esc(m.audienceDetail||"")+'">'
-          : empPicker("m-detail", m.audienceDetail))
-      : '<input id="m-detail" value="'+esc(m.audienceDetail||"")+'" placeholder="'+(m.audience==="Project"?"Project name":"Describe the recipients")+'"'+lockAttr+'>';
-    const showDraft = !filed || m._wantDraft;
-    const scanNote = (m.fromDrive || m.link)
-      ? '<div class="note" style="border-left-color:var(--accent)"><b>This memorandum is already on file'
-        + (m.no?" as "+esc(m.no):"")+'.</b> '
-        + (m.fromDrive?"It was issued on paper before the portal. ":"")
-        + (m.link?'<a href="'+esc(m.link)+'" target="_blank" rel="noopener noreferrer"><b>Open the Drive scan</b></a>'
-          + ' — that scan is the original. ':"")
-        + 'Type a subject when you can so the register is searchable. '
-        + 'The number and date stay as filed. The next step is to upload the signed copy.</div>'
-      : "";
-    const aiCard = sample
-      ? '<div class="card" style="background:var(--surface2)"><div class="card-b stack">'
-        + '<div class="f"><label>What should this memo say?</label>'
-        + '<textarea id="m-brief" placeholder="e.g. site reporting time moves to 7:00 AM starting Monday because of the road closure on the Canduman route; anyone arriving after 7:15 is marked late" style="min-height:56px">'+esc(m.brief||"")+'</textarea>'
-        + '<span class="hint">Describe it plainly. The draft comes back in the company\'s memo voice — review and edit it before issuing.</span></div>'
-        + '<div class="row"><button class="btn pri" id="m-draft">Draft it</button>'
-        + '<button class="btn" id="m-tighten"'+(m.body?"":" disabled")+'>Tighten the current draft</button>'
-        + '<span class="lbl" id="m-ai-status"></span></div>'
-        + '</div></div>'
-      : '<div class="note">AI drafting is not available in this view — write the body directly below.</div>';
+      ? empPicker("m-detail", m.audienceDetail)
+      : '<input id="m-detail" value="'+esc(m.audienceDetail||"")+'" placeholder="'+(m.audience==="Project"?"Project name":"Describe the recipients")+'">';
     openModal({
       title: m.no ? "Memo "+m.no : "New memorandum", wide:true,
       body:'<div class="stack">'
-        + scanNote
         + '<div class="grid3">'
         + '<div class="f"><label>Number</label><input value="'+esc(m.no||"assigned when you save")+'" disabled></div>'
-        + '<div class="f"><label>Date</label><input id="m-date" type="date" value="'+esc(m.date)+'"'+lockAttr+'></div>'
-        + '<div class="f"><label>Effective</label><input id="m-eff" type="date" value="'+esc(m.effectivity||"")+'"'+lockAttr+'></div>'
+        + '<div class="f"><label>Date</label><input id="m-date" type="date" value="'+esc(m.date)+'"></div>'
+        + '<div class="f"><label>Effective</label><input id="m-eff" type="date" value="'+esc(m.effectivity||"")+'"></div>'
         + '</div>'
         + '<div class="grid3">'
-        + '<div class="f"><label>Subject</label><input id="m-subj" value="'+esc(m.subject)+'" placeholder="'+(filed?"optional — from the scan, when you have it":"e.g. Revised Site Reporting Time")+'"></div>'
-        + '<div class="f"><label>Category</label><select id="m-cat"'+lockAttr+'>'+MEMO_CATS.map(c=>'<option'+(m.cat===c?" selected":"")+'>'+c+'</option>').join("")+'</select></div>'
-        + '<div class="f"><label>Status</label><select id="m-status"'+lockAttr+'>'+["Draft","Issued","Superseded","Void"].map(s=>'<option'+(m.status===s?" selected":"")+'>'+s+'</option>').join("")+'</select></div>'
+        + '<div class="f"><label>Subject</label><input id="m-subj" value="'+esc(m.subject)+'" placeholder="e.g. Revised Site Reporting Time"></div>'
+        + '<div class="f"><label>Category</label><select id="m-cat">'+MEMO_CATS.map(c=>'<option'+(m.cat===c?" selected":"")+'>'+c+'</option>').join("")+'</select></div>'
+        + '<div class="f"><label>Status</label><select id="m-status">'+["Draft","Issued","Superseded","Void"].map(s=>'<option'+(m.status===s?" selected":"")+'>'+s+'</option>').join("")+'</select></div>'
         + '</div>'
         + '<div class="grid2">'
-        + '<div class="f"><label>Addressed to</label><select id="m-aud"'+lockAttr+'>'+["All","Department","Project","Individual","Custom"].map(a=>'<option'+(m.audience===a?" selected":"")+'>'+a+'</option>').join("")+'</select></div>'
+        + '<div class="f"><label>Addressed to</label><select id="m-aud">'+["All","Department","Project","Individual","Custom"].map(a=>'<option'+(m.audience===a?" selected":"")+'>'+a+'</option>').join("")+'</select></div>'
         + '<div class="f"><label>'+(m.audience==="All"?"(all employees)":"Which")+'</label>'+(m.audience==="All"?'<input value="All Employees" disabled>':detail)+'</div>'
         + '</div>'
-        + (showDraft ? aiCard
-          : (sample && !String(m.body||"").trim()
-            ? '<div class="note">Need a typed body in the portal? '
-              + '<button class="btn sm" id="m-want-draft">Draft a text copy</button> '
-              + 'The paper original stays the record.</div>'
-            : ""))
-        + '<div class="f"><label>Memo body'+(filed?" — optional, a summary for the register":"")+'</label>'
-        + '<textarea id="m-body" style="min-height:'+(filed?"110":"190")+'px">'+esc(m.body||"")+'</textarea></div>'
+        + (sample?'<div class="card" style="background:var(--surface2)"><div class="card-b stack">'
+          + '<div class="f"><label>What should this memo say?</label>'
+          + '<textarea id="m-brief" placeholder="e.g. site reporting time moves to 7:00 AM starting Monday because of the road closure on the Canduman route; anyone arriving after 7:15 is marked late" style="min-height:56px">'+esc(m.brief||"")+'</textarea>'
+          + '<span class="hint">Describe it plainly. The draft comes back in the company\'s memo voice — review and edit it before issuing.</span></div>'
+          + '<div class="row"><button class="btn pri" id="m-draft">Draft it</button>'
+          + '<button class="btn" id="m-tighten"'+(m.body?"":" disabled")+'>Tighten the current draft</button>'
+          + '<span class="lbl" id="m-ai-status"></span></div>'
+          + '</div></div>':'<div class="note">AI drafting is not available in this view — write the body directly below.</div>')
+        + (m.fromDrive
+            ? '<div class="note" style="border-left-color:var(--warn)"><b>This memorandum was issued on paper '
+              + 'before the portal.</b> The scan is the original — '
+              + (m.link?'<a href="'+esc(m.link)+'" target="_blank" rel="noopener noreferrer"><b>open it</b></a>, ':"")
+              + 'read the subject off it and type it above. Its number and date came from the file name and '
+              + 'will not change.</div>'
+            : "")
+        + '<div class="f"><label>Memo body'+(m.fromDrive?" — optional, a summary for the register":"")+'</label>'
+        + '<textarea id="m-body" style="min-height:'+(m.fromDrive?"110":"190")+'px">'+esc(m.body||"")+'</textarea></div>'
         + '<div class="f"><label>Tags (comma separated)</label><input id="m-tags" value="'+esc((m.tags||[]).join(", "))+'" placeholder="e.g. attendance, Barili, 2026"></div>'
         + (S.memos[m.id] ? signedBlock("memos", m) : '<div class="note">Save the memo first, then the signed '
             + 'copy can be uploaded against it.</div>')
         + '</div>',
       foot:(id?'<button class="btn danger" id="m-del">Delete</button>':"")
         + '<button class="btn" id="m-preview">Preview &amp; print</button>'
-        + '<button class="btn'+(filed&&id?"":" pri")+'" id="m-save">Save memo</button>'
-        + (filed&&id&&!m.signedLink?'<button class="btn pri" id="m-upload">Upload the signed copy</button>':"")
+        + '<button class="btn pri" id="m-save">Save memo</button>'
     });
     const grab=()=>{
-      m.subject=$("#m-subj").value.trim();
-      m.body=$("#m-body").value; const b=$("#m-brief"); if(b) m.brief=b.value;
-      m.tags=$("#m-tags").value.split(",").map(s=>s.trim()).filter(Boolean);
-      if(lockIdentity) return;
-      m.cat=$("#m-cat").value; m.date=$("#m-date").value;
+      m.subject=$("#m-subj").value.trim(); m.cat=$("#m-cat").value; m.date=$("#m-date").value;
       m.effectivity=$("#m-eff").value; m.status=$("#m-status").value; m.audience=$("#m-aud").value;
       const d=$("#m-detail"); m.audienceDetail=d?d.value:"";
+      m.body=$("#m-body").value; const b=$("#m-brief"); if(b) m.brief=b.value;
+      m.tags=$("#m-tags").value.split(",").map(s=>s.trim()).filter(Boolean);
     };
     $("#m-aud").onchange=()=>{ grab(); m.audienceDetail=""; draw(); };
-    const wd=$("#m-want-draft");
-    if(wd) wd.onclick=()=>{ grab(); m._wantDraft=true; draw(); };
-    const up=$("#m-upload");
-    if(up) up.onclick=()=>{ const b=document.querySelector('[data-signed="memos"]'); if(b) b.click(); };
-    if(sample && $("#m-draft")){
+    if(sample){
       const run = async (mode)=>{
         grab();
         if(mode==="draft" && !m.brief.trim()){ toast("Say what the memo should cover first.","err"); return; }
@@ -10522,20 +10916,7 @@ async function memoDraw(m){
     $("#m-preview").onclick=()=>{ grab(); previewMemo(m); };
     $("#m-save").onclick=async()=>{
       grab();
-      /* An issued / Drive-imported memo already has its number. Re-read it
-         from the store so Save cannot blank it or mint a second C.M. number. */
-      const stored=S.memos[m.id];
-      if(stored&&stored.no) m.no=stored.no;
-      if(stored&&(stored.fromDrive||stored.status==="Issued")){
-        if(stored.date) m.date=stored.date;
-        if(stored.effectivity) m.effectivity=stored.effectivity;
-        if(stored.cat) m.cat=stored.cat;
-        if(stored.status) m.status=stored.status;
-        if(stored.audience) m.audience=stored.audience;
-        if(stored.audienceDetail!=null) m.audienceDetail=stored.audienceDetail;
-      }
-      const already=!!(m.no||m.fromDrive||m.status==="Issued"||(stored&&stored.status==="Issued"));
-      if(!m.subject && !already){ toast("Give the memo a subject.","err"); return; }
+      if(!m.subject){ toast("Give the memo a subject.","err"); return; }
       /* A memo read off a filed scan already has its number — it must not draw
          a fresh one and create a second entry for the same sheet. */
       if(!m.no && !m.fromDrive){
@@ -10571,7 +10952,7 @@ function previewMemo(m){
   const body = memoPaper(view, no) ;
   const warn = [];
   if(!m.subject) warn.push("no subject");
-  if(!String(m.body||"").trim() && !(m.no||m.fromDrive||m.status==="Issued")) warn.push("no body");
+  if(!String(m.body||"").trim()) warn.push("no body");
   openModal({ title:"Memo preview — "+(m.no||"not yet numbered"), wide:true,
     body:(warn.length?'<div class="note" style="border-left-color:var(--warn);margin-bottom:12px">'
             + 'This memo still has <b>'+esc(warn.join(" and "))+'</b>. Go back and fill it in — '
@@ -11911,6 +12292,9 @@ function viewSettings(){
    + '<div class="f"><label>Warn before contract ends (days)</label><input data-set="contractWarnDays" type="number" value="'+st.contractWarnDays+'"></div>'
    + '<div class="f"><label>Warn before a document expires (days)</label><input data-set="docExpiryWarnDays" type="number" value="'+st.docExpiryWarnDays+'"></div>'
    + '<div class="f"><label>Days to liquidate a cash advance</label><input data-set="caLiquidateDays" type="number" value="'+(st.caLiquidateDays||15)+'"></div>'
+   + '<div class="f"><label>Holiday premium</label><input value="30% of a day\'s rate" disabled>'
+   + '<span class="hint">'+holidayList().length+' date'+(holidayList().length===1?'':'s')+' on the calendar'
+   + ' <button class="btn sm" id="set-holcal">Open the holiday calendar</button></span></div>'
    + '</div></div></div>';
 
   h+='<div class="card"><div class="card-h"><h3>HR-201 FILES in Google Drive</h3>'
@@ -13987,6 +14371,7 @@ function viewRecruit(){
    + tile(as.filter(a=>a.stage==="Hired").length,"Hired","converted to 201 records","ok")
    + '</div>';
   h+='<div class="sect-h"><h2>Pipeline</h2><span class="rule"></span>'
+   + '<button class="btn sm" id="imp-apps">Import from the mailbox</button>'
    + '<button class="btn sm pri" id="new-app"><svg><use href="#i-plus"/></svg> Log an applicant</button></div>';
   if(!as.length) return h+'<div class="card"><div class="empty">No applicants logged. Define the role first, then add applicants against it — the exam scores, the scripted interview and both recommendations all sit on one record.</div></div>';
   STAGES.forEach(st=>{
@@ -14063,7 +14448,7 @@ async function appEditor(id){
             +' · Script: '+(guide?(guide.items||[]).length+" questions":"<b>not written yet</b>")+'</div>':"")
         + '<div class="grid3">'
         + '<div class="f"><label>Applied on</label><input id="a-date" type="date" value="'+esc(a.appliedOn)+'"></div>'
-        + '<div class="f"><label>Source</label><select id="a-src">'+["Walk-in","Referral","Facebook / Online","JobStreet","PESO / LGU","School","Agency"].map(x=>'<option'+(a.source===x?" selected":"")+'>'+x+'</option>').join("")+'</select></div>'
+        + '<div class="f"><label>Source</label><select id="a-src">'+["Walk-in","Email","Referral","Facebook / Online","JobStreet","PESO / LGU","School","Agency"].map(x=>'<option'+(a.source===x?" selected":"")+'>'+x+'</option>').join("")+'</select></div>'
         + '<div class="f"><label>Expected pay</label><input id="a-exp" value="'+esc(a.expected)+'" placeholder="e.g. ₱18,000/mo"></div>'
         + '</div>'
         + '<div class="grid3">'
@@ -14071,6 +14456,7 @@ async function appEditor(id){
         + '<div class="f"><label>Email</label><input id="a-email" type="email" value="'+esc(a.email)+'"></div>'
         + '<div class="f"><label>CV / documents (Drive link)</label><input id="a-cv" type="url" value="'+esc(a.resumeLink)+'"></div>'
         + '</div>'
+        + mailboxFilesNote(a)
 
         + '<div class="sect-h" style="margin:6px 0 0"><h2 style="font-size:12.5px">Written and aptitude tests</h2><span class="rule"></span>'
         + (sc?'<span class="pill '+(sc.pct>=70?"ok":sc.pct>=50?"warn":"crit")+'">'+sc.passed+' of '+sc.total+' passed · '+sc.pct+'% average</span>':"")+'</div>'
@@ -14413,6 +14799,7 @@ function viewCA(){
    + '<button class="'+(mode==="register"?"on":"")+'" data-camode="register">Register</button>'
    + '<button class="'+(mode==="aging"?"on":"")+'" data-camode="aging">Aging</button></div>'
    + '<button class="btn pri" id="new-ca"><svg><use href="#i-plus"/></svg> New cash advance</button>'
+   + '<button class="btn" id="ca-fromscan">New from a scanned form</button>'
    + '<button class="btn" id="imp-ca">Import signed forms</button>'
    + (all.length?'<button class="btn" id="ca-csv"><svg><use href="#i-dl"/></svg> Export CSV</button>':"")+'</div>';
 
@@ -14806,6 +15193,7 @@ function viewLeave(){
    + '<button class="'+(mode==="register"?"on":"")+'" data-lvmode="register">Applications</button>'
    + '<button class="'+(mode==="balances"?"on":"")+'" data-lvmode="balances">Balances</button></div>'
    + '<button class="btn pri" id="new-lv"><svg><use href="#i-plus"/></svg> New leave application</button>'
+   + '<button class="btn" id="lv-fromscan">New from a scanned form</button>'
    + '<button class="btn" id="imp-lv">Import signed forms</button>'
    + (all.length?'<button class="btn" id="lv-csv"><svg><use href="#i-dl"/></svg> Export CSV</button>':"")+'</div>';
 
@@ -14816,6 +15204,26 @@ function viewLeave(){
    + tile(num(approvedYtd.reduce((s,l)=>s+(+l.days||0),0),1),"Days approved this year","across "+new Set(approvedYtd.map(l=>l.empId)).size+" employees","acc")
    + tile(approvedYtd.filter(l=>!leaveType(l.type).pay).length,"Without pay","LWOP applications",approvedYtd.filter(l=>!leaveType(l.type).pay).length?"warn":"ok")
    + '</div>';
+
+  /* A leave number is on one form only. Any number held twice is listed here
+     until it is put right, with the way to put it right on the row. */
+  const byLvNo={};
+  all.forEach(l=>{ if(!l.no) return; const k=docNoKey(l.no); (byLvNo[k]=byLvNo[k]||[]).push(l); });
+  const lvDups=Object.values(byLvNo).filter(a=>a.length>1);
+  if(lvDups.length){
+    h+='<div class="card" style="margin:14px 0;border-left:3px solid var(--crit)"><div class="card-h">'
+     + '<h3>Leave numbers used more than once</h3><div class="sp"><span class="pill crit">'+lvDups.length+'</span></div></div>'
+     + '<div class="card-b"><div class="note">A leave number belongs to one form. Keep the number that is printed on a '
+     + 'signed paper form and give the other record the next free number — the change is noted on that record.</div>'
+     + '<div class="tw"><table><thead><tr><th style="width:130px">Number</th><th>Employee</th><th style="width:170px">Type</th>'
+     + '<th style="width:190px">Dates</th><th style="width:110px">Status</th><th style="width:230px"></th></tr></thead><tbody>'
+     + lvDups.map(grp=>grp.map((l,i)=>{ const e=S.employees[l.empId];
+         return '<tr><td class="mono"><b>'+esc(l.no)+'</b></td><td class="nm">'+esc(e?flipName(e.name):"—")+'</td>'
+           + '<td>'+esc(l.type?leaveType(l.type).n:"not set")+'</td><td class="mono">'+esc((l.from||"")+(l.to&&l.to!==l.from?" – "+l.to:""))+'</td>'
+           + '<td>'+esc(l.status||"")+'</td><td style="text-align:right"><button class="btn sm" data-lvopen="'+esc(l.id)+'">Open</button> '
+           + '<button class="btn sm" data-lvrenum="'+esc(l.id)+'">Give this one a new number</button></td></tr>'; }).join("")).join("")
+     + '</tbody></table></div></div></div>';
+  }
 
   /* the backlog the reports have already described */
   const jobs=citedLeaveJobs();
@@ -14969,6 +15377,12 @@ function lvEditor(id,presetEmp){
       if(!l.from){ toast("Give the start date.","err"); return null; }
       if(decisionBlocked(l)){
         toast("Upload the signed leave form before marking it "+l.status.toLowerCase()+".","err"); return null; }
+      if(l.no){
+        const dup=Object.values(S.leaves).find(x=>x.id!==l.id && x.no && docNoKey(x.no)===docNoKey(l.no));
+        if(dup){ const de=S.employees[dup.empId];
+          toast(l.no+" is already on "+(de?flipName(de.name)+"'s":"another")+" leave form. Leave numbers never repeat — fix one of them first.","err");
+          return null; }
+      }
       if(!l.no){
         const entry=await allocate("LV",{title:leaveType(l.type).n, empId:l.empId, module:"leave", refId:l.id,
           status:"Issued", date:l.filedOn||TODAY, tags:["leave",l.type]});
@@ -15539,8 +15953,11 @@ async function handleSignedPick(job, file){
     if(!c.docs[k.docKey].filed) c.docs[k.docKey].filed=TODAY;
     await put("employees",c.id,c);
     toast(out.toInbox ? "Uploaded to _INBOX — this employee has no 201 folder yet"
-                      : "Signed form on file — you can approve it now", out.toInbox?undefined:"ok");
-    k.back(job.recId);
+                      : "Signed form on file — reading it now", out.toInbox?undefined:"ok");
+    /* the same automatic read the 201 folder gets: what the paper says is
+       offered against the record, and nothing changes until HR ticks it */
+    if((job.coll==="leaves" || job.coll==="advances") && out.id) await readSignedScan(job.coll, job.recId, out.id, out.title||file.name);
+    else k.back(job.recId);
   }catch(e){
     const m=driveMessage(e); if(m) toast(m,"err");
     if(btn){ btn.disabled=false; btn.textContent="Upload the signed form"; }
@@ -15749,7 +16166,7 @@ async function uploadSigned(emp, no, label, file){
     disableConversionToGoogleType: true });
   const pl=(r&&r.payload)||{};
   if(!pl.viewUrl) throw {code:"tool_error", message:"Drive did not return a link for the file"};
-  return { url:pl.viewUrl, title:pl.title, toInbox:!parentId };
+  return { url:pl.viewUrl, title:pl.title, id:pl.id||"", toInbox:!parentId };
 }
 /* A memorandum belongs to the company, so its signed copy goes to the memo
    folder rather than into somebody's 201 file. */
@@ -15853,8 +16270,8 @@ function importRecords(kind){
     for(const r of rows){
       const emp=findEmp(r[1]); if(!emp){ skipped++; continue; }
       const no=r[0].trim();
-      const already = isLeave ? Object.values(S.leaves).some(x=>x.no===no)
-                              : Object.values(S.advances).some(x=>x.no===no);
+      const already = isLeave ? Object.values(S.leaves).some(x=>x.no && docNoKey(x.no)===docNoKey(no))
+                              : Object.values(S.advances).some(x=>x.no && docNoKey(x.no)===docNoKey(no));
       if(already){ skipped++; continue; }
       if(isLeave){
         const t=(r[2]||"").trim();
@@ -15874,8 +16291,8 @@ function importRecords(kind){
         await put("advances",rec.id,rec);
       }
       /* reserve the number on the register so nothing reissues it */
-      if(!Object.values(S.docreg).some(x=>x.no===no)){
-        const m=no.match(/^([A-Za-z]+)(\d{4})-(\d+)$/);
+      if(!Object.values(S.docreg).some(x=>docNoKey(x.no)===docNoKey(no))){
+        const pp=parseDocNo(no), m=pp ? [null, pp.prefix, String(pp.year), String(pp.seq)] : null;
         const entry={id:uid("d"), no, seriesKey:isLeave?"LV":"CA",
           year:m?parseInt(m[2],10):new Date().getFullYear(), seq:m?parseInt(m[3],10):0,
           title:isLeave?"Leave Request Form":"Cash Advance Request Form", tags:["imported"],
@@ -16242,7 +16659,10 @@ function askText(title, fields, opts){
       + '<div class="modal-b"><div class="stack">'
       + (opts.note?'<div class="note">'+esc(opts.note)+'</div>':"")
       + fields.map((f,i)=>'<div class="f"><label>'+esc(f.label||f.k)+'</label>'
-          + '<input id="at-'+i+'" value="'+esc(f.value||"")+'" placeholder="'+esc(f.placeholder||"")+'">'
+          + (f.options
+             ? '<select id="at-'+i+'">'+f.options.map(o=>'<option'
+                 + (String(o)===String(f.value||"")?' selected':'')+'>'+esc(o)+'</option>').join("")+'</select>'
+             : '<input id="at-'+i+'" type="'+esc(f.type||"text")+'" value="'+esc(f.value||"")+'" placeholder="'+esc(f.placeholder||"")+'">')
           + (f.hint?'<span class="hint">'+esc(f.hint)+'</span>':"")+'</div>').join("")
       + '</div></div>'
       + '<div class="modal-f"><button class="btn" id="at-no">Cancel</button>'
@@ -16260,7 +16680,8 @@ function askText(title, fields, opts){
 
 function openModal(o){
   const root=$("#modal-root");
-  root.innerHTML='<div class="ov" id="ov"><div class="modal"'+(o.wide?' style="width:min(940px,100%)"':"")+'>'
+  root.innerHTML='<div class="ov" id="ov"><div class="modal"'
+    + (o.wide?' style="width:min('+(PF_LAND?1120:940)+'px,100%)"':"")+'>'
     + '<div class="modal-h"><h3>'+esc(o.title||"")+'</h3><button class="x" id="mx"><svg style="width:16px;height:16px"><use href="#i-x"/></svg></button></div>'
     + '<div class="modal-b">'+(o.body||"")+'</div>'
     + (o.foot?'<div class="modal-f">'+o.foot+'</div>':"")+'</div></div>';
@@ -16539,6 +16960,1600 @@ function viewAssistant(){
   return h;
 }
 
+
+/* ============ payroll ============ */
+/* Rebuilt from Catherine's own sheets — the weekly site payroll
+   ("August 20-26, 2026.xlsx") and the semi-monthly admin payroll
+   ("August 13-27, 2026.xlsx"). Every rule below was checked by reproducing
+   real rows from those files to the centavo before any of it was written:
+
+     hourly rate      = daily / 8
+     weekly gross     = days x daily + OT hours x hourly          (OT at 1.0x)
+     admin daily rate = monthly / 26
+     admin gross      = days x daily + OT x hourly + holiday x daily + allowance
+     holiday          = 0.3 of a day for a special non-working holiday, or a
+                        Sunday, that was actually worked
+     NET PAY          = the peso CEILING of gross less deductions
+
+   The 1.0x overtime is theirs, not a mistake: the sheets pay plain hourly for
+   OT and the portal's own setting has said 1.0 since the April run. It is in
+   Settings if that ever changes. */
+const PAY_KIND = [
+  {k:"weekly", n:"Weekly — site", days:7, start:4,      /* Thursday */
+   note:"Thursday to Wednesday, cut off Wednesday and released Saturday. Daily-rated site staff, paid by project."},
+  {k:"semi",   n:"Semi-monthly — admin", days:15, start:null,
+   note:"Cut off on the 12th and the 27th, released on the 15th and the 30th. Salaried staff, and the daily rate is the monthly salary divided by 26."}
+];
+const payKind = k => PAY_KIND.find(x=>x.k===k) || PAY_KIND[0];
+const pesoCeil = n => Math.ceil(Number(n||0) - 1e-9);
+
+/* The Thursday on or before a date. */
+function weekStart(d){
+  const t=new Date(d+"T00:00:00");
+  const back=(t.getDay() - 4 + 7) % 7;        /* 4 = Thursday */
+  t.setDate(t.getDate()-back);
+  return isoDate(t);
+}
+/* The 13th-27th / 28th-12th window a date falls in. */
+function semiPeriod(d){
+  const t=new Date(d+"T00:00:00"), day=t.getDate();
+  if(day>=13 && day<=27) return {from:isoDate(new Date(t.getFullYear(),t.getMonth(),13)),
+                                 to:  isoDate(new Date(t.getFullYear(),t.getMonth(),27))};
+  if(day>27) return {from:isoDate(new Date(t.getFullYear(),t.getMonth(),28)),
+                     to:  isoDate(new Date(t.getFullYear(),t.getMonth()+1,12))};
+  return {from:isoDate(new Date(t.getFullYear(),t.getMonth()-1,28)),
+          to:  isoDate(new Date(t.getFullYear(),t.getMonth(),12))};
+}
+function payPeriod(kind, anchor){
+  if(kind==="weekly"){ const f=weekStart(anchor||TODAY); return {from:f, to:addDays(f,6)}; }
+  return semiPeriod(anchor||TODAY);
+}
+/* The cut-off is not the pay day. A period closing on the 27th is released on
+   the 30th, one closing on the 12th on the 15th, and a week closing Wednesday
+   is released that Saturday. A February with no 30th pays on its last day. */
+function payRelease(kind, per){
+  if(!per || !per.to) return TODAY;
+  /* A range HR chose by hand has no schedule behind it, so the portal will not
+     invent a pay day for it — the form is printed with the line blank. */
+  const std=payPeriod(kind, per.from);
+  if(per.from!==std.from || per.to!==std.to) return "";
+  if(kind==="weekly") return addDays(per.to, 3);
+  const t=new Date(per.to+"T00:00:00"), y=t.getFullYear(), m=t.getMonth();
+  if(t.getDate()>=13){
+    const last=new Date(y,m+1,0).getDate();
+    return isoDate(new Date(y,m,Math.min(30,last)));
+  }
+  return isoDate(new Date(y,m,15));
+}
+function payDates(from,to){
+  const out=[]; let d=from;
+  while(d<=to){ out.push(d); d=addDays(d,1); }
+  return out;
+}
+function payLabel(from,to){
+  const a=new Date(from+"T00:00:00"), b=new Date(to+"T00:00:00");
+  const M=x=>MONTHS[x.getMonth()];
+  return a.getMonth()===b.getMonth()
+    ? M(a)+" "+a.getDate()+"-"+b.getDate()+", "+b.getFullYear()
+    : M(a)+" "+a.getDate()+"-"+M(b)+" "+b.getDate()+", "+b.getFullYear();
+}
+
+/* The rate the portal will pay, and where it came from. A monthly-rated
+   person is divided by 26 exactly as the admin sheet does. */
+function payRate(e, kind){
+  const monthly = String(e.rateType||"").toLowerCase()==="monthly";
+  const daily = monthly ? (Number(e.dailyRate)||0)/26 : (Number(e.dailyRate)||0);
+  return { daily, hourly: daily/8, monthly,
+           basis: monthly ? "monthly "+peso(e.dailyRate)+" ÷ 26" : "daily rate" };
+}
+/* Who belongs on which run. Site people are on the weekly; salaried admin on
+   the semi-monthly. It follows the rate type, not the department, because
+   that is what actually decides how somebody is paid. */
+/* Which run a person belongs on — the rate they are on, not the department
+   they sit in. A monthly-rated person is on the semi-monthly admin sheet. */
+function payKindOf(e){
+  return String((e||{}).rateType||"").toLowerCase()==="monthly" ? "semi" : "weekly";
+}
+/* Everyone on the run for a period. Someone separated since is still owed for
+   the days they worked before they left, so a past period keeps them — Ben
+   Pasion was dropped from the August 20–26 run exactly this way. */
+function payPeople(kind, per){
+  const owed = e => {
+    if(e.status!=="Separated") return true;
+    if(!per) return false;
+    if(e.separatedOn && e.separatedOn >= per.from) return true;
+    return payDates(per.from, per.to).some(d=>{
+      const r=((dailyGet(d)||{}).rows||{})[e.id];
+      return r && dayCredit(r)>0;
+    });
+  };
+  return empList().filter(e=>payKindOf(e)===kind && owed(e))
+    .sort((a,b)=>String(a.name||"").localeCompare(String(b.name||"")));
+}
+
+/* One person's days over the period, straight off the manpower reports. */
+function payDaysFor(empId, dates){
+  const out=[];
+  dates.forEach(d=>{
+    const rec=dailyGet(d); if(!rec) return;
+    const r=(rec.rows||{})[empId]; if(!r) return;
+    out.push({ date:d, s:r.s||"", reason:r.r||"", site:r.site||"",
+               in:r.in||"", out:r.out||"",
+               day: dayVal(r,"day", dayCredit(r)),
+               ot:  dayVal(r,"ot", 0),
+               hol: holCode(r), holRate: holRate(r), elig: holEligible(d, r) });
+  });
+  return out;
+}
+/* What the run pays this person before HR touches anything. */
+function payLine(e, kind, dates, saved){
+  const rate=payRate(e,kind);
+  const days=payDaysFor(e.id,dates);
+  const auto={
+    days: days.reduce((n,x)=>n+(x.day||0),0),
+    ot:   days.reduce((n,x)=>n+(x.ot||0),0),
+    hol:  days.filter(x=>x.hol>0).length,
+    holFactor: days.reduce((n,x)=>n+(x.holRate||0),0),
+    hol30: days.filter(x=>x.hol===1).length,
+    hol100: days.filter(x=>x.hol===2).length,
+    eligible: days.filter(x=>x.elig).length
+  };
+  const sv=saved||{};
+  const L={
+    empId:e.id, empNo:e.empNo||"", name:e.name, position:e.position||"",
+    site: days.length ? (days[days.length-1].site||e.project||"") : (e.project||""),
+    daily:rate.daily, hourly:rate.hourly, basis:rate.basis, monthly:rate.monthly,
+    /* Days, overtime and the premium are never overridden here. They are
+       whatever the daily manpower reports say, so the payroll and the
+       attendance record cannot drift apart. Corrections go on the day. */
+    days:  auto.days,
+    ot:    auto.ot,
+    hol:   auto.hol,
+    holFactor: auto.holFactor, hol30: auto.hol30, hol100: auto.hol100, eligible: auto.eligible,
+    allowance: sv.allowance!=null ? Number(sv.allowance) : (rate.monthly ? (Number(e.allowance)||0) : 0),
+    incentive: Number(sv.incentive)||0,
+    late:      Number(sv.late)||0,
+    ca:        sv.ca!=null ? Number(sv.ca) : payCaDue(e.id),
+    uniform:   Number(sv.uniform)||0,
+    sssLoan:   Number(sv.sssLoan)||0,
+    hdmfLoan:  Number(sv.hdmfLoan)||0,
+    sss:       sv.sss !=null ? Number(sv.sss)  : payStat(kind,"sss", e),
+    phic:      sv.phic!=null ? Number(sv.phic) : payStat(kind,"phic", e),
+    hdmf:      sv.hdmf!=null ? Number(sv.hdmf) : payStat(kind,"hdmf", e),
+    rows:days, auto
+  };
+  return payTotals(L);
+}
+/* The statutory slice for the length of the period. The settings figures are
+   per semi-monthly period; a week is half of one. */
+/* What the person's own record says, or the company default where their line
+   was never set. Stored per semi-monthly period, the way the sheets carry it. */
+function empStat(e, which){
+  const own=((e&&e.ded)||{})[which];
+  if(own!=null && own!=="") return Number(own)||0;
+  return Number((S.settings.ded||{})[which])||0;
+}
+function empStatSet(e, which){
+  const own=((e&&e.ded)||{})[which];
+  return own!=null && own!=="";
+}
+function payStat(kind, which, e){
+  const d=S.settings.ded||{};
+  const full = e ? empStat(e, which) : (Number(d[which])||0);
+  /* Their sheet writes half of 131.25 as 65.62, not 65.63 — the centavo is
+     dropped, not rounded. Match the paper. */
+  return kind==="weekly" ? Math.floor(full/2*100)/100 : full;
+}
+/* An advance still outstanding is offered as a deduction — at the plan rate
+   where a plan was set, otherwise nothing is assumed. */
+function payCaDue(empId){
+  let n=0;
+  caList().forEach(a=>{
+    if(a.empId!==empId) return;
+    if(["Cancelled","Disapproved","Liquidated","Recovered from pay"].indexOf(a.status)>=0) return;
+    if(caBalance(a)<=0.005) return;
+    const per=Number(a.deductPerPeriod)||0;
+    if(per>0) n+=Math.min(per, caBalance(a));
+  });
+  return Math.round(n*100)/100;
+}
+function payTotals(L){
+  L.basic   = L.days * L.daily;
+  L.otPay   = L.ot   * L.hourly * (Number(S.settings.otPolicy)||1);
+  /* 30% or 100% of the day, per day chosen, on top of the day already in basic */
+  L.holPay  = (L.holFactor!=null ? L.holFactor : L.hol*HOL_PREMIUM) * L.daily;
+  L.gross   = L.basic + L.otPay + L.holPay + L.allowance + L.incentive;
+  L.ded     = L.late + L.ca + L.uniform + L.sssLoan + L.hdmfLoan + L.sss + L.phic + L.hdmf;
+  L.net     = pesoCeil(L.gross - L.ded);
+  return L;
+}
+
+/* The period on screen. Normally the standard weekly or semi-monthly window
+   the anchor falls in; HR can set any two dates instead, which is what a
+   catch-up run or a short first week needs. */
+function payCur(){
+  const kind=S.ui.payKind||"weekly";
+  const std=payPeriod(kind, S.ui.payAnchor||TODAY);
+  const f=S.ui.payFrom, t=S.ui.payTo;
+  if(f && t && f<=t && !(f===std.from && t===std.to)) return {kind, per:{from:f,to:t}, std, custom:true};
+  return {kind, per:std, std, custom:false};
+}
+/* A custom range is a run of its own and must not overwrite the standard one
+   that starts on the same day. */
+/* Which days a figure came from, so the number on the run can be traced back
+   to the reports without leaving the screen. */
+function payDayHint(L, field){
+  const hit=(L.rows||[]).filter(r=>(Number(r[field])||0)>0);
+  if(!hit.length) return "Nothing recorded on any day in this period";
+  const lab={day:"days worked", ot:"overtime hours", hol:"premium days"}[field]||field;
+  if(field==="hol") return lab + " — " + hit.map(r=>r.date.slice(5)+" ("+holLabel(r.hol)+")").join(", ");
+  return lab + " — " + hit.map(r=>
+    r.date.slice(5) + (field==="day" ? (Number(r.day)===1 ? "" : " ("+num(r.day,1)+")")
+                                     : " ("+num(r[field],1)+")")).join(", ");
+}
+function payRunKey(kind,from,to){
+  const std=payPeriod(kind,from);
+  return (to && to!==std.to) ? kind+"|"+from+"|"+to : kind+"|"+from;
+}
+function payRunGet(kind,from,to){ return (S.payruns||{})[payRunKey(kind,from,to)] || null; }
+
+function viewPayrollRun(){
+  /* A week nobody has filed yet opens as a page of zeros and reads as a broken
+     payroll. If the standard window has no reports and the period was not
+     chosen by hand, open the latest period that does have them. */
+  if(!S.ui.payAnchor && !S.ui.payFrom && !S.ui.payNoSnap){
+    const k0=S.ui.payKind||"weekly", std0=payPeriod(k0, TODAY);
+    if(!payDates(std0.from, std0.to).some(d=>dailyGet(d))){
+      const last=Object.values(S.daily).map(r=>r.date).filter(Boolean).sort().pop();
+      if(last){ S.ui.payAnchor=last; S.ui.paySnapped=1; }
+    }
+  }
+  const cur=payCur(), kind=cur.kind, per=cur.per;
+  const anchor=S.ui.payAnchor||TODAY;
+  const dates=payDates(per.from,per.to);
+  const saved=payRunGet(kind,per.from,per.to);
+  const people=payPeople(kind, per);
+  const lines=people.map(e=>payLine(e,kind,dates,(saved&&saved.lines&&saved.lines[e.id])||null));
+  const worked=lines.filter(L=>L.days>0 || L.ot>0);
+  const idle=lines.length-worked.length;
+  const T=worked.reduce((a,L)=>({gross:a.gross+L.gross, ded:a.ded+L.ded, net:a.net+L.net,
+    ot:a.ot+L.ot, days:a.days+L.days}),{gross:0,ded:0,net:0,ot:0,days:0});
+  const cov=dates.filter(d=>dailyGet(d)).length;
+
+  setCrumb("Payroll — "+payLabel(per.from,per.to),
+    payKind(kind).n+" · "+worked.length+" people · "+cov+" of "+dates.length+" days have a manpower report");
+
+  let h='<div class="row" style="margin-bottom:10px"><div class="seg">'
+   + PAY_KIND.map(k=>'<button class="'+(kind===k.k?"on":"")+'" data-paykind="'+k.k+'">'+esc(k.n)+'</button>').join("")
+   + '</div>'
+   + '<button class="btn sm" data-payshift="-1">◂ previous</button>'
+   + '<div class="f" style="width:152px"><label>From</label><input id="pay-from" type="date" value="'+esc(per.from)+'"></div>'
+   + '<div class="f" style="width:152px"><label>To</label><input id="pay-to" type="date" value="'+esc(per.to)+'"></div>'
+   + '<button class="btn sm" data-payshift="1">next ▸</button>'
+   + (cur.custom?'<button class="btn sm" id="pay-std">Back to the standard period</button>':"")
+   + '<span class="lbl" style="margin-left:auto">'+dates.length+' days'
+   + (cur.custom ? ' &nbsp;·&nbsp; <b style="color:var(--warn)">chosen range</b>'
+                 : ' &nbsp;·&nbsp; <b>release '+esc(longDate(payRelease(kind,per)))+'</b>')
+   + '</span></div>'
+   + '<div class="note" style="margin-bottom:12px">'+esc(payKind(kind).note)
+   + ' <b>Days, overtime and the holiday premium are read off the daily manpower reports and cannot be typed here</b> — '
+   + 'if one of them is wrong, the day itself is wrong, so fix it on the Daily Manpower screen and come back. '
+   + 'Everything else on this run — allowance, cash advance, loans, contributions — is typed here and kept with the run.'
+   + ' <button class="btn sm" id="pay-toattend">Open Daily Manpower</button>'
+   + ' <button class="btn sm" id="pay-tocontrib">Contributions per head</button>'
+   + ' <button class="btn sm" id="pay-paste">Paste manpower JSON</button></div>';
+
+  if(cov<dates.length){
+    const missing=dates.filter(d=>!dailyGet(d));
+    h+='<div class="note" style="border-left-color:var(--warn);margin-bottom:12px">'
+     + '<b>'+(dates.length-cov)+' of '+dates.length+' days in this period have no manpower report</b> — '
+     + missing.map(d=>esc(d.slice(5))).join(", ")
+     + '. Those days pay nothing to anybody. File the reports first, or the run is short.</div>';
+  }
+  if(S.ui.paySnapped && S.ui.payAnchor){
+    h+='<div class="note" style="margin-bottom:12px">Opened the <b>latest period with filed reports</b> — the current '
+     + (kind==="semi"?"half-month":"week")+' has none yet. <button class="btn sm" id="pay-now">Go to the current period</button></div>';
+  }
+  const eligPeople=worked.filter(L=>L.eligible>0);
+  if(eligPeople.length){
+    const granted=worked.filter(L=>L.hol>0).length;
+    h+='<div class="note" style="border-left-color:var(--warn);margin-bottom:12px">'
+     + '<b>Holiday premium is eligible, not granted.</b> '+eligPeople.length+' '+(eligPeople.length===1?'person has':'people have')
+     + ' a holiday or a worked Sunday in this period; '+granted+' '+(granted===1?'has':'have')+' a premium. '
+     + 'Choose <b>+30%</b> for a special day or Sunday, <b>+100%</b> for a regular holiday worked, or <b>As is</b>. '
+     + '<button class="btn sm" id="pay-hol30">Give all +30%</button> '
+     + '<button class="btn sm" id="pay-hol100">Give all +100%</button> '
+     + '<button class="btn sm" id="pay-holnone">Clear all (as is)</button> '
+     + '<button class="btn sm" id="pay-holcal">Holiday calendar</button>'
+     + '<div class="lbl" style="margin-top:4px;text-transform:none;letter-spacing:0">One person’s days: the Days button on their row.</div></div>';
+  }
+  h+=payAttendanceCard(kind, per, worked);
+
+  h+='<div class="strip">'
+   + tile(worked.length,"On this run",idle?idle+" more with nothing recorded":"everybody has time on","acc")
+   + tile(num(T.days,1),"Days paid",num(T.ot,1)+" overtime hours","acc")
+   + tile(peso(T.gross),"Gross pay","before deductions","ok")
+   + tile(peso(T.net),"Net pay",peso(T.ded)+" deducted",T.net?"ok":"mut")
+   + '</div>';
+
+  h+='<div class="row" style="margin:14px 0 8px">'
+   + '<button class="btn pri" id="pay-print">Preview &amp; print the payroll</button>'
+   + '<button class="btn" id="pay-csv"><svg><use href="#i-dl"/></svg> CSV</button>'
+   + '<button class="btn" id="pay-slips">Payslips for everyone</button>'
+   + '<button class="btn" id="pay-save">Save this run</button>'
+   + (saved?'<span class="pill ok">saved '+esc(saved.savedOn||"")+'</span>':'<span class="lbl">not saved yet</span>')
+   + '<div class="f" style="margin-left:auto;width:210px"><input id="pay-q" placeholder="Find someone in this run" autocomplete="off"></div>'
+   + '</div>';
+
+  /* One list drives the heading, the cells and the footer. Three places
+     describing the same row is how a table ends up one column out of step. */
+  const LEAD = [{n:"ID",w:56},{n:"Employee",w:196},{n:"Area",w:124},
+    {n:"Daily",w:88,r:1},{n:"Hourly",w:82,r:1},{n:"Days",w:64,r:1},
+    {n:"OT hrs",w:68,r:1},{n:"Prem.",w:68,r:1}]
+    .concat(kind==="semi" ? [{n:"Allowance",w:100,r:1,f:"allowance"}] : [])
+    .concat([{n:"Gross",w:106,r:1}]);
+  const DED = [
+    {k:"late",     n:"Late",        w:92, always:1},
+    {k:"ca",       n:"Cash adv.",   w:98, always:1},
+    {k:"uniform",  n:"Uniform",     w:92},
+    {k:"sssLoan",  n:"SSS loan",    w:94},
+    {k:"hdmfLoan", n:"Pag-IBIG ln", w:100},
+    {k:"sss",      n:"SSS",         w:92, always:1},
+    {k:"phic",     n:"PhilHealth",  w:96, always:1},
+    {k:"hdmf",     n:(kind==="semi"?"HMIC":"Pag-IBIG"), w:96, always:1}
+  ];
+  /* A column nobody has a figure in is eight blank boxes squeezing the ones
+     that do carry something. Those are folded away until they are needed. */
+  const showAll = !!S.ui.payAllCols;
+  const used   = DED.filter(c=>c.always || showAll || worked.some(L=>Math.abs(Number(L[c.k])||0)>0.005));
+  const folded = DED.length - used.length;
+  const TAIL = [{n:"Deductions",w:100,r:1},{n:"NET PAY",w:108,r:1},{n:"",w:140}];
+  const MINW = LEAD.concat(used,TAIL).reduce((a,c)=>a+c.w,0);
+
+  if(folded || showAll){
+    h+='<div class="row" style="margin:0 0 8px">'
+     + '<button class="btn sm" id="pay-cols">'
+     + (showAll ? 'Fold away the '+(DED.length-DED.filter(c=>c.always||worked.some(L=>Math.abs(Number(L[c.k])||0)>0.005)).length)+' empty columns'
+                : 'Show all '+DED.length+' deduction columns')+'</button>'
+     + '<span class="lbl">'+(showAll
+         ? 'every deduction column is showing'
+         : folded+' column'+(folded===1?'':'s')+' hidden — nobody on this run has a figure in '
+           + DED.filter(c=>used.indexOf(c)<0).map(c=>c.n.toLowerCase()).join(", "))
+     + '</span></div>';
+  }
+
+  const money='width:100%;min-width:64px;padding:4px 6px;border:1px solid var(--line2);border-radius:4px;'
+    + 'background:var(--surface);font-size:12px;text-align:right;font-family:var(--f-mono);color:var(--ink)';
+  const th=c=>'<th'+(c.r?' class="num"':'')+' style="width:'+c.w+'px"'
+    +(c.t?' title="'+esc(c.t)+'"':'')+'>'+esc(c.n)+'</th>';
+
+  h+='<div class="tw" style="max-height:58vh;overflow:auto">'
+   + '<table style="min-width:'+MINW+'px"><thead><tr>'
+   + LEAD.map(th).join("")
+   + used.map(c=>th({n:c.n,w:c.w,r:1})).join("")
+   + TAIL.map(th).join("")
+   + '</tr></thead><tbody>';
+
+  const inp=(L,k,v)=>'<input data-payf="'+esc(L.empId)+'|'+k+'" type="number" step="0.01" '
+    + 'placeholder="0.00" value="'+(v?esc(v):"")+'" style="'+money+'">';
+  worked.forEach(L=>{
+    h+='<tr data-payrow="1" data-hay="'+esc((L.name+" "+flipName(L.name)+" "+L.empNo+" "+L.site+" "+L.position).toLowerCase())+'">'
+     + '<td class="mono">'+esc(L.empNo||"—")+'</td>'
+     + '<td><b>'+esc(flipName(L.name))+'</b>'
+     + (L.monthly?' <span class="pill mut" title="'+esc(L.basis)+'">÷26</span>':'')
+     + '<div class="lbl" style="text-transform:none;letter-spacing:0;font-family:var(--f-ui)">'+esc(L.position||"")+'</div></td>'
+     + '<td style="font-size:11px">'+esc(L.site||"—")+'</td>'
+     + '<td class="num mono">'+num(L.daily,2)+'</td><td class="num mono">'+num(L.hourly,2)+'</td>'
+     + '<td class="num mono" title="'+esc(payDayHint(L,"day"))+'">'+num(L.days,1)+'</td>'
+     + '<td class="num mono" title="'+esc(payDayHint(L,"ot"))+'">'+(L.ot?num(L.ot,1):'<span class="lbl">—</span>')+'</td>'
+     + '<td class="num mono" title="'+esc(payDayHint(L,"hol")+(L.holPay?" — adds "+peso(L.holPay)+" to gross":""))+'">'
+     +   (L.hol?esc(holMix(L)):'<span class="lbl">—</span>')+'</td>'
+     + (kind==="semi" ? '<td>'+inp(L,"allowance",L.allowance)+'</td>' : '')
+     + '<td class="num mono"><b>'+num(L.gross,2)+'</b></td>'
+     + used.map(c=>'<td>'+inp(L,c.k,L[c.k])+'</td>').join("")
+     + '<td class="num mono">'+num(L.ded,2)+'</td>'
+     + '<td class="num mono"><b>'+num(L.net,0)+'</b></td>'
+     + '<td style="white-space:nowrap"><button class="btn sm" data-payperson="'+esc(L.empId)+'" title="Status, times, overtime and holiday for each day">Days</button> '
+     + '<button class="btn sm" data-payslip="'+esc(L.empId)+'">Payslip</button></td></tr>';
+  });
+  h+='</tbody><tfoot><tr style="font-weight:700;background:var(--surface2)">'
+   + '<td colspan="'+(LEAD.length-1)+'">TOTAL — '+worked.length+' people</td>'
+   + '<td class="num mono">'+num(T.gross,2)+'</td>'
+   + '<td colspan="'+used.length+'"></td>'
+   + '<td class="num mono">'+num(T.ded,2)+'</td><td class="num mono">'+num(T.net,0)+'</td><td></td>'
+   + '</tr></tfoot></table></div>';
+
+  if(idle){
+    h+='<div class="note" style="margin-top:10px">'+idle+' '+(idle===1?'person is':'people are')
+     + ' on the '+esc(payKind(kind).n.toLowerCase())+' list with no day recorded in this period, so they are '
+     + 'not on the run. If somebody worked and is missing here, the manpower report for their day is what to fix.</div>';
+  }
+  return h;
+}
+
+/* The sheet as Catherine lays it out: period and release date at the head, a
+   line per person with the day rows beneath, then the project summary and the
+   two signatures. Landscape, because their own file is. */
+function payPaper(kind, per, lines, T){
+  const K=payKind(kind);
+  const st=S.settings;
+  let h=pfHead()
+   + pfTitle(kind==="semi" ? "ADMIN PAYROLL" : "WEEKLY PAYROLL",
+             kind==="semi" ? "Salaried staff — daily rate is the monthly salary divided by 26"
+                           : "Site personnel — daily rated, paid by project")
+   + '<table class="pf-t" style="margin:0"><tr>'
+   + '<td class="pf-l">PERIOD</td><td class="pf-v fill">'+esc(payLabel(per.from,per.to))+'</td>'
+   + '<td class="pf-l">RELEASE DATE</td><td class="pf-v fill">'
+   +   (payRelease(kind,per) ? esc(longDate(payRelease(kind,per))) : "&nbsp;")+'</td>'
+   + '</tr></table>';
+
+  /* Sized by hand. Left to itself the table gives every column the same width,
+     which is what broke "Agustin" into "Agusti / n" and stacked the peso
+     figures two to a line. Percentages, so they hold at any paper size. */
+  const COLS = kind==="semi"
+    ? [["No.",2.5],["Name",15],["Position",8.5],["Area",9],["Days",4],["OT hrs",4.5],["Prem.",4],
+       ["Daily",6],["Hourly",5.5],["Allowance",6.5],["Gross",7.5],["Deductions",7.5],["NET PAY",8],["Signature",11.5]]
+    : [["No.",3],["Name",17],["Position",9.5],["Area",10],["Days",4.5],["OT hrs",5],["Prem.",4.5],
+       ["Daily",6.5],["Hourly",6],["Gross",8],["Deductions",8],["NET PAY",8.5],["Signature",9.5]];
+  h+='<table class="pf-t reg" style="margin-top:0">'
+   + '<colgroup>'+COLS.map(c=>'<col style="width:'+c[1]+'%">').join("")+'</colgroup>'
+   + '<tr>'+COLS.map(c=>'<td class="hd">'+esc(c[0])+'</td>').join("")+'</tr>';
+  lines.forEach((L,i)=>{
+    h+='<tr>'
+     + '<td class="c">'+(i+1)+'</td>'
+     + '<td class="nm">'+esc(flipName(L.name))+(L.empNo?'<small>ID No. '+esc(L.empNo)+'</small>':'')+'</td>'
+     + '<td>'+esc(L.position||"")+'</td>'
+     + '<td>'+esc(L.site||"")+'</td>'
+     + '<td class="n">'+num(L.days,1)+'</td>'
+     + '<td class="n">'+(L.ot?num(L.ot,1):"")+'</td>'
+     + '<td class="n" style="font-size:7.4pt">'+(L.hol30?L.hol30+"×30%":"")+(L.hol30&&L.hol100?"<br>":"")+(L.hol100?L.hol100+"×100%":"")+'</td>'
+     + '<td class="n">'+num(L.daily,2)+'</td>'
+     + '<td class="n">'+num(L.hourly,2)+'</td>'
+     + (kind==="semi"?'<td class="n">'+(L.allowance?num(L.allowance,2):"")+'</td>':'')
+     + '<td class="n" style="font-weight:700">'+num(L.gross,2)+'</td>'
+     + '<td class="n">'+(L.ded?num(L.ded,2):"")+'</td>'
+     + '<td class="n" style="font-weight:700">'+num(L.net,2)+'</td>'
+     + '<td></td></tr>';
+  });
+  /* everything up to and including Hourly, plus Allowance on the admin sheet */
+  h+='<tr><td class="hd" colspan="'+(kind==="semi"?10:9)+'" style="text-align:left">'
+   + 'TOTAL — '+lines.length+' employees</td>'
+   + '<td class="n" style="font-weight:700">'+num(T.gross,2)+'</td>'
+   + '<td class="n" style="font-weight:700">'+num(T.ded,2)+'</td>'
+   + '<td class="n" style="font-weight:700">'+num(T.net,2)+'</td><td></td></tr></table>';
+
+  /* by project, the way the summary page is set out */
+  const byS={};
+  lines.forEach(L=>{ const k=L.site||"(no area)";
+    const b=(byS[k]=byS[k]||{gross:0,stat:0,late:0,ca:0,other:0,net:0,n:0});
+    b.gross+=L.gross; b.stat+=L.sss+L.phic+L.hdmf; b.late+=L.late; b.ca+=L.ca;
+    b.other+=L.uniform+L.sssLoan+L.hdmfLoan; b.net+=L.net; b.n++; });
+  h+=pfBand("SUMMARY BY PROJECT")
+   + '<table class="pf-t reg" style="margin-top:0">'
+   + '<colgroup>'+[22,7,12,17,11,11,11,9].map(w=>'<col style="width:'+w+'%">').join("")+'</colgroup><tr>'
+   + ['Project','Staff','Gross pay','SSS / Pag-IBIG / PhilHealth','Late / undertime','Cash advance','Loans & others','Net pay']
+      .map(x=>'<td class="hd">'+esc(x)+'</td>').join("")+'</tr>';
+  Object.keys(byS).sort().forEach(k=>{ const b=byS[k];
+    h+='<tr><td class="nm">'+esc(k)+'</td><td class="n">'+b.n+'</td>'
+     + '<td class="n">'+num(b.gross,2)+'</td><td class="n">'+num(b.stat,2)+'</td>'
+     + '<td class="n">'+(b.late?num(b.late,2):"")+'</td>'
+     + '<td class="n">'+(b.ca?num(b.ca,2):"")+'</td>'
+     + '<td class="n">'+(b.other?num(b.other,2):"")+'</td>'
+     + '<td class="n" style="font-weight:700">'+num(b.net,2)+'</td></tr>'; });
+  h+='</table>';
+
+  h+=pfSign([
+    {who:"Prepared by", name:st.payrollBy||st.hrHead||"", role:st.payrollTitle||"Safety Officer"},
+    {who:"Approved by", name:st.signatory||"", role:st.signatoryTitle||"CEO / President"}])
+   + pfFoot(kind==="semi"?"Admin Payroll — period":"Weekly Payroll — period", payLabel(per.from,per.to))
+   + pfISO(kind==="semi"?"payadmin":"payweek");
+  return h;
+}
+
+/* ============ payslip ============ */
+/* One person's slip, on the letterhead. Every figure on it is lifted from the
+   run as it stands — nothing is recomputed here, so a slip can never say
+   something the payroll does not. Two fit on a sheet with a cut line between,
+   which is how they are handed out. */
+function payslipBody(L, kind, per){
+  const st=S.settings;
+  const otx=Number(st.otPolicy)||1;
+  const one=n=>n===1?"":"s";
+  const earn=[
+    ["Basic pay",        num(L.days,1)+" day"+one(L.days)+" × "+num(L.daily,2), L.basic],
+    ["Overtime",         num(L.ot,1)+" hr"+one(L.ot)+" × "+num(L.hourly,2)+(otx!==1?" × "+otx:""), L.otPay],
+    ["Holiday / rest-day premium", [L.hol30?num(L.hol30,0)+" day"+one(L.hol30)+" × "+num(L.daily,2)+" × 30%":"",
+                                    L.hol100?num(L.hol100,0)+" day"+one(L.hol100)+" × "+num(L.daily,2)+" × 100%":""]
+                                   .filter(Boolean).join(" + "), L.holPay],
+    ["Allowance",        "", L.allowance],
+    ["Incentive",        "", L.incentive]
+  ].filter(r=>Math.abs(r[2])>0.005);
+  const ded=[
+    ["Late / undertime", "", L.late],
+    ["Cash advance",     "", L.ca],
+    ["Uniform / others", "", L.uniform],
+    ["SSS loan",         "", L.sssLoan],
+    ["Pag-IBIG loan",    "", L.hdmfLoan],
+    ["SSS contribution", "", L.sss],
+    ["PhilHealth",       "", L.phic],
+    [kind==="semi"?"HMIC":"Pag-IBIG contribution", "", L.hdmf]
+  ].filter(r=>Math.abs(r[2])>0.005);
+
+  const cell=r=>'<td style="font-size:9.6px">'+esc(r[0])
+    + (r[1]?'<br><span style="color:#666;font-size:8.4px">'+esc(r[1])+'</span>':"")+'</td>'
+    + '<td style="text-align:right;font-family:var(--f-mono);font-size:9.8px">'+num(r[2],2)+'</td>';
+  const blank='<td>&nbsp;</td><td>&nbsp;</td>';
+
+  let h=pfHead()
+   + pfTitle("PAYSLIP", payKind(kind).n.replace(/ —.*/,"") + " — " + payLabel(per.from,per.to))
+   + '<table class="pf-t" style="margin:0">'
+   + '<tr><td class="pf-l">EMPLOYEE</td><td class="pf-v fill" style="font-weight:700">'+esc(flipName(L.name))+'</td>'
+   +     '<td class="pf-l">ID NO.</td><td class="pf-v fill">'+esc(L.empNo||"—")+'</td></tr>'
+   + '<tr><td class="pf-l">POSITION</td><td class="pf-v fill">'+esc(L.position||"—")+'</td>'
+   +     '<td class="pf-l">AREA</td><td class="pf-v fill">'+esc(L.site||"—")+'</td></tr>'
+   + '<tr><td class="pf-l">PERIOD</td><td class="pf-v fill">'+esc(payLabel(per.from,per.to))+'</td>'
+   +     '<td class="pf-l">RELEASE DATE</td><td class="pf-v fill">'
+   +       (payRelease(kind,per) ? esc(longDate(payRelease(kind,per))) : "&nbsp;")+'</td></tr>'
+   + '</table>';
+
+  h+='<table class="pf-t" style="margin-top:0"><tr>'
+   + '<td class="pf-l" colspan="2" style="text-align:center;font-size:9.6px">EARNINGS</td>'
+   + '<td class="pf-l" colspan="2" style="text-align:center;font-size:9.6px">DEDUCTIONS</td></tr>';
+  const rows=Math.max(earn.length, ded.length, 1);
+  for(let i=0;i<rows;i++){
+    h+='<tr>'+(earn[i]?cell(earn[i]):blank)+(ded[i]?cell(ded[i]):blank)+'</tr>';
+  }
+  h+='<tr><td class="pf-l" style="font-size:9.6px">GROSS PAY</td>'
+   + '<td style="text-align:right;font-weight:700;font-family:var(--f-mono)">'+num(L.gross,2)+'</td>'
+   + '<td class="pf-l" style="font-size:9.6px">TOTAL DEDUCTIONS</td>'
+   + '<td style="text-align:right;font-weight:700;font-family:var(--f-mono)">'+num(L.ded,2)+'</td></tr>'
+   + '</table>';
+
+  h+=pfBand("NET PAY   " + peso(L.net));
+
+  /* An advance is the one figure a person will want to check, so say what is
+     left of it rather than only what was taken. */
+  const bal=payslipCaNote(L);
+  if(bal) h+='<div style="font-size:9px;color:#555;margin:2px 0 4px">'+esc(bal)+'</div>';
+
+  h+=pfSign([
+    {who:"Prepared by", name:st.payrollBy||st.hrHead||"", role:st.payrollTitle||"Safety Officer"},
+    {who:"Received by", name:flipName(L.name), role:"Signature over printed name"}])
+   + pfFoot("Payslip — "+flipName(L.name), payLabel(per.from,per.to))
+   + pfISO("payslip");
+  return h;
+}
+/* What is left of every advance after this run's deduction. */
+function payslipCaNote(L){
+  if(!(L.ca>0.005)) return "";
+  let left=0;
+  caList().forEach(a=>{
+    if(a.empId!==L.empId) return;
+    if(["Cancelled","Disapproved","Liquidated","Recovered from pay"].indexOf(a.status)>=0) return;
+    left+=Math.max(0, caBalance(a));
+  });
+  const after=Math.max(0, left - L.ca);
+  return "Cash advance: " + peso(after) + " still to be recovered after this deduction.";
+}
+/* Two to a sheet, cut line between, page break after every pair. */
+function payslipSheet(lines, kind, per){
+  let h="";
+  lines.forEach((L,i)=>{
+    if(i && i%2===0) h+='<div class="pf-pg"></div>';
+    else if(i) h+='<div style="border-top:1px dashed #999;margin:10px 0 8px;'
+      + 'font-size:8px;color:#999;letter-spacing:.08em">CUT HERE</div>';
+    h+=payslipBody(L, kind, per);
+  });
+  return h;
+}
+
+/* ============ contributions ============ */
+/* SSS, PhilHealth and Pag-IBIG are a standing fact about a person, not a
+   decision made each payday, so they live on the employee record and not on
+   the run. A blank line falls back to the company figure in Settings, which is
+   what the portal did for everybody before this screen existed.
+   Everything here is per semi-monthly period; a weekly run takes half, with
+   the centavo dropped rather than rounded, because that is what their sheets
+   do. */
+const STAT_N = {sss:"SSS", phic:"PhilHealth", hdmf:"Pag-IBIG / HMIC"};
+
+/* The published tables, as a starting point only. They change, the brackets
+   are not the whole story for every case, and the figure that governs is
+   whatever the agency bills — so this fills the boxes in and HR corrects them.
+   Monthly employee share; halve it for the semi-monthly figure stored here. */
+function statFromRate(e){
+  const monthly = String(e.rateType||"").toLowerCase()==="monthly"
+    ? (Number(e.dailyRate)||0)
+    : (Number(e.dailyRate)||0) * 26;
+  if(!monthly) return null;
+  /* SSS: employee share 5% of the monthly salary credit, which moves in 500s
+     between 5,000 and 35,000. */
+  const msc = Math.min(35000, Math.max(5000, Math.round(monthly/500)*500));
+  const sss = msc * 0.05;
+  /* PhilHealth: 5% premium shared half and half, so 2.5% of monthly basic,
+     with the basic floored at 10,000 and capped at 100,000. */
+  const phBase = Math.min(100000, Math.max(10000, monthly));
+  const phic = phBase * 0.025;
+  /* Pag-IBIG: 2% of monthly compensation, capped at the 10,000 ceiling. */
+  const hdmf = Math.min(10000, monthly) * 0.02;
+  return { monthly, msc,
+           sss:  Math.round(sss/2*100)/100,
+           phic: Math.round(phic/2*100)/100,
+           hdmf: Math.round(hdmf/2*100)/100 };
+}
+
+function viewContrib(){
+  const q=(S.ui.contribQ||"").toLowerCase().trim();
+  const only=S.ui.contribKind||"";
+  let people=activeEmps().slice().sort((a,b)=>flipName(a.name).localeCompare(flipName(b.name)));
+  if(only) people=people.filter(e=>payKindOf(e)===only);
+  const set=people.filter(e=>["sss","phic","hdmf"].some(k=>empStatSet(e,k))).length;
+  const d=S.settings.ded||{};
+
+  setCrumb("Contributions", people.length+" people · "+set+" with their own figures · the rest on the company default");
+
+  let h='<div class="note" style="margin-bottom:12px">'
+   + 'These are the <b>SSS, PhilHealth and Pag-IBIG amounts deducted from the employee</b>, '
+   + 'per semi-monthly period. A weekly run takes half of each. Leave a box empty and the person '
+   + 'is deducted the company figure — <b>SSS '+peso(d.sss||0)+', PhilHealth '+peso(d.phic||0)
+   + ', Pag-IBIG '+peso(d.hdmf||0)+'</b> — which is what everybody was on before. '
+   + 'Type a figure and it belongs to that person from the next run onwards.</div>';
+
+  h+='<div class="row" style="margin-bottom:10px"><div class="seg">'
+   + [["","Everyone"],["weekly","Site — weekly"],["semi","Admin — semi-monthly"]]
+       .map(x=>'<button class="'+(only===x[0]?"on":"")+'" data-ckind="'+x[0]+'">'+esc(x[1])+'</button>').join("")
+   + '</div>'
+   + '<button class="btn" id="c-fill">Fill the blanks from each rate</button>'
+   + '<button class="btn" id="c-clear">Put everyone back on the company figure</button>'
+   + '<div class="f" style="margin-left:auto;width:220px"><input id="c-q" placeholder="Find someone" autocomplete="off" value="'+esc(S.ui.contribQ||"")+'"></div>'
+   + '</div>';
+
+  const money='width:100%;padding:3px 6px;border:1px solid var(--line2);border-radius:4px;background:var(--surface);font-size:12px;text-align:right;font-family:var(--f-mono)';
+  h+='<div class="tw" style="max-height:62vh;overflow:auto"><table><thead><tr>'
+   + '<th style="width:52px">ID</th><th style="width:200px">Employee</th>'
+   + '<th style="width:110px">Paid</th><th class="num" style="width:104px">Monthly basis</th>'
+   + '<th class="num" style="width:96px">SSS</th><th class="num" style="width:104px">PhilHealth</th>'
+   + '<th class="num" style="width:104px">Pag-IBIG</th>'
+   + '<th class="num" style="width:96px">Per week</th>'
+   + '<th style="width:150px">Where it comes from</th>'
+   + '</tr></thead><tbody>';
+
+  people.forEach(e=>{
+    const kind=payKindOf(e);
+    const r=payRate(e,kind);
+    const half=["sss","phic","hdmf"].reduce((a,k)=>a+empStat(e,k),0);
+    const wk  =["sss","phic","hdmf"].reduce((a,k)=>a+payStat("weekly",k,e),0);
+    const own =["sss","phic","hdmf"].filter(k=>empStatSet(e,k));
+    const box=k=>'<td><input data-cf="'+esc(e.id)+'|'+k+'" type="number" step="0.01" min="0" '
+      + 'value="'+(empStatSet(e,k)?esc(String(e.ded[k])):"")+'" placeholder="'+num((S.settings.ded||{})[k]||0,2)+'" style="'+money+'"></td>';
+    h+='<tr data-crow="1" data-hay="'+esc((e.name+" "+flipName(e.name)+" "+(e.empNo||"")+" "+(e.position||"")+" "+(e.project||"")).toLowerCase())+'">'
+     + '<td class="mono">'+esc(e.empNo||"—")+'</td>'
+     + '<td><b>'+esc(flipName(e.name))+'</b><div class="lbl" style="text-transform:none;letter-spacing:0;font-family:var(--f-ui)">'+esc(e.position||"")+'</div></td>'
+     + '<td style="font-size:11.5px">'+(kind==="semi"?"Semi-monthly":"Weekly")+'</td>'
+     + '<td class="num mono" title="'+esc(r.basis||"")+'">'+num(r.monthly ? (Number(e.dailyRate)||0) : r.daily*26, 2)+'</td>'
+     + box("sss")+box("phic")+box("hdmf")
+     + '<td class="num mono">'+num(wk,2)+'</td>'
+     + '<td>'+(own.length===3
+         ? '<span class="pill acc">their own</span>'
+         : own.length
+           ? '<span class="pill warn" title="'+esc(own.map(k=>STAT_N[k]).join(", ")+" set; the rest on the company figure")+'">part own</span>'
+           : '<span class="pill mut">company figure</span>')
+       + '</td></tr>';
+  });
+  h+='</tbody></table></div>'
+   + '<div class="row" style="margin-top:10px"><button class="btn pri" id="c-save">Save</button>'
+   + '<span class="lbl" id="c-count"></span></div>';
+
+  h+='<div class="note" style="margin-top:14px;border-left-color:var(--warn)">'
+   + '<b>"Fill the blanks from each rate" is a starting point, not an authority.</b> It works the '
+   + 'published tables — SSS at 5% of the salary credit, PhilHealth at 2.5% of monthly basic between '
+   + 'the 10,000 floor and the 100,000 ceiling, Pag-IBIG at 2% up to the 10,000 ceiling — then halves '
+   + 'each for the period. The tables change, and the figure that actually governs is whatever the '
+   + 'agency bills. Check a filled figure against the last remittance before a run goes out. '
+   + 'It only fills boxes that are empty; anything already typed is left alone.</div>';
+  return h;
+}
+
+/* The calendar itself, opened from wherever HR happens to be standing. */
+async function holidayMark(date){
+  const h=holidayOn(date);
+  const r=await askText(h?"Edit this holiday":"Declare a holiday", [
+    {k:"d",    label:"Date",  type:"date", value:date||TODAY},
+    {k:"n",    label:"What it is", value:(h&&h.n)||"", placeholder:"e.g. Ninoy Aquino Day"},
+    {k:"t",    label:"Regular or Special", value:(h&&h.t)||"Special", options:["Special","Regular"],
+     hint:"Both can carry the 30% premium here. The label is for the record — what a person is actually paid stays HR's decision, ticked per head."}
+  ]);
+  if(!r || !r.d) return;
+  const list=(S.settings.holidays||[]).filter(x=>x.d!==r.d);
+  list.push({d:r.d, n:r.n||"Holiday", t:/^r/i.test(r.t||"")?"Regular":"Special"});
+  S.settings.holidays=list;
+  await putSettings();
+  toast(longDate(r.d)+" is on the holiday calendar. Open that day and the premium column appears.","ok");
+  render();
+}
+function holidayEditor(){
+  const draw=()=>{
+    const own=holidayList();
+    const y=TODAY.slice(0,4);
+    let b='<div class="note">A date on this list makes the <b>30% premium column</b> appear on that day\'s '
+     + 'Daily Manpower screen. It does not pay anybody anything on its own — the premium is still ticked '
+     + 'per person, because who worked and who should be paid extra is a decision, not a date.</div>';
+    b+='<div class="tw" style="max-height:44vh;overflow:auto;margin-top:12px"><table><thead><tr>'
+     + '<th style="width:130px">Date</th><th>What it is</th><th style="width:90px">Type</th>'
+     + '<th style="width:80px"></th></tr></thead><tbody>';
+    if(!own.length) b+='<tr><td colspan="4" class="lbl" style="padding:14px">Nothing added yet. '
+      + 'The fixed regular holidays below are already recognised.</td></tr>';
+    own.forEach(x=>{
+      b+='<tr><td class="mono">'+esc(x.d)+'</td><td><b>'+esc(x.n||"")+'</b></td>'
+       + '<td>'+esc(x.t||"Special")+'</td>'
+       + '<td style="text-align:right"><button class="btn sm danger" data-holdel="'+esc(x.d)+'">Remove</button></td></tr>';
+    });
+    b+='</tbody></table></div>';
+    b+='<div class="note" style="margin-top:12px"><b>Already recognised every year, no need to add them:</b> '
+     + HOLIDAY_FIXED.map(f=>esc(f.n)+" ("+f.md.replace("-","/")+")").join(" · ")
+     + '. <b>Not recognised until you add them:</b> Maundy Thursday, Good Friday, National Heroes Day, '
+     + 'the Eid holidays and every special non-working day — those move each year and arrive by '
+     + 'proclamation, so the portal will not guess at them.</div>';
+    return b;
+  };
+  const open=()=>{
+    openModal({ title:"Holiday calendar", wide:true, body:draw(),
+      foot:'<button class="btn" id="hc-close">Close</button>'
+        + '<button class="btn pri" id="hc-add">Add a holiday</button>'});
+    $("#hc-close").onclick=closeModal;
+    $("#hc-add").onclick=async()=>{ closeModal(); await holidayMark(S.ui.dailyDate||TODAY); };
+    $$("[data-holdel]").forEach(btn=>btn.onclick=async()=>{
+      const d=btn.dataset.holdel;
+      S.settings.holidays=(S.settings.holidays||[]).filter(x=>x.d!==d);
+      await putSettings();
+      toast(longDate(d)+" taken off the calendar.","ok");
+      closeModal(); render();
+    });
+  };
+  open();
+}
+
+/* ============ the attendance edit log ============ */
+/* An attendance figure feeds a payslip, so it has to be answerable for. Every
+   save records what moved, when, and who was at the screen — the report as
+   filed stays visible underneath, which is the difference between a corrected
+   record and a rewritten one. */
+function nowStamp(){
+  const d=new Date(), p=n=>String(n).padStart(2,"0");
+  return d.getFullYear()+"-"+p(d.getMonth()+1)+"-"+p(d.getDate())
+       + " " + p(d.getHours())+":"+p(d.getMinutes());
+}
+function whoEdits(){ return S.settings.editedBy || S.settings.hrStaff || "HR"; }
+
+const DAILY_FIELD = {s:"status", r:"reason", site:"area", in:"time in", out:"time out",
+                     ot:"overtime hours", day:"day credit", hol:"holiday premium",
+                     rk:"reason type", ex:"excused"};
+function dailyDiff(before, after){
+  const A=(before&&before.rows)||{}, B=(after&&after.rows)||{};
+  const ids={}; Object.keys(A).forEach(k=>ids[k]=1); Object.keys(B).forEach(k=>ids[k]=1);
+  const out=[];
+  Object.keys(ids).forEach(id=>{
+    const a=A[id], b=B[id];
+    if(!a && !b) return;
+    if(!a){ out.push({id, f:"row", from:"", to:"added to the day"}); return; }
+    if(!b){ out.push({id, f:"row", from:"on the day", to:"taken off"}); return; }
+    Object.keys(DAILY_FIELD).forEach(f=>{
+      const x=(a[f]==null||a[f]==="")?"":String(a[f]);
+      const y=(b[f]==null||b[f]==="")?"":String(b[f]);
+      if(x!==y) out.push({id, f, from:x, to:y});
+    });
+  });
+  return out;
+}
+const DAILY_LOG_MAX = 60;      /* enough to answer a question, not enough to bloat */
+/* The only way a day should ever be written. */
+async function dailySave(rec, why){
+  FIRST_ADDED=null; LAST_SITE_IX=null;
+  const before=clone(dailyGet(rec.date)||null);
+  const ch=before ? dailyDiff(before, rec) : [];
+  if(before && !ch.length && !why) return rec;          /* nothing actually moved */
+  rec.log=((before&&before.log)||[]).slice();
+  rec.log.unshift({ at:nowStamp(), by:whoEdits(), why:why||"", n:before?ch.length:0,
+                    ch:ch.slice(0,40), first:!before });
+  if(rec.log.length>DAILY_LOG_MAX) rec.log.length=DAILY_LOG_MAX;
+  rec.editedOn=rec.log[0].at; rec.editedBy=rec.log[0].by;
+  await put("daily", rec.id, rec);
+  return rec;
+}
+/* One change, in words. */
+function dailyChangeText(c){
+  const e=S.employees[c.id];
+  const who=e ? flipName(e.name) : "somebody no longer on file";
+  if(c.f==="row") return who+" — "+c.to;
+  const f=DAILY_FIELD[c.f]||c.f;
+  const show=v=>c.f==="hol" ? holLabel(holCode({hol:v}))
+    : c.f==="ex" ? (v===""?"blank":(Number(v)?"yes":"no")) : (v===""?"blank":v);
+  return who+" — "+f+" "+show(c.from)+" → "+show(c.to);
+}
+/* Every edit across every day, newest first. */
+function dailyEdits(o){
+  o=o||{};
+  const out=[];
+  Object.values(S.daily).forEach(rec=>{
+    if(o.month && monthKey(rec.date)!==o.month) return;
+    (rec.log||[]).forEach((L,i)=>{
+      if(o.changesOnly && (L.first || !L.n)) return;
+      out.push(Object.assign({date:rec.date, i}, L));
+    });
+  });
+  return out.sort((a,b)=>String(b.at||"").localeCompare(String(a.at||"")));
+}
+/* The history panel under a day. */
+function dailyLogCard(rec){
+  const log=(rec.log||[]);
+  let h='<div class="card" style="margin-top:14px"><div class="card-h"><h3>Change history</h3>'
+   + '<div class="sp"><span class="lbl">'+(log.length?log.length+" entr"+(log.length===1?"y":"ies"):"nothing recorded yet")+'</span>'
+   + '<button class="btn sm" id="dm-who">Edits logged as '+esc(whoEdits())+'</button></div></div>';
+  if(!log.length){
+    h+='<div class="card-b"><div class="empty">Nothing has been changed on this day since it was filed. '
+     + 'Every save from here on is recorded with the time and the name above.</div></div></div>';
+    return h;
+  }
+  h+='<div class="tw" style="max-height:34vh;overflow:auto"><table><thead><tr>'
+   + '<th style="width:130px">When</th><th style="width:150px">Who</th><th>What changed</th>'
+   + '</tr></thead><tbody>';
+  log.forEach(L=>{
+    h+='<tr><td class="mono" style="font-size:11.5px">'+esc(L.at||"")+'</td>'
+     + '<td>'+esc(L.by||"")+'</td><td style="font-size:12px">'
+     + (L.first
+        ? '<span class="pill mut">filed</span> the report was read in as it stands'
+        : (L.ch||[]).length
+          ? (L.ch||[]).map(c=>esc(dailyChangeText(c))).join('<br>')
+            + (L.n>(L.ch||[]).length ? '<br><span class="lbl">and '+(L.n-(L.ch||[]).length)+' more</span>' : "")
+          : '<span class="lbl">saved with no change to any figure</span>')
+     + (L.why?'<div class="lbl" style="margin-top:2px">'+esc(L.why)+'</div>':"")
+     + '</td></tr>';
+  });
+  h+='</tbody></table></div></div>';
+  return h;
+}
+
+/* ============ applications from the mailbox ============ */
+/* admin@corcondev.com lives on GoDaddy's mail (or Titan's), which no connector
+   reaches, so a small script on the HR Mac reads it and writes
+   applications.json. This takes that file, lays what it found beside who is
+   already on record, and files the new ones into the pipeline at Applied.
+   Nothing goes in until HR has looked at the list. The files themselves stay
+   on the Mac — this page cannot open a local folder, so it records where
+   they are rather than pretending to link them. */
+const APP_SCRIPT = "~/Documents/Corro Applications/corro_applications.py";
+function appNormName(s){
+  return String(s||"").toLowerCase().replace(/[^a-z\s]/g," ").split(/\s+/).filter(w=>w.length>1).sort().join(" ");
+}
+function appFindExisting(x){
+  const em=String(x.email||"").toLowerCase().trim();
+  const mob=String(x.mobile||"").replace(/\D/g,"").slice(-10);
+  const nm=appNormName(x.name);
+  return appList().find(a=>
+       (x.key && a.mailboxKey===x.key)
+    || (em && String(a.email||"").toLowerCase().trim()===em)
+    || (mob.length===10 && String(a.mobile||"").replace(/\D/g,"").slice(-10)===mob)
+    || (nm.split(" ").length>=2 && appNormName(a.name)===nm)) || null;
+}
+/* A role whose title the subject line names, so the applicant lands against it. */
+function appRoleFor(position){
+  const p=String(position||"").toLowerCase().trim();
+  if(p.length<3) return null;
+  return roleList().find(r=>{
+    const t=String(r.title||"").toLowerCase().trim();
+    return t && (p.includes(t) || t.includes(p));
+  }) || null;
+}
+function mailboxFilesNote(a){
+  const m=a && a.mailbox; if(!m) return "";
+  const files=(m.files||[]);
+  return '<div class="note"><b>From the '+esc(m.mailbox||"company")+' mailbox</b> — '
+    + (m.emails||1)+' email'+((m.emails||1)===1?"":"s")+', imported '+esc(m.importedOn||"")+'. '
+    + (files.length
+       ? 'Files on the HR Mac, under <span class="mono">'+esc(m.baseDir||"Corro Applications")+'</span>:<br>'
+         + files.map(f=>'<span class="mono" style="font-size:11.5px">'+esc(f.path||f.name)+'</span>').join("<br>")
+       : 'The email had no attachments.')
+    + '<br><span class="lbl">Upload the CV to their Drive folder and paste the link above when you want it one click away.</span></div>';
+}
+function importAppsDialog(){
+  let DOC=null, ROWS=[];
+  const kb=n=>n>1048576?(n/1048576).toFixed(1)+" MB":Math.max(1,Math.round(n/1024))+" KB";
+  const draw=()=>{
+    let b='';
+    if(!DOC){
+      b='<div class="stack">'
+       + '<div class="note">The company mailbox is on GoDaddy (or Titan), which this portal cannot open directly. '
+       + 'A small script on the HR Mac reads it for you — <b>read-only, nothing on the server is touched</b> — '
+       + 'and writes a file this screen imports.</div>'
+       + '<div><b>1. On the Mac, in Terminal, run the survey</b> (it asks for the mailbox password and downloads nothing):</div>'
+       + '<pre class="mono" style="white-space:pre-wrap;background:var(--surface2);padding:8px 10px;border-radius:6px;margin:0">python3 "'+esc(APP_SCRIPT)+'"</pre>'
+       + '<div><b>2. When the list looks right, download</b> — it says how much, and waits for YES:</div>'
+       + '<pre class="mono" style="white-space:pre-wrap;background:var(--surface2);padding:8px 10px;border-radius:6px;margin:0">python3 "'+esc(APP_SCRIPT)+'" --download</pre>'
+       + '<div><b>3. Choose the applications.json it wrote</b> (in Documents → Corro Applications):</div>'
+       + '<input type="file" id="ia-file" accept=".json,application/json">'
+       + '<div class="lbl" id="ia-msg"></div></div>';
+      return b;
+    }
+    const fresh=ROWS.filter(r=>!r.existing), dup=ROWS.filter(r=>r.existing);
+    const ticked=ROWS.filter(r=>r.tick).length;
+    b='<div class="stack">'
+     + '<div class="strip">'
+     + tile(ROWS.length,"In the file","from "+esc(DOC.mailbox||"the mailbox"),"acc")
+     + tile(fresh.length,"New to the portal",fresh.filter(r=>r.x.confidence==="likely").length+" likely applications","ok")
+     + tile(dup.length,"Already on record","matched by email, mobile or name",dup.length?"warn":"ok")
+     + tile(ticked,"Ticked to import","",ticked?"acc":"mut")
+     + '</div>'
+     + '<div class="note">Ticked by default: <b>new people the script is confident about</b>. "Worth a look" rows and people '
+     + 'already on record start unticked. Ticking someone already on record adds the mailbox files and any missing '
+     + 'email or mobile to their existing record — it never makes a second copy.</div>'
+     + '<div class="row"><button class="btn sm" id="ia-all">Tick all new</button>'
+     + '<button class="btn sm" id="ia-none">Untick all</button>'
+     + '<div class="f" style="margin-left:auto;width:240px"><input id="ia-q" placeholder="Find someone" autocomplete="off"></div>'
+     + '<span class="lbl" id="ia-count"></span></div>'
+     + '<div class="tw" style="max-height:48vh;overflow:auto"><table><thead><tr>'
+     + '<th style="width:34px"></th><th>Applicant</th><th style="width:118px">Mobile</th><th>Position</th>'
+     + '<th style="width:98px">Applied</th><th style="width:150px">Files</th><th style="width:110px">Status</th></tr></thead><tbody>';
+    ROWS.forEach((r,i)=>{
+      const x=r.x, files=x.files||[];
+      b+='<tr data-iarow="1" data-hay="'+esc([x.name,x.email,x.mobile,x.position].join(" ").toLowerCase())+'">'
+       + '<td><input type="checkbox" data-iatick="'+i+'"'+(r.tick?" checked":"")+'></td>'
+       + '<td><b>'+esc(x.name||x.email||"(no name)")+'</b><div class="lbl" style="text-transform:none;letter-spacing:0">'+esc(x.email||"")+'</div></td>'
+       + '<td class="mono" style="font-size:11.5px">'+esc(x.mobile||"—")+'</td>'
+       + '<td>'+esc(x.position||"—")
+       +   (r.role?'<div><span class="pill ok" title="Will be filed against this role">'+esc(r.role.title)+'</span></div>':"")+'</td>'
+       + '<td class="mono" style="font-size:11.5px">'+esc(x.appliedOn||"—")+(x.messages>1?'<div class="lbl">'+x.messages+' emails</div>':"")+'</td>'
+       + '<td style="font-size:11.5px" title="'+esc(files.map(f=>f.name).join("\n"))+'">'
+       +   (files.length?files.length+' file'+(files.length===1?"":"s")+' · '+kb(files.reduce((s,f)=>s+(f.size||0),0)):'<span class="lbl">none</span>')+'</td>'
+       + '<td>'+(r.existing
+            ? '<span class="pill warn" title="'+esc("On record as "+r.existing.name+" — "+r.existing.stage)+'">on record</span>'
+            : (x.confidence==="likely"?'<span class="pill ok">likely</span>':'<span class="pill mut">worth a look</span>'))
+       + '</td></tr>';
+    });
+    b+='</tbody></table></div></div>';
+    return b;
+  };
+  const open=()=>{
+    openModal({ title:"Import applications from the mailbox", wide:true, body:draw(),
+      foot:'<button class="btn" id="ia-close">Close</button>'
+        + (DOC?'<button class="btn pri" id="ia-go">Import the ticked applicants</button>':"") });
+    $("#ia-close").onclick=closeModal;
+    const f=$("#ia-file");
+    if(f) f.onchange=()=>{
+      const file=f.files&&f.files[0]; if(!file) return;
+      const rd=new FileReader();
+      rd.onload=()=>{
+        let d=null;
+        try{ d=JSON.parse(rd.result); }catch(e){}
+        if(!d || d.kind!=="corro-applications" || !Array.isArray(d.applicants)){
+          $("#ia-msg").textContent="That is not the applications.json the mailbox script writes. Choose the file from Documents → Corro Applications.";
+          return;
+        }
+        DOC=d;
+        ROWS=d.applicants.map(x=>{
+          const existing=appFindExisting(x);
+          return {x, existing, role:appRoleFor(x.position), tick: !existing && x.confidence==="likely"};
+        });
+        open();
+      };
+      rd.readAsText(file);
+    };
+    if(!DOC) return;
+    wireListFilter("ia-q","[data-iarow]","ia-count");
+    $$("[data-iatick]").forEach(cb=>cb.onchange=()=>{ ROWS[+cb.dataset.iatick].tick=cb.checked; });
+    $("#ia-all").onclick=()=>{ ROWS.forEach(r=>{ if(!r.existing) r.tick=true; }); open(); };
+    $("#ia-none").onclick=()=>{ ROWS.forEach(r=>r.tick=false); open(); };
+    $("#ia-go").onclick=async()=>{
+      const go=ROWS.filter(r=>r.tick);
+      if(!go.length){ toast("Nothing is ticked.","err"); return; }
+      const btn=$("#ia-go"); btn.disabled=true;
+      let made=0, merged=0;
+      for(const r of go){
+        const x=r.x;
+        const box={ mailbox:DOC.mailbox||"admin@corcondev.com", baseDir:DOC.baseDir||"", importedOn:TODAY,
+          emails:x.messages||1, subjects:(x.subjects||[]).slice(0,10), files:(x.files||[]).slice(0,40), dirs:x.dirs||[] };
+        const line="From the "+box.mailbox+" mailbox — "+(x.subjects||[])[0]+(box.files.length?" · "+box.files.map(f=>f.name).join(", "):"");
+        if(r.existing){
+          const a=Object.assign({},S.applicants[r.existing.id]);
+          a.email=a.email||x.email||""; a.mobile=a.mobile||x.mobile||"";
+          a.mailboxKey=x.key; a.mailbox=box;
+          if(String(a.notes||"").indexOf(line)<0) a.notes=(a.notes?a.notes+"\n":"")+line;
+          await put("applicants",a.id,a); merged++;
+        }else{
+          const role=r.role;
+          const a={ id:uid("a"), name:x.name||x.email||"(no name)", roleId:role?role.id:"", position:x.position||(role?role.title:""),
+            dept:role?role.dept:"Technical", source:x.source==="JobStreet"?"JobStreet":"Email",
+            appliedOn:x.appliedOn||TODAY, stage:"Applied", mobile:x.mobile||"", email:x.email||"",
+            resumeLink:"", expected:"", notes:line,
+            exams:[], interviews:[], aiSummary:"", aiVerdict:"", aiOn:"", education:"", years:"",
+            history:[], background:[], rffiNote:"", hrVerdict:"", hrRating:"3", hrNotes:"",
+            hrBy:S.settings.hrHead||"", hrOn:"", hiredEmpId:"", mailboxKey:x.key, mailbox:box };
+          await put("applicants",a.id,a); made++;
+        }
+        btn.textContent="Importing… "+(made+merged)+" of "+go.length;
+      }
+      closeModal();
+      S.ui.rmode="pipeline";
+      toast(made+" applicant"+(made===1?"":"s")+" added at Applied"+(merged?", "+merged+" existing record"+(merged===1?"":"s")+" updated":"")+".","ok");
+      render();
+    };
+  };
+  open();
+}
+
+/* ============ attendance reasons, required times and payroll helpers ============ */
+/* Carried over from the Netlify overlays so nothing HR has started relying on
+   is lost: a reason is picked from a list, and each pick is already excused or
+   not excused. "Other" is typed and marked by hand. */
+const REASON_CATALOG = [
+  {k:"sick",       n:"Sick / medical",                  g:"Health",         excused:true,  for:["Absent","Present/Late","Undertime"]},
+  {k:"clinic",     n:"Company clinic / check-up",       g:"Health",         excused:true,  for:["Absent","Present/Late","Undertime"]},
+  {k:"fit",        n:"Fit-to-work / medical clearance", g:"Health",         excused:true,  for:["Absent"]},
+  {k:"al",         n:"Approved leave",                  g:"Approved leave", excused:true,  for:["Absent"]},
+  {k:"vl",         n:"Vacation / SIL",                  g:"Approved leave", excused:true,  for:["Absent"]},
+  {k:"el",         n:"Emergency leave",                 g:"Approved leave", excused:true,  for:["Absent"]},
+  {k:"bl",         n:"Bereavement",                     g:"Approved leave", excused:true,  for:["Absent"]},
+  {k:"ml",         n:"Maternity / paternity",           g:"Approved leave", excused:true,  for:["Absent"]},
+  {k:"ob",         n:"Official business",               g:"Company",        excused:true,  for:["Absent","Present/Late","Undertime"]},
+  {k:"assign",     n:"Pulled to another site",          g:"Company",        excused:true,  for:["Absent","Present/Late","Undertime"]},
+  {k:"weather",    n:"Weather / typhoon",               g:"Company",        excused:true,  for:["Absent","Present/Late","Undertime"]},
+  {k:"calamity",   n:"Flood / calamity",                g:"Company",        excused:true,  for:["Absent","Present/Late","Undertime"]},
+  {k:"power",      n:"Power / site shutdown",           g:"Company",        excused:true,  for:["Absent","Undertime"]},
+  {k:"suspension", n:"Suspension",                      g:"Company",        excused:false, for:["Absent"]},
+  {k:"traffic",    n:"Traffic",                         g:"Travel",         excused:false, for:["Present/Late","Undertime"]},
+  {k:"transport",  n:"No ride / transportation",        g:"Travel",         excused:false, for:["Absent","Present/Late","Undertime"]},
+  {k:"family",     n:"Family matter",                   g:"Personal",       excused:false, for:["Absent","Present/Late","Undertime"]},
+  {k:"personal",   n:"Personal matter",                 g:"Personal",       excused:false, for:["Absent","Present/Late","Undertime"]},
+  {k:"oversleep",  n:"Overslept",                       g:"Personal",       excused:false, for:["Present/Late"]},
+  {k:"left-early", n:"Left early — personal",           g:"Personal",       excused:false, for:["Undertime"]},
+  {k:"awol",       n:"AWOL / no call, no show",         g:"Unexcused",      excused:false, for:["Absent"]},
+  {k:"nonotice",   n:"Left without notice",             g:"Unexcused",      excused:false, for:["Absent","Undertime"]},
+  {k:"other",      n:"Other",                           g:"Other",          excused:false, for:["Absent","Present/Late","Undertime"], other:true}
+];
+const REASON_ALIASES = { "awol":"awol","no show":"awol","no call no show":"awol","ncns":"awol",
+  "sick":"sick","sickness":"sick","illness":"sick","medical":"sick","clinic":"clinic","traffic":"traffic",
+  "official business":"ob","ob":"ob","approved leave":"al","vacation":"vl","sil":"vl","emergency":"el",
+  "bereavement":"bl","overslept":"oversleep","oversleep":"oversleep","no ride":"transport",
+  "transportation":"transport","transport":"transport","typhoon":"weather","weather":"weather",
+  "flood":"calamity","calamity":"calamity","suspension":"suspension","personal":"personal",
+  "family emergency":"family","family":"family" };
+function foldReason(s){ return String(s||"").toLowerCase().replace(/[^a-z0-9]+/g," ").replace(/\s+/g," ").trim(); }
+function reasonByKey(k){ return REASON_CATALOG.find(r=>r.k===String(k||"")) || null; }
+function reasonsForStatus(st){ return REASON_CATALOG.filter(r=>!r.for || r.for.indexOf(st)>=0); }
+function statusNeedsReason(st){ return st==="Absent" || st==="Present/Late" || st==="Undertime"; }
+function matchReasonKey(status, text){
+  const t=foldReason(text); if(!t) return "";
+  const list=status ? reasonsForStatus(status) : REASON_CATALOG.slice();
+  for(const r of list){ if(r.k===t || foldReason(r.n)===t) return r.k; }
+  for(const r of list){ const n=foldReason(r.n); if(n && n!=="other" && t.indexOf(n)===0) return r.k; }
+  if(REASON_ALIASES[t]) return REASON_ALIASES[t];
+  for(const k of Object.keys(REASON_ALIASES)){ if(k.length>=4 && t.indexOf(k)===0) return REASON_ALIASES[k]; }
+  return "";
+}
+/* true excused, false not excused, null not sorted yet */
+function rowExcused(r){
+  if(!r) return null;
+  if(r.ex!=null && r.ex!=="") return Number(r.ex)===1;
+  const spec=reasonByKey(r.rk);
+  if(spec && spec.k!=="other") return !!spec.excused;
+  return null;
+}
+function reasonOptions(status, key){
+  const list=reasonsForStatus(status);
+  const groups=[...new Set(list.map(r=>r.g))];
+  return '<option value="">— reason —</option>'
+    + groups.map(g=>'<optgroup label="'+esc(g)+'">'
+      + list.filter(r=>r.g===g).map(r=>'<option value="'+esc(r.k)+'"'+(r.k===key?" selected":"")+'>'
+          + esc(r.n)+(r.other?"":(r.excused?" · excused":" · not excused"))+'</option>').join("")
+      + '</optgroup>').join("");
+}
+function reasonPill(r){
+  if(!r || !statusNeedsReason(r.s)) return "";
+  const ex=rowExcused(r);
+  if(ex===true)  return '<span class="pill ok">excused</span>';
+  if(ex===false) return '<span class="pill crit">not excused</span>';
+  return r.r ? '<span class="pill mut">not sorted</span>' : '<span class="pill warn">needs a reason</span>';
+}
+/* Keeps one row of the Daily Manpower table honest while HR types, without a
+   redraw that would throw away whatever is half-entered on the other rows. */
+function syncReasonRow(id){
+  const q=a=>document.querySelector('['+a+'="'+id+'"]');
+  const sel=q("data-dms"), pick=q("data-dmrk"), note=q("data-dmr"), exp=q("data-dmexpick"), pill=q("data-dmex");
+  if(!sel || !pick) return;
+  const st=sel.value, need=statusNeedsReason(st), keep=pick.value;
+  pick.innerHTML=reasonOptions(st, keep);
+  if(keep && !reasonsForStatus(st).some(r=>r.k===keep)) pick.value="";
+  pick.disabled=!need;
+  const spec=reasonByKey(pick.value);
+  if(spec && spec.k!=="other" && note) note.value=spec.n;
+  if(exp) exp.style.display=(spec && spec.k==="other") ? "" : "none";
+  if(pill) pill.innerHTML=reasonPill({s:st, r:note?note.value:"", rk:pick.value,
+    ex:(spec && spec.k==="other") ? (exp?exp.value:"") : ""});
+  const tin=q("data-dmin"), tout=q("data-dmout");
+  if(tin)  tin.style.borderColor  = (st==="Present/Late" && !String(tin.value||"").trim()) ? "var(--crit)" : "";
+  if(tout) tout.style.borderColor = (st==="Undertime" && !String(tout.value||"").trim()) ? "var(--crit)" : "";
+}
+/* Present/Late needs the time they came in; Undertime needs the time they left. */
+function timeProblems(r){
+  const st=(r&&r.s)||"", out=[];
+  if(st==="Present/Late" && !String((r&&r.in)||"").trim()) out.push("Time In is required for Present/Late");
+  if(st==="Undertime" && !String((r&&r.out)||"").trim()) out.push("Time Out is required for Undertime");
+  return out;
+}
+function dailyTimeProblems(rec){
+  const bad=[];
+  Object.entries((rec&&rec.rows)||{}).forEach(([id,r])=>{
+    timeProblems(r).forEach(m=>{ const e=S.employees[id]; bad.push({id, text:(e?flipName(e.name):id)+" — "+m}); });
+  });
+  return bad;
+}
+/* When somebody was first put on a report by hand. Filed scans are left out on
+   purpose: they name everyone who ever worked a day there, and carrying all of
+   them forward would fill today's report with people long gone. */
+let FIRST_ADDED=null;
+function firstAddedIndex(){
+  if(FIRST_ADDED) return FIRST_ADDED;
+  const map={};
+  Object.values(S.daily).forEach(rec=>{
+    if(!rec || !rec.date || rec.fixed) return;
+    (rec.extra||[]).forEach(id=>{ if(!map[id] || rec.date<map[id]) map[id]=rec.date; });
+  });
+  FIRST_ADDED=map; return map;
+}
+function holMix(L){
+  const a=L.hol30||0, b=L.hol100||0;
+  return [a?a+"×30%":"", b?b+"×100%":""].filter(Boolean).join(" ");
+}
+
+/* Every eligible day in the period, for everybody on this run, set at once.
+   Written onto the manpower reports — with the change history — because that is
+   where the premium lives; the payroll only reads it back. */
+async function payHolAll(code){
+  const cur=payCur(), kind=cur.kind, per=cur.per;
+  const who=new Set(payPeople(kind, per).map(e=>e.id));
+  let n=0, days=0;
+  for(const d of payDates(per.from, per.to)){
+    const rec0=dailyGet(d); if(!rec0) continue;
+    const rec=clone(rec0); let moved=0;
+    Object.entries(rec.rows||{}).forEach(([id,r])=>{
+      if(!who.has(id) || !holEligible(d, r) || holCode(r)===code) return;
+      r.hol=code; moved++;
+    });
+    if(moved){
+      await dailySave(rec, (code ? "holiday premium "+holLabel(code) : "holiday premium cleared")
+        + " for everyone eligible, from Payroll Maker");
+      n+=moved; days++;
+    }
+  }
+  toast(n ? holLabel(code)+" set on "+n+" eligible day"+(n===1?"":"s")+" across "+days+" report"+(days===1?"":"s")
+          : "Nothing to change — every eligible day already reads "+holLabel(code), n?"ok":undefined);
+  render();
+}
+
+/* The days behind the run, one square per person per day, so a wrong figure
+   can be traced to the day it came from and fixed there. */
+function payAttendanceCard(kind, per, lines){
+  const dates=payDates(per.from, per.to);
+  const filed=dates.filter(d=>dailyGet(d)).length;
+  const open=S.ui.payAttOpen!=null ? !!S.ui.payAttOpen : !lines.length;
+  let h='<div class="card" style="margin:12px 0"><div class="card-h" style="cursor:pointer" id="pay-atttoggle" data-open="'+(open?"1":"0")+'">'
+    + '<h3>Period attendance</h3><div class="sp"><span class="lbl">'+filed+' of '+dates.length+' days filed</span>'
+    + '<button class="btn sm" type="button">'+(open?"Hide":"Show")+'</button></div></div>';
+  if(!open) return h+'</div>';
+  h+='<div class="card-b stack">';
+  if(!filed){
+    const last=Object.values(S.daily).map(r=>r.date).filter(Boolean).sort().pop();
+    h+='<div class="empty">No Daily Manpower report in this window — that is why days and overtime read as blank.</div>'
+     + '<div class="row"><button class="btn" id="pay-paste2">Paste manpower JSON</button>'
+     + '<button class="btn" id="pay-toattend2">Open Daily Manpower</button>'
+     + (last?'<button class="btn pri" id="pay-latest" data-date="'+esc(last)+'">Jump to the latest filed period</button>':"")
+     + '</div></div></div>';
+    return h;
+  }
+  const abbr=st=>({"Present":"P","Present/Late":"L","Undertime":"U","Absent":"A","Leave":"LV","Leave with Pay":"LP",
+    "Regular Holiday":"H","Special Holiday":"SH","Half Day":"HD","Rest Day":"R"}[st]||(st?"?":"·"));
+  h+='<div class="note">P present · L late · U undertime · A absent · LV leave · H holiday · R rest day. '
+   + 'A small figure is overtime hours; a green 30 or 100 is the holiday premium. Click a date to open that report, '
+   + 'or Days to change one person’s week — the register follows it.</div>'
+   + '<div class="tw" style="max-height:46vh;overflow:auto"><table><thead><tr><th style="min-width:180px">Employee</th>'
+   + dates.map(d=>{ const sun=new Date(d+"T00:00:00").getDay()===0;
+       return '<th class="num" style="width:44px;padding:4px 2px" title="'+esc(longDate(d))+'">'
+         + '<button class="btn sm" data-dmopen="'+esc(d)+'" style="padding:1px 5px'+(dailyGet(d)?'':';color:var(--warn)')+'" '
+         + 'title="'+esc(longDate(d)+(dailyGet(d)?" — open the report":" — no report filed"))+'">'+esc(d.slice(8))+'</button>'
+         + (sun?'<div class="lbl">Sun</div>':'')+'</th>'; }).join("")
+   + '<th style="width:70px"></th></tr></thead><tbody>';
+  lines.forEach(L=>{
+    h+='<tr><td><b>'+esc(flipName(L.name))+'</b></td>'
+      + dates.map(d=>{
+          const rec=dailyGet(d), r=rec&&rec.rows?rec.rows[L.empId]:null;
+          if(!rec) return '<td class="num" style="color:var(--ink3)" title="No report filed">·</td>';
+          if(!r) return '<td class="num" style="color:var(--ink3)" title="Not on this report">–</td>';
+          const st=effectiveStatus(L.empId, d, r.s, r.r);
+          const sev = st==="Absent" ? "crit" : (st==="Present/Late"||st==="Undertime") ? "warn" : "";
+          const ot=Number(r.ot)||0, hc=holCode(r);
+          const tip=[st, r.in?"in "+r.in:"", r.out?"out "+r.out:"", ot?"OT "+ot+" h":"", hc?holLabel(hc):"", r.r||""].filter(Boolean).join(" · ");
+          return '<td class="num mono" style="padding:4px 2px'+(sev?';color:var(--'+sev+');font-weight:600':'')+'" title="'+esc(tip)+'">'
+            + esc(abbr(st)) + (ot?'<sup style="font-size:8px">'+esc(String(ot))+'</sup>':'')
+            + (hc?'<sup style="font-size:8px;color:var(--ok)">'+(hc===2?"100":"30")+'</sup>':'')+'</td>';
+        }).join("")
+      + '<td><button class="btn sm" data-payperson="'+esc(L.empId)+'">Days</button></td></tr>';
+  });
+  h+='</tbody></table></div></div></div>';
+  return h;
+}
+
+/* One person's days for the period in one place. Saved onto each manpower
+   report, with the change history, so the payroll and the attendance record
+   never disagree. */
+function payPersonDays(empId){
+  const e=S.employees[empId]; if(!e) return;
+  const per=payCur().per, dates=payDates(per.from, per.to);
+  const sty='width:100%;padding:3px 6px;border:1px solid var(--line2);border-radius:4px;background:var(--surface);font-size:12px';
+  const rows=dates.map(d=>{
+    const rec=dailyGet(d), r=rec&&rec.rows?rec.rows[empId]:null;
+    const day='<td class="mono" style="white-space:nowrap">'+esc(longDate(d))+'</td>';
+    if(!rec) return '<tr>'+day+'<td colspan="6"><span class="lbl">No report filed for this day</span></td></tr>';
+    if(!r) return '<tr>'+day+'<td colspan="6"><span class="lbl">Not on this day’s report — add them on Daily Manpower</span></td></tr>';
+    const elig=holEligible(d, r) || holCode(r);
+    return '<tr data-pdrow="'+esc(d)+'">'+day
+      + '<td><select data-pd="s" style="'+sty+'">'+DAY_STATUS.map(x=>'<option'+(r.s===x?" selected":"")+'>'+x+'</option>').join("")+'</select></td>'
+      + '<td><input data-pd="in" value="'+esc(r.in||"")+'" placeholder="8:00 AM" style="'+sty+'"></td>'
+      + '<td><input data-pd="out" value="'+esc(r.out||"")+'" placeholder="5:00 PM" style="'+sty+'"></td>'
+      + '<td><input data-pd="ot" type="number" step="0.5" min="0" value="'+esc(r.ot!=null?r.ot:"")+'" placeholder="0" style="'+sty+';text-align:right"></td>'
+      + '<td>'+(elig ? holSelect("data-pd", "hol", holCode(r)) : '<span class="lbl">—</span>')+'</td>'
+      + '<td><input data-pd="r" value="'+esc(r.r||"")+'" style="'+sty+'"></td></tr>';
+  }).join("");
+  openModal({ title:flipName(e.name)+" — "+payLabel(per.from, per.to), wide:true,
+    body:'<div class="stack"><div class="note">Present/Late needs <b>Time In</b>. Undertime needs <b>Time Out</b>. '
+      + 'Holiday is per day: <b>+30%</b>, <b>+100%</b> or <b>As is</b>. Each change is written onto that day’s '
+      + 'manpower report with its change history.</div>'
+      + '<div class="tw"><table><thead><tr><th style="width:150px">Day</th><th style="width:130px">Status</th>'
+      + '<th style="width:92px">Time in</th><th style="width:92px">Time out</th><th style="width:74px">OT hrs</th>'
+      + '<th style="width:90px">Holiday</th><th>Reason</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
+      + '<div class="note" id="pd-err" style="border-left-color:var(--crit)" hidden></div></div>',
+    foot:'<button class="btn" id="pd-cancel">Cancel</button><button class="btn pri" id="pd-save">Save days</button>'});
+  $("#pd-cancel").onclick=closeModal;
+  $("#pd-save").onclick=async()=>{
+    const bad=[], edits=[];
+    $$("[data-pdrow]").forEach(tr=>{
+      const d=tr.dataset.pdrow, g=k=>{ const el=tr.querySelector('[data-pd="'+k+'"]'); return el ? el.value : null; };
+      const next={ s:g("s"), in:g("in")||"", out:g("out")||"", r:g("r")||"",
+        ot: g("ot")==="" ? null : (parseFloat(g("ot"))||0) };
+      const hv=g("hol"); if(hv!=null) next.hol=Number(hv)||0;
+      timeProblems(next).forEach(m=>bad.push(longDate(d)+": "+m));
+      edits.push([d,next]);
+    });
+    if(bad.length){ const box=$("#pd-err"); box.hidden=false; box.textContent=bad.join(" · "); toast(bad[0],"err"); return; }
+    let n=0;
+    for(const [d,next] of edits){
+      const cur=dailyGet(d); if(!cur) continue;
+      const rec=clone(cur), row=Object.assign({}, rec.rows[empId]||{}, next);
+      if(!statusNeedsReason(row.s)){ row.rk=""; row.ex=""; }
+      else if(row.r && !row.rk){ row.rk=matchReasonKey(row.s, row.r)||""; }
+      rec.rows[empId]=row;
+      if(dailyDiff(cur, rec).length){ await dailySave(rec, "edited from Payroll Maker"); n++; }
+    }
+    closeModal();
+    toast(n ? n+" day"+(n===1?"":"s")+" updated for "+flipName(e.name) : "Nothing changed.", n?"ok":undefined);
+    render();
+  };
+}
+
+/* Manpower rows read off the scans elsewhere, pasted in. Rows match on the
+   four-digit employee number only, and a day already here is merged, not
+   replaced: what HR typed on it stays unless the paste sets it. */
+function pasteManpowerDoor(){
+  const sample='[\n  { "date": "2026-08-29", "source": "08.29.2026.pdf",\n    "rows": [\n'
+    + '      { "empNo": "1250", "status": "Present", "site": "CTU BARILI" },\n'
+    + '      { "empNo": "1348", "status": "Absent", "reason": "Approved Leave (LRF2026 - 0123)" },\n'
+    + '      { "empNo": "1353", "status": "Present/Late", "in": "8:22 AM", "reason": "traffic" }\n    ] }\n]';
+  openModal({ title:"Paste manpower rows", wide:true,
+    body:'<div class="stack"><div class="note">Paste the JSON read off the daily scans, or choose the file. '
+      + 'Rows match on the <b>four-digit employee number</b> only. A day already in the portal is <b>merged</b> — '
+      + 'time in and out, overtime, day credit and holiday treatment already on it stay unless the JSON sets them. '
+      + 'Every change goes into that day’s change history.</div>'
+      + '<div class="f"><label>JSON</label><textarea id="pm-json" style="min-height:200px;font-family:var(--f-mono);font-size:11.5px" placeholder="'+esc(sample)+'"></textarea></div>'
+      + '<div class="row"><input type="file" id="pm-file" accept=".json,application/json,text/plain"><span class="lbl" id="pm-out" style="text-transform:none;letter-spacing:0"></span></div></div>',
+    foot:'<button class="btn" id="pm-close">Close</button><button class="btn" id="pm-check">Check</button><button class="btn pri" id="pm-go">Import</button>'});
+  const parse=()=>{
+    const raw=String($("#pm-json").value||"").replace(/^﻿/,"").trim();
+    if(!raw) throw new Error("Nothing pasted yet.");
+    let d; try{ d=JSON.parse(raw); }catch(err){ throw new Error("That is not valid JSON."); }
+    if(d && !Array.isArray(d) && Array.isArray(d.days)) d=d.days;
+    if(d && !Array.isArray(d) && d.rows) d=[d];
+    if(!Array.isArray(d)) throw new Error("Paste an array of daily reports.");
+    const byNo={}; Object.values(S.employees).forEach(e=>{ const k=normNo(e.empNo); if(k && !byNo[k]) byNo[k]=e; });
+    const out={days:[], matched:0, unknown:{}, badStatus:[]};
+    d.forEach((day,i)=>{
+      const date=(String((day&&day.date)||"").match(/^\d{4}-\d{2}-\d{2}$/)||[])[0] || dateFromReport((day&&day.source)||"","");
+      if(!date) throw new Error("Report "+(i+1)+" has no date.");
+      const rows=[];
+      ((day&&day.rows)||[]).forEach(r=>{
+        const e=byNo[normNo(r.empNo)];
+        if(!e){ const k=String(r.empNo||"?"); out.unknown[k]=(out.unknown[k]||0)+1; return; }
+        const raw2=r.status||r.s||"", st=normStatus(raw2);
+        if(raw2 && !st) out.badStatus.push(String(r.empNo)+" “"+raw2+"”");
+        rows.push({e, r, st}); out.matched++;
+      });
+      out.days.push({date, day, rows});
+    });
+    return out;
+  };
+  const say=o=>{ const u=Object.keys(o.unknown);
+    $("#pm-out").textContent=o.days.length+" day"+(o.days.length===1?"":"s")+" · "+o.matched+" rows matched"
+      + (u.length?" · employee numbers not on file: "+u.join(", "):"")
+      + (o.badStatus.length?" · statuses not on the list: "+o.badStatus.slice(0,4).join("; "):""); };
+  $("#pm-close").onclick=closeModal;
+  $("#pm-file").onchange=ev=>{ const f=ev.target.files && ev.target.files[0]; if(!f) return;
+    const rd=new FileReader();
+    rd.onload=()=>{ $("#pm-json").value=String(rd.result||""); try{ say(parse()); }catch(err){ $("#pm-out").textContent=err.message; } };
+    rd.readAsText(f); };
+  $("#pm-check").onclick=()=>{ try{ say(parse()); }catch(err){ $("#pm-out").textContent=err.message; } };
+  $("#pm-go").onclick=async()=>{
+    let o; try{ o=parse(); }catch(err){ toast(err.message,"err"); return; }
+    if(!o.matched){ toast("No row matched an employee number on file.","err"); return; }
+    const btn=$("#pm-go"); btn.disabled=true;
+    let wrote=0;
+    for(const x of o.days){
+      const rec=clone(dailyGet(x.date)||dailyBlank(x.date));
+      rec.rows=rec.rows||{}; rec.fixed=true;
+      ["preparedBy","approvedBy","source","driveLink"].forEach(k=>{ if(x.day[k]!=null && x.day[k]!=="") rec[k]=x.day[k]; });
+      x.rows.forEach(({e,r,st})=>{
+        const prev=rec.rows[e.id]||{}, row=Object.assign({}, prev);
+        row.s = st || prev.s || "Present";
+        if(r.reason!=null) row.r=String(r.reason); else if(row.r==null) row.r="";
+        row.site = r.site || prev.site || e.project || "ADMINS";
+        ["in","out"].forEach(k=>{ if(r[k]!=null && r[k]!=="") row[k]=String(r[k]); });
+        ["ot","day"].forEach(k=>{ if(r[k]!=null && r[k]!=="") row[k]=Number(r[k])||0; });
+        if(r.hol!=null && r.hol!=="") row.hol=holCode({hol:r.hol});
+        if(statusNeedsReason(row.s)) row.rk = prev.rk || matchReasonKey(row.s, row.r) || "";
+        else { row.rk=""; row.ex=""; }
+        rec.rows[e.id]=row;
+      });
+      await dailySave(rec, "pasted from JSON"+(x.day.source?" — "+x.day.source:""));
+      wrote++;
+    }
+    closeModal();
+    toast(wrote+" day"+(wrote===1?"":"s")+" imported, "+o.matched+" rows","ok");
+    render();
+  };
+}
+
+/* Everybody on the reports in the window, with the counts that feed payroll
+   and discipline side by side. An excused absence is counted as leave, never as
+   an absence; it still pays nothing. */
+function attendanceSummaryCard(months){
+  const keep=new Set(months), T={};
+  Object.values(S.daily).forEach(rec=>{
+    if(!rec || !rec.date || !keep.has(monthKey(rec.date))) return;
+    Object.entries(rec.rows||{}).forEach(([id,r])=>{
+      const t=(T[id]=T[id]||{present:0,late:0,ut:0,absent:0,leave:0,excused:0,ot:0,prem:0,credit:0});
+      const st=effectiveStatus(id, rec.date, r.s, r.r);
+      if(st==="Present" || st==="Half Day") t.present++;
+      else if(st==="Present/Late"){ t.present++; t.late++; }
+      else if(st==="Undertime"){ t.present++; t.ut++; }
+      else if(st==="Absent") t.absent++;
+      else if(st==="Leave" || st==="Leave with Pay"){ t.leave++; if(r.s==="Absent") t.excused++; }
+      t.ot+=Number(r.ot)||0;
+      if(holCode(r)) t.prem++;
+      t.credit+=dayVal(r,"day",dayCredit(r));
+    });
+  });
+  const rows=Object.entries(T).map(([id,t])=>Object.assign({e:S.employees[id], id}, t)).filter(x=>x.e)
+    .sort((a,b)=>String(a.e.empNo||"").localeCompare(String(b.e.empNo||"")));
+  let h='<div class="sect-h" style="margin-top:22px"><h2>Manpower attendance summary</h2><span class="rule"></span>'
+   + '<span class="lbl">'+rows.length+' people on the reports</span></div>';
+  if(!rows.length) return h+'<div class="card"><div class="empty">No manpower report in this window.</div></div>';
+  h+='<div class="card"><div class="card-b" style="padding-bottom:6px"><div class="row">'
+   + '<div class="f" style="width:260px;margin:0"><input id="att-sum-q" placeholder="Name or number — either order" autocomplete="off"></div>'
+   + '<span class="lbl" id="att-sum-count"></span></div>'
+   + '<div class="note" style="margin-top:8px">Late and undertime are a full day of credit. An absence excused by '
+   + 'approved leave, a leave number on the report or an excused reason counts under leave, not absent. '
+   + 'Holiday premium days are the ones HR chose, not the ones that were eligible.</div></div>'
+   + '<div class="tw" style="max-height:52vh;overflow:auto"><table><thead><tr>'
+   + '<th style="width:60px">No.</th><th>Employee</th><th class="num">Days credited</th><th class="num">Present</th>'
+   + '<th class="num">Late</th><th class="num">Undertime</th><th class="num">Absent</th><th class="num">Leave</th>'
+   + '<th class="num">OT hrs</th><th class="num">Premium days</th></tr></thead><tbody>'
+   + rows.map(x=>'<tr data-attsum="1" data-hay="'+esc((x.e.name+" "+flipName(x.e.name)+" "+(x.e.empNo||"")).toLowerCase())+'">'
+      + '<td class="mono">'+esc(x.e.empNo||"—")+'</td><td class="nm">'+esc(flipName(x.e.name))+'</td>'
+      + '<td class="num">'+num(x.credit,1)+'</td><td class="num">'+x.present+'</td>'
+      + '<td class="num">'+(x.late?drillCell(x.late,"warn",{kind:"late",empId:x.id,months}):"0")+'</td>'
+      + '<td class="num">'+x.ut+'</td>'
+      + '<td class="num">'+(x.absent?drillCell(x.absent,"crit",{kind:"absent",empId:x.id,months}):"0")+'</td>'
+      + '<td class="num">'+(x.leave?drillCell(x.leave,"mut",{kind:"leave",empId:x.id,months}):"0")
+      + (x.excused?'<div class="lbl">'+x.excused+' excused</div>':'')+'</td>'
+      + '<td class="num">'+(x.ot?num(x.ot,1):"0")+'</td><td class="num">'+x.prem+'</td></tr>').join("")
+   + '</tbody></table></div></div>';
+  return h;
+}
+
+/* ============ reading signed leave and cash advance forms ============ */
+/* The 201 folder already reads its scans; the two request forms now do the
+   same. Drive supplies the text, the model pulls out the fields, and HR sees
+   what the paper says beside what the record says. Nothing is written until
+   it is ticked, and a number printed on the form is only offered when no other
+   record already holds it. */
+const SCAN_FIELDS = {
+  leaves: [
+    ["type","Type of leave","type"], ["from","From","date"], ["to","To","date"], ["half","Half day","bool"],
+    ["reason","Reason","text"], ["filedOn","Filed on","date"], ["approvedBy","Approved by","text"],
+    ["approvedOn","Approved on","date"], ["status","Status","status"]],
+  advances: [
+    ["date","Date","date"], ["amount","Amount","money"], ["purpose","Purpose","text"],
+    ["particulars","Particulars","text"], ["project","Project","text"], ["neededOn","Date needed","date"],
+    ["liquidateBy","Liquidate by","date"], ["deductPerPeriod","Deduct per period","money"],
+    ["planEvery","Deducted every","text"], ["releasedOn","Released on","date"], ["status","Status","status"]]
+};
+function scanLeaveType(t){
+  const x=String(t||"").trim().toLowerCase(); if(!x) return "";
+  const byK=LEAVE_TYPES.find(l=>l.k.toLowerCase()===x); if(byK) return byK.k;
+  const byN=LEAVE_TYPES.find(l=>x.indexOf(l.n.toLowerCase())>=0 || l.n.toLowerCase().indexOf(x)>=0);
+  if(byN) return byN.k;
+  if(/sick/.test(x)) return "SL"; if(/vacation/.test(x)) return "VL"; if(/emergen/.test(x)) return "EL";
+  if(/service incentive|\bsil\b/.test(x)) return "SIL"; if(/without pay|lwop/.test(x)) return "LWOP";
+  if(/bereav/.test(x)) return "BEREV"; if(/matern/.test(x)) return "ML"; if(/patern/.test(x)) return "PL";
+  return "";
+}
+async function readSignedScan(coll, recId, fileId, title){
+  const back=()=>{ const k=SIGNED_KIND[coll]; if(k && k.back) k.back(recId); };
+  const mcp=await getMcp(), sample=await getSample();
+  if(!mcp || !sample){ back(); return; }
+  openModal({ title:"Reading the signed form", body:'<div class="stack"><div class="lbl">Reading '+esc(title||"the scan")+'…</div>'+meterBar(35)+'</div>'});
+  let txt="";
+  try{
+    const rr=await mcp.callTool(DRIVE_SERVER,"read_file_content",{fileId});
+    txt=String(payloadText(rr)||"").replace(/CamScanner|https:\/\/v3\.camscanner\.com\S*/g,"").trim();
+  }catch(e){ txt=""; }
+  if(txt.replace(/\s+/g,"").length<40){
+    closeModal();
+    toast("Filed, but the scan has no readable text, so nothing was filled in. A CamScanner PDF needs OCR turned on, or send it as a JPG.","err");
+    back(); return;
+  }
+  const rec=recOf(coll, recId)||{}, e=S.employees[rec.empId];
+  const leave = coll==="leaves";
+  const shape = leave
+    ? '{"formNo":"","employeeName":"","employeeNo":"","leaveType":"","from":"YYYY-MM-DD","to":"YYYY-MM-DD","halfDay":false,'
+      + '"reason":"","filedOn":"YYYY-MM-DD","approvedBy":"","approvedOn":"YYYY-MM-DD","decision":"Approved|Disapproved|"}'
+    : '{"formNo":"","employeeName":"","employeeNo":"","date":"YYYY-MM-DD","amount":0,"purpose":"","particulars":"","project":"",'
+      + '"neededOn":"YYYY-MM-DD","liquidateBy":"YYYY-MM-DD","deductPerPeriod":0,"deductEvery":"","releasedOn":"YYYY-MM-DD","decision":"Approved|Disapproved|Released|"}';
+  let found={};
+  try{
+    found=await sample.json(
+      "Below is text read off a scanned, signed "+(leave?"Leave Request Form":"Cash Advance Request Form")+" at a Philippine "
+      + "construction company. Pull out only what is actually written on it. Use an empty string, 0 or false for anything "
+      + "not clearly present — never guess, never infer, never complete a partial number. Dates as YYYY-MM-DD. "
+      + "\"decision\" is only what a signed approval or disapproval section says.\n"+shape
+      + "\n\nThe record it is being filed against is for "+(e?flipName(e.name)+", employee number "+(e.empNo||"unknown"):"an employee not yet chosen")
+      + ".\n\nFORM TEXT:\n"+txt.slice(0,6000), {modelTier:"default"});
+  }catch(err){ found={}; }
+  closeModal();
+  reviewSignedScan(coll, recId, found||{}, title);
+}
+function reviewSignedScan(coll, recId, f, title){
+  const rec=clone(recOf(coll, recId)); if(!rec) return;
+  const leave = coll==="leaves", e=S.employees[rec.empId];
+  const val={
+    type: scanLeaveType(f.leaveType), from:f.from, to:f.to, half:f.halfDay===true, reason:f.reason,
+    filedOn:f.filedOn, approvedBy:f.approvedBy, approvedOn:f.approvedOn,
+    date:f.date, amount:Number(f.amount)||0, purpose:f.purpose, particulars:f.particulars, project:f.project,
+    neededOn:f.neededOn, liquidateBy:f.liquidateBy, deductPerPeriod:Number(f.deductPerPeriod)||0,
+    planEvery:f.deductEvery, releasedOn:f.releasedOn,
+    status: /approv/i.test(f.decision||"") ? "Approved" : /disapprov|denied|reject/i.test(f.decision||"") ? "Disapproved"
+          : (!leave && /releas/i.test(f.decision||"")) ? "Released" : ""
+  };
+  const clean=(k,t)=>{ const v=val[k];
+    if(t==="date") return /^\d{4}-\d{2}-\d{2}$/.test(String(v||"")) ? v : "";
+    if(t==="money") return Number(v)>0 ? Number(v) : "";
+    if(t==="bool") return v===true ? true : "";
+    return String(v||"").trim(); };
+  const rows=SCAN_FIELDS[coll].map(([k,n,t])=>({k,n,t, cur:rec[k], val:clean(k,t)}))
+    .filter(r=>r.val!=="" && String(r.val)!==String(r.cur==null?"":r.cur));
+  const nameOnForm=String(f.employeeName||"").trim(), noOnForm=String(f.employeeNo||"").replace(/\D/g,"");
+  const wrongPerson = e && ((noOnForm && normNo(noOnForm)!==normNo(e.empNo)) || (nameOnForm && !empMatch(e, nameOnForm.toLowerCase())));
+  const paperNo=String(f.formNo||"").trim();
+  const key = leave ? "LV" : "CA";
+  const noHeld = paperNo && parseDocNo(paperNo) && [...numbersInUse(key)].some(x=>x===docNoKey(paperNo))
+    && docNoKey(paperNo)!==docNoKey(rec.no||"");
+  const offerNo = paperNo && parseDocNo(paperNo) && docNoKey(paperNo)!==docNoKey(rec.no||"") && !noHeld;
+  const show=(r,v)=>r.t==="bool" ? (v?"yes":"no") : r.t==="money" ? peso(v) : (r.k==="type" && v ? leaveType(v).n : String(v));
+  openModal({ title:"What the signed form says", wide:true,
+    body:'<div class="stack">'
+      + '<div class="note">Read from <b>'+esc(title||"the scan")+'</b>. Ticked rows replace what is on the record. '
+      + 'Rows where the record already has something different start unticked — check the scan before you tick them. '
+      + 'OCR misreads digits.</div>'
+      + (wrongPerson?'<div class="note" style="border-left-color:var(--crit)"><b>The form names '
+          + esc(nameOnForm||("employee "+noOnForm))+'</b>, and this record is for '+esc(flipName(e.name))
+          + '. Make sure the scan is filed against the right person before applying anything.</div>':"")
+      + (offerNo?'<label class="row" style="gap:8px"><input type="checkbox" id="rs-no"'+(rec.no?'':' checked')+'> '
+          + 'Use the number printed on the form, <b class="mono">'+esc(paperNo)+'</b>'
+          + (rec.no?' (the record has '+esc(rec.no)+')':'')+'</label>'
+        : noHeld?'<div class="note" style="border-left-color:var(--warn)">The form is printed <b class="mono">'+esc(paperNo)
+          + '</b>, but another record already holds that number, so it is not offered. Check which form is right.</div>':"")
+      + (rows.length
+        ? '<div class="tw"><table><thead><tr><th style="width:34px"></th><th style="width:150px">Field</th>'
+          + '<th style="width:190px">On the record</th><th>On the form</th></tr></thead><tbody>'
+          + rows.map((r,i)=>{ const blank = r.cur==null || r.cur==="" || r.cur===0 || r.cur===false;
+              return '<tr><td><input type="checkbox" data-rsx="'+i+'"'+(blank?' checked':'')+'></td><td class="nm">'+esc(r.n)+'</td>'
+                + '<td style="color:var(--ink3)">'+(blank?'<span class="lbl">blank</span>':esc(show(r,r.cur)))+'</td>'
+                + '<td><b>'+esc(show(r,r.val))+'</b></td></tr>'; }).join("")
+          + '</tbody></table></div>'
+        : '<div class="note" style="margin:0">Everything readable on the form already matches the record.</div>')
+      + '</div>',
+    foot:'<button class="btn" id="rs-skip">Keep the record as it is</button><button class="btn pri" id="rs-apply">Apply the ticked rows</button>'});
+  const after=()=>{ const k=SIGNED_KIND[coll]; if(k && k.back) k.back(recId); else render(); };
+  $("#rs-skip").onclick=()=>{ closeModal(); after(); };
+  $("#rs-apply").onclick=async()=>{
+    const r2=clone(recOf(coll, recId)); let n=0;
+    $$("[data-rsx]").forEach(cb=>{ if(!cb.checked) return; const r=rows[+cb.dataset.rsx]; r2[r.k]=r.val; n++; });
+    const useNo=$("#rs-no");
+    if(useNo && useNo.checked && offerNo){
+      const pp=parseDocNo(paperNo);
+      r2.no=paperNo;
+      if(!Object.values(S.docreg).some(x=>docNoKey(x.no)===docNoKey(paperNo))){
+        const rid=uid("d");
+        await put("docreg", rid, { id:rid, no:paperNo, seriesKey:key, year:pp.year, seq:pp.seq,
+          title:leave?"Leave Request Form":"Cash Advance Request Form", tags:["read from the signed form"],
+          empId:r2.empId||"", module:leave?"leave":"ca", refId:r2.id, date:r2.filedOn||r2.date||TODAY,
+          status:"Issued", link:r2.signedLink||"", notes:"Number read off the signed paper form", issuedBy:"" });
+      }
+      n++;
+    }
+    if(leave) r2.days=leaveDays(r2.from, r2.to||r2.from, !!r2.half);
+    r2.notes=((r2.notes||"")+(n?"\nFields filled from the signed form on "+TODAY+".":"")).trim();
+    if(n) await put(coll, r2.id, r2);
+    closeModal();
+    toast(n ? n+" field"+(n===1?"":"s")+" taken from the signed form" : "Nothing applied.", n?"ok":undefined);
+    after();
+  };
+}
+/* A form that arrives on paper first: choose the person and the scan, and the
+   record is started from what the form says. */
+function newFromScan(coll){
+  const leave = coll==="leaves";
+  openModal({ title: leave ? "New leave from a scanned form" : "New cash advance from a scanned form", wide:true,
+    body:'<div class="stack"><div class="note">Choose whose form it is and the scan. It is filed in their 201 folder, '
+      + 'read, and the details it finds are offered for you to accept. The record keeps the number printed on the form '
+      + 'when no other record already holds it; otherwise it gets the next free number when you save.</div>'
+      + '<div class="f"><label>Employee</label>'+empPicker("fs-emp","")+'</div>'
+      + '<div class="f"><label>The signed form</label><input type="file" id="fs-file" accept=".pdf,.jpg,.jpeg,.png,.webp,.heic"></div></div>',
+    foot:'<button class="btn" id="fs-cancel">Cancel</button><button class="btn pri" id="fs-go">File and read it</button>'});
+  $("#fs-cancel").onclick=closeModal;
+  $("#fs-go").onclick=async()=>{
+    const empId=$("#fs-emp").value, file=($("#fs-file").files||[])[0];
+    const emp=S.employees[empId];
+    if(!emp){ toast("Choose the employee.","err"); return; }
+    if(!file){ toast("Choose the scan.","err"); return; }
+    const btn=$("#fs-go"); btn.disabled=true; btn.textContent="Filing…";
+    const rec = leave
+      ? { id:uid("lv"), no:"", empId, type:"", from:TODAY, to:TODAY, half:false, days:1, reason:"", status:"Filed",
+          filedOn:TODAY, approvedBy:"", approvedOn:"", covering:"", notes:"Started from a scanned form", contact:"",
+          printedOn:"", signedLink:"", signedTitle:"", signedOn:"" }
+      : { id:uid("ca"), no:"", date:TODAY, empId, requestedBy:S.settings.hrHead||"", receivedBy:emp.name,
+          purpose:"Cash Advance", particulars:"", project:emp.project||"", amount:0, chargeTo:"Project cost", mode:"Cash",
+          releasedBy:"", releasedOn:"", status:"Requested", liquidations:[], deducted:0, pcNo:"", deductPerPeriod:0,
+          planEvery:"Semi-monthly", planFrom:"", liqAuto:true, notes:"Started from a scanned form", neededOn:"", liquidateBy:"",
+          printedOn:"", signedLink:"", signedTitle:"", signedOn:"" };
+    try{
+      const k=SIGNED_KIND[coll];
+      const out=await uploadSigned(emp, "", k.label, file);
+      rec.signedLink=out.url; rec.signedTitle=out.title; rec.signedOn=TODAY;
+      await put(coll, rec.id, rec);
+      const c=clone(S.employees[emp.id]);
+      c.docs=c.docs||blankDocs();
+      c.docs[k.docKey]=c.docs[k.docKey]||{s:"miss",link:"",links:[],filed:"",expiry:""};
+      docAddLink(c.docs[k.docKey], out.url, out.title||"");
+      if(c.docs[k.docKey].s!=="exp") c.docs[k.docKey].s="on";
+      if(!c.docs[k.docKey].filed) c.docs[k.docKey].filed=TODAY;
+      await put("employees", c.id, c);
+      closeModal();
+      if(out.id) await readSignedScan(coll, rec.id, out.id, out.title||file.name);
+      else k.back(rec.id);
+    }catch(err){
+      const m=driveMessage(err); if(m) toast(m,"err");
+      btn.disabled=false; btn.textContent="File and read it";
+    }
+  };
+}
+
 /* ============ router ============ */
 function render(){
   renderNav();
@@ -16549,6 +18564,7 @@ function render(){
     attendance:viewAttendance, payroll:viewPayroll, tasks:viewTasks, general:viewGeneral, daily:viewDaily,
     salaries:viewSalaries, insights:viewInsights, filed:viewFiled, training:viewTraining,
     compliance:viewCompliance, gaps:viewGaps, reminders:viewReminders, assistant:viewAssistant,
+    payrun:viewPayrollRun, contrib:viewContrib,
     settings:viewSettings}[v] || viewDash;
   $("#view").innerHTML = (S.bootError ? bootErrorCard() : "") + fn();
   wire();
@@ -16777,6 +18793,202 @@ function wire(){
     if(ev.key==="Enter" && (ev.metaKey||ev.ctrlKey)){ ev.preventDefault(); askRun(askBox.value); } };
   on("[data-askq]","click", e=>askRun(e.currentTarget.dataset.askq));
 
+  /* ---- payroll maker ---- */
+  on("[data-paykind]","click",e=>{
+    S.ui.payKind=e.currentTarget.dataset.paykind;
+    /* the two kinds cut on different days, so a range chosen for one is dropped */
+    S.ui.payFrom=""; S.ui.payTo="";
+    render();
+  });
+  const payFromEl=$("#pay-from",v), payToEl=$("#pay-to",v);
+  const paySetRange=()=>{
+    const f=payFromEl.value, t=payToEl.value;
+    if(!f||!t) return;
+    if(f>t){ toast("The first date has to come before the last.","err"); render(); return; }
+    S.ui.payFrom=f; S.ui.payTo=t; S.ui.payAnchor=f; S.ui.paySnapped=0; render();
+  };
+  if(payFromEl) payFromEl.onchange=paySetRange;
+  if(payToEl)   payToEl.onchange=paySetRange;
+  const payStdBtn=$("#pay-std",v); if(payStdBtn) payStdBtn.onclick=()=>{
+    S.ui.payFrom=""; S.ui.payTo=""; render();
+  };
+  const payCols=$("#pay-cols",v); if(payCols) payCols.onclick=()=>{
+    S.ui.payAllCols=!S.ui.payAllCols; render();
+  };
+  const payPaste=$("#pay-paste",v);   if(payPaste) payPaste.onclick=pasteManpowerDoor;
+  const payPaste2=$("#pay-paste2",v); if(payPaste2) payPaste2.onclick=pasteManpowerDoor;
+  const payTa2=$("#pay-toattend2",v); if(payTa2) payTa2.onclick=()=>{ S.ui.dailyDate=payCur().per.to; go("daily"); };
+  const payAttT=$("#pay-atttoggle",v); if(payAttT) payAttT.onclick=()=>{ S.ui.payAttOpen = payAttT.dataset.open!=="1"; render(); };
+  const payLatest=$("#pay-latest",v); if(payLatest) payLatest.onclick=ev=>{ ev.stopPropagation();
+    S.ui.payFrom=""; S.ui.payTo=""; S.ui.payAnchor=payLatest.dataset.date; S.ui.paySnapped=0; render(); };
+  const payNow=$("#pay-now",v); if(payNow) payNow.onclick=()=>{ S.ui.payFrom=""; S.ui.payTo=""; S.ui.payAnchor=TODAY; S.ui.paySnapped=0; S.ui.payNoSnap=1; render(); };
+  const ph30=$("#pay-hol30",v);   if(ph30) ph30.onclick=()=>payHolAll(1);
+  const ph100=$("#pay-hol100",v); if(ph100) ph100.onclick=()=>payHolAll(2);
+  const phn=$("#pay-holnone",v);  if(phn) phn.onclick=()=>payHolAll(0);
+  const phc=$("#pay-holcal",v);   if(phc) phc.onclick=holidayEditor;
+  on("[data-payperson]","click",e=>payPersonDays(e.currentTarget.dataset.payperson));
+  const payToCon=$("#pay-tocontrib",v); if(payToCon) payToCon.onclick=()=>go("contrib");
+  const payToAtt=$("#pay-toattend",v); if(payToAtt) payToAtt.onclick=()=>{
+    /* land on the last day of the period being paid, not on today */
+    S.ui.dailyDate = payCur().per.to;
+    go("daily");
+  };
+  on("[data-payshift]","click",e=>{
+    const n=+e.currentTarget.dataset.payshift;
+    S.ui.paySnapped=0;
+    const cur=payCur();
+    if(cur.custom){
+      /* step a chosen range by its own length, so a fortnight moves a fortnight */
+      const len=payDates(cur.per.from,cur.per.to).length;
+      S.ui.payFrom = addDays(cur.per.from, n>0 ? len : -len);
+      S.ui.payTo   = addDays(cur.per.to,   n>0 ? len : -len);
+      S.ui.payAnchor = S.ui.payFrom;
+      render(); return;
+    }
+    const per=cur.per;
+    S.ui.payAnchor = n>0 ? addDays(per.to,1) : addDays(per.from,-1);
+    render();
+  });
+  wireListFilter("pay-q","[data-payrow]",null);
+
+  /* an edited figure is kept against this run, never written back onto the
+     attendance record — the manpower report stays what the timekeeper filed */
+  const payEdit=async(commit)=>{
+    const kind=S.ui.payKind||"weekly";
+    const per=payCur().per;
+    const key=payRunKey(kind,per.from,per.to);
+    const run=clone(payRunGet(kind,per.from,per.to) || {id:key, kind, from:per.from, to:per.to, lines:{}, savedOn:""});
+    run.lines=run.lines||{};
+    $$("[data-payf]").forEach(el=>{
+      const [id,f]=el.dataset.payf.split("|");
+      const val=el.value===""?null:(parseFloat(el.value)||0);
+      run.lines[id]=run.lines[id]||{};
+      run.lines[id][f]=val;
+    });
+    S.payruns=S.payruns||{}; S.payruns[key]=run;
+    if(commit){ run.savedOn=TODAY; await put("payruns",key,run); toast("Run saved.","ok"); }
+    render();
+  };
+  $$("[data-payf]").forEach(el=>el.onchange=()=>payEdit(false));
+  const psv=$("#pay-save",v); if(psv) psv.onclick=()=>payEdit(true);
+
+  const payBuild=()=>{
+    const kind=S.ui.payKind||"weekly";
+    const per=payCur().per;
+    const dates=payDates(per.from,per.to);
+    const saved=payRunGet(kind,per.from,per.to);
+    const lines=payPeople(kind, per)
+      .map(e=>payLine(e,kind,dates,(saved&&saved.lines&&saved.lines[e.id])||null))
+      .filter(L=>L.days>0||L.ot>0);
+    const T=lines.reduce((a,L)=>({gross:a.gross+L.gross, ded:a.ded+L.ded, net:a.net+L.net}),
+      {gross:0,ded:0,net:0});
+    return {kind, per, lines, T};
+  };
+  const payPrintBtn=$("#pay-print",v); if(payPrintBtn) payPrintBtn.onclick=()=>{
+    const b=payBuild();
+    if(!b.lines.length){ toast("Nobody has a day recorded in this period.","err"); return; }
+    const body=payPaper(b.kind,b.per,b.lines,b.T);
+    const no=(b.kind==="semi"?"ADMIN":"WEEKLY")+" PAYROLL "+payLabel(b.per.from,b.per.to);
+    openModal({ title:no, wide:true, body:pfWrap(body,{land:true}),
+      foot:'<button class="btn" id="pyp-back">Back</button>'
+        + '<button class="btn" id="pyp-pdf"><svg><use href="#i-dl"/></svg> Save as PDF</button>'
+        + '<button class="btn pri" id="pyp-print">Print</button>'});
+    $("#pyp-back").onclick=closeModal;
+    $("#pyp-print").onclick=()=>printDoc(no, body);
+    $("#pyp-pdf").onclick=()=>savePDF(no, body);
+  };
+  const slipShow=(lines,b,title,file)=>{
+    const body = lines.length===1 ? payslipBody(lines[0],b.kind,b.per) : payslipSheet(lines,b.kind,b.per);
+    openModal({ title, wide:true, body:pfWrap(body),
+      foot:'<button class="btn" id="pys-back">Back</button>'
+        + '<button class="btn" id="pys-pdf"><svg><use href="#i-dl"/></svg> Save as PDF</button>'
+        + '<button class="btn pri" id="pys-print">Print</button>'});
+    $("#pys-back").onclick=closeModal;
+    $("#pys-print").onclick=()=>printDoc(file, body);
+    $("#pys-pdf").onclick=()=>savePDF(file, body);
+  };
+  on("[data-payslip]","click",e=>{
+    const b=payBuild();
+    const L=b.lines.find(x=>x.empId===e.currentTarget.dataset.payslip);
+    if(!L){ toast("That person has nothing on this run.","err"); return; }
+    slipShow([L], b, "Payslip — "+flipName(L.name),
+      slugNo("PAYSLIP-"+(L.empNo||L.name)+"-"+b.per.from));
+  });
+  const paySlipsBtn=$("#pay-slips",v); if(paySlipsBtn) paySlipsBtn.onclick=()=>{
+    const b=payBuild();
+    if(!b.lines.length){ toast("Nobody has a day recorded in this period.","err"); return; }
+    slipShow(b.lines, b, "Payslips — "+b.lines.length+" people, "+payLabel(b.per.from,b.per.to),
+      slugNo("PAYSLIPS-"+(b.kind==="semi"?"ADMIN":"WEEKLY")+"-"+b.per.from));
+  };
+  const payCsvBtn=$("#pay-csv",v); if(payCsvBtn) payCsvBtn.onclick=()=>{
+    const b=payBuild();
+    const semi=b.kind==="semi";
+    const head=["ID","Name","Position","Area","Daily","Hourly","Days","OT hrs"]
+      .concat(["Premium days +30%","Premium days +100%","Holiday premium"])
+      .concat(semi?["Allowance"]:[])
+      .concat(["Gross","Late/Undertime","Cash advance","Uniform/Others","SSS loan","Pag-IBIG loan",
+               "SSS","PhilHealth",semi?"HMIC":"Pag-IBIG","Total deductions","NET PAY"]);
+    const rows=b.lines.map(L=>[L.empNo,flipName(L.name),L.position,L.site,
+      L.daily.toFixed(2),L.hourly.toFixed(2),L.days,L.ot]
+      .concat([L.hol30||0, L.hol100||0, (L.holPay||0).toFixed(2)])
+      .concat(semi?[L.allowance.toFixed(2)]:[])
+      .concat([L.gross.toFixed(2),L.late,L.ca,L.uniform,L.sssLoan,L.hdmfLoan,
+               L.sss,L.phic,L.hdmf,L.ded.toFixed(2),L.net]));
+    saveFile(slugNo((semi?"ADMIN":"WEEKLY")+"-PAYROLL-"+b.per.from)+".csv", toCSV([head].concat(rows)));
+  };
+
+  /* ---- contributions ---- */
+  on("[data-ckind]","click",e=>{ S.ui.contribKind=e.currentTarget.dataset.ckind; render(); });
+  wireListFilter("c-q","[data-crow]","c-count",()=>{ S.ui.contribQ=($("#c-q")||{}).value||""; });
+  const cSave=$("#c-save",v); if(cSave) cSave.onclick=async()=>{
+    const by={};
+    $$("[data-cf]").forEach(el=>{
+      const [id,k]=el.dataset.cf.split("|");
+      (by[id]=by[id]||{})[k] = el.value===""? null : (parseFloat(el.value)||0);
+    });
+    let n=0;
+    for(const id in by){
+      const e=S.employees[id]; if(!e) continue;
+      const next={};
+      let changed=false;
+      ["sss","phic","hdmf"].forEach(k=>{
+        const was=((e.ded||{})[k]);
+        const now=by[id][k];
+        if(now!=null) next[k]=now;
+        if((was==null?"":String(was)) !== (now==null?"":String(now))) changed=true;
+      });
+      if(!changed) continue;
+      e.ded = Object.keys(next).length ? next : undefined;
+      if(!e.ded) delete e.ded;
+      await put("employees", id, e); n++;
+    }
+    toast(n ? n+" record"+(n===1?"":"s")+" updated." : "Nothing changed.", n?"ok":"");
+    render();
+  };
+  const cFill=$("#c-fill",v); if(cFill) cFill.onclick=()=>{
+    let n=0;
+    $$("[data-cf]").forEach(el=>{
+      if(el.value!=="") return;                      /* never overwrite a typed figure */
+      const [id,k]=el.dataset.cf.split("|");
+      const e=S.employees[id]; if(!e) return;
+      const c=statFromRate(e); if(!c) return;
+      el.value=c[k].toFixed(2); n++;
+    });
+    toast(n ? n+" box"+(n===1?"":"es")+" filled from the tables — check them, then Save."
+            : "Every box already has a figure, or no rate is on file.", n?"ok":"err");
+  };
+  const cClear=$("#c-clear",v); if(cClear) cClear.onclick=async()=>{
+    const r=await askText("Put everyone back on the company figure",
+      [{k:"ok", label:'Type CLEAR to confirm', placeholder:"CLEAR",
+        hint:"Every per-person SSS, PhilHealth and Pag-IBIG figure is removed. The company figures in Settings apply again."}]);
+    if(!r || String(r.ok||"").toUpperCase()!=="CLEAR") return;
+    let n=0;
+    for(const e of activeEmps()){ if(!e.ded) continue; delete e.ded; await put("employees", e.id, e); n++; }
+    toast(n+" record"+(n===1?"":"s")+" put back on the company figure.","ok");
+    render();
+  };
+
+  const shc=$("#set-holcal",v); if(shc) shc.onclick=holidayEditor;
   const gs=$("#gap-survey"); if(gs) gs.onclick=surveyFolders;
   const gn=$("#gap-newfolders"); if(gn) gn.onclick=scanNewFolders;
   const gm=$("#gap-matchall"); if(gm) gm.onclick=matchAllFolders;
@@ -16873,17 +19085,59 @@ function wire(){
     saveFile("salary-register-"+TODAY+".csv", toCSV(rows));
   };
   const dd=$("#dm-date",v); if(dd) dd.onchange=()=>{ S.ui.dailyDate=dd.value; render(); };
+  on("[data-dmshift]","click",e=>{
+    S.ui.dailyDate = addDays(S.ui.dailyDate||TODAY, +e.currentTarget.dataset.dmshift);
+    render();
+  });
   const dap=$("#dm-allpresent",v); if(dap) dap.onclick=()=>{
     $$("[data-dms]").forEach(sel=>{ sel.value="Present"; });
     $$("[data-dmr]").forEach(i=>{ i.value=""; });
     toast("All set to present — change the exceptions");
   };
+  /* Write it down before redrawing: the redraw reads the record, not the
+     boxes, so an unsaved tick would vanish on the way back. */
+  const holSet=async code=>{
+    const els=$$("[data-dmhol]");
+    if(!els.length) return;
+    els.forEach(el=>{ el.value=String(code); });
+    const rec=dailyCollect();
+    await dailySave(rec, code ? "holiday premium "+holLabel(code)+" for everyone eligible" : "holiday premium cleared for the day");
+    toast(code ? holLabel(code)+" given to all "+els.length+" — change anyone who should not have it"
+               : "Premium cleared for all "+els.length, "ok");
+    render();
+  };
+  const dmw=$("#dm-who",v); if(dmw) dmw.onclick=async()=>{
+    const r=await askText("Whose edits are these?", [{k:"n", label:"Name", value:whoEdits(),
+      hint:"Every change to a day is stamped with this name and the time. It stays until it is changed."}]);
+    if(!r || !r.n) return;
+    S.settings.editedBy=r.n; await putSettings(); render();
+  };
+  const dhc=$("#dm-holcal",v);  if(dhc) dhc.onclick=holidayEditor;
+  const dhm=$("#dm-holmark",v); if(dhm) dhm.onclick=()=>holidayMark(S.ui.dailyDate||TODAY);
+  const dha=$("#dm-hol30",v);   if(dha) dha.onclick=()=>holSet(1);
+  const dh1=$("#dm-hol100",v);  if(dh1) dh1.onclick=()=>holSet(2);
+  const dhn=$("#dm-holnone",v); if(dhn) dhn.onclick=()=>holSet(0);
+  const dpj=$("#dm-paste",v);   if(dpj) dpj.onclick=pasteManpowerDoor;
+  on("[data-dms]","change",e=>syncReasonRow(e.currentTarget.dataset.dms));
+  on("[data-dmrk]","change",e=>syncReasonRow(e.currentTarget.dataset.dmrk));
+  on("[data-dmexpick]","change",e=>syncReasonRow(e.currentTarget.dataset.dmexpick));
+  on("[data-dmin]","input",e=>syncReasonRow(e.currentTarget.dataset.dmin));
+  on("[data-dmout]","input",e=>syncReasonRow(e.currentTarget.dataset.dmout));
   const dms=$("#dm-save",v); if(dms) dms.onclick=async()=>{
-    const rec=dailyCollect(); await put("daily",rec.id,rec);
-    toast("Saved "+longDate(rec.date),"ok"); render();
+    const rec=dailyCollect();
+    const bad=dailyTimeProblems(rec);
+    if(bad.length){ bad.forEach(b=>syncReasonRow(b.id));
+      toast(bad[0].text+(bad.length>1?" — and "+(bad.length-1)+" more":""),"err"); return; }
+    const n=(dailyDiff(dailyGet(rec.date), rec)||[]).length;
+    await dailySave(rec);
+    toast(n ? "Saved — "+n+" change"+(n===1?"":"s")+" logged" : "Saved "+longDate(rec.date), "ok");
+    render();
   };
   const dmp=$("#dm-print",v); if(dmp) dmp.onclick=async()=>{
-    const rec=dailyCollect(); await put("daily",rec.id,rec); printDaily(rec);
+    const rec=dailyCollect();
+    const bad=dailyTimeProblems(rec);
+    if(bad.length){ bad.forEach(b=>syncReasonRow(b.id)); toast(bad[0].text,"err"); return; }
+    await dailySave(rec); printDaily(rec);
   };
   const dmd=$("#dm-del",v); if(dmd) dmd.onclick=async()=>{
     const d=S.ui.dailyDate||TODAY;
@@ -16891,14 +19145,35 @@ function wire(){
     await drop("daily",dailyId(d)); render();
   };
   on("[data-imonths]","click",e=>{ S.ui.insightMonths=+e.currentTarget.dataset.imonths; S.ui.insightMonth=""; render(); });
+  wireListFilter("att-sum-q","[data-attsum]","att-sum-count");
   const ias=$("#ia-start",v); if(ias) ias.onclick=importAttendancePick;
   const dadd=$("#dm-add",v); if(dadd) dadd.onclick=dailyAddPerson;
   on("[data-siterename]","click",e=>dailyRenameSite(e.currentTarget.dataset.siterename));
+  on("[data-dmsep]","click",async e=>{
+    const id=e.currentTarget.dataset.dmsep, p=S.employees[id];
+    if(!p) return;
+    if(!confirm("Mark "+flipName(p.name)+" separated?\n\nThey come off the standing list from today on. "
+      + "Reports already filed keep them, and payroll for a period they worked still pays them."))
+      return;
+    await markSeparated(id, TODAY, leaverEvidence(p));
+    toast(flipName(p.name)+" is marked separated.","ok");
+    render();
+  });
+  const sepAll=$("#dm-sep-all",v); if(sepAll) sepAll.onclick=async()=>{
+    const list=leaversOnList();
+    if(!list.length) return;
+    if(!confirm("Mark all "+list.length+" separated?\n\nThey come off the standing list from today on. "
+      + "Reports already filed keep them, and payroll for a period they worked still pays them."))
+      return;
+    for(const x of list) await markSeparated(x.e.id, TODAY, x.why);
+    toast(list.length+" record"+(list.length===1?"":"s")+" marked separated.","ok");
+    render();
+  };
   on("[data-dmdrop]","click",async e=>{
     const id=e.currentTarget.dataset.dmdrop, rec=dailyCollect();
     rec.omit=(rec.omit||[]).concat([id]).filter((x,i,a)=>a.indexOf(x)===i);
     rec.extra=(rec.extra||[]).filter(x=>x!==id);
-    await put("daily",rec.id,rec); render();
+    await dailySave(rec, "taken off the day"); render();
   });
   on("[data-dmsite]","change",async e=>{
     const sel=e.currentTarget;
@@ -16909,9 +19184,9 @@ function wire(){
       if(!r){ render(); return; }
       const rec=dailyCollect();
       rec.rows[key]=Object.assign({s:"Present",r:""},rec.rows[key]||{},{site:r.name});
-      await put("daily",rec.id,rec); render(); return;
+      await dailySave(rec); render(); return;
     }
-    await put("daily", dailyCollect().id, dailyCollect()); render();
+    await dailySave(dailyCollect()); render();
   });
   /* drag a name onto another area */
   on("[data-drag]","dragstart",e=>{
@@ -16926,14 +19201,14 @@ function wire(){
     const id=e.dataTransfer.getData("text/plain"); if(!id) return;
     const site=e.currentTarget.dataset.drop, rec=dailyCollect();
     rec.rows[id]=Object.assign({s:"Present",r:""}, rec.rows[id]||{}, {site});
-    await put("daily",rec.id,rec);
+    await dailySave(rec, "moved to another area");
     toast(flipName((S.employees[id]||{}).name||"")+" → "+site);
     render();
   });
   const dmaa=$("#dm-apply",v); if(dmaa) dmaa.onclick=dailyApplyAssignments;
   const dma=$("#dm-archive",v); if(dma) dma.onclick=()=>
     browseFolder(ATTENDANCE_ROOT, "Attendance — the filed scans", []);
-  on("[data-dmopen]","click",e=>{ S.ui.dailyDate=e.currentTarget.dataset.dmopen; render(); });
+  on("[data-dmopen]","click",e=>{ S.ui.dailyDate=e.currentTarget.dataset.dmopen; go("daily"); });
   on("[data-dmview]","click",e=>{
     const r=dailyGet(e.currentTarget.dataset.dmview); if(r) printDaily(r);
   });
@@ -17042,6 +19317,7 @@ function wire(){
   on("[data-edit-exam]","click",e=>examEditor(e.currentTarget.dataset.editExam));
   on("[data-edit-guide]","click",e=>examEditor(e.currentTarget.dataset.editGuide));
   const na=$("#new-app",v); if(na) na.onclick=()=>appEditor(null);
+  const iap=$("#imp-apps",v); if(iap) iap.onclick=importAppsDialog;
   on("[data-edit-role]","click",e=>roleEditor(e.currentTarget.dataset.editRole));
   const nrl=$("#new-role",v); if(nrl) nrl.onclick=()=>roleEditor(null);
   const rt=$("#role-tasks",v); if(rt) rt.onclick=tasksForBlankRoles;
@@ -17096,8 +19372,8 @@ function wire(){
             + (j.broken?". Those days are not consecutive — check whether this is one leave or two":"")
             + ". The signed form still has to be uploaded and the leave type set." }]);
         /* the number exists on paper, so the register has to know it and never reissue it */
-        const m=/^LRF(\d{4})-(\d+)$/.exec(j.no);
-        if(m && !Object.values(S.docreg).some(d=>d.no===j.no)){
+        const pj=parseDocNo(j.no), m=pj ? [null, String(pj.year), String(pj.seq)] : null;
+        if(m && !Object.values(S.docreg).some(d=>docNoKey(d.no)===docNoKey(j.no))){
           const rid=uid("d");
           regs.push([rid,{ id:rid, no:j.no, seriesKey:"LV", year:+m[1], seq:parseInt(m[2],10),
             title:"Leave Request Form", empId:j.empId, tags:["leave","from the manpower report"],
@@ -17114,7 +19390,24 @@ function wire(){
     };
   }
   const ilv=$("#imp-lv",v); if(ilv) ilv.onclick=()=>importRecords("leave");
+  on("[data-lvopen]","click",e=>lvEditor(e.currentTarget.dataset.lvopen));
+  on("[data-lvrenum]","click",async e=>{
+    const l=clone(S.leaves[e.currentTarget.dataset.lvrenum]); if(!l) return;
+    const old=l.no;
+    if(!await askConfirm("Give this leave form a new number? "+old+" stays on the other form, and this record notes the change.",
+      {yes:"Renumber it", danger:false})) return;
+    const entry=await allocate("LV",{title:(l.type?leaveType(l.type).n:"Leave Request Form"), empId:l.empId, module:"leave",
+      refId:l.id, status:"Issued", date:l.filedOn||TODAY, tags:["leave","renumbered"],
+      notes:"Renumbered — "+old+" was also on another leave form"});
+    if(!entry) return;
+    l.no=entry.no;
+    l.notes=((l.notes||"")+"\nRenumbered on "+TODAY+" from "+old+" — that number was also on another leave form.").trim();
+    await put("leaves", l.id, l);
+    toast(old+" → "+l.no, "ok"); render();
+  });
   const ica=$("#imp-ca",v); if(ica) ica.onclick=()=>importRecords("ca");
+  const lfs=$("#lv-fromscan",v); if(lfs) lfs.onclick=()=>newFromScan("leaves");
+  const cfs=$("#ca-fromscan",v); if(cfs) cfs.onclick=()=>newFromScan("advances");
   const cac=$("#ca-csv",v); if(cac) cac.onclick=()=>saveFile("cash-advances-"+TODAY+".csv", toCSV(
     [["Number","Date","Employee","Received by","Purpose","Particulars","Project","Charge to","Amount","Liquidated","Deducted","Balance","Released on","Days open","Status"]].concat(
       caList().map(a=>[a.no,a.date,(S.employees[a.empId]||{}).name||"",a.receivedBy,a.purpose,a.particulars,a.project,a.chargeTo,

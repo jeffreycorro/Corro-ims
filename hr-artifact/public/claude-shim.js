@@ -306,7 +306,9 @@
   }
 
   function capabilityOn(status, name) {
-    return Boolean(status && status.capabilities && status.capabilities[name]);
+    if (!status) return false;
+    if (status[name] === true) return true;
+    return Boolean(status.capabilities && status.capabilities[name]);
   }
 
   function createDb() {
@@ -835,8 +837,6 @@
   function loadDictationCompanion() {
     loadCompanion("/hr-dictation.js", "data-hr-dictation");
     loadCompanion("/hr-memo.js", "data-hr-memo");
-    loadCompanion("/hr-attendance.js", "data-hr-attendance");
-    loadCompanion("/hr-payroll.js", "data-hr-payroll");
     loadCompanion("/hr-tts.js", "data-hr-tts");
     loadCompanion("/hr-applicant-dedupe.js", "data-hr-applicant-dedupe");
     loadCompanion("/hr-recruit.js", "data-hr-recruit");

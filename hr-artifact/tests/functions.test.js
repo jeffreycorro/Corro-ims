@@ -11,7 +11,7 @@ const { handler: transcribeHandler } = require("../netlify/functions/transcribe"
 const { handler: ttsHandler } = require("../netlify/functions/tts");
 const { COOKIE_NAME, signSession } = require("../netlify/lib/session");
 const { resetTokenCache } = require("../netlify/lib/google-drive");
-const { setTestBlobLoader } = require("../netlify/lib/google-sa");
+const { resetServiceAccountCache, setTestBlobLoader } = require("../netlify/lib/google-sa");
 
 function testServiceAccountJson() {
   const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -44,6 +44,7 @@ describe("netlify functions", () => {
     delete process.env.ELEVENLABS_API_KEY;
     delete process.env.ELEVENLABS_VOICE_ID;
     setTestBlobLoader(async () => "");
+    resetServiceAccountCache();
     resetTokenCache();
   });
 
@@ -137,6 +138,8 @@ describe("netlify functions", () => {
     const body = JSON.parse(res.body);
     assert.equal(body.capabilities.sample, true);
     assert.equal(body.capabilities.mcp, false);
+    assert.equal(body.mcp, false);
+    assert.equal(body.sample, true);
     assert.equal(body.capabilities.transcribe, false);
     assert.equal(body.capabilities.tts, false);
   });
@@ -146,7 +149,23 @@ describe("netlify functions", () => {
     const res = await authHandler({ httpMethod: "GET", headers: {} });
     const body = JSON.parse(res.body);
     assert.equal(body.capabilities.tts, true);
+    assert.equal(body.tts, true);
     assert.equal(body.capabilities.sample, false);
+  });
+
+  it("advertises top-level mcp when a Drive service account file is present", async () => {
+    const fs = require("node:fs");
+    const os = require("node:os");
+    const path = require("node:path");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hr-sa-auth-"));
+    const file = path.join(dir, "sa.json");
+    fs.writeFileSync(file, testServiceAccountJson());
+    process.env.GOOGLE_SERVICE_ACCOUNT_FILE = file;
+    delete process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+    const res = await authHandler({ httpMethod: "GET", headers: {} });
+    const body = JSON.parse(res.body);
+    assert.equal(body.capabilities.mcp, true);
+    assert.equal(body.mcp, true);
   });
 
   it("rejects sample, drive, and transcribe without a session", async () => {

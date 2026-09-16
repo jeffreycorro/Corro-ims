@@ -11,6 +11,9 @@
 
 [build.environment]
   NODE_VERSION = "20"
+  # Tiny Functions-safe flag. Makes auth/drive try Netlify Blobs for the
+  # service account even when NETLIFY=true is missing at Lambda runtime.
+  GOOGLE_SERVICE_ACCOUNT_BLOB = "1"
 
 [functions]
   directory = "netlify/functions"

@@ -19,10 +19,11 @@ describe("placeholder and privacy", () => {
     const shimIndex = html.indexOf("/claude-shim.js");
     const pwaIndex = html.indexOf("/pwa.js");
     assert.ok(shimIndex > -1 && pwaIndex > shimIndex, "pwa.js must load after the shim");
+    assert.match(html, /const BUILD = "2026-09-16b"/);
     assert.doesNotMatch(html, /hr-dictation\.js/);
     assert.doesNotMatch(html, /hr-memo\.js/);
-    assert.doesNotMatch(html, /hr-attendance\.js/);
-    assert.doesNotMatch(html, /hr-payroll\.js/);
+    assert.doesNotMatch(html, /<script[^>]+hr-attendance\.js/);
+    assert.doesNotMatch(html, /<script[^>]+hr-payroll\.js/);
     assert.doesNotMatch(html, /hr-tts\.js/);
     assert.doesNotMatch(html, /hr-recruit\.js/);
     assert.doesNotMatch(html, /hr-applicant-dedupe\.js/);
@@ -33,8 +34,8 @@ describe("placeholder and privacy", () => {
       path.join(__dirname, "../public/claude-shim.js"),
       "utf8"
     );
-    assert.match(shim, /hr-attendance\.js/);
-    assert.match(shim, /hr-payroll\.js/);
+    assert.doesNotMatch(shim, /hr-attendance\.js/);
+    assert.doesNotMatch(shim, /hr-payroll\.js/);
     assert.match(shim, /hr-tts\.js/);
     assert.match(shim, /hr-applicant-dedupe\.js/);
     assert.match(shim, /hr-recruit\.js/);
@@ -76,6 +77,7 @@ describe("placeholder and privacy", () => {
     assert.match(readme, /hr-201-file\.js/);
     assert.match(readme, /hr-leave-numbers\.js/);
     assert.match(readme, /hr-onboarding-links\.js/);
+    assert.match(readme, /2026-09-16b/);
     assert.match(readme, /Renumber leave/);
     assert.match(readme, /20260915000001_lv_unique_leave_numbers/);
     assert.match(readme, /fixLiveDuplicate169/);
@@ -94,6 +96,7 @@ describe("placeholder and privacy", () => {
     const toml = fs.readFileSync(path.join(__dirname, "../netlify.toml"), "utf8");
     assert.match(toml, /prepare-google-sa\.js/);
     assert.match(toml, /@netlify\/blobs/);
+    assert.match(toml, /GOOGLE_SERVICE_ACCOUNT_BLOB/);
     assert.match(toml, /publish = "public"/);
     assert.match(toml, /X-Robots-Tag = "noindex, nofollow"/);
     assert.match(toml, /X-Frame-Options = "DENY"/);

@@ -8,7 +8,7 @@ Do **not** rewrite, minify, or modernize the HTML artifact. Paste the Claude exp
 
 ### 1. Paste the real artifact
 
-`public/index.html` should be the Claude artifact HTML export. If you replace it, keep the shim script tag in `<head>`.
+`public/index.html` should be the Claude artifact HTML export. Current deploy is **build 2026-09-16b**. If you replace it, keep the shim script tag in `<head>`.
 
 ### 2. Inject the shim (one-line change)
 
@@ -22,7 +22,7 @@ Inside `<head>` of that real `index.html`, **before any other scripts**, add:
 <script src="/pwa.js"></script>
 ```
 
-`window.claude.use(name)` is implemented by `public/claude-shim.js` and must load first. Do not rewrite the rest of the artifact. `pwa.js` / `pwa.css` only add iOS Home Screen tags and a scoped mobile overlay. The shim then loads `hr-dictation.js` (hold-to-talk when `OPENAI_API_KEY` is set), `hr-memo.js` (issued / on-paper memoranda open as saved records, not blank drafts), `hr-attendance.js` (manpower tally leave rule, JSON paste/import door, per-person summary, Present/Late Time In and Undertime Time Out), `hr-payroll.js` (Payroll Maker period attendance, +30% / +100% / as-is holiday premium, contributions, holiday calendar, Daily Manpower Hol/OT + change history), `hr-tts.js` (ElevenLabs readback for Ask the records and memo text when `ELEVENLABS_API_KEY` is set), `hr-recruit.js` (Recruitment → Pipeline “Bulk import JSON”, “Consolidate duplicates”, role filter, search, applicant staff notes, and the applicant “View 201 / application file”), `hr-201-file.js` (201 profile “On file for this person” — NTEs, memos, incidents, leave, cash advances, and other empId-tagged records), `hr-leave-numbers.js` (unique LRF / LV series numbers on New leave, Import signed forms, and allocate; Leave → **Renumber leave**), and `hr-onboarding-links.js` (New Employee Orientation company video Drive file remap). Do not rewrite the artifact to add mic buttons, memo chrome, a second attendance system, a parallel payroll app, a second voice UI, a second recruitment editor, a second 201 register, or a second leave-numbering counter.
+`window.claude.use(name)` is implemented by `public/claude-shim.js` and must load first. Do not rewrite the rest of the artifact. `pwa.js` / `pwa.css` only add iOS Home Screen tags and a scoped mobile overlay. The shim then loads `hr-dictation.js` (hold-to-talk when `OPENAI_API_KEY` is set), `hr-memo.js` (issued / on-paper memoranda open as saved records, not blank drafts), `hr-tts.js` (ElevenLabs readback for Ask the records and memo text when `ELEVENLABS_API_KEY` is set), `hr-recruit.js` (Recruitment → Pipeline “Bulk import JSON”, “Consolidate duplicates”, role filter, search, applicant staff notes, and the applicant “View 201 / application file”), `hr-201-file.js` (201 profile “On file for this person” — NTEs, memos, incidents, leave, cash advances, and other empId-tagged records; also keeps Settings `hr201Active` / `hr201Separated` / `hr201Inbox` as Drive folder ids), `hr-leave-numbers.js` (unique LRF / LV series numbers on New leave, Import signed forms, and allocate; Leave → **Renumber leave**), and `hr-onboarding-links.js` (New Employee Orientation company video Drive file remap). Build 2026-09-16b owns attendance and payroll UI, so the shim no longer loads `hr-attendance.js` or `hr-payroll.js` (those files stay in `public/` for tests). Do not rewrite the artifact to add mic buttons, memo chrome, a second attendance system, a parallel payroll app, a second voice UI, a second recruitment editor, a second 201 register, or a second leave-numbering counter.
 
 ### 3. Apply the SQL migration
 
@@ -92,7 +92,7 @@ Copy `.env.example`. Data, AI, Drive, and voice functions **refuse** requests wi
 4. Add `HR_SESSION_SECRET` (`openssl rand -hex 32`). Scope **Functions**, Production. Delete `HR_GATE_SECRET` if it is still set.
 5. Scope API keys to **Functions** + **Production**. Never commit real keys. Do **not** also set `NEXT_PUBLIC_SUPABASE_*` on this site (duplicates the JWTs).
 6. Move Drive credentials off Functions (see Drive notes below), then **redeploy**.
-7. Confirm the deploy creates functions (no “exceed the 4KB limit”). Then `GET /.netlify/functions/auth` (while signed in) shows `capabilities.sample: true`, `capabilities.tts: true`, and `capabilities.mcp: true` when Drive is configured.
+7. Confirm the deploy creates functions (no “exceed the 4KB limit”). Then `GET /.netlify/functions/auth` shows `mcp: true` and `capabilities.mcp: true` when Drive credentials are available (Blobs or Builds-only JSON). `netlify.toml` sets `GOOGLE_SERVICE_ACCOUNT_BLOB=1` so Lambda always tries Blobs.
 
 Extractor contract (URL, headers, field map, seed roles `ro01`–`ro10`, soft-dedupe, one-shot Pipeline cleanup): `docs/applicants-ingest.md`.
 
@@ -145,6 +145,8 @@ Privacy headers (`X-Robots-Tag: noindex, nofollow`, `X-Frame-Options: DENY`, `Re
 
 After deploy, open the site, sign in with a portal HR/admin account, and restore the backup JSON from **Settings in the artifact**. Never commit backup JSON.
 
+**Separated roster + contributions (2026-09-16).** Do not delete anyone. Apply status `Separated` and per-head `ded` (including zeros) with `scripts/apply-employee-updates.js` or the SQL next to it. Steps: [`scripts/README-employee-updates.md`](scripts/README-employee-updates.md).
+
 **Duplicate LRF2026-0169 (Jaranilla / Cartuciano).** The leave number field is not editable. After this host ships, sign in, open **Leave**, and either click **Renumber leave** (Jaranilla is preselected; new number defaults to the next free LRF, likely `LRF2026-0171`) or, in the browser console:
 
 ```js
@@ -164,7 +166,7 @@ That keeps Cartuciano on `LRF2026-0169`, moves Jaranilla to the next free number
 | `db` | `doc(path).get/set/delete/acquire` and `collection(name).get` / `onSnapshot` (one-shot + unsubscribe). Path: `collection/id`. |
 | `downloads` | `save({ filename, data })` via object URL + `<a download>`. |
 | `sample` | Anthropic-backed `sample(prompt, { modelTier, onText, tools, signal })` → `{ text, truncated? }`, plus `sample.json` and `sample.limits`. `null` until `ANTHROPIC_API_KEY` is set. Client-side tools (Ask the records) run in the browser; only schemas go to the function. |
-| `mcp` | `callTool("Google Drive", tool, args)` for `search_files`, `read_file_content`, `create_file`. Responses use `{ payload: { files, text/content/fileContent, id, title, viewUrl, nextPageToken } }`. `null` until the service account env is set. Uploads larger than ~3MB are chunked through a resumable Drive session. |
+| `mcp` | `callTool("Google Drive", tool, args)` for `search_files`, `read_file_content`, `create_file`. Responses use `{ payload: { files, text/content/fileContent, id, title, viewUrl, nextPageToken } }`. `null` until Drive credentials load (Netlify Blobs `hr-secrets` / `google-service-account`, Builds-only bundle, or local file). `GET /.netlify/functions/auth` advertises both `capabilities.mcp` and top-level `mcp`. Uploads larger than ~3MB are chunked through a resumable Drive session. |
 | `transcribe` | OpenAI-backed `transcribe({ audio, mimeType, language, signal })` → `{ text }`. Hold-to-talk on memo draft / reminder / Ask fields is attached by `hr-dictation.js` (loaded by the shim). `null` until `OPENAI_API_KEY` is set. Issued / Drive-imported memos are treated as saved records by `hr-memo.js` (also loaded by the shim). The manpower leave rule, Claude JSON paste door, per-person summary, and Present/Late / Undertime time fields are attached by `hr-attendance.js`. Payroll Maker (period attendance, +30% / +100% / as-is holiday premium), contributions, the holiday calendar, and the attendance edit log are attached by `hr-payroll.js`. |
 | `tts` | ElevenLabs-backed `tts(text)` → `{ audioBase64, mimeType }`. Ask the records / memo readback is attached by `hr-tts.js` (loaded by the shim). `null` until `ELEVENLABS_API_KEY` is set. |
 | anything else | `null` |

@@ -447,24 +447,23 @@ describe("hr-memo companion", () => {
 
 describe("issued memo artifact lines", () => {
   const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
+  const shim = fs.readFileSync(path.join(__dirname, "../public/claude-shim.js"), "utf8");
+  const companion = fs.readFileSync(path.join(__dirname, "../public/hr-memo.js"), "utf8");
 
-  it("passes the memo number into pfISO formNo", () => {
-    assert.match(html, /pfISO\("memo",\s*\{formNo:\s*no\|\|m\.no\|\|""\}\)/);
-    assert.doesNotMatch(html, /pfISO\("memo"\);/);
+  it("keeps Claude 16b memoPaper and lets hr-memo.js supply formNo", () => {
+    assert.match(html, /pfISO\("memo"\);/);
+    assert.match(shim, /hr-memo\.js/);
+    assert.match(companion, /function pfISOOpts/);
+    assert.match(companion, /key === "memo" && formNo/);
   });
 
-  it("does not ask a filed memo to describe itself unless they choose to draft", () => {
-    assert.match(html, /const filed = !!\(m\.no \|\| m\.fromDrive \|\| m\.status==="Issued"\)/);
-    assert.match(html, /m-want-draft/);
-    assert.match(html, /Upload the signed copy/);
-    assert.match(html, /Open the Drive scan/);
-    assert.match(html, /if\(stored&&stored\.no\) m\.no=stored\.no/);
-    assert.match(html, /const lockIdentity = !!\(m\.fromDrive \|\| m\.status==="Issued"\)/);
-    assert.match(html, /id="m-date" type="date"[\s\S]*?\+lockAttr/);
-    assert.match(html, /id="m-eff" type="date"[\s\S]*?\+lockAttr/);
-    assert.match(html, /id="m-cat"'\+lockAttr/);
-    assert.match(html, /id="m-status"'\+lockAttr/);
-    assert.match(html, /id="m-aud"'\+lockAttr/);
-    assert.match(html, /if\(stored&&\(stored\.fromDrive\|\|stored\.status==="Issued"\)\)/);
+  it("lets hr-memo.js lock issued / Drive-imported identity fields", () => {
+    assert.match(html, /id="m-date" type="date"/);
+    assert.match(html, /id="m-eff" type="date"/);
+    assert.match(html, /id="m-cat"/);
+    assert.match(html, /This memorandum was issued on paper/);
+    assert.match(companion, /function shouldLockIdentity/);
+    assert.match(companion, /function lockIdentityFields/);
+    assert.match(companion, /hr-memo-filed/);
   });
 });

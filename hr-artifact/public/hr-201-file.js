@@ -53,9 +53,55 @@
     wu: "writeups",
   };
 
+  var FOLDER_DEFAULTS = {
+    hr201Active: "1Xf6W6jV_T1BLxyuQ-3F2VZAkqMleP8Iu",
+    hr201Separated: "1g8AoHhilRgWR0alLlH2175FPH5X-lQH8",
+    hr201Inbox: "1Pp2xm6BfSCdCHfg7G0Vu1bT-OldakYvC",
+  };
+
+  function looksLikeDriveId(v) {
+    return /^[A-Za-z0-9_-]{20,}$/.test(String(v == null ? "" : v).trim());
+  }
+
   function store(S) {
     if (S && typeof S === "object") return S;
     return root.S || {};
+  }
+
+  function ensureFolderSettings(S) {
+    S = store(S);
+    if (!S.settings || typeof S.settings !== "object") S.settings = {};
+    Object.keys(FOLDER_DEFAULTS).forEach(function (key) {
+      var cur = S.settings[key];
+      if (looksLikeDriveId(cur)) {
+        S.settings[key] = String(cur).trim();
+        return;
+      }
+      S.settings[key] = FOLDER_DEFAULTS[key];
+    });
+    return S.settings;
+  }
+
+  function unlockFolderInputs(doc, S) {
+    if (!doc || typeof doc.querySelectorAll !== "function") return 0;
+    var settings = ensureFolderSettings(S);
+    var n = 0;
+    Object.keys(FOLDER_DEFAULTS).forEach(function (name) {
+      var nodes = doc.querySelectorAll('[data-set="' + name + '"]');
+      for (var i = 0; i < nodes.length; i++) {
+        var el = nodes[i];
+        if (el.type === "number") el.type = "text";
+        if (el.removeAttribute) {
+          el.removeAttribute("maxlength");
+          el.removeAttribute("max");
+          el.removeAttribute("min");
+        }
+        el.maxLength = 128;
+        if (!looksLikeDriveId(el.value)) el.value = settings[name] || "";
+        n += 1;
+      }
+    });
+    return n;
   }
 
   function values(map) {
@@ -686,6 +732,8 @@
     doc = doc || root.document;
     S = store(S);
     if (!doc) return null;
+    ensureFolderSettings(S);
+    unlockFolderInputs(doc, S);
     ensureStyles(doc);
     wrapPaperTrail();
     var folder = folderRoot(doc);
@@ -787,6 +835,10 @@
   api.inject = inject;
   api.takeOpenEmp = takeOpenEmp;
   api.install = attach;
+  api.ensureFolderSettings = ensureFolderSettings;
+  api.unlockFolderInputs = unlockFolderInputs;
+  api.looksLikeDriveId = looksLikeDriveId;
+  api.FOLDER_DEFAULTS = FOLDER_DEFAULTS;
   root.hr201File = api;
 
   if (typeof root.document !== "undefined") {

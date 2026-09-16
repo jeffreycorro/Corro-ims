@@ -44,12 +44,17 @@ function rateLimitLogin(event) {
 }
 
 async function methodsPayload(event) {
+  const caps = await capabilities(event);
   return {
     methods: configuredMethods(),
     gateRequired: gateRequired() && Boolean(gatePassword()),
     timezone: "Asia/Manila",
     serverTime: formatManilaIso(),
-    capabilities: await capabilities(event),
+    capabilities: caps,
+    sample: caps.sample,
+    mcp: caps.mcp,
+    transcribe: caps.transcribe,
+    tts: caps.tts,
   };
 }
 
