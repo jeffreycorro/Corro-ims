@@ -978,15 +978,65 @@ async function connect(){
     let any=false;
     snaps.forEach((snap,i)=>{ const c=COLLS[i]; snap.docs.forEach(d=>{ S[c][d.id]=clone(d.data()); any=true; }); });
     const st = await db.doc("meta/settings").get();
-    if(st.exists) S.settings=Object.assign(S.settings,clone(st.data()));
+    if(st.exists){
+      const incoming=clone(st.data());
+      if(S.settings.hrSigData && !incoming.hrSigData) incoming.hrSigData=S.settings.hrSigData;
+      if(S.settings.hrSigLink && !incoming.hrSigLink) incoming.hrSigLink=S.settings.hrSigLink;
+      S.settings=Object.assign(S.settings,incoming);
+    }
     if(any) lsSave();
   }catch(e){}
   COLLS.forEach(c=>{
     S.subs.push(db.collection(c).onSnapshot(snap=>{
       const next={}; snap.docs.forEach(d=>next[d.id]=clone(d.data()));
+      /* A just-saved Daily Manpower or signed memo can lose fields when a
+         stale collection snapshot replaces the whole map. Merge, don't swap. */
+      if(S[c]){
+        Object.keys(S[c]).forEach(id=>{
+          if(next[id]) next[id]=mergeIncomingDoc(c, next[id], S[c][id]);
+        });
+      }
       S[c]=next; lsSave(); if(S.ready) render();
     }, ()=>{}));
   });
+}
+function mergeIncomingDoc(coll, incoming, local){
+  if(!incoming || !local) return incoming;
+  if(coll==="daily"){
+    const next=Object.assign({}, incoming);
+    const rows=Object.assign({}, local.rows||{}, incoming.rows||{});
+    Object.keys(local.rows||{}).forEach(id=>{
+      if(!rows[id]) rows[id]=local.rows[id];
+      else if(!(rows[id].site) && local.rows[id] && local.rows[id].site) rows[id].site=local.rows[id].site;
+    });
+    next.rows=rows;
+    const omit=new Set([].concat(incoming.omit||[], local.omit||[]));
+    next.extra=[].concat(incoming.extra||[], local.extra||[]).filter((id,i,a)=>id && !omit.has(id) && a.indexOf(id)===i);
+    next.omit=[...omit];
+    if(local.hrSigLink && !next.hrSigLink) next.hrSigLink=local.hrSigLink;
+    if(local.hrSigData && !next.hrSigData) next.hrSigData=local.hrSigData;
+    if((local.log||[]).length>(next.log||[]).length) next.log=local.log;
+    return next;
+  }
+  if(coll==="memos"){
+    const next=Object.assign({}, incoming);
+    if(local.signedLink && !next.signedLink){
+      next.signedLink=local.signedLink;
+      next.signedTitle=local.signedTitle||next.signedTitle;
+      next.signedOn=local.signedOn||next.signedOn;
+    }
+    if(local.link && !next.link) next.link=local.link;
+    if(local.no && !String(next.no||"").trim()) next.no=local.no;
+    return next;
+  }
+  if(coll==="employees" && local.status==="Separated" && incoming.status!=="Separated"){
+    return Object.assign({}, incoming, {
+      status:"Separated",
+      separatedOn:local.separatedOn||incoming.separatedOn||"",
+      separationReason:local.separationReason||incoming.separationReason||""
+    });
+  }
+  return incoming;
 }
 
 /* ============ record factories + seed ============ */
@@ -1094,7 +1144,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-09-16b";
+const BUILD = "2026-09-16c";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -1554,7 +1604,60 @@ function empList(){
   return Object.values(S.employees).sort((a,b)=>
     (a.dept||"").localeCompare(b.dept||"") || (a.name||"").localeCompare(b.name||""));
 }
-function activeEmps(){ return empList().filter(e=>e.status!=="Separated"); }
+/* empNo → {separatedOn, separationReason} from /separated-roster.json.
+   Netlify 201 rows were never marked Separated; the Claude DB was. */
+let KNOWN_SEP=null;
+function knownSepRec(e){
+  if(!e || !KNOWN_SEP) return null;
+  const no=normNo(e.empNo!=null?e.empNo:e.emp_no);
+  return no ? (KNOWN_SEP[no]||null) : null;
+}
+function empStatusIsSeparated(e){
+  const s=String((e&&e.status)||"").trim();
+  if(s==="Separated") return true;
+  return /^(resigned|terminated|awol)$/i.test(s);
+}
+function empSeparatedAsOf(e, date){
+  if(!e) return false;
+  const known=knownSepRec(e);
+  if(!empStatusIsSeparated(e) && !known) return false;
+  const on=String((e.separatedOn||(known&&known.separatedOn)||"")).slice(0,10);
+  const day=String(date||"").slice(0,10);
+  if(!on) return true;
+  return !day || on<=day;
+}
+async function loadKnownSep(){
+  if(KNOWN_SEP) return KNOWN_SEP;
+  KNOWN_SEP={};
+  try{
+    const r=await fetch("/separated-roster.json",{cache:"no-store"});
+    if(!r.ok) return KNOWN_SEP;
+    const data=await r.json();
+    (data.employees||[]).forEach(x=>{
+      const no=normNo(x.empNo); if(!no) return;
+      KNOWN_SEP[no]={separatedOn:x.separatedOn||"", separationReason:x.separationReason||""};
+    });
+  }catch(err){}
+  return KNOWN_SEP;
+}
+async function applySeparatedRoster(){
+  await loadKnownSep();
+  const entries=[];
+  empList().forEach(e=>{
+    const rec=knownSepRec(e);
+    if(!rec || e.status==="Separated") return;
+    const n=clone(e);
+    n.status="Separated";
+    if(rec.separatedOn && !n.separatedOn) n.separatedOn=rec.separatedOn;
+    if(rec.separationReason && !n.separationReason) n.separationReason=rec.separationReason;
+    n.statusBasis=n.statusBasis||"Applied from the 2026-09-16 separated roster";
+    S.employees[n.id]=n;
+    entries.push([n.id,n]);
+  });
+  if(entries.length) await putMany("employees", entries);
+  return entries.length;
+}
+function activeEmps(){ return empList().filter(e=>!empSeparatedAsOf(e, TODAY)); }
 function compliance(e){
   const d=e.docs||{}; let need=0,have=0,missing=[];
   DOCS.forEach(x=>{ if(x.opt) return;
@@ -4025,14 +4128,19 @@ function printEvaluation(e, no, opt, period){
 /* Their memos sign in a column, not in boxes: a label, room for the pen, then
    the name over a rule with the office beneath it. */
 function memoChain(rows){
-  return '<div style="margin-top:14px">'+rows.map(r=>
-    '<div style="margin-bottom:16px">'
+  return '<div style="margin-top:14px">'+rows.map(r=>{
+    const sig=r[3]||"";
+    const sigHTML=sig
+      ? '<img src="'+esc(sig)+'" alt="" style="max-height:42px;max-width:180px;display:block;margin:0 0 2px 52px">'
+      : '<div style="height:34px"></div>';
+    return '<div style="margin-bottom:16px">'
     + '<div style="font-weight:700;font-size:11.5px">'+esc(r[0])+'</div>'
-    + '<div style="height:34px"></div>'
+    + sigHTML
     + '<div style="margin-left:52px;display:inline-block;text-align:center;min-width:230px">'
     + '<div style="border-top:1px solid #000;font-weight:700;font-size:11.5px;padding-top:2px">'
     + (r[1]?esc(r[1]):"&nbsp;")+'</div>'
-    + '<div style="font-size:10px">'+esc(r[2]||"")+'</div></div></div>').join("")+'</div>';
+    + '<div style="font-size:10px">'+esc(r[2]||"")+'</div></div></div>';
+  }).join("")+'</div>';
 }
 /* ---- Company Memorandum, the C.M. series ---- */
 /* Their memos run a four-tier chain: prepared by HR staff, confirmed by the HR
@@ -7836,8 +7944,15 @@ function dailyPeople(rec){
       .sort((a,b)=>String(a.empNo).localeCompare(String(b.empNo)));
   }
   const omit=new Set(rec.omit||[]);
-  const list=atWork().filter(e=>!omit.has(e.id));
-  (rec.extra||[]).forEach(id=>{ const e=S.employees[id]; if(e && !list.some(x=>x.id===e.id)) list.push(e); });
+  const extra=new Set(rec.extra||[]);
+  const list=atWork().filter(e=>!omit.has(e.id) && !empSeparatedAsOf(e, rec.date));
+  (rec.extra||[]).forEach(id=>{
+    const e=S.employees[id];
+    if(!e || omit.has(id) || list.some(x=>x.id===e.id)) return;
+    /* A separated callback stays on the extra day only. */
+    if(empSeparatedAsOf(e, rec.date) && !extra.has(id)) return;
+    list.push(e);
+  });
   /* Somebody added to a day by hand stays on the days after it until they are
      marked Separated — a new hire or a worker lent to a site is on tomorrow too. */
   if(rec.date){
@@ -7845,7 +7960,7 @@ function dailyPeople(rec){
     Object.keys(first).forEach(id=>{
       if(first[id]>rec.date || omit.has(id) || list.some(x=>x.id===id)) return;
       const e=S.employees[id]; if(!e) return;
-      if(e.status==="Separated" && (!e.separatedOn || e.separatedOn<rec.date)) return;
+      if(empSeparatedAsOf(e, rec.date) && !extra.has(id)) return;
       list.push(e);
     });
   }
@@ -7872,6 +7987,38 @@ function lastSiteBefore(empId, date){
   let site="";
   for(const [d,st] of (LAST_SITE_IX[empId]||[])){ if(d<date) site=st; else break; }
   return site;
+}
+function hrSigSrc(rec){
+  if(rec && (rec.hrSigData||rec.hrSigLink)) return rec.hrSigData||rec.hrSigLink;
+  const st=S.settings||{};
+  if(st.hrSigData||st.hrSigLink) return st.hrSigData||st.hrSigLink;
+  const day=dailyGet(S.ui.dailyDate||TODAY);
+  return (day&&(day.hrSigData||day.hrSigLink))||"";
+}
+/* Write the people and sites currently on the day onto extra/rows so a later
+   blank day, or a stale snapshot, cannot put yesterday's standing list back. */
+function persistRosterOnDay(rec){
+  if(!rec) return rec;
+  rec.rows=rec.rows||{};
+  rec.omit=rec.omit||[];
+  const omit=new Set(rec.omit);
+  const extra=new Set(rec.extra||[]);
+  dailyPeople(rec).forEach(e=>{
+    if(!e || !e.id || omit.has(e.id)) return;
+    const prev=rec.rows[e.id]||{};
+    const site=prev.site || dailySiteOf(rec,e) || e.project || "ADMINS";
+    rec.rows[e.id]=Object.assign({s:"Present", r:""}, prev, {site:site});
+    extra.add(e.id);
+  });
+  rec.extra=[...extra].filter(id=>id && !omit.has(id));
+  if(!rec.hrSigData && !rec.hrSigLink){
+    const src=hrSigSrc();
+    if(src){
+      if(/^data:/i.test(src)) rec.hrSigData=src;
+      else rec.hrSigLink=src;
+    }
+  }
+  return rec;
 }
 /* Site order follows the report: projects first, admin last. */
 function dailyGroups(rec){
@@ -8008,6 +8155,9 @@ function viewDaily(){
    + '<button class="btn sm" data-dmshift="1" title="The day after">▸</button>'
    + '<button class="btn" id="dm-allpresent">Everyone present</button>'
    + '<button class="btn" id="dm-print">Print the report</button>'
+   + '<button class="btn" id="dm-hrsig" title="Attach the HR e-signature that prints on this report">'
+   + (hrSigSrc()?'Replace HR e-sig':'Attach HR e-sig')+'</button>'
+   + (hrSigSrc()?'<span class="pill ok" title="HR e-signature is on file">HR e-sig on file</span>':'')
    + '<button class="btn pri" id="dm-save">Save</button>'
    + '<button class="btn" id="dm-add">Add someone</button>'
    + '<button class="btn" id="dm-apply" title="Copy today\'s areas onto the 201 records">Make areas permanent</button>'
@@ -8256,6 +8406,7 @@ function dailyCollect(){
         return prevRow.hol!=null ? holCode(prevRow) : null; })(),
       rk, ex };
   });
+  persistRosterOnDay(rec);
   return rec;
 }
 
@@ -8271,7 +8422,9 @@ function dailyAddPerson(){
   openModal({ title:"Add someone to "+longDate(d), wide:true,
     body:'<div class="stack">'
       + '<div class="note">Anyone not on today’s standing list — a new hire, someone lent from another '
-      + 'site, or a separated employee brought back for the day. Adding them here changes this report only.</div>'
+      + 'site, or a separated employee brought back for the day. Once added they stay on later days '
+      + 'from this date, until they are marked <b>Separated</b> on their 201 file. '
+      + 'A separated callback stays on this day only.</div>'
       + '<div class="f"><label>Employee</label><select id="da-emp">'
       + rest.map(e=>'<option value="'+esc(e.id)+'">'+esc((e.empNo||"no number")+" · "+flipName(e.name))
           + (e.status==="Separated"?" (separated)":"")+'</option>').join("")+'</select></div>'
@@ -8358,7 +8511,7 @@ function printDaily(rec){
        .map(c=>'<td style="font-weight:700;text-align:center;background:var(--surface3)">'+c+'</td>').join("")
    + '</tr>'+rows+'</table>'
    + memoChain([
-       ["Prepared by:", rec.preparedBy||"", "HR Staff"],
+       ["Prepared by:", rec.preparedBy||"", "HR Staff", rec.hrSigData||rec.hrSigLink||hrSigSrc()],
        ["Approved by:", rec.approvedBy||"", "HR Officer"]])
    + pfISO("daily");
   openModal({ title:"Daily manpower report — "+shortDate(rec.date), wide:true,
@@ -8813,7 +8966,11 @@ function parkedIds(){
   unadopted().forEach(e=>set.add(e.id));
   return set;
 }
-function atWork(){ const p=parkedIds(); return activeEmps().filter(e=>!p.has(e.id)); }
+function atWork(){
+  const p=parkedIds();
+  const day=S.ui.dailyDate||TODAY;
+  return activeEmps().filter(e=>!p.has(e.id) && !empSeparatedAsOf(e, day));
+}
 /* A leaver whose 201 record was never switched to Separated stays on every
    report for ever, because the roster only drops an exact "Separated". HR files
    the resignation or the clearance as a document and the status never moves —
@@ -10797,9 +10954,11 @@ function viewMemos(){
        + '<td>'+esc(audienceText(m))+'</td><td><span class="pill mut">'+esc(m.cat||"—")+'</span></td>'
        + '<td class="mono">'+esc(m.date||"—")+'</td><td class="mono">'+esc(m.effectivity||"—")+'</td>'
        + '<td>'+sevPill(m.status==="Issued"?"ok":m.status==="Void"?"mut":"warn",m.status||"Draft")
-       + (m.fromDrive?' <span class="pill mut">on paper</span>':"")+'</td>'
+       + (m.fromDrive?' <span class="pill mut">on paper</span>':"")
+       + (m.signedLink?' <span class="pill ok" title="'+esc(m.signedTitle||"signed copy")+'">signed</span>':"")+'</td>'
        + '<td><div class="row">'
        + (m.link?'<a class="btn sm" href="'+esc(m.link)+'" target="_blank" rel="noopener noreferrer" title="The filed scan"><svg><use href="#i-link"/></svg></a>':"")
+       + (m.signedLink?'<a class="btn sm" href="'+esc(m.signedLink)+'" target="_blank" rel="noopener noreferrer" title="The signed copy"><svg><use href="#i-link"/></svg></a>':"")
        + '<button class="btn sm" data-open-memo="'+m.id+'">Open</button></div></td></tr>';
     });
     h+='</tbody></table></div>';
@@ -10916,6 +11075,17 @@ async function memoDraw(m){
     $("#m-preview").onclick=()=>{ grab(); previewMemo(m); };
     $("#m-save").onclick=async()=>{
       grab();
+      const prev=S.memos[m.id];
+      if(prev){
+        if(prev.signedLink && !m.signedLink){
+          m.signedLink=prev.signedLink;
+          m.signedTitle=m.signedTitle||prev.signedTitle;
+          m.signedOn=m.signedOn||prev.signedOn;
+        }
+        if(prev.link && !m.link) m.link=prev.link;
+        if(prev.fromDrive) m.fromDrive=prev.fromDrive;
+        if(prev.fileTitle && !m.fileTitle) m.fileTitle=prev.fileTitle;
+      }
       if(!m.subject){ toast("Give the memo a subject.","err"); return; }
       /* A memo read off a filed scan already has its number — it must not draw
          a fresh one and create a second entry for the same sheet. */
@@ -12267,6 +12437,15 @@ function viewSettings(){
    + '<div class="f"><label>President</label><input data-set="president" value="'+esc(st.president||"")+'"><span class="hint">Named as the Company in project contracts</span></div>'
    + '<div class="f"><label>President title</label><input data-set="presidentTitle" value="'+esc(st.presidentTitle||"")+'"></div>'
    + '</div></div></div>';
+
+  h+='<div class="card"><div class="card-h"><h3>HR e-signature</h3></div><div class="card-b stack">'
+   + '<div class="row">'
+   + '<button class="btn" id="set-hrsig">'+(hrSigSrc()?"Replace HR e-sig":"Attach HR e-sig")+'</button>'
+   + (hrSigSrc()?'<span class="pill ok">On file'+(st.hrSigOn?" · "+esc(st.hrSigOn):"")+'</span>':"")
+   + '</div>'
+   + '<div class="note">Used on the printed Daily Monitoring report (Prepared by). A PNG or JPG prints as the signature. The same attach control is on Daily Manpower.</div>'
+   + (st.hrSigData?'<div><img src="'+esc(st.hrSigData)+'" alt="HR e-signature" style="max-height:56px;max-width:220px"></div>':"")
+   + '</div></div>';
 
   h+='<div class="card"><div class="card-h"><h3>Numbering series</h3><div class="sp"><button class="btn sm" id="new-series"><svg><use href="#i-plus"/></svg> Add series</button></div></div>'
    + '<div class="tw"><table><thead><tr><th>Key</th><th>Label</th><th>Prefix</th><th>Digits</th><th>Pattern</th><th>Next number</th><th></th></tr></thead><tbody>';
@@ -15845,6 +16024,53 @@ const fileToBase64 = f => new Promise((res,rej)=>{
   r.onload=()=>{ const s=String(r.result); const i=s.indexOf(","); res(i<0?s:s.slice(i+1)); };
   r.readAsDataURL(f);
 });
+const fileToDataUrl = f => new Promise((res,rej)=>{
+  const r=new FileReader();
+  r.onerror=()=>rej({code:"bad_request",message:"the file could not be read"});
+  r.onload=()=>res(String(r.result||""));
+  r.readAsDataURL(f);
+});
+async function handleHrSigPick(job, file){
+  if(!file) return;
+  if(file.size > MAX_UPLOAD_MB*1024*1024){ toast("The file is over "+MAX_UPLOAD_MB+" MB","err"); return; }
+  const isImg=/^image\//.test(file.type||"") || /\.(png|jpe?g|webp|gif)$/i.test(file.name||"");
+  let data="", link="";
+  try{ if(isImg) data=await fileToDataUrl(file); }catch(e){}
+  try{
+    const mcp=await getMcp();
+    if(mcp){
+      const dest=S.settings.hr201Inbox || (GENERAL_FOLDERS.find(f=>f.k==="g05")||{}).id || MEMO_FOLDERS[0];
+      if(dest){
+        const ext=(String(file.name).match(/\.[A-Za-z0-9]{1,6}$/)||[""])[0].toLowerCase();
+        const res=await mcp.callTool(DRIVE_SERVER,"create_file",{
+          title:"HR e-signature"+ext,
+          parentId:dest,
+          base64Content:await fileToBase64(file),
+          contentMimeType:file.type||"application/octet-stream",
+          disableConversionToGoogleType:true });
+        const pl=mcpPayload(res);
+        link=pl.viewUrl||"";
+      }
+    }
+  }catch(e){}
+  if(!data && !link){ toast("Could not attach the e-signature.","err"); return; }
+  S.settings.hrSigData=data||S.settings.hrSigData||"";
+  S.settings.hrSigLink=link||S.settings.hrSigLink||"";
+  S.settings.hrSigOn=TODAY;
+  S.settings.hrSigTitle=file.name||"HR e-signature";
+  await putSettings();
+  const d=S.ui.dailyDate||TODAY;
+  const rec=clone(dailyGet(d)||dailyBlank(d));
+  rec.hrSigData=S.settings.hrSigData;
+  rec.hrSigLink=S.settings.hrSigLink;
+  await dailySave(rec, "HR e-signature attached");
+  toast("HR e-signature attached — it will print on Daily Monitoring.","ok");
+  render();
+}
+function pickHrSig(){
+  PENDING={ hrSig:true };
+  ensurePicker().click();
+}
 
 /* Finds this employee's folder under HR-201 FILES and remembers it. */
 async function resolveFolder(emp){
@@ -15903,6 +16129,7 @@ function ensurePicker(){
     const file=el.files && el.files[0];
     const job=PENDING; PENDING=null; el.value="";
     if(!file || !job) return;
+    if(job.hrSig){ await handleHrSigPick(job, file); return; }
     if(job.signed){ await handleSignedPick(job, file); return; }
     if(job.general){ await handleGeneralPick(job, file); return; }
     const emp=S.employees[job.empId]; if(!emp) return;
@@ -16187,12 +16414,18 @@ async function handleSignedCompany(job, file, r0, k){
     const pl=mcpPayload(res);
     if(!pl.viewUrl) throw {code:"tool_error", message:"Drive did not return a link for the file"};
     const r=clone(recOf(job.coll, job.recId));
-    r.signedLink=pl.viewUrl; r.signedTitle=pl.title; r.signedOn=TODAY;
+    r.signedLink=pl.viewUrl; r.signedTitle=pl.title||file.name; r.signedOn=TODAY;
     if(!r.link) r.link=pl.viewUrl;
     if(r.status==="Draft") r.status="Issued";
+    S[job.coll][r.id]=r;
     await put(job.coll, r.id, r);
     const entry=regFor("memo", r.id);
-    if(entry){ entry.link=pl.viewUrl; entry.status="Issued"; await put("docreg",entry.id,entry); }
+    if(entry){
+      entry.link=entry.link||pl.viewUrl;
+      entry.signedLink=pl.viewUrl;
+      entry.status="Issued";
+      await put("docreg",entry.id,entry);
+    }
     toast("Signed memorandum filed in Drive.","ok");
   }catch(e){ toast(driveMessage(e),"err"); }
   finally{ if(k.back) k.back(job.recId); }
@@ -17749,6 +17982,7 @@ const DAILY_LOG_MAX = 60;      /* enough to answer a question, not enough to blo
 /* The only way a day should ever be written. */
 async function dailySave(rec, why){
   FIRST_ADDED=null; LAST_SITE_IX=null;
+  persistRosterOnDay(rec);
   const before=clone(dailyGet(rec.date)||null);
   const ch=before ? dailyDiff(before, rec) : [];
   if(before && !ch.length && !why) return rec;          /* nothing actually moved */
@@ -18095,7 +18329,10 @@ function firstAddedIndex(){
   const map={};
   Object.values(S.daily).forEach(rec=>{
     if(!rec || !rec.date || rec.fixed) return;
-    (rec.extra||[]).forEach(id=>{ if(!map[id] || rec.date<map[id]) map[id]=rec.date; });
+    const seen={};
+    Object.keys(rec.rows||{}).forEach(id=>{ if(id) seen[id]=true; });
+    (rec.extra||[]).forEach(id=>{ if(id) seen[id]=true; });
+    Object.keys(seen).forEach(id=>{ if(!map[id] || rec.date<map[id]) map[id]=rec.date; });
   });
   FIRST_ADDED=map; return map;
 }
@@ -18989,6 +19226,7 @@ function wire(){
   };
 
   const shc=$("#set-holcal",v); if(shc) shc.onclick=holidayEditor;
+  const shs=$("#set-hrsig",v); if(shs) shs.onclick=pickHrSig;
   const gs=$("#gap-survey"); if(gs) gs.onclick=surveyFolders;
   const gn=$("#gap-newfolders"); if(gn) gn.onclick=scanNewFolders;
   const gm=$("#gap-matchall"); if(gm) gm.onclick=matchAllFolders;
@@ -19123,6 +19361,7 @@ function wire(){
   on("[data-dmexpick]","change",e=>syncReasonRow(e.currentTarget.dataset.dmexpick));
   on("[data-dmin]","input",e=>syncReasonRow(e.currentTarget.dataset.dmin));
   on("[data-dmout]","input",e=>syncReasonRow(e.currentTarget.dataset.dmout));
+  const dhs=$("#dm-hrsig",v); if(dhs) dhs.onclick=pickHrSig;
   const dms=$("#dm-save",v); if(dms) dms.onclick=async()=>{
     const rec=dailyCollect();
     const bad=dailyTimeProblems(rec);
@@ -19647,6 +19886,8 @@ $("#q").addEventListener("input",e=>{
     await ensureSeriesAndTemplates();   /* runs every boot, not only on a version bump */
     await migrate();
     await verifyRoster();
+    await loadKnownSep();
+    await applySeparatedRoster();
     seedStatus(S.db ? "shared · live" : "this device only");
     /* use("mcp") can take ten seconds. Do not hold up the page for it — let it
        land and redraw, so the Upload buttons appear rather than never showing. */

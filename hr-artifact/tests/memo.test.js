@@ -318,6 +318,27 @@ describe("hr-memo companion", () => {
     assert.equal(draft.effectivity, "2026-09-01");
   });
 
+  it("preserveOnSave keeps a signed company memo attach across a later save", () => {
+    const w = fakeDom();
+    loadMemo(w);
+    const kept = w.hrMemo.preserveOnSave(
+      {
+        no: "C.M. 2026 - 15",
+        status: "Issued",
+        signedLink: "https://drive.google.com/file/d/SIGNED",
+        signedTitle: "CM-15 SIGNED.pdf",
+        signedOn: "2026-09-15",
+        link: "https://drive.google.com/file/d/SCAN",
+      },
+      { no: "C.M. 2026 - 15", status: "Issued", subject: "typed", signedLink: "", link: "" }
+    );
+    assert.equal(kept.signedLink, "https://drive.google.com/file/d/SIGNED");
+    assert.equal(kept.signedTitle, "CM-15 SIGNED.pdf");
+    assert.equal(kept.signedOn, "2026-09-15");
+    assert.equal(kept.link, "https://drive.google.com/file/d/SCAN");
+    assert.equal(kept.subject, "typed");
+  });
+
   it("does not clear an Issued memo number on save or mint a new CM number", async () => {
     const w = fakeDom();
     const allocated = [];
