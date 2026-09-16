@@ -50,12 +50,13 @@ describe("hr-onboarding-links companion wiring", () => {
     assert.doesNotMatch(html, /hr-onboarding-links\.js/);
   });
 
-  it("points the artifact pg_onb onboarding video at the 2026 Drive file", () => {
+  it("leaves Claude 16b pg_onb on the retired file; the companion remaps it", () => {
     const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
+    const companion = fs.readFileSync(path.join(__dirname, "../public/hr-onboarding-links.js"), "utf8");
     assert.match(html, /id:"pg_onb"/);
-    assert.match(html, new RegExp('D_FILE\\("' + NEW_ID + '"\\)'));
-    assert.match(html, /CORCONDEV Onboarding \(2026\)/);
-    assert.doesNotMatch(html, new RegExp('D_FILE\\("' + OLD_ID + '"\\)'));
+    assert.match(html, new RegExp('D_FILE\\("' + OLD_ID + '"\\)'));
+    assert.match(html, /CORCONDEV Onboarding/);
+    assert.match(companion, new RegExp(NEW_ID));
     assert.doesNotMatch(html, new RegExp('D_FILE\\("' + INTERIM_ID + '"\\)'));
     assert.match(html, new RegExp('D_FILE\\("' + PURCHASER_ID + '"\\)'));
     assert.match(html, new RegExp('D_FILE\\("' + OE_ID + '"\\)'));
