@@ -16,6 +16,7 @@
 
   var CLOSED_STATUSES = [
     "Present",
+    "Has not yet arrived",
     "Present/Late",
     "Undertime",
     "Absent",
@@ -28,7 +29,7 @@
   ];
 
   var DAY_STATUS_RX =
-    /(Present\s*\/\s*Late|Present\s*\(\s*Late\s*\)|Present|Undertime|Absent|Regular\s+Holiday|Special\s+Holiday|Half\s*Day|Rest\s*Day|Leave\s+with\s+Pay|Leave)/i;
+    /(Has\s+not\s+yet\s+arrived|Not\s+yet\s+arrived|Not\s+yet\s+in|Present\s*\/\s*Late|Present\s*\(\s*Late\s*\)|Present|Undertime|Absent|Regular\s+Holiday|Special\s+Holiday|Half\s*Day|Rest\s*Day|Leave\s+with\s+Pay|Leave)/i;
 
   var LRF_FULL = /LRF\s*[-–]?\s*(20\d\d)\s*[-–]?\s*(\d{3,4})/i;
   var LRF_TAIL = /(?:^|[^\d-])(\d{3,4})\s*\\?\)/;
@@ -120,6 +121,9 @@
   function normStatus(t) {
     var x = String(t || "").toLowerCase().replace(/\s+/g, " ").trim();
     if (!x) return "";
+    if (/has\s+not\s+yet\s+arrived|not\s+yet\s+arrived|not\s+yet\s+in|^nya\b|^nyi\b/.test(x)) {
+      return "Has not yet arrived";
+    }
     if (/present\s*\/\s*late/.test(x) || /present\s*\(\s*late\s*\)/.test(x) || x === "late" || x === "tardy") {
       return "Present/Late";
     }
@@ -583,7 +587,7 @@
     if (st === "Leave with Pay") return 1;
     if (st === "Regular Holiday") return 1;
     if (st === "Half Day") return 0.5;
-    if (st === "Leave" || st === "Absent" || st === "Rest Day" || st === "Special Holiday") return 0;
+    if (st === "Leave" || st === "Absent" || st === "Has not yet arrived" || st === "Rest Day" || st === "Special Holiday") return 0;
     return 0;
   }
 
@@ -738,6 +742,8 @@
       t.undertime++;
       t.dates.present.push(rec.date);
       t.dates.undertime.push(rec.date);
+    } else if (st === "Has not yet arrived") {
+      t.waiting = (t.waiting || 0) + 1;
     } else if (st === "Absent") {
       t.absent++;
       t.dates.absent.push(rec.date);
@@ -1071,6 +1077,8 @@
         hol: r.hol,
         fromPayroll: r.fromPayroll,
       }, e);
+      rec.order = rec.order || [];
+      if (rec.order.indexOf(e.id) < 0) rec.order.push(e.id);
       used++;
     });
     if (ctx.daily) ctx.daily[id] = rec;
