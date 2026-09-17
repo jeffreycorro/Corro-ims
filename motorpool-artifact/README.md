@@ -110,9 +110,12 @@ Site settings → Environment variables. Copy `.env.example`.
 | `MOTORPOOL_OFFICE_PASS_HASH` | Functions, optional | SHA-256 **hex** of the office pass (64 lowercase hex chars). Never put the plaintext here. Generate locally: `printf '%s' 'your-pass' \| openssl dgst -sha256` |
 | `ANTHROPIC_API_KEY` | Functions **only** | Enables Ask the log (`claude.use("sample")`). Never put this in the shim or `index.html`. |
 | `ANTHROPIC_MODEL` | Functions, optional | Override the default model (`claude-sonnet-4-5`). |
+| `OPENAI_API_KEY` | Functions **only** | Enables Ask the log hold-to-talk (`claude.use("transcribe")`). Never commit the key. Without it, the mic falls back to the browser Web Speech API. |
+| `OPENAI_TRANSCRIBE_MODEL` | Functions, optional | Override the first transcription model (default chain `gpt-transcribe` → `gpt-4o-transcribe` → `whisper-1`). |
 | `ELEVENLABS_API_KEY` | Functions **only** | Enables Ask the log readback (`claude.use("tts")`). Never commit the key. |
-| `ELEVENLABS_VOICE_ID` | Functions, optional | Override the default ElevenLabs voice. |
-| `ELEVENLABS_MODEL_ID` | Functions, optional | Override the TTS model (default `eleven_multilingual_v2`). |
+| `ELEVENLABS_VOICE_ID` | Functions, optional | Override the default ElevenLabs voice. Code default is **Sarah** (`EXAVITQu4vr4xnSDxMaL`) — warmer conversational readback. Previous default was Rachel `21m00Tcm4TlvDq8ikWAM`. |
+| `ELEVENLABS_MODEL_ID` | Functions, optional | Override the TTS model (default `eleven_multilingual_v2` for English / Filipino / Cebuano). For snappier English-only replies: `eleven_turbo_v2_5`. |
+| `ELEVENLABS_STABILITY` / `ELEVENLABS_SIMILARITY` | Functions, optional | 0–1 conversational tuning (defaults `0.42` / `0.82`). |
 
 The artifact also stores an office hash on `config/app.pass` after the owner sets it in-app. That field is a hash. **Never write the office pass into code, docs, tests, comments, or chat.**
 
@@ -121,16 +124,16 @@ Without `SUPABASE_URL` / `SUPABASE_ANON_KEY` the artifact still opens (open yard
 **How to set env on Netlify (Motorpool site `corcondev-motorpool`):**
 
 1. Site configuration → Environment variables.
-2. Add `ANTHROPIC_API_KEY` (Ask the log) and `ELEVENLABS_API_KEY` (read-aloud). Optional: `ELEVENLABS_VOICE_ID`.
+2. Add `ANTHROPIC_API_KEY` (Ask the log), `ELEVENLABS_API_KEY` (read-aloud), and `OPENAI_API_KEY` (hold-to-talk). Optional: `ELEVENLABS_VOICE_ID`, `ELEVENLABS_MODEL_ID`.
 3. Scope them to **Production** (and Local if you use `netlify dev`). Same values as in `.env.example` — never commit real keys.
 4. Trigger a **redeploy** after changing keys so functions reload the env.
-5. Confirm `GET /.netlify/functions/auth` shows `capabilities.sample: true` and `capabilities.tts: true` (and `open: false` once Auth keys are set). `/.netlify/functions/sample` must exist (not 404).
+5. Confirm `GET /.netlify/functions/auth` shows `capabilities.sample: true`, `capabilities.tts: true`, and `capabilities.transcribe: true` (and `open: false` once Auth keys are set). `/.netlify/functions/sample`, `/tts`, and `/transcribe` must exist (not 404).
 
-Without `ANTHROPIC_API_KEY` the shim still resolves `sample` to `null` and Ask the log shows “The assistant is not available in this view.” Without `ELEVENLABS_API_KEY`, `tts` is `null` and the page falls back to the device’s Web Speech voices.
+Without `ANTHROPIC_API_KEY` the shim still resolves `sample` to `null` and Ask the log shows “The assistant is not available in this view.” Without `ELEVENLABS_API_KEY`, `tts` is `null` and the page falls back to the device’s Web Speech voices. Without `OPENAI_API_KEY`, hold-to-talk still works via the browser speech recognizer.
 
 ### 6. Access control
 
-**App-level login (required when Auth is configured):** `/.netlify/functions/auth` accepts the company-portal Supabase email/password, or a short-lived `access_token` from the portal Motorpool deeplink (URL hash only). It then checks `profiles` and issues an httpOnly cookie. `/.netlify/functions/db`, `sample`, `tts`, and `office` return 401 without that cookie. The service role key, Anthropic key, and ElevenLabs key never leave Netlify Functions.
+**App-level login (required when Auth is configured):** `/.netlify/functions/auth` accepts the company-portal Supabase email/password, or a short-lived `access_token` from the portal Motorpool deeplink (URL hash only). It then checks `profiles` and issues an httpOnly cookie. `/.netlify/functions/db`, `sample`, `transcribe`, `tts`, and `office` return 401 without that cookie. The service role key, Anthropic key, OpenAI key, and ElevenLabs key never leave Netlify Functions.
 
 **One staff password.** Motorpool uses the same Supabase email + password as [https://corcondev-portal.netlify.app](https://corcondev-portal.netlify.app). There is no separate Motorpool site password in the default flow. After login, an httpOnly cookie keeps the PWA signed in (7 days, or until Sign out).
 
@@ -195,6 +198,7 @@ Each unit record stores its Drive folder link. This host stores photos in `photo
 | `db` | `doc(path).get/set/delete/acquire` and `collection(name).get` / `onSnapshot`. Path: `collection/id`. |
 | `downloads` | `save({ filename, data })` for standalone VRF HTML (the artifact does not rely on `window.print` in the host). |
 | `sample` | Anthropic-backed `sample(prompt, { modelTier, onText, tools, signal })` → `{ text, truncated? }`, plus `sample.json` and `sample.limits`. `null` until `ANTHROPIC_API_KEY` is set. Yard Ask the log has no Office peso figures — the artifact already scopes that. |
+| `transcribe` | OpenAI-backed `transcribe({ audio, mimeType })` → `{ text }`. Hold-to-talk on Ask the log uses this when granted (`motorpool-ask-voice.js`). `null` until `OPENAI_API_KEY` is set. |
 | `tts` | ElevenLabs-backed `tts(text)` → `{ audioBase64, mimeType }`. The artifact’s existing `speak` / `utter` / `voiceOut` hooks use this when granted (`motorpool-tts.js`). `null` until `ELEVENLABS_API_KEY` is set. |
 | anything else | `null` |
 
@@ -238,7 +242,7 @@ Add from **Safari** only.
 3. Tap **Share** → **Add to Home Screen**.
 4. Keep the name **Motorpool** and tap **Add**.
 
-The optional service worker caches icons and `pwa.css` only. It does **not** cache `index.html`, `claude-shim.js`, `motorpool-host.js`, `motorpool-tts.js`, or `/.netlify/functions/*`.
+The optional service worker caches icons and `pwa.css` only. It does **not** cache `index.html`, `claude-shim.js`, `motorpool-host.js`, `motorpool-tts.js`, `motorpool-ask-voice.js`, or `/.netlify/functions/*`.
 
 ## Files
 
@@ -251,7 +255,8 @@ motorpool-artifact/
   public/pwa.js
   public/pwa.css
   public/motorpool-tts.js    ← ElevenLabs readback (loaded by the shim)
-  netlify/functions/         ← auth, db, office, sample, tts
+  public/motorpool-ask-voice.js ← hold-to-talk STT (loaded by the shim)
+  netlify/functions/         ← auth, db, office, sample, transcribe, tts
   netlify/lib/               ← session, mp-access, capabilities, Anthropic, ElevenLabs
   supabase/migrations/
   tests/                     ← auth, thaw, isFuel, papers, variance, host

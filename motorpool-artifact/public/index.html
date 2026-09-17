@@ -365,7 +365,7 @@ var SIGNATORIES = [
 ];
 var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
 /* Shown on the Ask screen, so a screenshot says which version someone is on. */
-var BUILD = "2026-09-17 a";
+var BUILD = "2026-09-17 b";
 var DAY = 86400000, MO = 30.44;
 
 /* Part categories that were entered under two spellings and so split a unit's
@@ -392,7 +392,7 @@ var PROJ_ALIAS = {
 var S = {
   vehicles:[], parts:[], suppliers:[], projects:[], drivers:[], worktypes:[], ambig:[], items:[],
   purchases:[], withdrawals:[], ledger:{}, breakdowns:[], mechanic:[], tasks:[], papers:[],
-  cfg:{nextVrf:5793, pass:null, varianceTol:0.10, nextReserve:1}, sample:null, chat:[], asking:false, voiceOut:true, voiceLang:"en-PH", hearing:false, micBlocked:false, ttsReady:false,
+  cfg:{nextVrf:5793, pass:null, varianceTol:0.10, nextReserve:1}, sample:null, chat:[], asking:false, voiceOut:true, voiceLang:"en-PH", hearing:false, speaking:false, micBlocked:false, ttsReady:false,
   voiceName:"", voices:[], photoCounts:{}, reserves:[], rsvYears:[], lens:"job", selUnit:"", selCat:"", selWork:"", regWork:"", regUnit:"", regSrc:"", regStatus:"", logQ:"",
   view:"yard", office:false, db:null, ready:false, sel:null, draft:null, stale:false,
   hist:[], showArchivedProjects:false, logProject:""
@@ -3815,7 +3815,24 @@ var _rec=null;
 /* Browsers refuse to speak unless a user gesture has unlocked audio, and the
    answer arrives long after the click — so every click that could lead to an
    answer plays a silent utterance first, which is what does the unlocking. */
+function hasServerVoice(){
+  return !!(window.mpTts && window.mpTts.ready && typeof window.mpTts.speak==="function");
+}
+function canHoldTalk(){
+  try{
+    if(window.mpAskVoice && window.mpAskVoice.ready) return true;
+    if(SR) return true;
+    return !!(navigator.mediaDevices && window.MediaRecorder);
+  }catch(e){ return !!SR; }
+}
+function voicePhase(){
+  if(S.hearing) return "listening";
+  if(S.asking) return "thinking";
+  if(S.speaking) return "speaking";
+  return "idle";
+}
 function primeTTS(){
+  try{ if(window.mpTts && typeof window.mpTts.prime==="function") window.mpTts.prime(); }catch(e){}
   if(!TTS||S.ttsReady) return;
   try{
     var u=new SpeechSynthesisUtterance(" ");
@@ -3881,13 +3898,36 @@ function utter(text,onDone){
   })();
 }
 function speak(text){
-  if(!TTS||!S.voiceOut||!text) return;
-  try{ TTS.cancel(); utter(text); }catch(e){}
+  if(!S.voiceOut||!text) return;
+  hush();
+  S.ttsReady=true;
+  S.speaking=true;
+  if(hasServerVoice()){
+    Promise.resolve(window.mpTts.speak(text)).then(function(){
+      S.speaking=false;
+      if(S.ready && S.view==="ask" && !S.hearing && !S.asking) render();
+    }, function(){
+      S.speaking=false;
+      if(S.ready && S.view==="ask" && !S.hearing && !S.asking) render();
+    });
+    return;
+  }
+  if(!TTS){ S.speaking=false; return; }
+  try{ utter(text, function(){ S.speaking=false; if(S.ready && S.view==="ask" && !S.hearing && !S.asking) render(); }); }
+  catch(e){ S.speaking=false; }
 }
-function hush(){ try{ if(TTS) TTS.cancel(); }catch(e){} }
+function hush(){
+  S.speaking=false;
+  try{ if(window.mpTts && window.mpTts.hush) window.mpTts.hush(); }catch(e){}
+  try{ if(TTS) TTS.cancel(); }catch(e){}
+}
 function listen(inp,onFinal,setBusy){
+  if(window.mpAskVoice && typeof window.mpAskVoice.capture==="function"){
+    var handled=window.mpAskVoice.capture({inp:inp,onFinal:onFinal,setBusy:setBusy,lang:S.voiceLang});
+    if(handled!==false) return handled;
+  }
   if(!SR){ toast("This browser cannot listen. Type the question instead."); return; }
-  if(_rec){ try{ _rec.stop(); }catch(e){} _rec=null; setBusy(false); return; }
+  if(_rec) return;
   hush();
   var rec=new SR();
   rec.lang=S.voiceLang; rec.interimResults=true; rec.maxAlternatives=1; rec.continuous=false;
@@ -3914,6 +3954,54 @@ function listen(inp,onFinal,setBusy){
   try{ rec.start(); _rec=rec; setBusy(true); }
   catch(e){ _rec=null; setBusy(false); toast("Could not start the microphone."); }
 }
+function stopListen(){
+  if(window.mpAskVoice && typeof window.mpAskVoice.release==="function"){
+    var handled=window.mpAskVoice.release();
+    if(handled!==false) return handled;
+  }
+  if(_rec){ try{ _rec.stop(); }catch(e){} }
+}
+var _askTalkBound=false;
+function bindAskTalkKeys(){
+  if(_askTalkBound) return;
+  _askTalkBound=true;
+  function isAskSpaceTarget(t){
+    if(!t) return true;
+    var tag=t.tagName?String(t.tagName).toLowerCase():"";
+    if(tag==="textarea"||tag==="select") return false;
+    if(t.isContentEditable) return false;
+    if(tag==="input"){
+      var ask=document.querySelector("[data-mp-ask-input='1']");
+      return !!(ask && t===ask && !String(t.value||"").trim());
+    }
+    return true;
+  }
+  document.addEventListener("keydown", function(e){
+    if(S.view!=="ask" || !S.sample) return;
+    if(e.code!=="Space" && e.key!==" ") return;
+    if(e.repeat) return;
+    if(!isAskSpaceTarget(e.target)) return;
+    e.preventDefault();
+    var mic=document.querySelector("[data-mp-ask-mic='1']");
+    if(!mic || mic.disabled) return;
+    if(S.speaking){ hush(); }
+    if(S.asking) return;
+    try{ mic.dispatchEvent(new PointerEvent("pointerdown",{bubbles:true,button:0})); }
+    catch(err){ if(mic.onpointerdown) mic.onpointerdown({preventDefault:function(){},button:0}); }
+  });
+  document.addEventListener("keyup", function(e){
+    if(S.view!=="ask") return;
+    if(e.code!=="Space" && e.key!==" ") return;
+    if(!isAskSpaceTarget(e.target)) return;
+    e.preventDefault();
+    var mic=document.querySelector("[data-mp-ask-mic='1']");
+    if(mic){
+      try{ mic.dispatchEvent(new PointerEvent("pointerup",{bubbles:true,button:0})); }
+      catch(err){}
+    }
+    stopListen();
+  });
+}
 
 var SUGGEST=[
   "DT-03 battery — when was the last purchase?",
@@ -3939,18 +4027,16 @@ function askView(){
   var vh=el("div","hd");
   vh.appendChild(el("h3",null,"Ask"));
   var vr=el("div","row"); vr.style.marginLeft="auto";
-  if(TTS){
-    var spk=el("button","btn sm",(S.voiceOut?"🔊 Reading aloud":"🔇 Silent"));
-    spk.addEventListener("click",function(){
-      S.voiceOut=!S.voiceOut;
-      if(!S.voiceOut) hush();
-      if(S.voiceOut) primeTTS();
-      try{ localStorage.setItem("mp_voice",S.voiceOut?"1":""); }catch(e){}
-      render();
-    });
-    vr.appendChild(spk);
-  }
-  if(TTS||SR){
+  var spk=el("button","btn sm",(S.voiceOut?"🔊 Reading aloud":"🔇 Silent"));
+  spk.addEventListener("click",function(){
+    S.voiceOut=!S.voiceOut;
+    if(!S.voiceOut) hush();
+    if(S.voiceOut) primeTTS();
+    try{ localStorage.setItem("mp_voice",S.voiceOut?"1":""); }catch(e){}
+    render();
+  });
+  vr.appendChild(spk);
+  if(TTS||SR||canHoldTalk()){
     var lang=el("select");
     [["en-PH","English"],["fil-PH","Filipino"],["ceb-PH","Cebuano"]].forEach(function(o){
       lang.appendChild(new Option(o[1],o[0])); });
@@ -3979,7 +4065,8 @@ function askView(){
     var tst=el("button","btn sm","Test");
     tst.addEventListener("click",function(){
       S.ttsReady=true; hush();
-      utter("DT-03 last had a battery change on the twenty-first of October, twenty twenty-five.");
+      speak("DT-03 last had a battery change on the twenty-first of October, twenty twenty-five.");
+      render();
     });
     vr.appendChild(tst);
   }
@@ -4033,38 +4120,94 @@ function askView(){
       if(m.content&&!m.error){
         var bar=el("div","row"); bar.style.marginTop="var(--space-1)";
         bar.appendChild(el("span","hint","answered from the posted records"));
-        if(TTS){
-          var pl=el("button","btn sm","🔊 Play");
-          pl.addEventListener("click",function(){
-            S.ttsReady=true; hush(); utter(m.content);
-          });
-          bar.appendChild(pl);
-        }
+        var pl=el("button","btn sm",S.speaking?"Stop":"🔊 Play");
+        pl.addEventListener("click",function(){
+          if(S.speaking){ hush(); render(); return; }
+          speak(m.content);
+          render();
+        });
+        bar.appendChild(pl);
         row.appendChild(bar);
       }
     }
     tb.appendChild(row);
   });
   thread.appendChild(tb);
+  var phase=voicePhase();
+  var stateChip=el("div","hint");
+  stateChip.setAttribute("data-mp-ask-state","1");
+  stateChip.setAttribute("data-phase",phase);
+  stateChip.setAttribute("aria-live","polite");
+  stateChip.style.cssText="padding:0 var(--space-4) var(--space-2);font-weight:600";
+  stateChip.textContent = phase==="listening" ? "Listening — release to ask"
+    : phase==="thinking" ? "Thinking…"
+    : phase==="speaking" ? "Speaking — tap the mic or Space to stop"
+    : "Idle — hold the mic or Space to talk";
+  thread.appendChild(stateChip);
   var foot=el("div");
   foot.style.cssText="display:flex;gap:var(--space-2);padding:var(--space-3) var(--space-4);border-top:1px solid var(--rule)";
   var inp=el("input"); inp.placeholder="e.g. DT-03 battery, when was the last purchase?";
+  inp.setAttribute("data-mp-ask-input","1");
   inp.style.flex="1"; inp.disabled=S.asking;
-  if(SR){
-    var mic=el("button","btn",S.hearing?"● Listening":"🎙");
-    mic.title="Ask out loud";
-    if(S.hearing) mic.style.borderColor="var(--danger)";
-    mic.disabled=S.asking;
-    mic.addEventListener("click",function(){
-      primeTTS();
+  var mic=el("button","btn",
+    phase==="listening" ? "● Listening"
+    : phase==="thinking" ? "Thinking"
+    : phase==="speaking" ? "● Tap to stop"
+    : "🎙 Hold to talk");
+  mic.setAttribute("data-mp-ask-mic","1");
+  mic.setAttribute("data-mp-ask-phase",phase);
+  mic.title="Hold to talk. Tap while it is speaking to stop.";
+  mic.setAttribute("aria-pressed", S.hearing||S.speaking ? "true":"false");
+  if(phase==="listening") mic.style.borderColor="var(--danger)";
+  else if(phase==="speaking") mic.style.borderColor="var(--accent)";
+  mic.disabled=S.asking && !S.speaking;
+  var holdTimer=null;
+  function paintMic(){
+    var p=voicePhase();
+    mic.setAttribute("data-mp-ask-phase",p);
+    mic.setAttribute("aria-pressed", S.hearing||S.speaking ? "true":"false");
+    mic.textContent = p==="listening" ? "● Listening"
+      : p==="thinking" ? "Thinking"
+      : p==="speaking" ? "● Tap to stop"
+      : "🎙 Hold to talk";
+    mic.style.borderColor = p==="listening" ? "var(--danger)" : p==="speaking" ? "var(--accent)" : "";
+    stateChip.setAttribute("data-phase",p);
+    stateChip.textContent = p==="listening" ? "Listening — release to ask"
+      : p==="thinking" ? "Thinking…"
+      : p==="speaking" ? "Speaking — tap the mic or Space to stop"
+      : "Idle — hold the mic or Space to talk";
+  }
+  function beginHold(ev){
+    if(ev && ev.button!=null && ev.button!==0) return;
+    if(ev){
+      ev.preventDefault();
+      if(ev.pointerId!=null){
+        try{ mic.setPointerCapture(ev.pointerId); }catch(e){}
+      }
+    }
+    primeTTS();
+    if(S.speaking){ hush(); paintMic(); }
+    if(S.asking) return;
+    if(holdTimer) clearTimeout(holdTimer);
+    holdTimer=setTimeout(function(){
+      holdTimer=null;
       listen(inp,function(t){ send(t); },function(on){
         S.hearing=on;
-        mic.textContent=on?"● Listening":"🎙";
-        mic.style.borderColor=on?"var(--danger)":"";
+        paintMic();
       });
-    });
-    foot.appendChild(mic);
+    }, 160);
   }
+  function endHold(ev){
+    if(ev) ev.preventDefault();
+    if(holdTimer){ clearTimeout(holdTimer); holdTimer=null; return; }
+    stopListen();
+  }
+  mic.addEventListener("pointerdown", beginHold);
+  mic.addEventListener("pointerup", endHold);
+  mic.addEventListener("pointercancel", endHold);
+  mic.addEventListener("click", function(ev){ ev.preventDefault(); });
+  mic.addEventListener("contextmenu", function(ev){ ev.preventDefault(); });
+  foot.appendChild(mic);
   var go2=el("button","btn pri",S.asking?"Asking…":"Ask"); go2.disabled=S.asking;
   go2.addEventListener("click",function(){ primeTTS(); send(inp.value); });
   inp.addEventListener("keydown",function(e){ if(e.key==="Enter"){ primeTTS(); send(inp.value); } });
@@ -4077,23 +4220,21 @@ function askView(){
   thread.appendChild(foot);
   g.appendChild(thread);
 
-  if(TTS&&S.voices.length){
-    var vn=el("div","hint");
-    vn.textContent="Voices come from this device, so the list differs on a Mac, an iPhone and a "+
-      "Windows PC — the premium and neural ones sound best. Pick one and press Test.";
-    vn.style.marginTop="calc(-1 * var(--space-2))";
-    g.appendChild(vn);
-  }
-  if(S.micBlocked||!SR){
+  var vn=el("div","hint");
+  vn.textContent=hasServerVoice()
+    ? "Hold the mic or Space to talk — it listens only while you hold. Tap while it is speaking to stop. Typed questions still work."
+    : "Hold the mic or Space to talk — it listens only while you hold. Device voices are the fallback until the site voice is granted. Typed questions still work.";
+  vn.style.marginTop="calc(-1 * var(--space-2))";
+  g.appendChild(vn);
+  if(S.micBlocked){
     var mb=el("div","banner info");
-    mb.innerHTML="<b>Talking to it needs the microphone, which this page is not allowed to open.</b> "+
-      "Use your device's own dictation instead — it types straight into the box above and works everywhere: "+
-      "on a phone, the microphone key on the keyboard; on a Mac, press <b>Fn</b> twice; on Windows, <b>Win + H</b>. "+
-      "Opening the portal in its own browser tab, or saving it to your home screen, also lets the microphone work.";
+    mb.innerHTML="<b>The microphone is blocked on this page.</b> "+
+      "Type the question, or use the device dictation key: on a phone, the microphone key; on a Mac, <b>Fn</b> twice; on Windows, <b>Win + H</b>.";
     g.appendChild(mb);
   }
   w.appendChild(g);
-  setTimeout(function(){ if(!S.asking) inp.focus(); },30);
+  bindAskTalkKeys();
+  setTimeout(function(){ if(!S.asking && !S.hearing && !S.speaking) inp.focus(); },30);
   return w;
 
   async function send(q){

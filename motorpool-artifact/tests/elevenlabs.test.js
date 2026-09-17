@@ -37,8 +37,10 @@ describe("elevenlabs contract", () => {
 
   it("advertises a default voice and char cap", () => {
     const limits = ttsLimits();
+    assert.equal(DEFAULT_VOICE_ID, "EXAVITQu4vr4xnSDxMaL");
     assert.equal(limits.defaultVoiceId, DEFAULT_VOICE_ID);
     assert.equal(limits.maxChars, 2500);
+    assert.equal(limits.voiceSettings.stability, 0.42);
   });
 
   it("posts text to ElevenLabs and returns base64 audio", async () => {
@@ -63,6 +65,8 @@ describe("elevenlabs contract", () => {
       assert.equal(captured.opts.headers["xi-api-key"], "el-test");
       const sent = JSON.parse(captured.opts.body);
       assert.equal(sent.text, "DT-03 is due for oil.");
+      assert.equal(sent.voice_settings.stability, 0.42);
+      assert.equal(sent.voice_settings.similarity_boost, 0.82);
     } finally {
       global.fetch = originalFetch;
     }
