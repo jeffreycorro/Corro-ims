@@ -139,6 +139,28 @@ describe("applicants ingest persist", () => {
     assert.deepEqual(saved.interviews, []);
   });
 
+  it("stores a Drive file id and attachments as resumeLink / linkedDocs", async () => {
+    const store = memoryStore();
+    const result = await ingestApplicants(
+      [
+        {
+          name: "Santos, Hazel Kate",
+          source: "GoDaddy",
+          driveFileId: "1AbCdEfGhIjKlMnOpQrStUvWxYz012345",
+          attachments: [
+            { title: "Hazel Kate application.pdf", url: "https://drive.google.com/file/d/1appxxxxxxxxxxxxxxxxxxxxx/view" },
+          ],
+        },
+      ],
+      { ...store, today: "2026-09-15" }
+    );
+    assert.equal(result.ok, true);
+    const saved = store.docs.get(`applicants/${result.created[0].id}`).data;
+    assert.match(saved.resumeLink, /1AbCdEfGhIjKlMnOpQrStUvWxYz012345|1appxxxxxxxxxxxxxxxxxxxxx/);
+    assert.ok((saved.linkedDocs || []).length >= 1);
+    assert.equal(saved.docs.resume.s, "on");
+  });
+
   it("does not overwrite an existing id unless overwrite is true", async () => {
     const store = memoryStore({
       applicants: {

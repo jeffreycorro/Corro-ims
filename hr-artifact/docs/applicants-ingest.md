@@ -121,7 +121,10 @@ On the applicant editor, a dated **Background check and observations** log sits 
 | `roleId` | no | `""` | Seed ids `ro01`–`ro10` below. Unknown id is **not** a batch failure: that row is still created, unlinked, with a `warning`. |
 | `position` | no | role title if `roleId` is valid | |
 | `dept` | no | role dept if `roleId` is valid | |
-| `resumeLink` | no | `""` | Drive / CV URL. |
+| `resumeLink` | no | `""` | Drive / CV URL. Also accepted: `cvLink`, `applicationLink`. |
+| `driveFileId` | no | — | Google Drive file id (also `fileId` / `resumeFileId`). Stored as a `https://drive.google.com/file/d/…/view` link on `resumeLink`. |
+| `attachments` / `files` / `linkedDocs` | no | `[]` | Extra Drive URLs or `{ title, url }` objects. Shown on **View 201 / application file**. |
+| `docs` | no | `{}` | Optional checklist rows (`resume`, `tor`, …) with `link` / `links`. |
 | `notes` | no | `""` | Extractor remarks, mailbox subject, etc. |
 | `expected` | no | `""` | Expected pay. |
 | `education` | no | `""` | |

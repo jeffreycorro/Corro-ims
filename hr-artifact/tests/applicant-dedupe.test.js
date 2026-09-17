@@ -11,6 +11,10 @@ const {
   mergeApplicantRecords,
   nameKey,
   seedApplicantDocs,
+  collectApplicationFiles,
+  fileMatchesApplicant,
+  ingestFileFields,
+  parseDriveRef,
 } = require("../public/hr-applicant-dedupe");
 
 describe("applicant name keys", () => {
@@ -176,5 +180,34 @@ describe("application-file seeding", () => {
     assert.equal(docs.resume.s, "on");
     assert.equal(docs.iqtest.s, "on");
     assert.equal(docs.initint.s, "on");
+  });
+
+  it("turns a Drive file id and attachment list into openable URLs", () => {
+    const files = collectApplicationFiles({
+      driveFileId: "1AbCdEfGhIjKlMnOpQrStUvWxYz012345",
+      attachments: [{ title: "Hazel Kate TOR.pdf", url: "https://drive.google.com/file/d/1torxxxxxxxxxxxxxxxxxxxx/view" }],
+    });
+    assert.ok(files.some((f) => /1AbCdEfGhIjKlMnOpQrStUvWxYz012345/.test(f.url)));
+    assert.ok(files.some((f) => /TOR/.test(f.title)));
+    const seeded = seedApplicantDocs({
+      driveFileId: "1AbCdEfGhIjKlMnOpQrStUvWxYz012345",
+      attachments: [{ title: "Hazel Kate TOR.pdf", url: "https://drive.google.com/file/d/1torxxxxxxxxxxxxxxxxxxxx/view" }],
+    });
+    assert.equal(seeded.resume.s, "on");
+    assert.equal(seeded.tor.s, "on");
+  });
+
+  it("matches Drive file names to the applicant and ignores near-misses", () => {
+    assert.equal(fileMatchesApplicant("Barrios_Luisa_Application.pdf", "Barrios, Luisa G."), true);
+    assert.equal(fileMatchesApplicant("Hazel Kate Santos CV.pdf", "Santos, Hazel Kate"), true);
+    assert.equal(fileMatchesApplicant("Barrios leave form.pdf", "Barrios, Luisa G."), false);
+    assert.equal(parseDriveRef("1AbCdEfGhIjKlMnOpQrStUvWxYz012345").kind, "file");
+    assert.equal(parseDriveRef("https://drive.google.com/drive/folders/1folderxxxxxxxxxxxxxxxxx").kind, "folder");
+    const ingested = ingestFileFields({
+      name: "Barrios, Luisa G.",
+      fileId: "1AbCdEfGhIjKlMnOpQrStUvWxYz012345",
+    });
+    assert.match(ingested.resumeLink, /1AbCdEfGhIjKlMnOpQrStUvWxYz012345/);
+    assert.equal(ingested.docs.resume.s, "on");
   });
 });
