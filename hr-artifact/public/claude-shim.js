@@ -311,6 +311,37 @@
     return Boolean(status.capabilities && status.capabilities[name]);
   }
 
+  var CAPABILITY_KEYS = {
+    sample: true,
+    mcp: true,
+    transcribe: true,
+    tts: true,
+    speak: true,
+  };
+
+  function rememberAuth(status) {
+    if (status && status.authenticated) {
+      authReady = Promise.resolve(status);
+    }
+    return status;
+  }
+
+  function withCapability(name, create) {
+    return waitForAuth()
+      .then(function (status) {
+        if (capabilityOn(status, name)) return create();
+        return authStatus()
+          .then(function (fresh) {
+            rememberAuth(fresh);
+            if (!capabilityOn(fresh, name)) return null;
+            return create();
+          });
+      })
+      .catch(function () {
+        return null;
+      });
+  }
+
   function createDb() {
     var db = {
       doc: function (path, maybeId) {
@@ -774,48 +805,28 @@
       return Promise.resolve(downloadsSingleton);
     }
     if (name === "sample") {
-      return waitForAuth()
-        .then(function (status) {
-          if (!capabilityOn(status, "sample")) return null;
-          if (!sampleSingleton) sampleSingleton = createSample();
-          return sampleSingleton;
-        })
-        .catch(function () {
-          return null;
-        });
+      return withCapability("sample", function () {
+        if (!sampleSingleton) sampleSingleton = createSample();
+        return sampleSingleton;
+      });
     }
     if (name === "mcp") {
-      return waitForAuth()
-        .then(function (status) {
-          if (!capabilityOn(status, "mcp")) return null;
-          if (!mcpSingleton) mcpSingleton = createMcp();
-          return mcpSingleton;
-        })
-        .catch(function () {
-          return null;
-        });
+      return withCapability("mcp", function () {
+        if (!mcpSingleton) mcpSingleton = createMcp();
+        return mcpSingleton;
+      });
     }
     if (name === "transcribe") {
-      return waitForAuth()
-        .then(function (status) {
-          if (!capabilityOn(status, "transcribe")) return null;
-          if (!transcribeSingleton) transcribeSingleton = createTranscribe();
-          return transcribeSingleton;
-        })
-        .catch(function () {
-          return null;
-        });
+      return withCapability("transcribe", function () {
+        if (!transcribeSingleton) transcribeSingleton = createTranscribe();
+        return transcribeSingleton;
+      });
     }
     if (name === "tts" || name === "speak") {
-      return waitForAuth()
-        .then(function (status) {
-          if (!capabilityOn(status, "tts")) return null;
-          if (!ttsSingleton) ttsSingleton = createTts();
-          return ttsSingleton;
-        })
-        .catch(function () {
-          return null;
-        });
+      return withCapability("tts", function () {
+        if (!ttsSingleton) ttsSingleton = createTts();
+        return ttsSingleton;
+      });
     }
     return Promise.resolve(null);
   }
@@ -848,8 +859,20 @@
   var apiObj = {
     use: function (name) {
       var key = String(name || "");
-      if (!cache[key]) cache[key] = resolveName(key);
-      return cache[key];
+      if (cache[key]) return cache[key];
+      var pending = resolveName(key);
+      cache[key] = pending;
+      if (CAPABILITY_KEYS[key]) {
+        pending.then(
+          function (value) {
+            if (value == null && cache[key] === pending) delete cache[key];
+          },
+          function () {
+            if (cache[key] === pending) delete cache[key];
+          }
+        );
+      }
+      return pending;
     },
   };
 

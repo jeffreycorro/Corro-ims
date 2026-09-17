@@ -200,6 +200,55 @@ describe("hr-dictation companion", () => {
     assert.equal(Number(w.hrDictation.MAX_MS), 90 * 1000);
   });
 
+  it("shares one in-flight getTranscribe and does not resolve the second call to null", async () => {
+    const w = fakeDom();
+    let resolveUse;
+    const usePromise = new Promise((resolve) => {
+      resolveUse = resolve;
+    });
+    let useCalls = 0;
+    const transcribe = () => Promise.resolve({ text: "shared" });
+    w.claude.use = (name) => {
+      if (name !== "transcribe") return Promise.resolve(null);
+      useCalls += 1;
+      return usePromise;
+    };
+    loadDictation(w);
+    const first = w.hrDictation.getTranscribe();
+    const second = w.hrDictation.getTranscribe();
+    assert.equal(first, second);
+    assert.equal(useCalls, 1);
+    let secondSettled = false;
+    let secondValue = "pending";
+    second.then((fn) => {
+      secondSettled = true;
+      secondValue = fn;
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(secondSettled, false);
+    resolveUse(transcribe);
+    assert.equal(await first, transcribe);
+    assert.equal(await second, transcribe);
+    assert.equal(secondSettled, true);
+    assert.equal(secondValue, transcribe);
+    assert.equal(await w.hrDictation.getTranscribe(), transcribe);
+  });
+
+  it("retries getTranscribe after an earlier null once the shim grants transcribe", async () => {
+    const w = fakeDom();
+    let impl = null;
+    w.claude.use = (name) => {
+      if (name !== "transcribe") return Promise.resolve(null);
+      return Promise.resolve(impl);
+    };
+    loadDictation(w);
+    assert.equal(await w.hrDictation.getTranscribe(), null);
+    impl = () => Promise.resolve({ text: "later" });
+    const fn = await w.hrDictation.getTranscribe();
+    assert.equal(typeof fn, "function");
+    assert.equal(fn, impl);
+  });
+
   it("records, transcribes, and inserts after a short hold even if the mic opens late", async () => {
     const w = fakeDom();
     w.Blob = class FakeBlob {
@@ -252,5 +301,68 @@ describe("hr-dictation companion", () => {
     opened();
     await new Promise((r) => setTimeout(r, 30));
     assert.match(String(w.fields["m-body"].value), /Glory Mae was late on August 5/);
+  });
+
+  it("does not mark dictation unavailable when a hold finishes while getTranscribe is still pending", async () => {
+    const w = fakeDom();
+    w.Blob = class FakeBlob {
+      constructor(parts, opts) {
+        this.parts = parts;
+        this.type = (opts && opts.type) || "";
+        this.size = (parts || []).reduce((n, p) => n + (p && p.size != null ? p.size : String(p).length), 0);
+      }
+    };
+    w.MediaRecorder = class FakeRecorder {
+      constructor(stream, opts) {
+        this.state = "inactive";
+        this.mimeType = (opts && opts.mimeType) || "audio/webm";
+        this.ondataavailable = null;
+        this.onstop = null;
+      }
+      start() {
+        this.state = "recording";
+      }
+      stop() {
+        this.state = "inactive";
+        if (this.ondataavailable) {
+          this.ondataavailable({ data: { size: 8, type: this.mimeType } });
+        }
+        if (this.onstop) this.onstop();
+      }
+    };
+    w.MediaRecorder.isTypeSupported = () => true;
+    let opened;
+    const micReady = new Promise((resolve) => {
+      opened = resolve;
+    });
+    w.navigator.mediaDevices = {
+      getUserMedia() {
+        return micReady.then(() => ({ getTracks() { return [{ stop() {} }]; } }));
+      },
+    };
+    let resolveUse;
+    const usePromise = new Promise((resolve) => {
+      resolveUse = resolve;
+    });
+    w.claude.use = (name) => {
+      if (name !== "transcribe") return Promise.resolve(null);
+      return usePromise;
+    };
+    loadDictation(w);
+    w.hrDictation.attach(w.document);
+    const prefetch = w.hrDictation.getTranscribe();
+    const row = w.fields["m-body"].parentNode.children.find((c) => c.className === "hr-dict-row");
+    const btn = row.children.find((c) => String(c.className).includes("hr-dict-btn"));
+    const status = row.querySelector(".hr-dict-status");
+    btn.dispatchEvent({ type: "pointerdown", pointerId: 1, pointerType: "mouse", button: 0, preventDefault() {} });
+    btn.dispatchEvent({ type: "pointerup", pointerId: 1, pointerType: "mouse", button: 0, preventDefault() {} });
+    opened();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.doesNotMatch(String(status && status.textContent), /not available/i);
+    resolveUse(() => Promise.resolve({ text: "Glory Mae was late on August 5." }));
+    await prefetch;
+    await new Promise((r) => setTimeout(r, 30));
+    assert.match(String(w.fields["m-body"].value), /Glory Mae was late on August 5/);
+    assert.doesNotMatch(String(status && status.textContent), /not available/i);
   });
 });

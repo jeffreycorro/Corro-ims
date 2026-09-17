@@ -119,6 +119,68 @@ describe("claude shim", () => {
     assert.equal(p, again);
   });
 
+  it("shares one in-flight transcribe use() until auth settles", async () => {
+    const w = fakeWindow();
+    let releaseAuth;
+    const firstAuth = new Promise((resolve) => {
+      releaseAuth = resolve;
+    });
+    let authGets = 0;
+    w.fetch = (url) => {
+      if (String(url).includes("/auth")) {
+        authGets += 1;
+        const payload = {
+          authenticated: true,
+          methods: ["password"],
+          capabilities: { transcribe: true },
+          transcribe: true,
+        };
+        const wait = authGets === 1 ? firstAuth : Promise.resolve();
+        return wait.then(() => ({
+          ok: true,
+          json: async () => payload,
+          text: async () => JSON.stringify(payload),
+        }));
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}), text: async () => "{}" });
+    };
+    loadShim(w);
+    const first = w.claude.use("transcribe");
+    const second = w.claude.use("transcribe");
+    assert.equal(first, second);
+    releaseAuth();
+    const fn = await first;
+    assert.equal(typeof fn, "function");
+    assert.equal(await second, fn);
+  });
+
+  it("retries transcribe after a null capability once a later auth status grants it", async () => {
+    const w = fakeWindow();
+    let caps = {};
+    w.fetch = (url) => {
+      if (String(url).includes("/auth")) {
+        const payload = {
+          authenticated: true,
+          methods: ["password"],
+          capabilities: { ...caps },
+          ...caps,
+        };
+        return Promise.resolve({
+          ok: true,
+          json: async () => payload,
+          text: async () => JSON.stringify(payload),
+        });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}), text: async () => "{}" });
+    };
+    loadShim(w);
+    assert.equal(await w.claude.use("transcribe"), null);
+    caps = { transcribe: true };
+    const fn = await w.claude.use("transcribe");
+    assert.equal(typeof fn, "function");
+    assert.equal(await w.claude.use("transcribe"), fn);
+  });
+
   it("returns null for sample, mcp, transcribe, and tts when auth does not advertise them", async () => {
     const w = fakeWindow();
     loadShim(w);

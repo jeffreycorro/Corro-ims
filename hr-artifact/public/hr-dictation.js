@@ -18,7 +18,7 @@
   ];
 
   var transcribeFn = null;
-  var transcribeTried = false;
+  var transcribePending = null;
   var session = null;
 
   function ensureStyles() {
@@ -89,18 +89,25 @@
   }
 
   function getTranscribe() {
-    if (transcribeTried) return Promise.resolve(transcribeFn);
-    transcribeTried = true;
+    if (transcribeFn) return Promise.resolve(transcribeFn);
+    if (transcribePending) return transcribePending;
     if (!window.claude || typeof window.claude.use !== "function") {
       return Promise.resolve(null);
     }
-    return window.claude.use("transcribe").then(function (fn) {
-      transcribeFn = fn;
-      return fn;
-    }).catch(function () {
-      transcribeFn = null;
-      return null;
-    });
+    var pending = window.claude.use("transcribe").then(
+      function (fn) {
+        transcribeFn = typeof fn === "function" ? fn : null;
+        if (transcribePending === pending) transcribePending = null;
+        return transcribeFn;
+      },
+      function () {
+        transcribeFn = null;
+        if (transcribePending === pending) transcribePending = null;
+        return null;
+      }
+    );
+    transcribePending = pending;
+    return pending;
   }
 
   function setStatus(row, text, kind) {
@@ -414,11 +421,9 @@
 
   function boot() {
     ensureStyles();
-    getTranscribe().then(function (fn) {
-      if (!fn) return;
-      attach(document);
-      observe();
-    });
+    attach(document);
+    observe();
+    getTranscribe();
   }
 
   var api = {
@@ -427,6 +432,7 @@
     insertText: insertText,
     messageForError: messageForError,
     attach: attach,
+    getTranscribe: getTranscribe,
     pickMime: pickMime,
     attached: true,
   };
