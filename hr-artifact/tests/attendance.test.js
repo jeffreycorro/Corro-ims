@@ -91,10 +91,14 @@ describe("manpower attendance core", () => {
     assert.equal(hr.normStatus("special holiday"), "Special Holiday");
     assert.equal(hr.normStatus("Regular Holiday"), "Regular Holiday");
     assert.equal(hr.normStatus("Leave with Pay"), "Leave with Pay");
+    assert.equal(hr.normStatus("Has not yet arrived"), "Has not yet arrived");
+    assert.equal(hr.normStatus("not yet in"), "Has not yet arrived");
     assert.equal(hr.normStatus("not a status"), "");
     assert.ok(hr.CLOSED_STATUSES.includes("Special Holiday"));
     assert.ok(hr.CLOSED_STATUSES.includes("Leave with Pay"));
     assert.ok(hr.CLOSED_STATUSES.includes("Undertime"));
+    assert.ok(hr.CLOSED_STATUSES.includes("Has not yet arrived"));
+    assert.equal(hr.dayCredit("Has not yet arrived"), 0);
     assert.equal(hr.normStatus("Present (Late)"), "Present/Late");
     assert.equal(hr.normStatus("undertime"), "Undertime");
     assert.equal(hr.normStatus("left early"), "Undertime");
@@ -111,6 +115,7 @@ describe("manpower attendance core", () => {
     assert.equal(hr.validateDayRowTimes({ s: "Undertime", out: "15:30" }).length, 0);
     assert.equal(hr.validateDayRowTimes({ s: "Present", in: "", out: "" }).length, 0);
     assert.equal(hr.validateDayRowTimes({ s: "Absent", in: "", out: "" }).length, 0);
+    assert.equal(hr.validateDayRowTimes({ s: "Has not yet arrived", in: "", out: "" }).length, 0);
     assert.equal(hr.dayCredit("Undertime"), 1);
     assert.equal(hr.holidayGranted({ hol: 2 }), true);
     assert.equal(hr.holidayPremiumCode({ hol: 2 }), 2);

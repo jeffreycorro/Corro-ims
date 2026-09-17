@@ -982,6 +982,9 @@ async function connect(){
       const incoming=clone(st.data());
       if(S.settings.hrSigData && !incoming.hrSigData) incoming.hrSigData=S.settings.hrSigData;
       if(S.settings.hrSigLink && !incoming.hrSigLink) incoming.hrSigLink=S.settings.hrSigLink;
+      if(S.settings.hrSigs && !incoming.hrSigs) incoming.hrSigs=S.settings.hrSigs;
+      else if(S.settings.hrSigs && incoming.hrSigs)
+        incoming.hrSigs=Object.assign({}, S.settings.hrSigs, incoming.hrSigs);
       S.settings=Object.assign(S.settings,incoming);
     }
     if(any) lsSave();
@@ -1007,14 +1010,17 @@ function mergeIncomingDoc(coll, incoming, local){
     const rows=Object.assign({}, local.rows||{}, incoming.rows||{});
     Object.keys(local.rows||{}).forEach(id=>{
       if(!rows[id]) rows[id]=local.rows[id];
-      else if(!(rows[id].site) && local.rows[id] && local.rows[id].site) rows[id].site=local.rows[id].site;
+      else rows[id]=mergeDailyRowKeep(local.rows[id], rows[id]);
     });
     next.rows=rows;
     const omit=new Set([].concat(incoming.omit||[], local.omit||[]));
     next.extra=[].concat(incoming.extra||[], local.extra||[]).filter((id,i,a)=>id && !omit.has(id) && a.indexOf(id)===i);
     next.omit=[...omit];
+    next.order=mergeIdList(incoming.order, local.order);
+    next.siteOrder=mergeIdList(incoming.siteOrder, local.siteOrder);
     if(local.hrSigLink && !next.hrSigLink) next.hrSigLink=local.hrSigLink;
     if(local.hrSigData && !next.hrSigData) next.hrSigData=local.hrSigData;
+    next.hrSigs=Object.assign({}, local.hrSigs||{}, incoming.hrSigs||{});
     if((local.log||[]).length>(next.log||[]).length) next.log=local.log;
     return next;
   }
@@ -1144,7 +1150,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-09-16c";
+const BUILD = "2026-09-17a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -4954,9 +4960,10 @@ function payloadText(r){
 /* "Regular Day - Off" is how the timekeeper marks a Sunday nobody worked. It was
    missing from this list, so those rows had no status word and were filed as
    Present — 184 of them over five Sundays before it was caught. */
-const DAY_STATUS_RX = /(Present\s*\/\s*Late|Under\s*time|Present|Absent|Regular\s+Holiday|Special\s+Holiday|Half\s*Day|Rest\s*Day|Day\s*[-–]?\s*Off|Leave)/i;
+const DAY_STATUS_RX = /(Has\s+not\s+yet\s+arrived|Not\s+yet\s+arrived|Not\s+yet\s+in|Present\s*\/\s*Late|Under\s*time|Present|Absent|Regular\s+Holiday|Special\s+Holiday|Half\s*Day|Rest\s*Day|Day\s*[-–]?\s*Off|Leave)/i;
 function normStatus(t){
   const x=String(t||"").toLowerCase().replace(/\s+/g," ").trim();
+  if(/has\s+not\s+yet\s+arrived|not\s+yet\s+arrived|not\s+yet\s+in|^nya\b|^nyi\b/.test(x)) return "Has not yet arrived";
   if(/present\s*\/\s*late/.test(x)) return "Present/Late";
   if(/under\s*time/.test(x)) return "Undertime";
   if(/^present/.test(x)) return "Present";
@@ -5219,6 +5226,8 @@ async function importAttendance(only){
         const e=byNo[normNo(r.empNo)];
         if(!e){ stats.unknown[r.empNo]=(stats.unknown[r.empNo]||0)+1; return; }
         rec.rows[e.id]={ s:r.status||normStatus(r.reason)||"Present", r:r.reason||"", site:e.project||"ADMINS" };
+        rec.order=rec.order||[];
+        rec.order.push(e.id);
         used++;
       });
       if(!used){ stats.unread.push(f.title+" (no employee matched)"); continue; }
@@ -5512,6 +5521,7 @@ function leaveVerdictCell(r){
 function statusPill(st){
   if(st==="Absent")       return '<span class="pill crit">Absent</span>';
   if(st==="Present/Late") return '<span class="pill warn">Late</span>';
+  if(st==="Has not yet arrived") return '<span class="pill warn">Has not yet arrived</span>';
   if(st==="Leave")        return '<span class="pill mut">On leave</span>';
   return '<span class="pill mut">'+esc(st||"—")+'</span>';
 }
@@ -7889,7 +7899,7 @@ async function browseFolder(id, name, trail){
    day actually goes. */
 /* "Special Holiday" and "Leave with Pay" carry different money from their
    near-neighbours, so payroll needs them named separately. */
-const DAY_STATUS = ["Present","Present/Late","Undertime","Absent","Leave","Leave with Pay",
+const DAY_STATUS = ["Present","Has not yet arrived","Present/Late","Undertime","Absent","Leave","Leave with Pay",
                     "Regular Holiday","Special Holiday","Rest Day","Half Day"];
 const DAY_REASON = { "Absent":"AWOL", "Leave":"Approved Leave", "Present/Late":"" };
 function dailyId(d){ return "d"+String(d||"").replace(/-/g,""); }
@@ -7940,8 +7950,10 @@ function dailyPeople(rec){
      rows ARE the roster — counting today's staff as present on a day in March
      would invent attendance nobody recorded. */
   if(rec && rec.fixed){
-    return Object.keys(rec.rows||{}).map(id=>S.employees[id]).filter(Boolean)
-      .sort((a,b)=>String(a.empNo).localeCompare(String(b.empNo)));
+    return sortByRosterOrder(
+      Object.keys(rec.rows||{}).map(id=>S.employees[id]).filter(Boolean),
+      dailyOrderOf(rec)
+    );
   }
   const omit=new Set(rec.omit||[]);
   const extra=new Set(rec.extra||[]);
@@ -7964,7 +7976,7 @@ function dailyPeople(rec){
       list.push(e);
     });
   }
-  return list.sort((a,b)=>String(a.empNo).localeCompare(String(b.empNo)));
+  return sortByRosterOrder(list, dailyOrderOf(rec));
 }
 function dailySiteOf(rec,e){
   const r=(rec.rows||{})[e.id];
@@ -7988,12 +8000,99 @@ function lastSiteBefore(empId, date){
   for(const [d,st] of (LAST_SITE_IX[empId]||[])){ if(d<date) site=st; else break; }
   return site;
 }
-function hrSigSrc(rec){
-  if(rec && (rec.hrSigData||rec.hrSigLink)) return rec.hrSigData||rec.hrSigLink;
+function hrSigSrc(rec, slot){
+  const want=slot||"prepared";
+  const fromMap=obj=>{
+    if(!obj) return "";
+    if(want==="prepared" && (obj.hrSigData||obj.hrSigLink)) return obj.hrSigData||obj.hrSigLink;
+    const pack=(obj.hrSigs||{})[want];
+    return (pack && (pack.data||pack.link)) || "";
+  };
+  const hit=fromMap(rec);
+  if(hit) return hit;
   const st=S.settings||{};
-  if(st.hrSigData||st.hrSigLink) return st.hrSigData||st.hrSigLink;
+  const fromSet=fromMap(st);
+  if(fromSet) return fromSet;
+  if(want==="prepared" && (st.hrSigData||st.hrSigLink)) return st.hrSigData||st.hrSigLink;
   const day=dailyGet(S.ui.dailyDate||TODAY);
-  return (day&&(day.hrSigData||day.hrSigLink))||"";
+  return fromMap(day);
+}
+function mergeIdList(a,b){
+  const out=[], seen={};
+  [].concat(a||[], b||[]).forEach(id=>{
+    if(!id || seen[id]) return;
+    seen[id]=true;
+    out.push(id);
+  });
+  return out;
+}
+/* Incoming snapshot wins when it actually set a field; a blank/missing OT,
+   time, site or holiday on a stale reload must not wipe what Cassie just typed. */
+function mergeDailyRowKeep(local, incoming){
+  const loc=local||{}, inc=incoming||{};
+  const next=Object.assign({}, loc, inc);
+  ["site","in","out","ot","day","hol","rk","ex","r"].forEach(k=>{
+    if((inc[k]==null || inc[k]==="") && loc[k]!=null && loc[k]!=="") next[k]=loc[k];
+  });
+  return next;
+}
+function lastRosterLayout(beforeDate){
+  let best=null;
+  Object.values(S.daily||{}).forEach(rec=>{
+    if(!rec || !rec.date) return;
+    if(beforeDate && rec.date>=beforeDate) return;
+    if(!best || rec.date>best.date) best=rec;
+  });
+  return best;
+}
+function dailyOrderOf(rec){
+  if(rec && rec.order && rec.order.length) return rec.order.slice();
+  const prev=lastRosterLayout(rec && rec.date);
+  if(prev && prev.order && prev.order.length) return prev.order.slice();
+  return [];
+}
+function dailySiteOrderOf(rec){
+  if(rec && rec.siteOrder && rec.siteOrder.length) return rec.siteOrder.slice();
+  const prev=lastRosterLayout(rec && rec.date);
+  if(prev && prev.siteOrder && prev.siteOrder.length) return prev.siteOrder.slice();
+  return [];
+}
+function sortByRosterOrder(list, order){
+  const rows=(list||[]).slice();
+  if(!order || !order.length)
+    return rows.sort((a,b)=>String(a.empNo||"").localeCompare(String(b.empNo||"")));
+  const ix={};
+  order.forEach((id,i)=>{ if(ix[id]==null) ix[id]=i; });
+  return rows.sort((a,b)=>{
+    const ai=ix[a.id], bi=ix[b.id];
+    if(ai!=null && bi!=null && ai!==bi) return ai-bi;
+    if(ai!=null && bi==null) return -1;
+    if(ai==null && bi!=null) return 1;
+    return String(a.empNo||"").localeCompare(String(b.empNo||""));
+  });
+}
+function nameLastFirst(n){
+  const s=String(n||"").trim();
+  if(!s) return {last:"", first:""};
+  if(s.indexOf(",")>=0){
+    const p=s.split(",");
+    return {last:p[0].trim(), first:p.slice(1).join(",").trim()};
+  }
+  const parts=s.split(/\s+/);
+  if(parts.length<=1) return {last:s, first:""};
+  return {last:parts[parts.length-1], first:parts.slice(0,-1).join(" ")};
+}
+function applyHrSigsToRec(rec){
+  if(!rec) return rec;
+  rec.hrSigs=Object.assign({}, (S.settings||{}).hrSigs||{}, rec.hrSigs||{});
+  if(!rec.hrSigData && !rec.hrSigLink){
+    const src=hrSigSrc(rec, "prepared");
+    if(src){
+      if(/^data:/i.test(src)) rec.hrSigData=src;
+      else rec.hrSigLink=src;
+    }
+  }
+  return rec;
 }
 /* Write the people and sites currently on the day onto extra/rows so a later
    blank day, or a stale snapshot, cannot put yesterday's standing list back. */
@@ -8003,24 +8102,21 @@ function persistRosterOnDay(rec){
   rec.omit=rec.omit||[];
   const omit=new Set(rec.omit);
   const extra=new Set(rec.extra||[]);
-  dailyPeople(rec).forEach(e=>{
+  const people=dailyPeople(rec);
+  people.forEach(e=>{
     if(!e || !e.id || omit.has(e.id)) return;
     const prev=rec.rows[e.id]||{};
     const site=prev.site || dailySiteOf(rec,e) || e.project || "ADMINS";
-    rec.rows[e.id]=Object.assign({s:"Present", r:""}, prev, {site:site});
+    rec.rows[e.id]=Object.assign({s:"Present", r:"", in:"", out:"", ot:null, day:null, hol:null}, prev, {site:site});
     extra.add(e.id);
   });
   rec.extra=[...extra].filter(id=>id && !omit.has(id));
-  if(!rec.hrSigData && !rec.hrSigLink){
-    const src=hrSigSrc();
-    if(src){
-      if(/^data:/i.test(src)) rec.hrSigData=src;
-      else rec.hrSigLink=src;
-    }
-  }
+  rec.order=people.map(e=>e.id);
+  rec.siteOrder=dailyGroups(rec).map(g=>g.site);
+  applyHrSigsToRec(rec);
   return rec;
 }
-/* Site order follows the report: projects first, admin last. */
+/* Site order follows the filed report (or yesterday's layout), admin last. */
 function dailyGroups(rec){
   rec=rec||dailyGet(S.ui.dailyDate||TODAY)||dailyBlank(S.ui.dailyDate||TODAY);
   const people=dailyPeople(rec);
@@ -8030,7 +8126,12 @@ function dailyGroups(rec){
     if(!g.has(k)) g.set(k,[]);
     g.get(k).push(e);
   });
+  const siteOrder=dailySiteOrderOf(rec);
   const keys=[...g.keys()].sort((a,b)=>{
+    const ai=siteOrder.indexOf(a), bi=siteOrder.indexOf(b);
+    if(ai>=0 && bi>=0 && ai!==bi) return ai-bi;
+    if(ai>=0 && bi<0) return -1;
+    if(ai<0 && bi>=0) return 1;
     if(a==="ADMINS") return 1; if(b==="ADMINS") return -1;
     return a.localeCompare(b);
   });
@@ -8042,6 +8143,7 @@ function dailyGroups(rec){
 function dayCredit(r){
   const st=(r&&r.s)||"";
   if(st==="Absent") return 0;
+  if(st==="Has not yet arrived") return 0;   /* morning mark — not present, not absent */
   if(st==="Half Day") return 0.5;
   if(st==="Leave") return 0;                 /* plain leave is unpaid */
   if(st==="Leave with Pay") return 1;
@@ -8126,13 +8228,14 @@ function dailyRow(rec,e){
   return (rec.rows||{})[e.id] || {s:"Present", r:"", in:"", out:"", ot:null, day:null, hol:null};
 }
 function dailyTally(rec){
-  const t={present:0,late:0,absent:0,leave:0,holiday:0,other:0};
+  const t={present:0,late:0,absent:0,leave:0,holiday:0,waiting:0,other:0};
   dailyGroups(rec).forEach(g=>g.people.forEach(e=>{
     const row=dailyRow(rec,e);
     const r=effectiveStatus(e.id, rec.date, row.s, row.r);
     if(r==="Present") t.present++;
     else if(r==="Present/Late") { t.present++; t.late++; }
     else if(r==="Undertime") { t.present++; t.undertime=(t.undertime||0)+1; }
+    else if(r==="Has not yet arrived") t.waiting++;
     else if(r==="Absent") t.absent++;
     else if(r==="Leave") t.leave++;
     else if(r==="Regular Holiday") t.holiday++;
@@ -8155,9 +8258,9 @@ function viewDaily(){
    + '<button class="btn sm" data-dmshift="1" title="The day after">▸</button>'
    + '<button class="btn" id="dm-allpresent">Everyone present</button>'
    + '<button class="btn" id="dm-print">Print the report</button>'
-   + '<button class="btn" id="dm-hrsig" title="Attach the HR e-signature that prints on this report">'
-   + (hrSigSrc()?'Replace HR e-sig':'Attach HR e-sig')+'</button>'
-   + (hrSigSrc()?'<span class="pill ok" title="HR e-signature is on file">HR e-sig on file</span>':'')
+   + '<button class="btn" id="dm-hrsig" title="Attach one or more HR e-signature JPEGs. Filenames match the person or slot.">'
+   + (hrSigSrc()||hrSigSrc(null,"approved")?'Replace HR e-sigs':'Attach HR e-sigs')+'</button>'
+   + hrSigPills()
    + '<button class="btn pri" id="dm-save">Save</button>'
    + '<button class="btn" id="dm-add">Add someone</button>'
    + '<button class="btn" id="dm-apply" title="Copy today\'s areas onto the 201 records">Make areas permanent</button>'
@@ -8169,6 +8272,7 @@ function viewDaily(){
 
   h+='<div class="strip">'
    + tile(t.present,"Present",t.late?t.late+" of them late":"nobody late","ok")
+   + tile(t.waiting||0,"Has not yet arrived","not marked in yet",(t.waiting?"warn":"ok"))
    + tile(t.absent,"Absent","",t.absent?"crit":"ok")
    + tile(t.leave,"On leave","approved leave","acc")
    + tile(t.holiday+t.other,"Holiday or rest day","","acc")
@@ -8205,7 +8309,7 @@ function viewDaily(){
      + '</div></div>';
   }
 
-  h+='<div class="note" style="margin:14px 0">Everyone starts as <b>Present</b> — change only the exceptions, '
+  h+='<div class="note" style="margin:14px 0">Everyone starts as <b>Present</b> — mark <b>Has not yet arrived</b> for anyone still on the way, then change the other exceptions. '
    + 'then Save. <b>Drag a name</b> onto another area, or use the Area column, when someone works somewhere '
    + 'else for the day; that changes this report only. <b>Make areas permanent</b> copies the day’s areas onto '
    + 'the 201 records when a move is a real transfer.</div>';
@@ -8327,8 +8431,8 @@ function viewDaily(){
      + '<div class="sp"><span class="lbl">'+g.people.length+'</span>'
      + '<button class="btn sm" data-siterename="'+esc(g.site)+'">Rename</button></div></div>'
      + '<div class="tw"><table><thead><tr><th style="width:26px"></th><th style="width:40px">No.</th>'
-     + '<th style="width:66px">ID</th>'
-     + '<th>Employee</th><th style="width:120px">Position</th><th style="width:130px">Status</th>'
+     + '<th style="width:66px">ID NO.</th>'
+     + '<th>Last name</th><th>First name</th><th style="width:120px">Position</th><th style="width:150px">Status</th>'
      + '<th style="width:78px" title="Time in">In</th><th style="width:78px" title="Time out">Out</th>'
      + '<th style="width:62px" title="Overtime hours — this is what payroll pays">OT hrs</th>'
      + '<th style="width:56px" title="1 for a full day, 0.5 for a half day">Day</th>'
@@ -8338,10 +8442,12 @@ function viewDaily(){
       n++;
       const r=dailyRow(rec,e);
       const sty='width:100%;padding:3px 6px;border:1px solid var(--line2);border-radius:4px;background:var(--surface);font-size:12px';
+      const nf=nameLastFirst(e.name);
       h+='<tr draggable="true" data-drag="'+esc(e.id)+'">'
        + '<td style="cursor:grab;color:var(--ink3);text-align:center" title="Drag to another area">⠿</td>'
        + '<td class="mono">'+n+'</td><td class="mono">'+esc(e.empNo||"—")+'</td>'
-       + '<td><b>'+esc(flipName(e.name))+'</b></td>'
+       + '<td><b>'+esc(nf.last||"—")+'</b></td>'
+       + '<td>'+esc(nf.first||"—")+'</td>'
        + '<td style="font-size:11.5px">'+esc(e.position||"—")+'</td>'
        + '<td><select data-dms="'+esc(e.id)+'" style="'+sty+'">'
        + DAY_STATUS.map(x=>'<option'+(r.s===x?" selected":"")+'>'+x+'</option>').join("")+'</select></td>'
@@ -8406,6 +8512,8 @@ function dailyCollect(){
         return prevRow.hol!=null ? holCode(prevRow) : null; })(),
       rk, ex };
   });
+  rec.order=$$("[data-dms]").map(sel=>sel.dataset.dms).filter(Boolean);
+  rec.siteOrder=$$("[data-drop]").map(el=>el.dataset.drop).filter(Boolean);
   persistRosterOnDay(rec);
   return rec;
 }
@@ -8479,20 +8587,25 @@ function printDaily(rec){
   const groups=dailyGroups(rec);
   let n=0, rows="";
   groups.forEach(g=>{
-    rows+='<tr><td colspan="6" style="background:#2aa0c0;color:#fff;font-weight:700;text-align:center;'
+    rows+='<tr><td colspan="8" style="background:#2aa0c0;color:#fff;font-weight:700;text-align:center;'
       + 'letter-spacing:.04em;font-size:11px">'+esc(g.site)+'</td></tr>';
     g.people.forEach(e=>{
       n++;
       const r=dailyRow(rec,e);
+      const nf=nameLastFirst(e.name);
       const bad = r.s==="Absent";
       const warn = r.s==="Present/Late";
+      const wait = r.s==="Has not yet arrived";
+      const tone = bad?' style="background:#fbeceb;color:#9c3131;font-weight:700"'
+                :warn?' style="background:#fbf3e4"'
+                :wait?' style="background:#eef3f7;color:#3a5a6e"':'';
       rows+='<tr><td style="text-align:center">'+n+'</td>'
         + '<td class="mono" style="text-align:center">'+esc(e.empNo||"")+'</td>'
-        + '<td>'+esc((e.name||"").split(",")[0])+'</td>'
-        + '<td>'+esc(((e.name||"").split(",")[1]||"").trim())+'</td>'
+        + '<td>'+esc(nf.last)+'</td>'
+        + '<td>'+esc(nf.first)+'</td>'
         + '<td>'+esc(e.position||"")+'</td>'
-        + '<td'+(bad?' style="background:#fbeceb;color:#9c3131;font-weight:700"'
-                :warn?' style="background:#fbf3e4"':'')+'>'+esc(r.s)+'</td>'
+        + '<td'+tone+'>'+esc(r.s)+'</td>'
+        + '<td style="text-align:center">'+esc(r.ot!=null && r.ot!==""?r.ot:"")+'</td>'
         + '<td'+(bad?' style="background:#fbeceb;color:#9c3131"':'')+'>'+esc(r.r||"")+'</td></tr>';
     });
   });
@@ -8501,18 +8614,14 @@ function printDaily(rec){
    + 'DAILY MANPOWER REPORT</div>'
    + '<div style="text-align:center;font-weight:700;font-size:12px;padding-bottom:8px">'
    + esc(shortDate(rec.date))+'</div>'
-   + '<table class="pf-t"><tr>'
-   + ['No.','ID NO.','LAST NAME','FIRST NAME','POSITION','STATUS','REASON']
-       .slice(1).map((c,i)=>'').join("")
-   + '</tr></table>'
    + '<table class="pf-t" style="table-layout:auto"><tr>'
    + '<td style="width:34px;font-weight:700;text-align:center;background:var(--surface3)">&nbsp;</td>'
-   + ['ID NO.','LAST NAME','FIRST NAME','POSITION','STATUS','REASON']
+   + ['ID NO.','LAST NAME','FIRST NAME','POSITION','STATUS','OT HRS','REASON']
        .map(c=>'<td style="font-weight:700;text-align:center;background:var(--surface3)">'+c+'</td>').join("")
    + '</tr>'+rows+'</table>'
    + memoChain([
-       ["Prepared by:", rec.preparedBy||"", "HR Staff", rec.hrSigData||rec.hrSigLink||hrSigSrc()],
-       ["Approved by:", rec.approvedBy||"", "HR Officer"]])
+       ["Prepared by:", rec.preparedBy||"", "HR Staff", hrSigSrc(rec,"prepared")],
+       ["Approved by:", rec.approvedBy||"", "HR Officer", hrSigSrc(rec,"approved")]])
    + pfISO("daily");
   openModal({ title:"Daily manpower report — "+shortDate(rec.date), wide:true,
     body:pfWrap(body),
@@ -12438,13 +12547,17 @@ function viewSettings(){
    + '<div class="f"><label>President title</label><input data-set="presidentTitle" value="'+esc(st.presidentTitle||"")+'"></div>'
    + '</div></div></div>';
 
-  h+='<div class="card"><div class="card-h"><h3>HR e-signature</h3></div><div class="card-b stack">'
+  h+='<div class="card"><div class="card-h"><h3>HR e-signatures</h3></div><div class="card-b stack">'
    + '<div class="row">'
-   + '<button class="btn" id="set-hrsig">'+(hrSigSrc()?"Replace HR e-sig":"Attach HR e-sig")+'</button>'
-   + (hrSigSrc()?'<span class="pill ok">On file'+(st.hrSigOn?" · "+esc(st.hrSigOn):"")+'</span>':"")
+   + '<button class="btn" id="set-hrsig">'+(hrSigSrc()||hrSigSrc(null,"approved")?"Add / replace e-sigs":"Attach HR e-sigs")+'</button>'
+   + hrSigPills()
    + '</div>'
-   + '<div class="note">Used on the printed Daily Monitoring report (Prepared by). A PNG or JPG prints as the signature. The same attach control is on Daily Manpower.</div>'
-   + (st.hrSigData?'<div><img src="'+esc(st.hrSigData)+'" alt="HR e-signature" style="max-height:56px;max-width:220px"></div>':"")
+   + '<div class="note">Attach one or more JPEG/PNG files. The filename is kept and matched to a slot or person: '
+   + '<span class="mono">prepared.jpg</span>, <span class="mono">cassie.jpg</span>, <span class="mono">moran.jpg</span> → Prepared by; '
+   + '<span class="mono">approved.jpg</span>, <span class="mono">hr-head.jpg</span>, or the HR head’s surname → Approved by; '
+   + 'a four-digit employee number or a unique last name attaches to that person. '
+   + 'Used on the printed Daily Monitoring report. The same control is on Daily Manpower.</div>'
+   + hrSigPreviewList()
    + '</div></div>';
 
   h+='<div class="card"><div class="card-h"><h3>Numbering series</h3><div class="sp"><button class="btn sm" id="new-series"><svg><use href="#i-plus"/></svg> Add series</button></div></div>'
@@ -16030,9 +16143,107 @@ const fileToDataUrl = f => new Promise((res,rej)=>{
   r.onload=()=>res(String(r.result||""));
   r.readAsDataURL(f);
 });
-async function handleHrSigPick(job, file){
-  if(!file) return;
-  if(file.size > MAX_UPLOAD_MB*1024*1024){ toast("The file is over "+MAX_UPLOAD_MB+" MB","err"); return; }
+function foldSigName(s){
+  return String(s||"").toLowerCase().replace(/\.[a-z0-9]{1,5}$/i,"").replace(/[_-]+/g," ")
+    .replace(/[^a-z0-9\s]/g," ").replace(/\s+/g," ").trim();
+}
+function hrSigSlotDefs(){
+  const st=S.settings||{};
+  return [
+    {k:"prepared", label:"Prepared by", role:"HR Staff",
+      aliases:["prepared","prepared by","hr staff","hrsig","e sig","esig","cassie","cassandra","moran"],
+      names:[st.hrStaff||"Maria Trina Cassandra A. Moran"]},
+    {k:"approved", label:"Approved by", role:"HR Officer",
+      aliases:["approved","approved by","hr head","hr officer","approver"],
+      names:[st.hrHead||""].filter(Boolean)}
+  ];
+}
+function matchHrSigFilename(filename, used){
+  used=used||{};
+  const key=foldSigName(filename);
+  const title=String(filename||"").trim()||"HR e-signature";
+  if(!key) return {slot:"", emp:null, title};
+  const slots=hrSigSlotDefs();
+  const hitAlias=slot=>slot.aliases.some(a=>key===a || key.indexOf(a)>=0);
+  for(const slot of slots){
+    if(used[slot.k]) continue;
+    if(hitAlias(slot)) return {slot:slot.k, emp:null, title};
+  }
+  for(const slot of slots){
+    if(used[slot.k]) continue;
+    for(const nm of slot.names||[]){
+      const tokens=foldSigName(nm).split(" ").filter(t=>t.length>=3);
+      if(tokens.some(t=>key===t || key.split(" ").includes(t)))
+        return {slot:slot.k, emp:null, title};
+    }
+  }
+  const no=(String(filename).match(/(\d{4})/)||[])[1];
+  let emp=null;
+  if(no) emp=Object.values(S.employees||{}).find(e=>normNo(e.empNo)===no)||null;
+  if(!emp){
+    const last=key.split(" ")[0];
+    const cands=Object.values(S.employees||{}).filter(e=>{
+      const nf=nameLastFirst(e.name);
+      return foldSigName(nf.last)===last || foldSigName(e.name).indexOf(key)>=0
+        || foldSigName(flipName(e.name)).indexOf(key)>=0;
+    });
+    if(cands.length===1) emp=cands[0];
+  }
+  if(emp){
+    const staff=foldSigName((S.settings||{}).hrStaff||"");
+    const head=foldSigName((S.settings||{}).hrHead||"");
+    const en=foldSigName(emp.name)+" "+foldSigName(flipName(emp.name));
+    if(!used.prepared && staff && staff.split(" ").some(t=>t.length>=3 && en.indexOf(t)>=0))
+      return {slot:"prepared", emp, title};
+    if(!used.approved && head && head.split(" ").some(t=>t.length>=3 && en.indexOf(t)>=0))
+      return {slot:"approved", emp, title};
+    return {slot:"", emp, title};
+  }
+  return {slot:"", emp:null, title};
+}
+function hrSigPack(slot, file, data, link, emp){
+  return {
+    slot:slot||"",
+    data:data||"",
+    link:link||"",
+    title:file && file.name ? file.name : "HR e-signature",
+    on:TODAY,
+    name: emp ? flipName(emp.name) : ((hrSigSlotDefs().find(s=>s.k===slot)||{}).label||""),
+    empId: emp ? emp.id : ""
+  };
+}
+function hrSigPills(){
+  const st=S.settings||{};
+  const map=st.hrSigs||{};
+  const keys=["prepared","approved"].concat(Object.keys(map).filter(k=>k!=="prepared" && k!=="approved"));
+  const pills=keys.map(k=>{
+    const pack=map[k];
+    if(!pack || !(pack.data||pack.link||(k==="prepared" && (st.hrSigData||st.hrSigLink)))) return "";
+    const label=k==="prepared"?"Prepared by":k==="approved"?"Approved by":(pack.name||pack.title||k);
+    return '<span class="pill ok" title="'+esc(pack.title||label)+'">'+esc(label)+'</span>';
+  }).filter(Boolean);
+  if(!pills.length && (st.hrSigData||st.hrSigLink))
+    pills.push('<span class="pill ok" title="HR e-signature is on file">Prepared by</span>');
+  return pills.join("");
+}
+function hrSigPreviewList(){
+  const st=S.settings||{};
+  const map=Object.assign({}, st.hrSigs||{});
+  if((st.hrSigData||st.hrSigLink) && !map.prepared)
+    map.prepared={ data:st.hrSigData, link:st.hrSigLink, title:st.hrSigTitle, on:st.hrSigOn, name:"Prepared by" };
+  const keys=Object.keys(map);
+  if(!keys.length) return "";
+  return '<div class="row" style="flex-wrap:wrap;gap:12px">'+keys.map(k=>{
+    const p=map[k]; if(!p) return "";
+    const src=p.data||"";
+    return '<div style="min-width:140px">'
+      + (src?'<img src="'+esc(src)+'" alt="'+esc(p.title||k)+'" style="max-height:56px;max-width:220px;display:block">':'')
+      + '<div class="lbl" style="margin-top:4px">'+esc(p.name||p.title||k)+(p.title && p.name?' · '+esc(p.title):"")+'</div></div>';
+  }).join("")+'</div>';
+}
+async function attachOneHrSig(file, match){
+  if(!file) return null;
+  if(file.size > MAX_UPLOAD_MB*1024*1024){ toast((file.name||"File")+" is over "+MAX_UPLOAD_MB+" MB","err"); return null; }
   const isImg=/^image\//.test(file.type||"") || /\.(png|jpe?g|webp|gif)$/i.test(file.name||"");
   let data="", link="";
   try{ if(isImg) data=await fileToDataUrl(file); }catch(e){}
@@ -16041,9 +16252,8 @@ async function handleHrSigPick(job, file){
     if(mcp){
       const dest=S.settings.hr201Inbox || (GENERAL_FOLDERS.find(f=>f.k==="g05")||{}).id || MEMO_FOLDERS[0];
       if(dest){
-        const ext=(String(file.name).match(/\.[A-Za-z0-9]{1,6}$/)||[""])[0].toLowerCase();
         const res=await mcp.callTool(DRIVE_SERVER,"create_file",{
-          title:"HR e-signature"+ext,
+          title:file.name||((match&&match.title)||"HR e-signature.jpg"),
           parentId:dest,
           base64Content:await fileToBase64(file),
           contentMimeType:file.type||"application/octet-stream",
@@ -16053,23 +16263,62 @@ async function handleHrSigPick(job, file){
       }
     }
   }catch(e){}
-  if(!data && !link){ toast("Could not attach the e-signature.","err"); return; }
-  S.settings.hrSigData=data||S.settings.hrSigData||"";
-  S.settings.hrSigLink=link||S.settings.hrSigLink||"";
-  S.settings.hrSigOn=TODAY;
-  S.settings.hrSigTitle=file.name||"HR e-signature";
+  if(!data && !link) return null;
+  return hrSigPack(match&&match.slot, file, data, link, match&&match.emp);
+}
+async function handleHrSigFiles(job, files){
+  files=(files||[]).filter(Boolean);
+  if(!files.length) return;
+  S.settings.hrSigs=S.settings.hrSigs||{};
+  const used={};
+  Object.keys(S.settings.hrSigs).forEach(k=>{ if(k==="prepared"||k==="approved") used[k]=true; });
+  const attached=[];
+  for(let i=0;i<files.length;i++){
+    const file=files[i];
+    let match=matchHrSigFilename(file.name, used);
+    if(!match.slot && !match.emp && files.length===1) match={slot:"prepared", emp:null, title:file.name};
+    if(match.slot) used[match.slot]=true;
+    const pack=await attachOneHrSig(file, match);
+    if(!pack) continue;
+    const key=pack.slot || pack.empId || ("file"+i);
+    S.settings.hrSigs[key]=pack;
+    if(pack.slot==="prepared" || key==="prepared"){
+      S.settings.hrSigData=pack.data||S.settings.hrSigData||"";
+      S.settings.hrSigLink=pack.link||S.settings.hrSigLink||"";
+      S.settings.hrSigOn=TODAY;
+      S.settings.hrSigTitle=pack.title;
+    }
+    if(pack.empId && S.employees[pack.empId]){
+      const e=clone(S.employees[pack.empId]);
+      e.sigData=pack.data||e.sigData||"";
+      e.sigLink=pack.link||e.sigLink||"";
+      e.sigTitle=pack.title;
+      S.employees[e.id]=e;
+      try{ await put("employees", e.id, e); }catch(err){}
+    }
+    attached.push(pack);
+  }
+  if(!attached.length){ toast("Could not attach the e-signature.","err"); return; }
   await putSettings();
   const d=S.ui.dailyDate||TODAY;
   const rec=clone(dailyGet(d)||dailyBlank(d));
-  rec.hrSigData=S.settings.hrSigData;
-  rec.hrSigLink=S.settings.hrSigLink;
-  await dailySave(rec, "HR e-signature attached");
-  toast("HR e-signature attached — it will print on Daily Monitoring.","ok");
+  rec.hrSigs=Object.assign({}, rec.hrSigs||{}, S.settings.hrSigs);
+  rec.hrSigData=S.settings.hrSigData||rec.hrSigData;
+  rec.hrSigLink=S.settings.hrSigLink||rec.hrSigLink;
+  await dailySave(rec, attached.length>1 ? attached.length+" HR e-signatures attached" : "HR e-signature attached");
+  const names=attached.map(p=>p.title||p.name||p.slot).join(", ");
+  toast(attached.length+" e-sig"+(attached.length===1?"":"s")+" attached — "+names,"ok");
   render();
 }
 function pickHrSig(){
   PENDING={ hrSig:true };
-  ensurePicker().click();
+  const el=ensurePicker();
+  el.multiple=true;
+  el.accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp";
+  el.click();
+}
+async function handleHrSigPick(job, file){
+  return handleHrSigFiles(job, file ? [file] : []);
 }
 
 /* Finds this employee's folder under HR-201 FILES and remembers it. */
@@ -16126,10 +16375,11 @@ function ensurePicker(){
   el.type="file"; el.id="drive-picker"; el.style.display="none";
   el.accept=".pdf,.jpg,.jpeg,.png,.webp,.heic,.doc,.docx,.xls,.xlsx";
   el.addEventListener("change", async ()=>{
-    const file=el.files && el.files[0];
-    const job=PENDING; PENDING=null; el.value="";
-    if(!file || !job) return;
-    if(job.hrSig){ await handleHrSigPick(job, file); return; }
+    const files=el.files ? Array.from(el.files) : [];
+    const job=PENDING; PENDING=null; el.multiple=false; el.value="";
+    if(!files.length || !job) return;
+    if(job.hrSig){ await handleHrSigFiles(job, files); return; }
+    const file=files[0];
     if(job.signed){ await handleSignedPick(job, file); return; }
     if(job.general){ await handleGeneralPick(job, file); return; }
     const emp=S.employees[job.empId]; if(!emp) return;
@@ -18386,9 +18636,9 @@ function payAttendanceCard(kind, per, lines){
      + '</div></div></div>';
     return h;
   }
-  const abbr=st=>({"Present":"P","Present/Late":"L","Undertime":"U","Absent":"A","Leave":"LV","Leave with Pay":"LP",
+  const abbr=st=>({"Present":"P","Has not yet arrived":"NY","Present/Late":"L","Undertime":"U","Absent":"A","Leave":"LV","Leave with Pay":"LP",
     "Regular Holiday":"H","Special Holiday":"SH","Half Day":"HD","Rest Day":"R"}[st]||(st?"?":"·"));
-  h+='<div class="note">P present · L late · U undertime · A absent · LV leave · H holiday · R rest day. '
+  h+='<div class="note">P present · NY not yet arrived · L late · U undertime · A absent · LV leave · H holiday · R rest day. '
    + 'A small figure is overtime hours; a green 30 or 100 is the holiday premium. Click a date to open that report, '
    + 'or Days to change one person’s week — the register follows it.</div>'
    + '<div class="tw" style="max-height:46vh;overflow:auto"><table><thead><tr><th style="min-width:180px">Employee</th>'
@@ -18546,6 +18796,8 @@ function pasteManpowerDoor(){
         else { row.rk=""; row.ex=""; }
         rec.rows[e.id]=row;
       });
+      rec.order=mergeIdList(x.rows.map(({e})=>e.id), rec.order);
+      rec.siteOrder=mergeIdList(x.rows.map(({e,r})=>r.site||((rec.rows[e.id]||{}).site)||e.project||"").filter(Boolean), rec.siteOrder);
       await dailySave(rec, "pasted from JSON"+(x.day.source?" — "+x.day.source:""));
       wrote++;
     }
@@ -18563,11 +18815,12 @@ function attendanceSummaryCard(months){
   Object.values(S.daily).forEach(rec=>{
     if(!rec || !rec.date || !keep.has(monthKey(rec.date))) return;
     Object.entries(rec.rows||{}).forEach(([id,r])=>{
-      const t=(T[id]=T[id]||{present:0,late:0,ut:0,absent:0,leave:0,excused:0,ot:0,prem:0,credit:0});
+      const t=(T[id]=T[id]||{present:0,late:0,ut:0,absent:0,leave:0,waiting:0,excused:0,ot:0,prem:0,credit:0});
       const st=effectiveStatus(id, rec.date, r.s, r.r);
       if(st==="Present" || st==="Half Day") t.present++;
       else if(st==="Present/Late"){ t.present++; t.late++; }
       else if(st==="Undertime"){ t.present++; t.ut++; }
+      else if(st==="Has not yet arrived") t.waiting++;
       else if(st==="Absent") t.absent++;
       else if(st==="Leave" || st==="Leave with Pay"){ t.leave++; if(r.s==="Absent") t.excused++; }
       t.ot+=Number(r.ot)||0;
@@ -18588,13 +18841,14 @@ function attendanceSummaryCard(months){
    + 'Holiday premium days are the ones HR chose, not the ones that were eligible.</div></div>'
    + '<div class="tw" style="max-height:52vh;overflow:auto"><table><thead><tr>'
    + '<th style="width:60px">No.</th><th>Employee</th><th class="num">Days credited</th><th class="num">Present</th>'
-   + '<th class="num">Late</th><th class="num">Undertime</th><th class="num">Absent</th><th class="num">Leave</th>'
+   + '<th class="num">Late</th><th class="num">Undertime</th><th class="num">Not yet in</th><th class="num">Absent</th><th class="num">Leave</th>'
    + '<th class="num">OT hrs</th><th class="num">Premium days</th></tr></thead><tbody>'
    + rows.map(x=>'<tr data-attsum="1" data-hay="'+esc((x.e.name+" "+flipName(x.e.name)+" "+(x.e.empNo||"")).toLowerCase())+'">'
       + '<td class="mono">'+esc(x.e.empNo||"—")+'</td><td class="nm">'+esc(flipName(x.e.name))+'</td>'
       + '<td class="num">'+num(x.credit,1)+'</td><td class="num">'+x.present+'</td>'
       + '<td class="num">'+(x.late?drillCell(x.late,"warn",{kind:"late",empId:x.id,months}):"0")+'</td>'
       + '<td class="num">'+x.ut+'</td>'
+      + '<td class="num">'+(x.waiting||0)+'</td>'
       + '<td class="num">'+(x.absent?drillCell(x.absent,"crit",{kind:"absent",empId:x.id,months}):"0")+'</td>'
       + '<td class="num">'+(x.leave?drillCell(x.leave,"mut",{kind:"leave",empId:x.id,months}):"0")
       + (x.excused?'<div class="lbl">'+x.excused+' excused</div>':'')+'</td>'

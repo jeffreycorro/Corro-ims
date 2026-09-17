@@ -59,6 +59,10 @@ function loadRosterFns() {
         .replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;");
     },
+    flipName(n) {
+      const p = String(n || "").split(",");
+      return p.length > 1 ? p[1].trim() + " " + p[0].trim() : String(n || "");
+    },
   };
   const names = [
     "knownSepRec",
@@ -70,15 +74,29 @@ function loadRosterFns() {
     "firstAddedIndex",
     "dailySiteOf",
     "dailyPeople",
+    "dailyGroups",
     "persistRosterOnDay",
+    "applyHrSigsToRec",
     "memoChain",
+    "mergeIdList",
+    "mergeDailyRowKeep",
+    "lastRosterLayout",
+    "dailyOrderOf",
+    "dailySiteOrderOf",
+    "sortByRosterOrder",
+    "nameLastFirst",
+    "foldSigName",
+    "hrSigSlotDefs",
+    "matchHrSigFilename",
+    "normStatus",
+    "dayCredit",
   ];
   const body = names.map((n) => extractFunction(html, n)).join("\n");
   vm.runInNewContext(body, ctx);
   return ctx;
 }
 
-describe("staff concern sheet — live 16c HTML", () => {
+describe("staff concern sheet — live 17a HTML", () => {
   it("ships the separated apply list next to the artifact", () => {
     assert.equal(roster.count, 67);
     assert.equal(roster.employees.length, 67);
@@ -92,6 +110,8 @@ describe("staff concern sheet — live 16c HTML", () => {
     assert.match(html, /function mergeIncomingDoc/);
     assert.match(html, /function hrSigSrc/);
     assert.match(html, /function handleHrSigPick/);
+    assert.match(html, /function handleHrSigFiles/);
+    assert.match(html, /function matchHrSigFilename/);
     assert.match(html, /id="dm-hrsig"/);
     assert.match(html, /id="set-hrsig"/);
     assert.match(html, /job\.hrSig/);
@@ -99,9 +119,13 @@ describe("staff concern sheet — live 16c HTML", () => {
     assert.match(html, /separated-roster\.json/);
     assert.match(html, /pill ok[^>]*>signed/);
     assert.match(html, /prev\.signedLink && !m\.signedLink/);
-    assert.match(html, /rec\.hrSigData\|\|rec\.hrSigLink\|\|hrSigSrc\(\)/);
+    assert.match(html, /hrSigSrc\(rec,"prepared"\)/);
     assert.match(html, /Object\.keys\(rec\.rows\|\|\{\}\)\.forEach\(id=>\{ if\(id\) seen\[id\]=true/);
-    assert.match(html, /const BUILD = "2026-09-16c"/);
+    assert.match(html, /const BUILD = "2026-09-17a"/);
+    assert.match(html, /Has not yet arrived/);
+    assert.match(html, /OT HRS/);
+    assert.match(html, /Last name/);
+    assert.match(html, /el\.multiple=true/);
   });
 
   it("keeps a new hire and their site after save and on the next blank day", () => {
@@ -159,6 +183,110 @@ describe("staff concern sheet — live 16c HTML", () => {
     assert.equal(next.rows.e1250.site, "TAWASON");
     assert.equal(next.hrSigData, "data:image/png;base64,AAA");
     assert.equal(next.log.length, 1);
+  });
+
+  it("does not let a stale daily snapshot drop OT, times, or report order", () => {
+    const ctx = loadRosterFns();
+    const incoming = {
+      date: "2026-09-17",
+      extra: ["e1250"],
+      rows: { e1250: { s: "Present", r: "", site: "TAWASON" } },
+      omit: [],
+      order: ["e1250"],
+    };
+    const local = {
+      date: "2026-09-17",
+      extra: ["e1250", "e1400"],
+      rows: {
+        e1250: { s: "Present", r: "", site: "TAWASON", ot: 2.5, in: "7:30 AM", out: "6:00 PM" },
+        e1400: { s: "Has not yet arrived", r: "", site: "CTU BARILI", ot: 1 },
+      },
+      omit: [],
+      order: ["e1400", "e1250"],
+      siteOrder: ["CTU BARILI", "TAWASON"],
+    };
+    const next = ctx.mergeIncomingDoc("daily", incoming, local);
+    assert.equal(next.rows.e1250.ot, 2.5);
+    assert.equal(next.rows.e1250.in, "7:30 AM");
+    assert.equal(next.rows.e1250.out, "6:00 PM");
+    assert.equal(next.rows.e1400.ot, 1);
+    assert.equal(next.rows.e1400.s, "Has not yet arrived");
+    assert.equal(JSON.stringify(next.order), JSON.stringify(["e1250", "e1400"]));
+    assert.equal(JSON.stringify(next.siteOrder), JSON.stringify(["CTU BARILI", "TAWASON"]));
+  });
+
+  it("keeps saved people in Drive / payroll OT layout after save and on the next day", () => {
+    const ctx = loadRosterFns();
+    ctx.S.employees = {
+      e1250: { id: "e1250", empNo: "1250", name: "Armenio, Toribio D.", status: "Regular", project: "ADMINS" },
+      e1400: { id: "e1400", empNo: "1400", name: "Nuevo, Ana", status: "Probationary", project: "ADMINS" },
+      e1353: { id: "e1353", empNo: "1353", name: "Pedrano, Jaica M.", status: "Regular", project: "ADMINS" },
+    };
+    ctx.atWork = () => [ctx.S.employees.e1250, ctx.S.employees.e1400, ctx.S.employees.e1353];
+    const monday = {
+      id: "d20260916",
+      date: "2026-09-16",
+      extra: ["e1400"],
+      omit: [],
+      order: ["e1400", "e1353", "e1250"],
+      siteOrder: ["CTU BARILI", "TAWASON", "ADMINS"],
+      rows: {
+        e1400: { s: "Present", r: "", site: "CTU BARILI", ot: 3 },
+        e1353: { s: "Present", r: "", site: "TAWASON", ot: 1.5 },
+        e1250: { s: "Has not yet arrived", r: "", site: "ADMINS", ot: null },
+      },
+    };
+    ctx.persistRosterOnDay(monday);
+    ctx.S.daily.d20260916 = monday;
+    ctx.FIRST_ADDED = null;
+    ctx.LAST_SITE_IX = null;
+    assert.equal(JSON.stringify(monday.order), JSON.stringify(["e1400", "e1353", "e1250"]));
+    assert.equal(monday.rows.e1400.ot, 3);
+    assert.equal(monday.rows.e1353.ot, 1.5);
+
+    const tue = { date: "2026-09-17", rows: {}, extra: [], omit: [] };
+    const people = ctx.dailyPeople(tue);
+    assert.equal(JSON.stringify(people.map((e) => e.id)), JSON.stringify(["e1400", "e1353", "e1250"]));
+    ctx.persistRosterOnDay(tue);
+    assert.equal(tue.rows.e1400.site, "CTU BARILI");
+    assert.equal(JSON.stringify(tue.order), JSON.stringify(["e1400", "e1353", "e1250"]));
+  });
+
+  it("splits Drive-style last / first names and matches e-sig JPEGs by filename", () => {
+    const ctx = loadRosterFns();
+    ctx.S.settings = {
+      hrStaff: "Maria Trina Cassandra A. Moran",
+      hrHead: "Jeffrey James Corro",
+    };
+    ctx.S.employees = {
+      e1250: { id: "e1250", empNo: "1250", name: "Armenio, Toribio D." },
+      e1353: { id: "e1353", empNo: "1353", name: "Pedrano, Jaica M." },
+    };
+    const nf = ctx.nameLastFirst("Armenio, Toribio D.");
+    assert.equal(nf.last, "Armenio");
+    assert.equal(nf.first, "Toribio D.");
+    assert.equal(ctx.matchHrSigFilename("cassie.jpg").slot, "prepared");
+    assert.equal(ctx.matchHrSigFilename("prepared-by.jpeg").slot, "prepared");
+    assert.equal(ctx.matchHrSigFilename("Moran.JPG").slot, "prepared");
+    assert.equal(ctx.matchHrSigFilename("approved.jpg").slot, "approved");
+    assert.equal(ctx.matchHrSigFilename("hr-head.jpg").slot, "approved");
+    assert.equal(ctx.matchHrSigFilename("Corro.jpg").slot, "approved");
+    const empHit = ctx.matchHrSigFilename("1250-Armenio.jpg");
+    assert.equal(empHit.emp && empHit.emp.id, "e1250");
+    const lastHit = ctx.matchHrSigFilename("Pedrano.jpeg");
+    assert.equal(lastHit.emp && lastHit.emp.id, "e1353");
+  });
+
+  it("treats Has not yet arrived as its own unpaid, non-absent status", () => {
+    const ctx = loadRosterFns();
+    assert.equal(ctx.normStatus("Has not yet arrived"), "Has not yet arrived");
+    assert.equal(ctx.normStatus("not yet in"), "Has not yet arrived");
+    assert.equal(ctx.normStatus("NYA"), "Has not yet arrived");
+    assert.equal(ctx.dayCredit({ s: "Has not yet arrived" }), 0);
+    assert.equal(ctx.dayCredit({ s: "Present" }), 1);
+    assert.equal(ctx.dayCredit({ s: "Absent" }), 0);
+    assert.match(html, /"Has not yet arrived"/);
+    assert.match(html, /DAY_STATUS = \["Present","Has not yet arrived"/);
   });
 
   it("keeps a just-attached signedLink when a stale memo snapshot arrives", () => {
