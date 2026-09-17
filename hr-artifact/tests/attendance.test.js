@@ -98,7 +98,9 @@ describe("manpower attendance core", () => {
     assert.ok(hr.CLOSED_STATUSES.includes("Leave with Pay"));
     assert.ok(hr.CLOSED_STATUSES.includes("Undertime"));
     assert.ok(hr.CLOSED_STATUSES.includes("Has not yet arrived"));
+    assert.equal(hr.STATUS_PENDING, "Has not yet arrived");
     assert.equal(hr.dayCredit("Has not yet arrived"), 0);
+    assert.equal(hr.dayCredit(hr.STATUS_PENDING), 0);
     assert.equal(hr.normStatus("Present (Late)"), "Present/Late");
     assert.equal(hr.normStatus("undertime"), "Undertime");
     assert.equal(hr.normStatus("left early"), "Undertime");
