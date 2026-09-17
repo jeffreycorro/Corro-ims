@@ -395,6 +395,41 @@ describe("claude shim", () => {
     assert.doesNotMatch(src, /MOTORPOOL_GATE_SECRET/);
     assert.match(src, /access_token/);
     assert.match(src, /Sign out/);
+    assert.match(src, /function publishAuth/);
+    assert.match(src, /window\.__mpAuth/);
+  });
+
+  it("publishes the signed-in name on window.__mpAuth for Requested by", async () => {
+    const w = fakeWindow();
+    w.fetch = (url, opts) => {
+      if (String(url).includes("/auth") && (!opts || opts.method === "GET")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            authenticated: true,
+            method: "supabase",
+            name: "Yard Staff",
+            email: "motorpool@corroconstruction.com",
+          }),
+          text: async () =>
+            JSON.stringify({
+              authenticated: true,
+              method: "supabase",
+              name: "Yard Staff",
+              email: "motorpool@corroconstruction.com",
+            }),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({}),
+        text: async () => "{}",
+      });
+    };
+    loadShim(w);
+    await w.claude.use("db");
+    assert.equal(w.__mpAuth.name, "Yard Staff");
+    assert.equal(w.__mpAuth.email, "motorpool@corroconstruction.com");
   });
 
   it("hands off a hash access_token to auth and strips it from the URL", async () => {

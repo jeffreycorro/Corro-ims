@@ -365,7 +365,7 @@ var SIGNATORIES = [
 ];
 var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
 /* Shown on the Ask screen, so a screenshot says which version someone is on. */
-var BUILD = "2026-09-15 d";
+var BUILD = "2026-09-17 a";
 var DAY = 86400000, MO = 30.44;
 
 /* Part categories that were entered under two spellings and so split a unit's
@@ -413,6 +413,20 @@ function pesoK(n){ if(n==null||isNaN(n)) return "—";
 function litres(n){ return (n==null||isNaN(n))?"—":Number(n).toLocaleString("en-PH",{minimumFractionDigits:2,maximumFractionDigits:2})+" L"; }
 function nnum(n,d){ if(n==null||isNaN(n))return "—";
   return Number(n).toLocaleString("en-PH",{minimumFractionDigits:d==null?0:d,maximumFractionDigits:d==null?0:d}); }
+/* Amounts must stay numeric. A leftover string total ("8450" + 0) concatenated
+   across lines and showed ₱84k on a ₱8,450 form. */
+function moneyNum(v){
+  if(v==null||v==="") return 0;
+  if(typeof v==="number") return isFinite(v)?v:0;
+  var n=parseFloat(String(v).replace(/[₱,\s]/g,"").trim());
+  return isFinite(n)?n:0;
+}
+function lineMoney(l){
+  if(!l) return 0;
+  var q=moneyNum(l.qty), p=moneyNum(l.price);
+  if(q||p) return q*p;
+  return moneyNum(l.total);
+}
 /* local-date ISO: never build this from UTC getters, it shifts the day */
 function iso(d){ d=d||new Date();
   return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
@@ -609,6 +623,46 @@ function ltoDetailsStale(v,proposal){
   if(!haveDate||!haveExp) return true;
   return haveDate!==proposal.regDate;
 }
+function signedInName(){
+  try{
+    var a=(typeof window!=="undefined"&&window.__mpAuth)||{};
+    var name=String(a.name||a.full_name||"").trim();
+    if(name) return name;
+    var email=String(a.email||"").trim();
+    if(email&&email.indexOf("@")>0) return email.split("@")[0];
+  }catch(e){}
+  return "";
+}
+function vrfRequestedBy(entry){
+  function clean(v){
+    var s=String(v==null?"":v).trim();
+    if(!s||s==="MOTORPOOL DEPT.") return "";
+    return s;
+  }
+  var who=clean(entry&&entry.requestedBy);
+  if(who) return who;
+  var rows=(entry&&entry.rows)||[];
+  var i;
+  for(i=0;i<rows.length;i++){
+    who=clean(rows[i]&&rows[i].requestedBy);
+    if(who) return who;
+  }
+  var no=String((entry&&entry.vrf)||"");
+  var reserveNo=String((entry&&entry.reserve)||"");
+  var list=(typeof S!=="undefined"&&S.reserves)||[];
+  for(i=0;i<list.length;i++){
+    var r=list[i]; if(!r) continue;
+    var hit=false;
+    if(reserveNo&&String(r.no)===reserveNo) hit=true;
+    if(no&&String(r.vrfNo||"")===no) hit=true;
+    if(no&&(r.vrfs||[]).some(function(x){ return String(x)===no; })) hit=true;
+    if(hit){
+      who=clean(r.requestedBy);
+      if(who) return who;
+    }
+  }
+  return signedInName();
+}
 function vrfSearchHits(vrf,term){
   var v=String(vrf==null?"":vrf).toLowerCase();
   var t=String(term==null?"":term).toLowerCase().trim();
@@ -798,17 +852,18 @@ function buildIndex(){
       var rs=rows.filter(function(r){ return _lw.get(r).work===codeV; });
       return {code:codeV, name:workName(codeV), rows:rs,
         confirmed: rs.every(function(r){ return _lw.get(r).confirmed; }),
-        total: rs.reduce(function(a,r){ return a+(r.total||0); },0)};
+        total: rs.reduce(function(a,r){ return a+lineMoney(r); },0)};
     });
     var units={}; rows.forEach(function(r){ if(r.veh) units[r.veh]=1; });
     /* Every movement is a VRF, and a VRF has a life: raised → liquidated → closed.
        Rows carried in from the old workbooks have no status at all; they are
        history, not a backlog, so they are marked legacy and never chased. */
-    var st=null, liq=null, reserve="";
+    var st=null, liq=null, reserve="", who="";
     rows.forEach(function(r){
       if(!st&&r.vstatus) st=r.vstatus;
       if(!liq&&r.liq) liq=r.liq;
       if(!reserve&&r.reserve) reserve=String(r.reserve);
+      if(!who&&r.requestedBy) who=String(r.requestedBy);
     });
     return {vrf:k, date:rows[0].date, month:rows[0].month, rows:rows,
       status: st||"Legacy", legacy:!st, liq:liq, reserve:reserve,
@@ -817,9 +872,89 @@ function buildIndex(){
       confirmed:nConf===rows.length, partial:nConf>0&&nConf<rows.length,
       confidence: nConf===rows.length?"confirmed":inf.confidence,
       why: nConf===rows.length?"":inf.why,
-      total: rows.reduce(function(a,r){ return a+(r.total||0); },0),
-      project: rows[0].project, notes: rows[0].notes, src: rows[0].src||""};
-  }).sort(function(a,b){ return (parseDate(b.date)||0)-(parseDate(a.date)||0); });
+      total: rows.reduce(function(a,r){ return a+lineMoney(r); },0),
+      project: rows[0].project, notes: rows[0].notes, src: rows[0].src||"",
+      requestedBy:who};
+  });
+  addHeldReserveVrfs();
+  _vrfs.forEach(function(v){
+    if(v && !(v.requestedBy||"").trim()) v.requestedBy=vrfRequestedBy(v);
+  });
+  _vrfs.sort(function(a,b){ return (parseDate(b.date)||0)-(parseDate(a.date)||0); });
+}
+function usedVrfNumbers(){
+  var used={};
+  function add(n){ n=String(n==null?"":n).trim(); if(n) used[n]=1; }
+  (_vrfs||[]).forEach(function(v){ if(v) add(v.vrf); });
+  allLines().forEach(function(r){ if(r) add(r.vrf); });
+  (S.reserves||[]).forEach(function(r){
+    if(!r) return;
+    add(r.vrfNo);
+    (r.vrfs||[]).forEach(add);
+  });
+  return used;
+}
+function nextFreeVrf(from){
+  var n=parseInt(from,10);
+  if(!isFinite(n)||n<1) n=1;
+  var used=usedVrfNumbers();
+  while(used[String(n)]) n+=1;
+  return n;
+}
+function addHeldReserveVrfs(){
+  /* An approved VRF can sit on the reserve log with a held number and never
+     land in a ledger month (index miss, failed post, or year not loaded).
+     Keep that number on the VRF log — do not invent pesos, only surface
+     the reserve that is already on file. */
+  if(!_vrfs) _vrfs=[];
+  var have={};
+  _vrfs.forEach(function(v){ if(v&&v.vrf) have[String(v.vrf)]=1; });
+  (S.reserves||[]).forEach(function(r){
+    var no=String((r&&r.vrfNo)||"").trim();
+    if(!no||have[no]) return;
+    var lines=(r.draftLines||[]).filter(function(l){ return l&&l.cat; });
+    var rows=lines.map(function(l){
+      var qty=moneyNum(l.qty), price=moneyNum(l.price);
+      return {date:r.date, month:monthKey(r.date), vrf:no, veh:r.veh,
+        cat:l.cat, item:l.item, supplier:l.supplier, qty:qty, price:price,
+        total:qty*price, work:l.work||r.work||"", project:r.project||"",
+        notes:r.draftPurpose||r.scope||"", requestedBy:r.requestedBy||"",
+        reserve:String(r.no),
+        vstatus:(r.status==="Closed"||r.status==="Rejected")?"Closed":"Open",
+        src:"reserve-hold"};
+    });
+    if(!rows.length){
+      rows=[{date:r.date, month:monthKey(r.date), vrf:no, veh:r.veh, cat:"",
+        item:(r.scope||"").slice(0,80), qty:0, price:0,
+        total:moneyNum(r.approvedBudget!=null?r.approvedBudget:r.budget),
+        work:r.work||"", project:r.project||"", notes:r.scope||"",
+        requestedBy:r.requestedBy||"", reserve:String(r.no),
+        vstatus:(r.status==="Closed"||r.status==="Rejected")?"Closed":"Open",
+        src:"reserve-hold"}];
+    }
+    var works=[], seen={};
+    rows.forEach(function(x){
+      var w=x.work||"UNCLASS";
+      if(!seen[w]){ seen[w]=1; works.push(w); }
+    });
+    var scopes=works.map(function(codeV){
+      var rs=rows.filter(function(x){ return (x.work||"UNCLASS")===codeV; });
+      return {code:codeV, name:workName(codeV), rows:rs,
+        confirmed:!!codeV&&codeV!=="UNCLASS",
+        total:rs.reduce(function(a,x){ return a+lineMoney(x); },0)};
+    });
+    var st=rows[0].vstatus;
+    if(r.status==="Requested") st="Requested";
+    _vrfs.push({vrf:no, date:r.date, month:rows[0].month, rows:rows,
+      status:st, legacy:false, liq:null, reserve:String(r.no),
+      units:r.veh?[r.veh]:[], veh:r.veh, works:works, scopes:scopes,
+      multi:works.length>1, confirmed:true, partial:false,
+      confidence:"confirmed", why:"",
+      total:rows.reduce(function(a,x){ return a+lineMoney(x); },0),
+      project:r.project, notes:r.draftPurpose||r.scope||"",
+      src:"reserve-hold", requestedBy:r.requestedBy||"", held:true});
+    have[no]=1;
+  });
 }
 function vrfIndex(){ buildIndex(); return _vrfs; }
 function vrfByNo(no){
@@ -898,7 +1033,7 @@ async function postReserveVrf(r){
   var v=vehicle(r.veh);
   var rows=lines.map(function(l){
     var sp=partSpec(l.cat);
-    var qty=parseFloat(l.qty)||0, price=parseFloat(l.price)||0;
+    var qty=moneyNum(l.qty), price=moneyNum(l.price);
     var note=r.draftPurpose||r.scope||"";
     if(r.bypass||r.fuelOverride){
       var extra=bypassAttribution(r.fuelOverride,{unit:r.veh,litres:r.litres,by:r.approvedBy||r.requestedBy});
@@ -912,6 +1047,7 @@ async function postReserveVrf(r){
       liters:parseFloat(l.liters)||null,
       odo:parseFloat(String(r.draftOdo||"").replace(/,/g,""))||null,
       reserve:String(r.no), vstatus:"Open",
+      requestedBy:r.requestedBy||"",
       override:(r.bypass||r.fuelOverride)?(r.fuelOverride||null):null,
       bypass:!!r.bypass,
       notes:note};
@@ -1097,11 +1233,15 @@ async function loadAll(){
     S[k]=rows;
   });
   var rix = await readDoc("reserves/index");
-  var yrs = (rix&&rix.years)||[String(new Date().getFullYear())];
+  var yrs = mergeIdList((rix&&rix.years)||[], await listCollectionIds("reserves",/^\d{4}$/));
+  if(!yrs.length) yrs=[String(new Date().getFullYear())];
   var rdocs = await Promise.all(yrs.map(function(y){ return readDoc("reserves/"+y); }));
   S.rsvYears=yrs;
   S.reserves=[];
   rdocs.forEach(function(dd){ if(dd&&dd.rows) S.reserves=S.reserves.concat(dd.rows); });
+  if(yrs.join(",")!==((rix&&rix.years)||[]).join(",")){
+    try{ await writeDoc("reserves/index",{years:yrs}); }catch(e){}
+  }
   var pix = await readDoc(PATHS.photoIdx);
   S.photoCounts=(pix&&pix.counts)||{};
   var wt = await readDoc(PATHS.worktypes);
@@ -1111,14 +1251,40 @@ async function loadAll(){
   if(cfg) S.cfg = {nextVrf: cfg.nextVrf||5793, pass: cfg.pass||null, fuel: cfg.fuel||null,
     varianceTol: (typeof cfg.varianceTol==="number")?cfg.varianceTol:VARIANCE_TOL_DEFAULT,
     nextReserve: cfg.nextReserve||1, driveFolder: cfg.driveFolder||""};
-  /* ledger months live in their own documents so no single doc grows unbounded */
+  /* ledger months live in their own documents so no single doc grows unbounded.
+     Trust the index, but also list the collection and months named on reserves
+     so an approved VRF cannot vanish because its month was never indexed. */
   var idx = await readDoc("ledger/index");
-  var mks = (idx&&idx.months)||["2026-05","2026-06","2026-07","2026-08","2026-09"];
+  var mks = mergeIdList((idx&&idx.months)||[], await listCollectionIds("ledger",/^\d{4}-\d{2}$/));
+  (S.reserves||[]).forEach(function(r){ var mk=monthKey(r&&r.date); if(mk&&mks.indexOf(mk)<0) mks.push(mk); });
+  if(!mks.length) mks=["2026-05","2026-06","2026-07","2026-08","2026-09"];
+  mks.sort();
   var docs = await Promise.all(mks.map(function(m){ return readDoc("ledger/"+m); }));
   S.ledger={};
   mks.forEach(function(m,i){ S.ledger[m]=(docs[i]&&docs[i].rows)||[]; });
+  if(mks.join(",")!==((idx&&idx.months)||[]).join(",")){
+    try{ await writeDoc("ledger/index",{months:mks}); }catch(e){}
+  }
   await harvestProjects(true);
   _vrfs=null; _lw=null;
+}
+async function listCollectionIds(name,ok){
+  if(!S.db||!S.db.collection) return [];
+  try{
+    var snap=await S.db.collection(name).get();
+    return ((snap&&snap.docs)||[]).map(function(d){ return String(d.id||""); })
+      .filter(function(id){ return id&&(!ok||ok.test(id)); });
+  }catch(e){ return []; }
+}
+function mergeIdList(a,b){
+  var out=[], seen={};
+  (a||[]).concat(b||[]).forEach(function(x){
+    x=String(x||"").trim();
+    if(!x||seen[x]) return;
+    seen[x]=1; out.push(x);
+  });
+  out.sort();
+  return out;
 }
 
 /* Screens where someone may be typing. A live update must never wipe a
@@ -1452,22 +1618,27 @@ function openProjectsManager(opts){
 /* VRF numbers are the spine of the paper trail, so the counter is taken under a
    short lease rather than read-modify-written by whoever is fastest. */
 async function claimVrf(){
-  if(!S.db){ var n=S.cfg.nextVrf; S.cfg.nextVrf=n+1; await writeDoc(PATHS.cfg,S.cfg); return n; }
+  function take(cur){
+    var n=nextFreeVrf(cur);
+    S.cfg.nextVrf=n+1;
+    return n;
+  }
+  if(!S.db){ var n=take(S.cfg.nextVrf); await writeDoc(PATHS.cfg,S.cfg); return n; }
   for(var i=0;i<6;i++){
     try{
       var r = await S.db.doc("config/counter").acquire({holder:SID, ttlMs:6000});
       if(r.acquired){
         var s = await S.db.doc(PATHS.cfg).get();
         var cur = (s.exists && s.data().nextVrf) || S.cfg.nextVrf;
-        S.cfg.nextVrf = cur+1;
-        await writeDoc(PATHS.cfg,{nextVrf:cur+1, pass:S.cfg.pass, fuel:S.cfg.fuel||null,
+        var got=take(cur);
+        await writeDoc(PATHS.cfg,{nextVrf:S.cfg.nextVrf, pass:S.cfg.pass, fuel:S.cfg.fuel||null,
           varianceTol:S.cfg.varianceTol, nextReserve:S.cfg.nextReserve, driveFolder:S.cfg.driveFolder||""});
-        return cur;
+        return got;
       }
     }catch(e){ break; }
     await new Promise(function(r){ setTimeout(r,450); });
   }
-  var f=S.cfg.nextVrf; S.cfg.nextVrf=f+1; await writeDoc(PATHS.cfg,S.cfg); return f;
+  var f=take(S.cfg.nextVrf); await writeDoc(PATHS.cfg,S.cfg); return f;
 }
 
 async function appendLedger(month,rows){
@@ -1774,22 +1945,12 @@ function photoOwnersForReserve(r){
   return owners.filter(function(x,i,a){ return x&&a.indexOf(x)===i; });
 }
 function photoOwnersForVrf(entry){
-  var owners=[];
-  if(!entry) return owners;
-  if(entry.vrf) owners.push(String(entry.vrf));
-  if(entry.reserve) owners.push(rsvOwner(entry.reserve));
-  var r=entry.reserve?reserveBy(entry.reserve):null;
-  if(r){
-    photoOwnersForReserve(r).forEach(function(o){ owners.push(o); });
-  }else{
-    (S.reserves||[]).forEach(function(rr){
-      if(String(rr.vrfNo)===String(entry.vrf)) photoOwnersForReserve(rr).forEach(function(o){ owners.push(o); });
-      (rr.vrfs||[]).forEach(function(no){
-        if(String(no)===String(entry.vrf)) photoOwnersForReserve(rr).forEach(function(o){ owners.push(o); });
-      });
-    });
-  }
-  return owners.filter(function(x,i,a){ return x&&a.indexOf(x)===i; });
+  /* Photos and amounts stay on one VRF number. A shared reserve used to pull
+     every sibling form's attachments onto the sheet that was open. */
+  if(entry==null) return [];
+  var no=typeof entry==="object"?entry.vrf:entry;
+  no=String(no==null?"":no).trim();
+  return no?[no]:[];
 }
 async function listPhotos(vrf){
   var owner=String(vrf);
@@ -2638,7 +2799,8 @@ var JO_CHECKS={
 };
 function vrfChip(v){
   var m={"Open":["warn","Open — awaiting liquidation"],
-    "Closed":["ok","Liquidated"],"Legacy":["mute","From the old workbooks"]};
+    "Closed":["ok","Liquidated"],"Legacy":["mute","From the old workbooks"],
+    "Requested":["warn","Requested — waiting for approval"]};
   var x=m[v.status]||["mute",v.status];
   return el("span","chip "+x[0],x[1]);
 }
@@ -3122,7 +3284,10 @@ function buildNav(){
     });
   });
 }
-function go(v){ S.view=v; S.sel=null; hideTip(); render(); window.scrollTo(0,0); }
+function go(v){
+  if(v==="vrf"&&S.view!=="vrf") S.draft=null;
+  S.view=v; S.sel=null; hideTip(); render(); window.scrollTo(0,0);
+}
 
 /* ---------------------------------------------------------------
    Going back.
@@ -5476,6 +5641,22 @@ function invView(){
 /* ---- VRF log ----
    The operational list: find a form by its number, print it, and get to the
    signed copy in Drive. Everything else about a VRF lives on its sheet. */
+function vrfLogVisible(list){
+  var cur=parseInt(S.cfg&&S.cfg.nextVrf,10)||0;
+  var pinned=[], rest=[];
+  (list||[]).forEach(function(v){
+    var n=parseInt(String(v&&v.vrf||"").replace(/\D/g,""),10);
+    if(v&&(v.held||(isFinite(n)&&cur&&n>=cur-40&&n<=cur+10))) pinned.push(v);
+    else rest.push(v);
+  });
+  var out=pinned.concat(rest.slice(0,250));
+  var seen={};
+  return out.filter(function(v){
+    var k=String(v&&v.vrf||"");
+    if(!k||seen[k]) return false;
+    seen[k]=1; return true;
+  });
+}
 function vrfLogView(){
   var w=el("div");
   w.appendChild(pageHead("VRF log","Every form, by number",
@@ -5490,6 +5671,7 @@ function vrfLogView(){
   var fw=workSelect(S.regWork,"— every job —");
   var fs2=el("select");
   [["","every status"],["Open","open — awaiting liquidation"],["Closed","liquidated"],
+   ["Requested","requested — not yet approved"],
    ["Legacy","from the old workbooks"]].forEach(function(o){ fs2.appendChild(new Option(o[1],o[0])); });
   fs2.value=S.regStatus||"";
   bar.appendChild(f2("Find",q)); bar.appendChild(f2("Type of job",fw)); bar.appendChild(f2("Status",fs2));
@@ -5588,9 +5770,10 @@ function vrfLogView(){
         ob.addEventListener("click",function(ev){ ev.stopPropagation(); openVrf(v); });
         row.appendChild(ob);
         return row; }}
-    ],list.slice(0,250),{empty:"No form matches that."});
+    ],vrfLogVisible(list),{empty:"No form matches that."});
+    var visible=vrfLogVisible(list);
     host.appendChild(card("Forms",
-      list.length>250?"showing the newest 250 of "+nnum(list.length):nnum(list.length)+" form"+(list.length===1?"":"s"),
+      visible.length<list.length?"showing "+nnum(visible.length)+" of "+nnum(list.length):nnum(list.length)+" form"+(list.length===1?"":"s"),
       tbl));
   }
   var t=null;
@@ -5989,7 +6172,7 @@ function buildVrfDoc(entry,photos){
    ["Vehicle name",v.desc||entry.rows[0]&&entry.rows[0].name||"—"],
    ["Project",entry.project||"—"],
    ["Jobs on this form",entry.scopes.map(function(x){return x.name;}).join(" · ")],
-   ["Requested by",entry.notes?"":"MOTORPOOL DEPT."]
+   ["Requested by",vrfRequestedBy(entry)||"—"]
   ].forEach(function(pp){
     var c=el("div");
     c.appendChild(el("div","k",pp[0]));
@@ -6289,6 +6472,7 @@ function openVrf(entry,tab){
   var v=vehicle(entry.veh);
   lft.appendChild(el("div","hint",entry.date+"  ·  "+(entry.units.join(", ")||"—")+
     (v?" · "+v.desc:"")+"  ·  "+entry.rows.length+" line"+(entry.rows.length>1?"s":"")+
+    "  ·  requested by "+(vrfRequestedBy(entry)||"—")+
     (entry.src?"  ·  from the "+entry.src:"")));
   var chips=el("div","row"); chips.style.marginTop="var(--space-2)";
   chips.appendChild(vrfChip(entry));
@@ -6669,7 +6853,7 @@ function openVrf(entry,tab){
 
       var lrow=el("div","f3"); lrow.style.marginTop="var(--space-4)";
       function lf3(l,n){ var x=el("div","field"); x.appendChild(el("label",null,l)); x.appendChild(n); return x; }
-      var lby=el("input"); lby.placeholder="your name";
+      var lby=el("input"); lby.placeholder="your name"; lby.value=signedInName();
       var lnt=el("input"); lnt.placeholder="anything that changed against the estimate";
       lrow.appendChild(lf3("Liquidated by",lby)); lrow.appendChild(lf3("Note",lnt));
       var lbw=el("div"); lbw.style.cssText="display:flex;align-items:flex-end";
@@ -6714,7 +6898,7 @@ function openVrf(entry,tab){
     function f2(l,n){ var x=el("div","field"); x.appendChild(el("label",null,l)); x.appendChild(n); return x; }
     var fi=el("input"); fi.type="file"; fi.accept="image/*"; fi.multiple=true;
     var cap=el("input"); cap.placeholder="what these show, e.g. Petron receipt";
-    var by=el("input"); by.placeholder="your name";
+    var by=el("input"); by.placeholder="your name"; by.value=signedInName();
     upRow.appendChild(f2("Add photos",fi)); upRow.appendChild(f2("Caption",cap)); upRow.appendChild(f2("Added by",by));
     body.appendChild(upRow);
     var status=el("div","hint"); status.style.marginTop="var(--space-2)"; body.appendChild(status);
@@ -6736,7 +6920,7 @@ function openVrf(entry,tab){
       lbtn.disabled=true; lbtn.textContent="Attaching…";
       try{
         await addLink(entry.vrf,{url:lu.value.trim(),linkKind:lk.value,
-          caption:lc.value.trim(),by:by.value.trim()});
+          caption:lc.value.trim(),by:by.value.trim()||signedInName()});
       }catch(e){ lbtn.disabled=false; lbtn.textContent="Attach the link";
         toast("Could not attach: "+(e&&e.message||"")); return; }
       toast("Link attached."); openVrf(entry,"photos");
@@ -6751,8 +6935,8 @@ function openVrf(entry,tab){
         status.textContent="Adding "+(i+1)+" of "+files.length+"…";
         try{
           var shrunk=await shrinkImage(files[i]);
-          await addPhotoToOwners(photoOwnersForVrf(entry),{data:shrunk.data,w:shrunk.w,h:shrunk.h,bytes:shrunk.bytes,
-            caption:cap.value.trim()||files[i].name,by:by.value.trim()});
+          await addPhoto(String(entry.vrf),{data:shrunk.data,w:shrunk.w,h:shrunk.h,bytes:shrunk.bytes,
+            caption:cap.value.trim()||files[i].name,by:by.value.trim()||signedInName()});
           ok++;
         }catch(e){ failed++; }
       }
@@ -6821,6 +7005,11 @@ function openVrf(entry,tab){
 
 /* ---- new VRF ---- */
 function blankLine(){ return {cat:"",item:"",supplier:"",qty:"",unit:"pc",price:"",liters:"",work:"",remarks:""}; }
+function blankVrfDraft(){
+  return {date:iso(),veh:"",project:"",purpose:"",odo:"",work:"",
+    requestedBy:signedInName(),lines:[blankLine(),blankLine(),blankLine()],
+    photos:[],gateOverride:null,reserve:"",jo:"",vrfNo:""};
+}
 /* A work-type picker, grouped by family so the list stays readable at 39 entries. */
 function workSelect(value,blankLabel){
   var sel=el("select");
@@ -6837,12 +7026,17 @@ function workSelect(value,blankLabel){
 }
 function vrfView(){
   var w=el("div");
-  w.appendChild(pageHead("Vehicle Request Form","Raise a VRF",
-    "One form per request. The number is assigned when you post, so two people encoding at once cannot land on the same VRF."));
-  if(!S.draft) S.draft={date:iso(),veh:"",project:"",purpose:"",odo:"",work:"",
-    requestedBy:"",lines:[blankLine(),blankLine(),blankLine()],
-    photos:[],gateOverride:null,reserve:"",jo:""};
+  var headRow=pageHead("Vehicle Request Form","Raise a VRF",
+    "One form per request. The number is assigned when you post, so two people encoding at once cannot land on the same VRF.");
+  var clr=el("button","btn sm","Clear form");
+  clr.title="Wipe this draft so the next VRF does not keep another form's photos or amounts.";
+  clr.addEventListener("click",function(){ S.draft=null; render(); toast("New VRF cleared."); });
+  try{ var hd=headRow.querySelector&&headRow.querySelector(".page-head"); (hd||headRow).appendChild(clr); }
+  catch(e){ headRow.appendChild(clr); }
+  w.appendChild(headRow);
+  if(!S.draft) S.draft=blankVrfDraft();
   if(!S.draft.photos) S.draft.photos=[];
+  if(!(S.draft.requestedBy||"").trim()) S.draft.requestedBy=signedInName();
   var d=S.draft;
   var g=el("div","grid"); g.style.gap="var(--space-4)";
   var path=el("div","banner info");
@@ -7190,7 +7384,8 @@ function vrfView(){
         total:byW[k].reduce(function(a,r){return a+(r.total||0);},0)}; });
     printVrf({vrf:"— not yet posted —",date:d.date,veh:d.veh,units:[d.veh],
       rows:rows,scopes:scopes,multi:scopes.length>1,project:d.project,notes:d.purpose,
-      total:rows.reduce(function(a,r){return a+(r.total||0);},0)}, d.photos||[]);
+      requestedBy:d.requestedBy,
+      total:rows.reduce(function(a,r){return a+lineMoney(r);},0)}, d.photos||[]);
   });
   foot.appendChild(pv);
   var send=el("button","btn pri","Send for approval");
@@ -7281,10 +7476,9 @@ function vrfView(){
 async function sendForApproval(d,btn){
   if(!d.veh){ toast("Pick a unit first."); return; }
   if(!d.work){ toast("Pick the type of job — the approver decides on that."); return; }
-  var rows=d.lines.filter(function(l){ return l.cat&&(parseFloat(l.qty)||parseFloat(l.price)); });
+  var rows=d.lines.filter(function(l){ return l.cat&&(moneyNum(l.qty)||moneyNum(l.price)); });
   if(!rows.length){ toast("Add at least one line so there is a figure to approve."); return; }
-  var total=rows.reduce(function(a,l){
-    return a+((parseFloat(l.qty)||0)*(parseFloat(l.price)||0)); },0);
+  var total=rows.reduce(function(a,l){ return a+lineMoney(l); },0);
   if(total<=0){ toast("Put the estimated amounts on the lines — that is what is being approved."); return; }
   /* Fuel lines stay on this form. Gauge / fuel-check walls do not apply. */
   /* No window.prompt here: this page runs in a sandboxed frame that blocks
@@ -7320,7 +7514,7 @@ async function sendForApproval(d,btn){
     if(d.photos&&d.photos.length){
       btn.textContent="Saving photos…";
       for(var pi=0;pi<d.photos.length;pi++){
-        try{ await addPhotoToOwners([rsvOwner(no),String(vno)],{data:d.photos[pi].data,w:d.photos[pi].w,
+        try{ await addPhoto(String(vno),{data:d.photos[pi].data,w:d.photos[pi].w,
           h:d.photos[pi].h,bytes:d.photos[pi].bytes,caption:d.photos[pi].caption,by:who}); }catch(e){
           toast("Photo could not be saved: "+((e&&e.message)||"try again")); }
       }
@@ -7340,7 +7534,7 @@ async function postVrf(d,btn){
   if(!d.work){ toast("Pick the type of job — it is what makes this VRF findable later."); return; }
   /* Fuel is a normal VRF. No approved-reserve prerequisite, no fuel-check stop,
      no gauge / photo wall, no parallel bypass-to-create-reserve path. */
-  var rows=d.lines.filter(function(l){ return l.cat && (parseFloat(l.qty)||parseFloat(l.price)); });
+  var rows=d.lines.filter(function(l){ return l.cat && (moneyNum(l.qty)||moneyNum(l.price)); });
   if(!rows.length){ toast("Add at least one line with a category and a figure."); return; }
   btn.disabled=true; btn.textContent="Posting…";
   try{
@@ -7351,7 +7545,7 @@ async function postVrf(d,btn){
     var mk = monthKey(d.date)||iso().slice(0,7);
     var out = rows.map(function(l){
       var sp=partSpec(l.cat);
-      var qty=parseFloat(l.qty)||0, price=parseFloat(l.price)||0;
+      var qty=moneyNum(l.qty), price=moneyNum(l.price);
       return {month:mk,date:d.date,vrf:String(no),veh:d.veh,name:v?v.desc:"",
         work:l.work||d.work,
         cat:l.cat, sub:sp?sp.sub:(isFuel(l.cat)?"Fuel":""),
@@ -7359,6 +7553,7 @@ async function postVrf(d,btn){
         item:l.item, qty:qty, price:price, total:qty*price,
         supplier:l.supplier, project:d.project, liters:parseFloat(l.liters)||null,
         odo:parseFloat(String(d.odo).replace(/,/g,""))||null,
+        requestedBy:d.requestedBy||"",
         override: (isFuel(l.cat)&&d.gateOverride)?d.gateOverride:null,
         bypass: isFuel(l.cat)&&isFuelBypass(d.gateOverride),
         reserve: d.reserve||"", vstatus:"Open",
@@ -7379,10 +7574,8 @@ async function postVrf(d,btn){
     }
     if(d.photos&&d.photos.length){
       btn.textContent="Saving photos…";
-      var owners=[String(no)];
-      if(d.reserve) owners.push(rsvOwner(d.reserve));
       for(var pi=0;pi<d.photos.length;pi++){
-        try{ await addPhotoToOwners(owners,{data:d.photos[pi].data,w:d.photos[pi].w,h:d.photos[pi].h,
+        try{ await addPhoto(String(no),{data:d.photos[pi].data,w:d.photos[pi].w,h:d.photos[pi].h,
           bytes:d.photos[pi].bytes,caption:d.photos[pi].caption,by:d.requestedBy}); }catch(e){
           toast("Photo could not be saved: "+((e&&e.message)||"try again")); }
       }

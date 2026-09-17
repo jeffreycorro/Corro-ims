@@ -85,6 +85,19 @@
     return Boolean(status && status.methods && status.methods.indexOf("supabase") !== -1);
   }
 
+  function publishAuth(status) {
+    try {
+      window.__mpAuth = {
+        authenticated: Boolean(status && status.authenticated),
+        name: status && status.name ? String(status.name) : "",
+        email: status && status.email ? String(status.email) : "",
+        role: status && status.role ? String(status.role) : "",
+        department: status && status.department ? String(status.department) : "",
+      };
+    } catch (e) {}
+    return status;
+  }
+
   function authStatus() {
     return fetch("/.netlify/functions/auth", {
       method: "GET",
@@ -101,9 +114,9 @@
       }
       return res.json().catch(function () {
         return closedGateStatus();
-      });
+      }).then(publishAuth);
     }).catch(function () {
-      return closedGateStatus();
+      return publishAuth(closedGateStatus());
     });
   }
 
@@ -264,6 +277,7 @@
           api("auth", payload)
             .then(function (out) {
               if (!out.authenticated) throw new Error("Sign-in failed");
+              publishAuth(out);
               host.remove();
               showSessionChrome();
               resolve(out);
@@ -290,6 +304,7 @@
           return { authenticated: true, method: "open", local: true, offline: true };
         }
         if (status && status.authenticated) {
+          publishAuth(status);
           if (status.method !== "open") showSessionChrome();
           return status;
         }
@@ -301,6 +316,7 @@
           return api("auth", { action: "login", access_token: token })
             .then(function (out) {
               if (!out.authenticated) throw new Error("Sign-in failed");
+              publishAuth(out);
               showSessionChrome();
               return out;
             })
