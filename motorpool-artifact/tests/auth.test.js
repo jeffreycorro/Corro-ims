@@ -176,6 +176,7 @@ describe("supabase auth login", () => {
     assert.equal(body.method, "supabase");
     assert.equal(body.role, "staff");
     assert.equal(body.department, "motorpool");
+    assert.equal(body.name, "Yard Staff");
     assert.equal(body.open, false);
     assert.match(res.headers["set-cookie"], new RegExp(`${COOKIE_NAME}=`));
     assert.match(res.headers["set-cookie"], /HttpOnly/);

@@ -751,6 +751,147 @@
     });
   }
 
+  function photoOwnersForVrf(entry) {
+    if (entry == null) return [];
+    var no = typeof entry === "object" ? entry.vrf : entry;
+    no = String(no == null ? "" : no).trim();
+    return no ? [no] : [];
+  }
+
+  function moneyNum(v) {
+    if (v == null || v === "") return 0;
+    if (typeof v === "number") return isFinite(v) ? v : 0;
+    var n = parseFloat(String(v).replace(/[₱,\s]/g, "").trim());
+    return isFinite(n) ? n : 0;
+  }
+
+  function lineMoney(l) {
+    if (!l) return 0;
+    var q = moneyNum(l.qty);
+    var p = moneyNum(l.price);
+    if (q || p) return q * p;
+    return moneyNum(l.total);
+  }
+
+  function vrfRequestedBy(entry, signedIn, reserves) {
+    function clean(v) {
+      var s = String(v == null ? "" : v).trim();
+      if (!s || s === "MOTORPOOL DEPT.") return "";
+      return s;
+    }
+    var who = clean(entry && entry.requestedBy);
+    if (who) return who;
+    var rows = (entry && entry.rows) || [];
+    var i;
+    for (i = 0; i < rows.length; i++) {
+      who = clean(rows[i] && rows[i].requestedBy);
+      if (who) return who;
+    }
+    var no = String((entry && entry.vrf) || "");
+    var reserveNo = String((entry && entry.reserve) || "");
+    var list = reserves || [];
+    for (i = 0; i < list.length; i++) {
+      var r = list[i];
+      if (!r) continue;
+      var hit = false;
+      if (reserveNo && String(r.no) === reserveNo) hit = true;
+      if (no && String(r.vrfNo || "") === no) hit = true;
+      if (
+        no &&
+        (r.vrfs || []).some(function (x) {
+          return String(x) === no;
+        })
+      ) {
+        hit = true;
+      }
+      if (hit) {
+        who = clean(r.requestedBy);
+        if (who) return who;
+      }
+    }
+    return clean(signedIn);
+  }
+
+  function blankVrfDraft(now, signedIn) {
+    return {
+      date: now || "",
+      veh: "",
+      project: "",
+      purpose: "",
+      odo: "",
+      work: "",
+      requestedBy: String(signedIn || "").trim(),
+      lines: [{}, {}, {}],
+      photos: [],
+      gateOverride: null,
+      reserve: "",
+      jo: "",
+      vrfNo: "",
+    };
+  }
+
+  function usedVrfNumbers(vrfs, reserves) {
+    var used = {};
+    function add(n) {
+      n = String(n == null ? "" : n).trim();
+      if (n) used[n] = 1;
+    }
+    (vrfs || []).forEach(function (v) {
+      add(v && (v.vrf || v));
+    });
+    (reserves || []).forEach(function (r) {
+      if (!r) return;
+      add(r.vrfNo);
+      (r.vrfs || []).forEach(add);
+    });
+    return used;
+  }
+
+  function nextFreeVrf(from, used) {
+    var n = parseInt(from, 10);
+    if (!isFinite(n) || n < 1) n = 1;
+    used = used || {};
+    while (used[String(n)]) n += 1;
+    return n;
+  }
+
+  function heldReserveVrfs(reserves, existing) {
+    var have = {};
+    (existing || []).forEach(function (v) {
+      if (v && v.vrf) have[String(v.vrf)] = 1;
+    });
+    var out = [];
+    (reserves || []).forEach(function (r) {
+      var no = String((r && r.vrfNo) || "").trim();
+      if (!no || have[no]) return;
+      out.push(no);
+      have[no] = 1;
+    });
+    return out;
+  }
+
+  function vrfLogVisible(list, nextVrf) {
+    var cur = parseInt(nextVrf, 10) || 0;
+    var pinned = [];
+    var rest = [];
+    (list || []).forEach(function (v) {
+      var n = parseInt(String((v && v.vrf) || "").replace(/\D/g, ""), 10);
+      if (v && (v.held || (isFinite(n) && cur && n >= cur - 40 && n <= cur + 10))) {
+        pinned.push(v);
+      } else {
+        rest.push(v);
+      }
+    });
+    var out = pinned.concat(rest.slice(0, 250));
+    var seen = {};
+    return out.filter(function (v) {
+      var k = String((v && v.vrf) || "");
+      if (!k || seen[k]) return false;
+      seen[k] = 1;
+      return true;
+    });
+  }
+
   function photoFingerprint(x) {
     if (!x) return "";
     if (x.data) {
@@ -987,6 +1128,15 @@
     upsertManagedProject: upsertManagedProject,
     missingFuelApproveFields: missingFuelApproveFields,
     photoOwnersForReserve: photoOwnersForReserve,
+    photoOwnersForVrf: photoOwnersForVrf,
+    moneyNum: moneyNum,
+    lineMoney: lineMoney,
+    vrfRequestedBy: vrfRequestedBy,
+    blankVrfDraft: blankVrfDraft,
+    usedVrfNumbers: usedVrfNumbers,
+    nextFreeVrf: nextFreeVrf,
+    heldReserveVrfs: heldReserveVrfs,
+    vrfLogVisible: vrfLogVisible,
     mergePhotoLists: mergePhotoLists,
     missingJoCloseFields: missingJoCloseFields,
     missingList: missingList,

@@ -63,6 +63,7 @@ function sessionPublicFields(session) {
     email: session.email || null,
     role: session.role || null,
     department: session.department || null,
+    name: session.name || null,
   };
 }
 

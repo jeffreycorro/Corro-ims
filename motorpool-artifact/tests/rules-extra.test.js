@@ -23,6 +23,7 @@ const {
   masterList,
   asProject,
   photoOwnersForReserve,
+  photoOwnersForVrf,
   mergePhotoLists,
 } = require("./lib/rules");
 const { TYPES } = require("./lib/worktypes");
@@ -145,6 +146,7 @@ describe("infer job and gates", () => {
       "RSV-3",
       "5795",
     ]);
+    assert.deepEqual(photoOwnersForVrf({ vrf: "5795", reserve: "3" }), ["5795"]);
     const data = "data:image/png;base64,AAAABBBB";
     const merged = mergePhotoLists([
       [{ id: "vrf-RSV-1__1", vrf: "RSV-1", idx: 1, data: data, bytes: 12, w: 64, h: 40, caption: "Gauge before filling" }],
