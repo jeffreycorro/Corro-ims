@@ -3,21 +3,22 @@
  * Loaded by claude-shim.js. Does not rewrite the artifact.
  *
  * Adds Pipeline "Bulk import JSON", "Consolidate duplicates", a
- * role filter, a live search bar, and a "View 201 / application file"
- * action on the applicant editor.
+ * role filter, a live search bar, applicant exam-score rows, and a
+ * "View 201 / application file" action on the applicant editor.
  */
 (function (root) {
   "use strict";
 
-  if (root.hrRecruit && root.hrRecruit.version === "1.4.0") return;
+  if (root.hrRecruit && root.hrRecruit.version === "1.5.0") return;
 
   var api = {
-    version: "1.4.0",
+    version: "1.5.0",
     attached: false,
     openAppId: "",
     roleFilter: "",
     pipelineSearch: "",
     draftStaffNotes: [],
+    draftExamScores: [],
   };
 
   var STAFF_NOTE_KINDS = [
@@ -107,6 +108,162 @@
     var S = store();
     if (S && S.applicants) S.applicants[a.id] = a;
     if (typeof root.put === "function") await root.put("applicants", a.id, a);
+  }
+
+  function newExamScoreId() {
+    return "es_" + Math.random().toString(36).slice(2, 10);
+  }
+
+  function catalogExam(examId) {
+    var S = store() || {};
+    if (!examId || !S.exams) return null;
+    return S.exams[examId] || null;
+  }
+
+  function normalizeExamScore(raw) {
+    if (raw == null) return null;
+    if (typeof raw !== "object") return null;
+    var catalog = catalogExam(raw.examId);
+    var title = String(raw.title || raw.name || (catalog && catalog.title) || "").trim();
+    var scoreNum = raw.score === "" || raw.score == null ? NaN : Number(raw.score);
+    if (!title && !Number.isFinite(scoreNum) && !raw.examId) return null;
+    var maxNum = raw.max != null && raw.max !== "" ? Number(raw.max) : raw.maxScore != null && raw.maxScore !== "" ? Number(raw.maxScore) : NaN;
+    if (!Number.isFinite(maxNum) && catalog && catalog.maxScore != null) maxNum = Number(catalog.maxScore);
+    var rec = {
+      id: String(raw.id || newExamScoreId()),
+      examId: String(raw.examId || ""),
+      title: title || "Exam",
+      score: Number.isFinite(scoreNum) ? scoreNum : raw.score,
+      takenOn: String(raw.takenOn || raw.on || today()),
+      notes: String(raw.notes || "").trim(),
+    };
+    if (Number.isFinite(maxNum)) rec.max = maxNum;
+    if (raw.form) rec.form = raw.form;
+    if (raw.minutes != null) rec.minutes = raw.minutes;
+    if (raw.byCat) rec.byCat = raw.byCat;
+    if (raw.passing != null) rec.passing = raw.passing;
+    if (raw.on && !raw.takenOn) rec.on = raw.on;
+    return rec;
+  }
+
+  function mergeExamScores() {
+    var out = [];
+    var seen = Object.create(null);
+    Array.prototype.forEach.call(arguments, function (list) {
+      (list || []).forEach(function (raw) {
+        var n = normalizeExamScore(raw);
+        if (!n) return;
+        if (seen[n.id]) {
+          var i;
+          for (i = 0; i < out.length; i += 1) {
+            if (out[i].id === n.id) {
+              out[i] = Object.assign({}, out[i], n);
+              return;
+            }
+          }
+        }
+        seen[n.id] = true;
+        out.push(n);
+      });
+    });
+    return out;
+  }
+
+  function examScoresOf(a) {
+    return mergeExamScores((a && a.exams) || [], api.draftExamScores || []);
+  }
+
+  function appendExamScore(a, fields) {
+    var entry = normalizeExamScore(
+      Object.assign(
+        {
+          id: newExamScoreId(),
+          takenOn: today(),
+        },
+        fields || {}
+      )
+    );
+    if (!entry) return null;
+    if (a && a.id && findApplicant(a.id)) {
+      a.exams = mergeExamScores(a.exams, [entry]);
+    } else {
+      api.draftExamScores = mergeExamScores(api.draftExamScores, [entry]);
+    }
+    return entry;
+  }
+
+  function updateExamScore(a, id, fields) {
+    var list = a && a.id && findApplicant(a.id) ? a.exams || [] : api.draftExamScores || [];
+    var i;
+    for (i = 0; i < list.length; i += 1) {
+      if (String(list[i].id) === String(id)) {
+        var next = normalizeExamScore(Object.assign({}, list[i], fields || {}, { id: list[i].id }));
+        if (!next) return null;
+        list[i] = Object.assign({}, list[i], next);
+        if (a && a.id && findApplicant(a.id)) a.exams = list;
+        else api.draftExamScores = list;
+        return list[i];
+      }
+    }
+    return null;
+  }
+
+  function removeExamScore(a, id) {
+    function drop(list) {
+      return (list || []).filter(function (row) {
+        return String(row.id) !== String(id);
+      });
+    }
+    if (a && a.id && findApplicant(a.id)) {
+      var before = (a.exams || []).length;
+      a.exams = drop(a.exams);
+      return a.exams.length !== before;
+    }
+    var prev = (api.draftExamScores || []).length;
+    api.draftExamScores = drop(api.draftExamScores);
+    return api.draftExamScores.length !== prev;
+  }
+
+  function examScoreLine(r) {
+    var n = normalizeExamScore(r) || r || {};
+    var max = n.max != null ? n.max : n.maxScore;
+    return (
+      String(n.title || "Exam") +
+      ": " +
+      (n.score == null || n.score === "" ? "—" : String(n.score)) +
+      (max != null && max !== "" ? " / " + max : "") +
+      (n.takenOn ? " (" + n.takenOn + ")" : "") +
+      (n.notes ? " — " + n.notes : "")
+    );
+  }
+
+  function examScoresSummaryHtml(a) {
+    var list = examScoresOf(a || {});
+    if (!list.length) {
+      return '<div class="lbl" id="hr-recruit-exam-summary-empty">No exam scores on this application.</div>';
+    }
+    return (
+      '<div class="sect-h" style="margin:10px 0 0"><h2 style="font-size:12.5px">Exam scores</h2><span class="rule"></span></div>' +
+      '<div class="chklist" id="hr-recruit-exam-summary">' +
+      list
+        .map(function (n, i) {
+          return (
+            '<div class="chk"><span class="idx">' +
+            String(i + 1).padStart(2, "0") +
+            '</span><span class="n"><b>' +
+            esc(n.title || "Exam") +
+            "</b><span>" +
+            esc(n.takenOn || "") +
+            (n.notes ? " · " + esc(n.notes) : "") +
+            '</span></span><span class="mono">' +
+            esc(n.score == null || n.score === "" ? "—" : String(n.score)) +
+            (n.max != null ? " / " + esc(String(n.max)) : "") +
+            "</span></div>"
+          );
+        })
+        .join("") +
+      "</div>"
+    );
   }
 
   async function refreshApplicants() {
@@ -958,6 +1115,7 @@
         esc(a.resumeLink) +
         "</span></div>";
     }
+    h += examScoresSummaryHtml(a);
     h +=
       '<div class="sect-h" style="margin:6px 0 0"><h2 style="font-size:12.5px">Recruitment checklist</h2><span class="rule"></span></div>' +
       '<div class="chklist">';
@@ -1437,6 +1595,14 @@
             api.draftStaffNotes
           );
           if (api.draftStaffNotes && api.draftStaffNotes.length) api.draftStaffNotes = [];
+          if (Array.isArray(obj.exams)) {
+            obj.exams = mergeExamScores(obj.exams, api.draftExamScores);
+          } else if (cur && Array.isArray(cur.exams)) {
+            obj.exams = mergeExamScores(cur.exams, api.draftExamScores);
+          } else {
+            obj.exams = mergeExamScores(api.draftExamScores);
+          }
+          if (api.draftExamScores && api.draftExamScores.length) api.draftExamScores = [];
         } catch (e) {}
       }
       return orig.apply(this, arguments);
@@ -1507,6 +1673,14 @@
   api.mergeStaffNotes = mergeStaffNotes;
   api.normalizeStaffNote = normalizeStaffNote;
   api.injectStaffNotesPanel = injectStaffNotesPanel;
+  api.normalizeExamScore = normalizeExamScore;
+  api.mergeExamScores = mergeExamScores;
+  api.appendExamScore = appendExamScore;
+  api.updateExamScore = updateExamScore;
+  api.removeExamScore = removeExamScore;
+  api.examScoresOf = examScoresOf;
+  api.examScoreLine = examScoreLine;
+  api.examScoresSummaryHtml = examScoresSummaryHtml;
   api.install = attach;
   root.hrRecruit = api;
 

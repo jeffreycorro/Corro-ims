@@ -1150,7 +1150,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-09-18a";
+const BUILD = "2026-09-18b";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -9388,7 +9388,18 @@ function recruitmentBlock(e){
    + '<div class="kv">'
    + '<dt>Applied</dt><dd>'+esc(longDate(a.appliedOn||""))+' · '+esc(a.source||"—")+'</dd>'
    + '<dt>Written test</dt><dd>'+(a.examWaived?'<span class="pill mut">waived</span> '+esc(a.examWaivedWhy||"")
-       : sc?sc.passed+' of '+sc.total+' passed, '+sc.pct+'% average':'<span class="lbl">none taken</span>')+'</dd>'
+       : (a.exams||[]).length
+         ? (a.exams||[]).map(r=>{
+             const v=examVerdict(r);
+             const title=r.title||(v.x&&v.x.title)||"Exam";
+             const max=r.max||r.maxScore||(v.x&&v.x.maxScore)||"";
+             const when=r.takenOn||r.on||"";
+             return esc(title)+' <span class="mono">'+esc(String(r.score??"—")+(max?" / "+max:""))+'</span>'
+               +(when?' <span class="lbl">'+esc(when)+'</span>':"")
+               +(r.notes?' — '+esc(r.notes):"");
+           }).join("<br>")
+           +(sc?'<div class="lbl">'+sc.passed+' of '+sc.total+' passed'+(sc.pct? ", "+sc.pct+"% average":"")+"</div>":"")
+         : '<span class="lbl">none taken</span>')+'</dd>'
    + '<dt>Interviews</dt><dd>'+(ivs?ivs+' on record':'<span class="lbl">none</span>')+'</dd>'
    + '<dt>HR verdict</dt><dd>'+(a.hrVerdict?sevPill(vSev(a.hrVerdict),a.hrVerdict)+' <span class="mono lbl">'+esc(a.hrRating||"—")+'/5</span>':'<span class="lbl">—</span>')+'</dd>'
    + '</div>'
@@ -12938,14 +12949,26 @@ function examList(){ return Object.values(S.exams).filter(x=>x.kind==="exam").so
 function guideList(){ return Object.values(S.exams).filter(x=>x.kind==="guide").sort((a,b)=>a.title.localeCompare(b.title)); }
 function appList(){ return Object.values(S.applicants).sort((a,b)=>(b.appliedOn||"").localeCompare(a.appliedOn||"")); }
 function examVerdict(r){
-  const x=S.exams[r.examId]; if(!x) return {pct:0,pass:false};
-  const pct = x.maxScore ? Math.round((r.score||0)/x.maxScore*100) : 0;
-  return {pct, pass:(r.score||0)>=(x.passing||0), x};
+  const x=r && r.examId ? S.exams[r.examId] : null;
+  const title=String((r&&(r.title||r.name))||(x&&x.title)||"").trim();
+  const max=Number((r&&(r.max||r.maxScore))||(x&&x.maxScore)||0)||0;
+  const passing=r && r.passing!=null ? Number(r.passing)
+    : (x ? (x.items ? examPass(x) : Number(x.passing||0)) : 0);
+  const score=Number(r&&r.score);
+  if(!x && !title && !Number.isFinite(score)) return {pct:0,pass:false};
+  const pct = max && Number.isFinite(score) ? Math.round(score/max*100) : 0;
+  const syn = x || {title: title||"Exam", maxScore:max, passing:passing||0};
+  return {pct, pass: passing ? (Number.isFinite(score) && score>=passing) : true, x:syn, title:syn.title};
 }
 function appScore(a){
   const rs=(a.exams||[]).map(examVerdict).filter(v=>v.x);
   if(!rs.length) return null;
-  return { pct: Math.round(rs.reduce((s,v)=>s+v.pct,0)/rs.length), passed: rs.filter(v=>v.pass).length, total: rs.length };
+  const scored=rs.filter(v=>v.x && v.x.maxScore);
+  return {
+    pct: scored.length ? Math.round(scored.reduce((s,v)=>s+v.pct,0)/scored.length) : 0,
+    passed: rs.filter(v=>v.pass).length,
+    total: rs.length
+  };
 }
 
 
@@ -12999,10 +13022,15 @@ async function createEmpFolder(emp){
 function hiringPackHTML(a, e){
   const role=a.roleId?S.roles[a.roleId]:null;
   const exams=(a.exams||[]).map(r=>{
-    const x=S.exams[r.examId]||{}; const max=r.max||examMax(x)||x.maxScore||0;
-    const pass=x.items?examPass(x):(x.passing||0);
-    return [ (x.title||"Examination")+(r.form?" (Form "+r.form+")":""), r.on||"",
-             r.score+" / "+max, (r.score>=pass?"Passed":"Below the mark") ];
+    const v=examVerdict(r);
+    const x=v.x||S.exams[r.examId]||{};
+    const max=r.max||r.maxScore||examMax(x)||x.maxScore||0;
+    const pass=x.items?examPass(x):(x.passing||r.passing||0);
+    const title=r.title||x.title||"Examination";
+    const when=r.takenOn||r.on||"";
+    const mark=max? (r.score+" / "+max) : String(r.score??"—");
+    const result=pass? ((Number(r.score)>=pass)?"Passed":"Below the mark") : (r.notes||"");
+    return [ title+(r.form?" (Form "+r.form+")":""), when, mark, result ];
   });
   let body = pfHead()
    + pfTitle("RECRUITMENT RECORD","Filed on engagement. This is the basis on which the applicant was taken on.")
@@ -14711,6 +14739,7 @@ function viewRecruit(){
 
 async function appEditor(id){
   let AP_DRAFT=null;
+  let AP_EXAM_EDIT=null;
   if(id && typeof id==="object"){ AP_DRAFT=id; id=S.applicants[id.id]?id.id:null; }
   const a = AP_DRAFT ? AP_DRAFT : id ? Object.assign({},S.applicants[id]) : {
     id:uid("a"), name:"", roleId:"", position:"", dept:"Technical", source:"Walk-in", appliedOn:TODAY,
@@ -14721,13 +14750,23 @@ async function appEditor(id){
   const sample = await getSample();
   const draw=()=>{
     const sc=appScore(a), role=S.roles[a.roleId], guide=roleGuide(role);
-    let ex='<div class="chklist">';
+    const editing=(AP_EXAM_EDIT!=null && (a.exams||[])[AP_EXAM_EDIT]) ? a.exams[AP_EXAM_EDIT] : null;
+    const editTitle=editing?(editing.title||(S.exams[editing.examId]&&S.exams[editing.examId].title)||""):"";
+    const editScore=editing&&editing.score!=null?editing.score:"";
+    const editMax=editing?(editing.max||editing.maxScore||(S.exams[editing.examId]&&S.exams[editing.examId].maxScore)||""):"";
+    const editDate=editing?(editing.takenOn||editing.on||TODAY):TODAY;
+    const editNotes=editing?(editing.notes||""):"";
+    let ex='<div class="chklist" id="hr-exam-list">';
     (a.exams||[]).forEach((r,i)=>{
       const v=examVerdict(r);
-      ex+='<div class="chk'+(v.x&&!v.pass?" miss":"")+'"><span class="idx">'+String(i+1).padStart(2,"0")+'</span>'
-       + '<span class="n"><b>'+esc(v.x?v.x.title:"(exam removed)")+'</b><span>'+esc(r.takenOn||"no date")+(r.notes?" · "+esc(r.notes):"")+'</span></span>'
-       + '<span class="mono" style="font-size:12px">'+num(r.score,0)+' / '+(v.x?v.x.maxScore:"?")+'</span>'
-       + (v.x?'<span class="pill '+(v.pass?"ok":"crit")+'">'+v.pct+'% '+(v.pass?"pass":"fail")+'</span>':"")
+      const title=r.title||(v.x&&v.x.title)||"(untitled exam)";
+      const max=r.max||r.maxScore||(v.x&&v.x.maxScore)||"";
+      const when=r.takenOn||r.on||"no date";
+      ex+='<div class="chk'+(v.x&&!v.pass?" miss":"")+'" data-exam-row="'+i+'"><span class="idx">'+String(i+1).padStart(2,"0")+'</span>'
+       + '<span class="n"><b>'+esc(title)+'</b><span>'+esc(when)+(r.notes?" · "+esc(r.notes):"")+'</span></span>'
+       + '<span class="mono" style="font-size:12px">'+esc(String(r.score??"—")+(max?" / "+max:""))+'</span>'
+       + (v.x&&max?'<span class="pill '+(v.pass?"ok":"crit")+'">'+(v.pct?v.pct+"% ":"")+(v.pass?"pass":"fail")+'</span>':"")
+       + '<button class="btn sm" data-edex="'+i+'">Edit</button>'
        + '<button class="btn sm danger" data-rmex="'+i+'">Remove</button></div>';
     });
     ex+='</div>';
@@ -14769,15 +14808,20 @@ async function appEditor(id){
         + '</div>'
         + mailboxFilesNote(a)
 
-        + '<div class="sect-h" style="margin:6px 0 0"><h2 style="font-size:12.5px">Written and aptitude tests</h2><span class="rule"></span>'
+        + '<div class="sect-h" style="margin:6px 0 0"><h2 style="font-size:12.5px">Exam scores</h2><span class="rule"></span>'
         + (sc?'<span class="pill '+(sc.pct>=70?"ok":sc.pct>=50?"warn":"crit")+'">'+sc.passed+' of '+sc.total+' passed · '+sc.pct+'% average</span>':"")+'</div>'
-        + ((a.exams||[]).length?ex:'<div class="lbl" style="padding:4px 0">No results logged.</div>')
-        + '<div class="row" style="align-items:flex-end">'
-        + '<div class="f" style="flex:2"><label>Test</label><select id="ax-id">'+examList().map(x=>'<option value="'+x.id+'">'+esc(x.title)+' ('+x.dept+', pass '+x.passing+'/'+x.maxScore+')</option>').join("")+'</select></div>'
-        + '<div class="f" style="width:90px"><label>Score</label><input id="ax-score" type="number" step="0.5" min="0"></div>'
-        + '<div class="f" style="width:148px"><label>Date taken</label><input id="ax-date" type="date" value="'+TODAY+'"></div>'
-        + '<div class="f" style="flex:1"><label>Remarks</label><input id="ax-notes" placeholder="optional"></div>'
-        + '<button class="btn" id="ax-add">Add result</button></div>'
+        + ((a.exams||[]).length?ex:'<div class="lbl" style="padding:4px 0" id="hr-exam-empty">No exam scores yet. Add each paper as its own row.</div>')
+        + '<div class="row" style="align-items:flex-end" id="hr-exam-add-row">'
+        + '<div class="f" style="flex:2"><label>Exam name / type</label>'
+        + '<input id="ax-title" list="ax-title-list" placeholder="e.g. IQ Test, Safety, Excel" value="'+esc(editTitle)+'">'
+        + '<datalist id="ax-title-list">'+examList().map(x=>'<option value="'+esc(x.title)+'"></option>').join("")+'</datalist></div>'
+        + '<div class="f" style="width:90px"><label>Score</label><input id="ax-score" type="number" step="0.5" min="0" value="'+esc(editScore)+'"></div>'
+        + '<div class="f" style="width:90px"><label>Out of</label><input id="ax-max" type="number" step="0.5" min="0" placeholder="opt." value="'+esc(editMax)+'"></div>'
+        + '<div class="f" style="width:148px"><label>Date taken</label><input id="ax-date" type="date" value="'+esc(editDate)+'"></div>'
+        + '<div class="f" style="flex:1"><label>Notes</label><input id="ax-notes" placeholder="optional" value="'+esc(editNotes)+'"></div>'
+        + '<button class="btn pri" id="ax-add">'+(editing?"Save exam score":"Add exam score")+'</button>'
+        + (editing?'<button class="btn" id="ax-cancel" type="button">Cancel</button>':"")
+        + '</div>'
         + (sittableFor(a).length
             ? '<div class="row" style="margin-top:8px">'
               + sittableFor(a).map(x=>'<button class="btn pri" data-sit="'+esc(x.id)+'" data-sitapp="'+esc(a.id)+'">'
@@ -14843,12 +14887,36 @@ async function appEditor(id){
     const persist=async()=>{ grab(); await put("applicants",a.id,a); };
     $("#a-role").onchange=()=>{ grab(); draw(); };
     $("#ax-add").onclick=()=>{
-      grab(); const sv=parseFloat($("#ax-score").value);
+      grab();
+      const title=($("#ax-title")&&$("#ax-title").value||"").trim();
+      const sv=parseFloat($("#ax-score").value);
+      if(!title){ toast("Name the exam.","err"); return; }
       if(isNaN(sv)){ toast("Enter the score.","err"); return; }
-      a.exams=(a.exams||[]).concat([{examId:$("#ax-id").value, score:sv, takenOn:$("#ax-date").value, notes:$("#ax-notes").value}]);
+      const catalog=examList().find(x=>String(x.title||"").trim().toLowerCase()===title.toLowerCase());
+      const maxV=parseFloat($("#ax-max")&&$("#ax-max").value);
+      const rec={
+        id:(editing&&editing.id)||uid("es"),
+        examId:catalog?catalog.id:(editing&&editing.examId)||"",
+        title,
+        score:sv,
+        takenOn:$("#ax-date").value,
+        notes:($("#ax-notes")&&$("#ax-notes").value)||""
+      };
+      if(!isNaN(maxV)) rec.max=maxV;
+      else if(catalog&&catalog.maxScore) rec.max=catalog.maxScore;
+      else if(editing&&(editing.max||editing.maxScore)) rec.max=editing.max||editing.maxScore;
+      if(AP_EXAM_EDIT!=null && (a.exams||[])[AP_EXAM_EDIT]){
+        a.exams[AP_EXAM_EDIT]=Object.assign({}, a.exams[AP_EXAM_EDIT], rec);
+        AP_EXAM_EDIT=null;
+      }else{
+        a.exams=(a.exams||[]).concat([rec]);
+      }
       draw();
     };
-    $$("[data-rmex]").forEach(b=>b.onclick=()=>{ grab(); a.exams.splice(+b.dataset.rmex,1); draw(); });
+    const axCancel=$("#ax-cancel");
+    if(axCancel) axCancel.onclick=()=>{ grab(); AP_EXAM_EDIT=null; draw(); };
+    $$("[data-edex]").forEach(b=>b.onclick=()=>{ grab(); AP_EXAM_EDIT=+b.dataset.edex; draw(); });
+    $$("[data-rmex]").forEach(b=>b.onclick=()=>{ grab(); a.exams.splice(+b.dataset.rmex,1); if(AP_EXAM_EDIT!=null) AP_EXAM_EDIT=null; draw(); });
     $$("[data-rmiv]").forEach(b=>b.onclick=()=>{ grab(); a.interviews.splice(+b.dataset.rmiv,1); draw(); });
     $$("[data-openiv]").forEach(b=>b.onclick=async()=>{ await persist(); interviewRunner(a.id, a.interviews[+b.dataset.openiv].guideId, +b.dataset.openiv); });
     const ri=$("#a-runiv"); if(ri) ri.onclick=async()=>{
@@ -14946,6 +15014,20 @@ async function appEditor(id){
         + pfRows([["Applicant",a.name||""],["Position applied for",a.position||""],
                   ["Department",a.dept||""],["Applied",longDate(a.appliedOn||"")],
                   ["Source",a.source||""],["Stage",a.stage||""]])
+        + ((a.exams||[]).length
+            ? pfBand("TEST RESULTS")
+              + '<table class="pf-t" style="margin:6px 0 10px">'
+              + (a.exams||[]).map(r=>{
+                  const v=examVerdict(r);
+                  const title=r.title||(v.x&&v.x.title)||"Exam";
+                  const max=r.max||r.maxScore||(v.x&&v.x.maxScore)||"";
+                  const when=r.takenOn||r.on||"";
+                  return '<tr><td>'+esc(title)+'</td><td>'+esc(when)+'</td><td>'
+                    +esc(String(r.score??"—")+(max?" / "+max:""))+'</td><td>'
+                    +esc(r.notes||"")+'</td></tr>';
+                }).join("")
+              + '</table>'
+            : "")
         + pfBand("HR\u2019S OWN JUDGEMENT")
         + pfRows([["Verdict",a.hrVerdict||"not recorded"],["Rating",(a.hrRating||"—")+" / 5"],
                   ["Assessed by",a.hrBy||""],["On",longDate(a.hrOn||"")]])
