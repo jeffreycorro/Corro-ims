@@ -3,7 +3,12 @@
 const { codedError } = require("./coded-error");
 
 const ELEVENLABS_URL = "https://api.elevenlabs.io/v1/text-to-speech";
-const DEFAULT_VOICE_ID = "21m00Tcm4TlvDq8ikWAM";
+// Sarah — warmer conversational default for Ask the log (not a flat announcer).
+// Override on Netlify corcondev-motorpool with ELEVENLABS_VOICE_ID.
+// Previous default was Rachel 21m00Tcm4TlvDq8ikWAM (set that env to roll back).
+const DEFAULT_VOICE_ID = "EXAVITQu4vr4xnSDxMaL";
+// eleven_multilingual_v2 keeps English / Filipino / Cebuano. For snappier
+// English-only replies you can set ELEVENLABS_MODEL_ID=eleven_turbo_v2_5.
 const DEFAULT_MODEL = "eleven_multilingual_v2";
 const MAX_CHARS = 2500;
 
@@ -23,11 +28,29 @@ function defaultModelId() {
   return String(process.env.ELEVENLABS_MODEL_ID || "").trim() || DEFAULT_MODEL;
 }
 
+function clamped01(value, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  if (n < 0) return 0;
+  if (n > 1) return 1;
+  return n;
+}
+
+function voiceSettings() {
+  // Slightly lower stability = more spoken, less "read this memo".
+  // Optional Netlify overrides: ELEVENLABS_STABILITY / ELEVENLABS_SIMILARITY.
+  return {
+    stability: clamped01(process.env.ELEVENLABS_STABILITY, 0.42),
+    similarity_boost: clamped01(process.env.ELEVENLABS_SIMILARITY, 0.82),
+  };
+}
+
 function ttsLimits() {
   return {
     maxChars: MAX_CHARS,
     defaultVoiceId: defaultVoiceId(),
     modelId: defaultModelId(),
+    voiceSettings: voiceSettings(),
   };
 }
 
@@ -88,6 +111,7 @@ async function synthesizeSpeech({ text, voiceId, signal }) {
       body: JSON.stringify({
         text: clean,
         model_id: defaultModelId(),
+        voice_settings: voiceSettings(),
       }),
       signal,
     });
@@ -128,4 +152,5 @@ module.exports = {
   sanitizeSpeakText,
   synthesizeSpeech,
   ttsLimits,
+  voiceSettings,
 };

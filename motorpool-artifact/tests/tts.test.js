@@ -33,9 +33,14 @@ function fakeWindow(ttsImpl) {
       constructor(url) {
         this.url = url;
         this.src = url;
+        this.onended = null;
+        this.onerror = null;
       }
       play() {
-        return Promise.resolve();
+        const self = this;
+        return Promise.resolve().then(() => {
+          if (typeof self.onended === "function") self.onended();
+        });
       }
       pause() {}
     },
@@ -68,6 +73,35 @@ describe("motorpool tts companion", () => {
     assert.equal(w.mpTts.ready, true);
     await w.mpTts.speak("**DT-03** is due");
     assert.deepEqual(seen, ["DT-03 is due"]);
+    assert.equal(w.mpTts.speaking, false);
+  });
+
+  it("hush interrupts playback and clears speaking", async () => {
+    const w = fakeWindow(async () => {
+      return { audioBase64: Buffer.from("mp3").toString("base64"), mimeType: "audio/mpeg" };
+    });
+    w.Audio = class HoldAudio {
+      constructor(url) {
+        this.url = url;
+        this.src = url;
+        this.onended = null;
+        this.paused = false;
+      }
+      play() {
+        return new Promise(() => {});
+      }
+      pause() {
+        this.paused = true;
+      }
+    };
+    loadTts(w);
+    await new Promise((r) => setTimeout(r, 0));
+    const pending = w.mpTts.speak("Hold this");
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(w.mpTts.speaking, true);
+    w.mpTts.hush();
+    assert.equal(w.mpTts.speaking, false);
+    await pending;
   });
 
   it("does not attach a second time", () => {

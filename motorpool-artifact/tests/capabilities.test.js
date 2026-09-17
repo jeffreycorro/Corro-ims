@@ -39,6 +39,14 @@ describe("Motorpool capability flags", () => {
     assert.equal(caps.transcribe, false);
   });
 
+  it("turns transcribe on when OPENAI_API_KEY is set", () => {
+    process.env.OPENAI_API_KEY = "sk-test";
+    const caps = capabilities();
+    assert.equal(caps.transcribe, true);
+    assert.equal(caps.sample, false);
+    assert.equal(caps.tts, false);
+  });
+
   it("ignores blank keys", () => {
     process.env.ANTHROPIC_API_KEY = "   ";
     process.env.ELEVENLABS_API_KEY = "";

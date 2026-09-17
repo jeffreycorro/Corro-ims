@@ -23,12 +23,14 @@ describe("placeholder and host", () => {
     assert.doesNotMatch(html, /\/js\/app\.js/);
     assert.doesNotMatch(html, /motorpool-host\.js/);
     assert.doesNotMatch(html, /motorpool-tts\.js/);
+    assert.doesNotMatch(html, /motorpool-ask-voice\.js/);
     const shim = fs.readFileSync(
       path.join(__dirname, "../public/claude-shim.js"),
       "utf8"
     );
     assert.match(shim, /motorpool-host\.js/);
     assert.match(shim, /motorpool-tts\.js/);
+    assert.match(shim, /motorpool-ask-voice\.js/);
   });
 
   it("README tells the operator how to replace the Claude export and redeploy", () => {
@@ -45,6 +47,8 @@ describe("placeholder and host", () => {
     assert.match(readme, /publish directory is `public`/);
     assert.match(readme, /ANTHROPIC_API_KEY/);
     assert.match(readme, /ELEVENLABS_API_KEY/);
+    assert.match(readme, /ELEVENLABS_VOICE_ID/);
+    assert.match(readme, /OPENAI_API_KEY/);
     assert.match(readme, /`builds`/);
     assert.match(readme, /MOTORPOOL_OPEN_YARD/);
     assert.match(readme, /SUPABASE_AUTH_ENABLED/);

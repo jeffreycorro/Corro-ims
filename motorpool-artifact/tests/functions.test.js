@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 const { handler: authHandler } = require("../netlify/functions/auth");
 const { handler: sampleHandler } = require("../netlify/functions/sample");
 const { handler: ttsHandler } = require("../netlify/functions/tts");
+const { handler: transcribeHandler } = require("../netlify/functions/transcribe");
 const { COOKIE_NAME, signSession } = require("../netlify/lib/session");
 
 const SECRET = "test-motorpool-gate-secret-value";
@@ -27,6 +28,7 @@ describe("motorpool netlify functions", () => {
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.ELEVENLABS_API_KEY;
     delete process.env.ELEVENLABS_VOICE_ID;
+    delete process.env.OPENAI_API_KEY;
   });
 
   afterEach(() => {
@@ -42,6 +44,7 @@ describe("motorpool netlify functions", () => {
     assert.deepEqual(body.methods, []);
     assert.equal(body.capabilities.sample, false);
     assert.equal(body.capabilities.tts, false);
+    assert.equal(body.capabilities.transcribe, false);
   });
 
   it("closes the yard when Supabase Auth keys are configured", async () => {
@@ -72,6 +75,14 @@ describe("motorpool netlify functions", () => {
     const body = JSON.parse(res.body);
     assert.equal(body.capabilities.sample, true);
     assert.equal(body.capabilities.tts, true);
+    assert.equal(body.capabilities.transcribe, false);
+  });
+
+  it("advertises transcribe when OPENAI_API_KEY is set", async () => {
+    process.env.OPENAI_API_KEY = "sk-test";
+    const res = await authHandler({ httpMethod: "GET", headers: {} });
+    const body = JSON.parse(res.body);
+    assert.equal(body.capabilities.transcribe, true);
   });
 
   it("rejects sample and tts without a session when Auth is configured", async () => {
@@ -90,6 +101,12 @@ describe("motorpool netlify functions", () => {
       body: JSON.stringify({ text: "hi" }),
     });
     assert.equal(tts.statusCode, 401);
+    const transcribe = await transcribeHandler({
+      httpMethod: "POST",
+      headers: {},
+      body: JSON.stringify({ audioBase64: "YQ==", mimeType: "audio/webm" }),
+    });
+    assert.equal(transcribe.statusCode, 401);
   });
 
   it("refuses sample and tts when keys are missing even with a session", async () => {
@@ -112,6 +129,13 @@ describe("motorpool netlify functions", () => {
     });
     assert.equal(tts.statusCode, 403);
     assert.equal(JSON.parse(tts.body).code, "not_granted");
+    const transcribe = await transcribeHandler({
+      httpMethod: "POST",
+      headers,
+      body: JSON.stringify({ audioBase64: "YQ==", mimeType: "audio/webm" }),
+    });
+    assert.equal(transcribe.statusCode, 403);
+    assert.equal(JSON.parse(transcribe.body).code, "not_granted");
   });
 
   it("calls Anthropic with the session cookie and returns { text }", async () => {
@@ -180,6 +204,46 @@ describe("motorpool netlify functions", () => {
       assert.equal(body.mimeType, "audio/mpeg");
       assert.match(String(captured.url), /api\.elevenlabs\.io\/v1\/text-to-speech\//);
       assert.equal(captured.opts.headers["xi-api-key"], "el-test");
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it("calls OpenAI transcriptions with the session cookie and returns { text }", async () => {
+    process.env.SUPABASE_URL = "https://example.supabase.co";
+    process.env.SUPABASE_ANON_KEY = "anon-test";
+    process.env.MOTORPOOL_GATE_SECRET = SECRET;
+    process.env.OPENAI_API_KEY = "sk-test";
+    const token = signSession({ sub: "gate", method: "password" }, SECRET);
+    const originalFetch = global.fetch;
+    let captured;
+    global.fetch = async (url, opts) => {
+      captured = { url, opts };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ text: "DT-03 last battery was in October." }),
+      };
+    };
+    try {
+      const res = await transcribeHandler({
+        httpMethod: "POST",
+        headers: {
+          cookie: `${COOKIE_NAME}=${encodeURIComponent(token)}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          audioBase64: Buffer.from("fake-audio").toString("base64"),
+          mimeType: "audio/webm",
+          filename: "dictation.webm",
+        }),
+      });
+      assert.equal(res.statusCode, 200);
+      const body = JSON.parse(res.body);
+      assert.equal(body.text, "DT-03 last battery was in October.");
+      assert.match(String(captured.url), /api\.openai\.com\/v1\/audio\/transcriptions/);
+      assert.equal(captured.opts.headers.Authorization, "Bearer sk-test");
+      assert.equal(captured.opts.body.get("model"), "gpt-transcribe");
     } finally {
       global.fetch = originalFetch;
     }

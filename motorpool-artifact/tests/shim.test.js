@@ -119,6 +119,20 @@ function fakeWindow() {
       });
     },
     setTimeout,
+    FileReader: class FakeFileReader {
+      constructor() {
+        this.onload = null;
+        this.onerror = null;
+        this.result = "";
+      }
+      readAsDataURL() {
+        this.result = "data:audio/webm;base64," + Buffer.from("fake-audio").toString("base64");
+        const self = this;
+        setTimeout(() => {
+          if (self.onload) self.onload();
+        }, 0);
+      }
+    },
     console,
   };
   window.window = window;
@@ -142,6 +156,7 @@ describe("claude shim", () => {
     loadShim(w);
     assert.equal(await w.claude.use("sample"), null);
     assert.equal(await w.claude.use("tts"), null);
+    assert.equal(await w.claude.use("transcribe"), null);
     assert.equal(await w.claude.use("mcp"), null);
     assert.equal(await w.claude.use("nope"), null);
   });
@@ -247,6 +262,49 @@ describe("claude shim", () => {
     const ttsCalls = calls.filter((c) => String(c.url).includes("/tts"));
     assert.equal(ttsCalls[0].body.text, "DT-03 is due for oil.");
     assert.equal(await w.claude.use("speak"), tts);
+  });
+
+  it("exposes transcribe when auth reports that capability", async () => {
+    const w = fakeWindow();
+    const calls = [];
+    w.fetch = (url, opts) => {
+      const body = opts && opts.body ? JSON.parse(opts.body) : {};
+      calls.push({ url, body });
+      if (String(url).includes("/auth")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            authenticated: true,
+            methods: [],
+            capabilities: { transcribe: true },
+          }),
+          text: async () =>
+            JSON.stringify({
+              authenticated: true,
+              capabilities: { transcribe: true },
+            }),
+        });
+      }
+      if (String(url).includes("/transcribe")) {
+        return Promise.resolve({
+          ok: true,
+          text: async () =>
+            JSON.stringify({ text: "DT-03 last battery was in October.", model: "gpt-transcribe" }),
+        });
+      }
+      return Promise.resolve({ ok: true, text: async () => "{}" });
+    };
+    loadShim(w);
+    const transcribe = await w.claude.use("transcribe");
+    assert.equal(typeof transcribe, "function");
+    const spoken = await transcribe({
+      audio: new w.Blob(["x"], { type: "audio/webm" }),
+      mimeType: "audio/webm",
+    });
+    assert.equal(spoken.text, "DT-03 last battery was in October.");
+    const trCalls = calls.filter((c) => String(c.url).includes("/transcribe"));
+    assert.equal(trCalls[0].body.mimeType, "audio/webm");
+    assert.ok(trCalls[0].body.audioBase64);
   });
 
   it("exposes doc get/set/delete/acquire and collection get", async () => {
