@@ -8,7 +8,7 @@ Do **not** rewrite, minify, or modernize the HTML artifact. Paste the Claude exp
 
 ### 1. Paste the real artifact
 
-`public/index.html` should be the Claude artifact HTML export. Current deploy is **build 2026-09-18b** (18a plus multiple exam-score rows on an applicant). If you replace it, keep the shim script tag in `<head>`.
+`public/index.html` should be the Claude artifact HTML export. Current deploy is **build 2026-09-18b** (multiple exam-score rows on an applicant, on top of 2026-09-18a / Claude's three surgical patches on 2026-09-17a: one pending status that pays 0, bulk rest/pending buttons that only change selects until Save, and hosted-site Drive-off copy). If you replace it, keep the shim script tag in `<head>`.
 
 ### 2. Inject the shim (one-line change)
 
