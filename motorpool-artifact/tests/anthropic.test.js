@@ -15,6 +15,21 @@ const {
 } = require("../netlify/lib/anthropic");
 
 describe("anthropic contract", () => {
+  it("keeps image attachments as Anthropic content blocks", () => {
+    const out = normalizeMessages([
+      {
+        role: "user",
+        content: "What unit?",
+        attachments: [{ kind: "image", mediaType: "image/jpeg", data: "data:image/jpeg;base64,QQ==" }],
+      },
+    ]);
+    assert.equal(out.length, 1);
+    assert.equal(Array.isArray(out[0].content), true);
+    assert.equal(out[0].content[0].type, "image");
+    assert.equal(out[0].content[0].source.data, "QQ==");
+    assert.equal(out[0].content[1].text, "What unit?");
+  });
+
   it("normalizes a string prompt and merges consecutive user turns", () => {
     assert.deepEqual(normalizeMessages("Hello"), [{ role: "user", content: "Hello" }]);
     const merged = normalizeMessages([

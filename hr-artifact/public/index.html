@@ -1150,7 +1150,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-09-18b";
+const BUILD = "2026-09-18c";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -17407,10 +17407,32 @@ function askTools(){
     }
   },
   {
+    name:"leave_for",
+    description:"Leave applications on file for one person: form number, type, inclusive dates, days, "
+      +"status, and the Reason for Leave written on the leave form. Call this for any question about "
+      +"someone's leave, a recent leave, why they filed, or an LRF number. Always report the reason "
+      +"when the tool returns one. If reason is blank, say the form has no reason written.",
+    inputSchema:{type:"object",properties:{empNo:{type:"string"}},required:["empNo"]},
+    execute(i){
+      const e=askEmp(i.empNo); if(!e) throw new Error("No single employee matches \""+i.empNo+"\". Call find_employee first.");
+      const api=window.hrAskLeave;
+      const rows=leaveList().filter(l=>l.empId===e.id);
+      const leave=api&&api.leavesForEmployee
+        ? api.leavesForEmployee(rows, e.id, {leaveType:leaveType, cap:30})
+        : rows.slice(0,30).map(l=>({no:l.no||"",
+            type: l.type ? ((leaveType(l.type)||{}).n||l.type) : "not set — created from the manpower report",
+            from:l.from||"", to:l.to||"", days:l.days||0, status:l.status||"",
+            reason:l.reason||"", reasonOnForm:!!String(l.reason||"").trim()}));
+      return {employee:{empNo:e.empNo, name:e.name}, leave,
+        note:"reason is the Reason for Leave field on the leave form. If blank, none was written."};
+    }
+  },
+  {
     name:"money_for",
     description:"One person's cash advances and leave: for each advance the number, date, amount, how "
       +"much is liquidated and deducted, the balance outstanding and the status; for each leave the "
-      +"type, dates, days and status. Use it for any question about money owed or leave taken.",
+      +"type, dates, days, status and Reason for Leave. Use it for money owed; prefer leave_for for "
+      +"leave questions so the reason is not skipped.",
     inputSchema:{type:"object",properties:{empNo:{type:"string"}},required:["empNo"]},
     execute(i){
       const e=askEmp(i.empNo); if(!e) throw new Error("No single employee matches \""+i.empNo+"\". Call find_employee first.");
@@ -17422,10 +17444,17 @@ function askTools(){
           deducted:a.deducted||0, balance:caBalance(a), status:a.status||"",
           repaymentPlan:(caPlan(a)||{}).text||"", expectedLiquidation:a.liquidateBy||""})),
         totalOutstanding: cas.reduce((s,a)=>s+caBalance(a),0),
-        leave: leaveList().filter(l=>l.empId===e.id).slice(0,30).map(l=>({no:l.no||"", 
-          type: l.type ? ((leaveType(l.type)||{}).n||l.type) : "not set — created from the manpower report",
-          from:l.from||"", to:l.to||"",
-          days:l.days||0, status:l.status||"", reason:l.reason||""}))};
+        leave: (function(){
+          const rows=leaveList().filter(l=>l.empId===e.id);
+          const api=window.hrAskLeave;
+          return api&&api.leavesForEmployee
+            ? api.leavesForEmployee(rows, e.id, {leaveType:leaveType, cap:30})
+            : rows.slice(0,30).map(l=>({no:l.no||"",
+                type: l.type ? ((leaveType(l.type)||{}).n||l.type) : "not set — created from the manpower report",
+                from:l.from||"", to:l.to||"", days:l.days||0, status:l.status||"",
+                reason:l.reason||"", reasonOnForm:!!String(l.reason||"").trim()}));
+        })()
+      };
     }
   },
   {
@@ -17485,6 +17514,9 @@ const ASK_RULES =
 + "- A day with no attendance row was never recorded on any manpower report. That is NOT the same as "
 + "the person being present. Say which it is.\n"
 + "- Name the employee number you used, so the answer can be checked against the file.\n"
++ "- When a question is about leave, call leave_for after find_employee. Always include the type, "
++ "dates, status, AND the Reason for Leave the tool returns. That reason is the leave form field. "
++ "If reason is blank or reasonOnForm is false, say the form has no reason written. Do not invent one.\n"
 + "- Write dates the way a document does: August 5, 2026.\n"
 + "- Amounts are Philippine pesos.\n\n"
 + "Answer in two or three sentences unless asked for more. Lead with the answer, then the evidence. "
@@ -17522,26 +17554,45 @@ function viewAssistant(){
     if(t.role==="user"){
       h+='<div class="card" style="background:var(--surface2);margin-left:15%"><div class="card-b">'
        + '<div class="lbl">You asked</div><div style="font-size:13px;line-height:1.55;white-space:pre-wrap">'
-       + esc(t.content)+'</div></div></div>';
+       + esc(t.content)+'</div>';
+      if(t.attachments&&t.attachments.length){
+        h+='<div class="row" style="flex-wrap:wrap;gap:6px;margin-top:8px">';
+        t.attachments.forEach(a=>{
+          h+='<span class="chip">'+(a.preview?'<img src="'+esc(a.preview)+'" alt="" style="width:22px;height:22px;object-fit:cover;border-radius:3px;vertical-align:middle;margin-right:4px">':"")
+           + esc(a.name||a.kind||"file")+'</span>';
+        });
+        h+='</div>';
+      }
+      h+='</div></div>';
     }else{
       h+='<div class="card" style="margin-right:8%"><div class="card-b">'
-       + '<div class="row" style="margin-bottom:5px"><span class="lbl">From the records</span>'
+       + '<div class="row" style="margin-bottom:5px"><span class="lbl">'
+       + (t.pending?(t.phase==="answering"?"Answering":"Looking up the records"):"From the records")+'</span>'
        + (t.used?'<span class="lbl" style="margin-left:auto">'+esc(t.used)+'</span>':"")+'</div>'
-       + '<div style="font-size:13.5px;line-height:1.6;white-space:pre-wrap">'+esc(t.content)+'</div>'
+       + '<div style="font-size:13.5px;line-height:1.6;white-space:pre-wrap">'
+       + esc(t.content||(t.pending?"…":""))+'</div>'
        + '</div></div>';
     }
   });
   h+='</div>';
 
+  const pendingFiles=(S.ui.askFiles||[]);
   h+='<div class="card"><div class="card-b stack">'
    + '<div class="f"><label>Your question</label>'
-   + '<textarea id="ask-q" style="min-height:64px" placeholder="e.g. Was Glory Mae late on 5 August 2026?"></textarea></div>'
+   + '<textarea id="ask-q" style="min-height:64px" placeholder="e.g. Was Glory Mae late on 5 August 2026? Or: why did Catherine Largo file leave?"></textarea></div>'
+   + '<div class="row" style="flex-wrap:wrap;gap:8px" id="ask-chips">'
+   + pendingFiles.map((a,i)=>'<span class="chip" data-askrm="'+i+'">'
+        +(a.preview?'<img src="'+esc(a.preview)+'" alt="" style="width:22px;height:22px;object-fit:cover;border-radius:3px;vertical-align:middle;margin-right:4px">':"")
+        +esc(a.name||a.kind||"file")+' ×</span>').join("")
+   + '</div>'
    + '<div class="row"><button class="btn pri" id="ask-go">Ask</button>'
+   + '<button class="btn" id="ask-attach" type="button">Attach</button>'
+   + '<input id="ask-files" type="file" multiple accept="image/jpeg,image/png,image/webp,image/gif,application/pdf,text/plain,.pdf,.txt,.csv" hidden>'
    + '<button class="btn" id="ask-stop" disabled>Stop</button>'
    + (turns.length?'<button class="btn" id="ask-clear">Start again</button>':"")
    + '<span class="lbl" id="ask-status"></span></div>'
    + '<span class="hint">Reading the records takes half a minute or so — it is looking things up, not '
-   + 'recalling them.</span>'
+   + 'recalling them. Attach a photo or PDF when the question is about a form.</span>'
    + '</div></div>';
   h+='</div>';
   return h;
@@ -19317,23 +19368,29 @@ function wire(){
   const askSay=(t)=>{ const el=$("#ask-status",v); if(el) el.textContent=t||""; };
   const askRun=async(question)=>{
     if(ASK_BUSY) return;
-    const q=String(question||"").trim(); if(!q) return;
+    const q=String(question||"").trim();
+    const files=(S.ui.askFiles||[]).slice();
+    if(!q && !files.length) return;
     const sample=await getSample();
     if(!sample){ toast("Asking is not available in this view.","err"); return; }
     let caps=null; try{ caps=await sample.limits(); }catch(e){}
     if(caps && !caps.tools){
       toast("This view cannot run the lookups the assistant needs.","err"); return; }
     const tools=askTools().slice(0, (caps&&caps.tools&&caps.tools.maxCount) || 8);
+    const api=window.hrAskAttach;
+    const content=api&&api.userContent?api.userContent(q,files):q;
+    const display=api&&api.historyText?api.historyText(q,files):q;
 
     const turns=askTurns();
-    turns.push({role:"user", content:q});
+    turns.push({role:"user", content:display, attachments:files.map(a=>({name:a.name,kind:a.kind,preview:a.preview||""}))});
     /* an empty assistant turn so the answer has somewhere to stream into */
-    turns.push({role:"assistant", content:"", pending:true});
+    turns.push({role:"assistant", content:"", pending:true, phase:"looking"});
+    S.ui.askFiles=[];
     render();
 
     const ctl=new AbortController(); ASK_BUSY=ctl;
     const sb=$("#ask-stop",v); if(sb) sb.disabled=false;
-    askSay("Reading the records\u2026");
+    askSay("Looking up the records\u2026");
 
     const bubble=()=>{
       const cards=$$("#ask-thread .card");
@@ -19350,10 +19407,19 @@ function wire(){
 
     let answer="";
     try{
-      const r=await sample([{role:"user",content:ASK_RULES}]
-          .concat(turns.filter(t=>!t.pending).map(t=>({role:t.role,content:t.content}))), {
+      const payload=[{role:"user",content:ASK_RULES}]
+        .concat(turns.filter(t=>!t.pending).map((t,i,arr)=>{
+          if(i===arr.length-1) return {role:t.role, content:content};
+          return {role:t.role, content:t.content};
+        }));
+      const r=await sample(payload, {
         tools:watched, signal:ctl.signal, cache:false,
-        onText:({text})=>{ answer=text; askSay(""); const b=bubble(); if(b) b.textContent=text; }
+        onText:({text})=>{
+          answer=text; askSay("Answering\u2026");
+          const last=askTurns()[askTurns().length-1];
+          if(last&&last.pending) last.phase="answering";
+          const b=bubble(); if(b) b.textContent=text;
+        }
       });
       answer=r.text||answer;
       if(r.truncated) answer+="\n\n(Cut short \u2014 ask for less at a time.)";
@@ -19371,6 +19437,7 @@ function wire(){
       const t2=askTurns();
       const last=t2[t2.length-1];
       if(last && last.pending){ last.content=answer||"No answer came back."; delete last.pending;
+        delete last.phase;
         last.used = used.length ? Array.from(new Set(used)).join(" \u00b7 ") : ""; }
       /* keep the thread inside the prompt budget */
       while(t2.length>12) t2.splice(0,2);
@@ -19382,10 +19449,27 @@ function wire(){
   const askStopBtn=$("#ask-stop",v);
   if(askStopBtn) askStopBtn.onclick=()=>{ if(ASK_BUSY) ASK_BUSY.abort(); };
   const askClearBtn=$("#ask-clear",v);
-  if(askClearBtn) askClearBtn.onclick=()=>{ S.ui.ask=[]; render(); };
+  if(askClearBtn) askClearBtn.onclick=()=>{ S.ui.ask=[]; S.ui.askFiles=[]; render(); };
   const askBox=$("#ask-q",v);
   if(askBox) askBox.onkeydown=(ev)=>{
     if(ev.key==="Enter" && (ev.metaKey||ev.ctrlKey)){ ev.preventDefault(); askRun(askBox.value); } };
+  const askAttach=$("#ask-attach",v), askFile=$("#ask-files",v);
+  if(askAttach&&askFile){
+    askAttach.onclick=()=>askFile.click();
+    askFile.onchange=()=>{
+      const api=window.hrAskAttach;
+      if(!api||!askFile.files||!askFile.files.length) return;
+      api.readFiles(askFile.files, S.ui.askFiles||[]).then(list=>{
+        S.ui.askFiles=list; render();
+      }).catch(err=>toast((err&&err.message)||"Could not attach that file.","err"));
+      askFile.value="";
+    };
+  }
+  on("[data-askrm]","click", e=>{
+    const i=Number(e.currentTarget.dataset.askrm);
+    if(!S.ui.askFiles) return;
+    S.ui.askFiles.splice(i,1); render();
+  });
   on("[data-askq]","click", e=>askRun(e.currentTarget.dataset.askq));
 
   /* ---- payroll maker ---- */

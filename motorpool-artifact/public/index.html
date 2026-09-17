@@ -365,7 +365,7 @@ var SIGNATORIES = [
 ];
 var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
 /* Shown on the Ask screen, so a screenshot says which version someone is on. */
-var BUILD = "2026-09-17 b";
+var BUILD = "2026-09-17 c";
 var DAY = 86400000, MO = 30.44;
 
 /* Part categories that were entered under two spellings and so split a unit's
@@ -392,7 +392,7 @@ var PROJ_ALIAS = {
 var S = {
   vehicles:[], parts:[], suppliers:[], projects:[], drivers:[], worktypes:[], ambig:[], items:[],
   purchases:[], withdrawals:[], ledger:{}, breakdowns:[], mechanic:[], tasks:[], papers:[],
-  cfg:{nextVrf:5793, pass:null, varianceTol:0.10, nextReserve:1}, sample:null, chat:[], asking:false, voiceOut:true, voiceLang:"en-PH", hearing:false, speaking:false, micBlocked:false, ttsReady:false,
+  cfg:{nextVrf:5793, pass:null, varianceTol:0.10, nextReserve:1}, sample:null, chat:[], askFiles:[], askPhase:"", asking:false, voiceOut:true, voiceLang:"en-PH", hearing:false, speaking:false, micBlocked:false, ttsReady:false,
   voiceName:"", voices:[], photoCounts:{}, reserves:[], rsvYears:[], lens:"job", selUnit:"", selCat:"", selWork:"", regWork:"", regUnit:"", regSrc:"", regStatus:"", logQ:"",
   view:"yard", office:false, db:null, ready:false, sel:null, draft:null, stale:false,
   hist:[], showArchivedProjects:false, logProject:""
@@ -3505,7 +3505,7 @@ function yardView(){
 /* The assistant answers from the same data the screens draw on, through tools —
    nothing is pasted into the prompt, so it cannot answer from a stale snapshot.
    Every tool here is deliberately money-free: peso figures live in the Office zone. */
-function askTools(){
+function askTools(question){
   function findCat(q){
     if(!q) return null;
     var all={};
@@ -3545,7 +3545,7 @@ function askTools(){
   /* Nine lookups, most-asked first. A question can only offer the assistant a
      limited number of tools, and anything past that limit is simply not there —
      which is how "what do I register this month" came back unanswerable. */
-  return [
+  var tools = [
   {name:"whats_due",
    description:"Exactly what the Reminders tab shows, fleet-wide: registration due or overdue, any service interval due (change oil, battery, greasing …), parts past their lifespan, papers expiring, units off the road, follow-ups due, fuel reserve low. 'Check the reminders tab' means call this. Optional filter.",
    inputSchema:{type:"object",properties:{
@@ -3613,6 +3613,18 @@ function askTools(){
      var list=pool.filter(function(v){
        return !st || String(v.status||"Active").toLowerCase()===st; });
      return {count:list.length, units:fleetRows(list)};
+   }},
+  {name:"leave_for",
+   description:"HR leave applications for one person: form number, type, dates, days, status, AND the Reason for Leave written on the leave form. Use for questions about someone being on leave, why they filed, or an LRF number. Requires an HR or admin login. Never invent a reason.",
+   inputSchema:{type:"object",properties:{
+     query:{type:"string",description:"employee name, number, or leave number (LRF…)"}}},
+   execute:function(a){
+     var q=String(a&&(a.query||a.empNo||a.name)||"").trim();
+     if(!q) return {error:"Give a name, employee number, or leave number."};
+     var api=window.mpAskLeave;
+     if(!api||typeof api.lookupLeave!=="function")
+       return {error:"Leave lookup is not available in this view. Ask the same question in the HR portal."};
+     return api.lookupLeave(q);
    }},
   {name:"unit_record",
    description:"Everything on one unit: make, plate, owner, renewal month, CR and OR numbers, status, site, last odometer, open breakdowns, job orders, and the date each type of job was last done.",
@@ -3736,6 +3748,12 @@ function askTools(){
          return {code:w.code, name:w.name, family:w.family, interval_months:w.intervalMo}; }),
        projects:S.projects.filter(function(p){return !isProjectArchived(p);}).map(function(p){return projectCodeOf(p);})};
    }}];
+  if(/leave|lrf\b|\babsent\b|vacation|filed leave|why .*(off|away)/i.test(String(question||""))){
+    var leave=tools.filter(function(t){ return t.name==="leave_for"; });
+    if(leave.length)
+      tools=leave.concat(tools.filter(function(t){ return t.name!=="leave_for"; }));
+  }
+  return tools;
 }
 
 /* The questions asked most — what is due, what to register — are answered from
@@ -3801,6 +3819,9 @@ function askSystem(){
   "You do not have peso figures and must not estimate any. If someone asks what something cost or "+
   "what the fleet is spending, say that the money screens are in the Office zone of this portal, "+
   "behind the passcode.\n\n"+
+  "Questions about an employee's leave (why they filed, LRF numbers, dates, who is off) use leave_for, "+
+  "which reads the HR leave form. Always name the Reason for Leave the tool returns when one is present. "+
+  "If the tool says this login cannot read HR leaves, say so — do not guess a reason.\n\n"+
   "Only "+Object.keys(S.ledger).sort().join(", ")+" are loaded, so 'never on record' means "+
   "'not in those months'. Say which months you looked at whenever the answer is that nothing was found.\n\n"+
   askSnapshot();
@@ -3827,7 +3848,11 @@ function canHoldTalk(){
 }
 function voicePhase(){
   if(S.hearing) return "listening";
-  if(S.asking) return "thinking";
+  if(S.asking){
+    if(S.askPhase==="answering") return "answering";
+    if(S.askPhase==="looking") return "looking";
+    return "thinking";
+  }
   if(S.speaking) return "speaking";
   return "idle";
 }
@@ -3968,9 +3993,9 @@ function bindAskTalkKeys(){
   function isAskSpaceTarget(t){
     if(!t) return true;
     var tag=t.tagName?String(t.tagName).toLowerCase():"";
-    if(tag==="textarea"||tag==="select") return false;
+    if(tag==="select") return false;
     if(t.isContentEditable) return false;
-    if(tag==="input"){
+    if(tag==="textarea"||tag==="input"){
       var ask=document.querySelector("[data-mp-ask-input='1']");
       return !!(ask && t===ask && !String(t.value||"").trim());
     }
@@ -4097,7 +4122,7 @@ function askView(){
   tb.style.cssText="display:flex;flex-direction:column;gap:var(--space-4);min-height:220px";
   if(!S.chat.length){
     var hi=el("div"); hi.style.color="var(--text-muted)";
-    hi.appendChild(el("div",null,"Ask about a unit, a part, the fuel reserve or what is open in the yard."));
+    hi.appendChild(el("div",null,"Ask about a unit, a part, the fuel reserve, open work, or — with an HR/admin login — someone's leave. Attach a photo or file when it helps."));
     var sg=el("div"); sg.style.cssText="display:flex;flex-wrap:wrap;gap:var(--space-2);margin-top:var(--space-3)";
     SUGGEST.forEach(function(q){
       var b=el("button","btn sm",q);
@@ -4112,11 +4137,23 @@ function askView(){
     if(m.role==="user"){
       row.style.cssText="align-self:flex-end;max-width:76%;background:var(--accent-100);"+
         "color:var(--accent-900);padding:var(--space-2) var(--space-3);border-radius:var(--radius)";
-      row.textContent=m.content;
+      var body=el("div"); body.style.whiteSpace="pre-wrap";
+      body.textContent=m.content;
+      row.appendChild(body);
+      if(m.attachments&&m.attachments.length){
+        var atts=el("div"); atts.className="mp-ask-atts";
+        m.attachments.forEach(function(a){
+          var chip=el("span"); chip.className="mp-ask-chip";
+          if(a.preview){ var im=el("img"); im.src=a.preview; im.alt=""; chip.appendChild(im); }
+          chip.appendChild(document.createTextNode(a.name||a.kind||"file"));
+          atts.appendChild(chip);
+        });
+        row.appendChild(atts);
+      }
     }else{
       row.style.cssText="max-width:88%;white-space:pre-wrap";
       if(m.error){ row.style.color="var(--danger)"; }
-      row.textContent=m.content||"Thinking…";
+      row.textContent=m.content||(S.askPhase==="answering"?"Answering…":(S.askPhase==="looking"?"Looking up the records…":"Thinking…"));
       if(m.content&&!m.error){
         var bar=el("div","row"); bar.style.marginTop="var(--space-1)";
         bar.appendChild(el("span","hint","answered from the posted records"));
@@ -4140,15 +4177,36 @@ function askView(){
   stateChip.setAttribute("aria-live","polite");
   stateChip.style.cssText="padding:0 var(--space-4) var(--space-2);font-weight:600";
   stateChip.textContent = phase==="listening" ? "Listening — release to ask"
+    : phase==="looking" ? "Looking up the records…"
+    : phase==="answering" ? "Answering…"
     : phase==="thinking" ? "Thinking…"
     : phase==="speaking" ? "Speaking — tap the mic or Space to stop"
     : "Idle — hold the mic or Space to talk";
   thread.appendChild(stateChip);
+  if(!S.askFiles) S.askFiles=[];
+  try{ if(window.mpAskAttach&&window.mpAskAttach.ensureStyles) window.mpAskAttach.ensureStyles(); }catch(e){}
+  var chips=el("div"); chips.className="mp-ask-attach-row";
+  function paintChips(){
+    chips.innerHTML="";
+    (S.askFiles||[]).forEach(function(a,i){
+      var chip=el("span"); chip.className="mp-ask-chip";
+      if(a.preview){ var im=el("img"); im.src=a.preview; im.alt=""; chip.appendChild(im); }
+      chip.appendChild(document.createTextNode(a.name||a.kind||"file"));
+      var rm=el("button","btn sm","×"); rm.title="Remove";
+      rm.addEventListener("click",function(){ S.askFiles.splice(i,1); paintChips(); });
+      chip.appendChild(rm);
+      chips.appendChild(chip);
+    });
+  }
+  paintChips();
+  thread.appendChild(chips);
   var foot=el("div");
-  foot.style.cssText="display:flex;gap:var(--space-2);padding:var(--space-3) var(--space-4);border-top:1px solid var(--rule)";
-  var inp=el("input"); inp.placeholder="e.g. DT-03 battery, when was the last purchase?";
+  foot.style.cssText="display:flex;gap:var(--space-2);padding:var(--space-3) var(--space-4);border-top:1px solid var(--rule);align-items:flex-end;flex-wrap:wrap";
+  var inp=el("textarea"); inp.placeholder="e.g. DT-03 battery, when was the last purchase?";
   inp.setAttribute("data-mp-ask-input","1");
-  inp.style.flex="1"; inp.disabled=S.asking;
+  inp.setAttribute("id","ask-q");
+  inp.rows=2;
+  inp.style.flex="1"; inp.style.minWidth="180px"; inp.disabled=S.asking;
   var mic=el("button","btn",
     phase==="listening" ? "● Listening"
     : phase==="thinking" ? "Thinking"
@@ -4167,12 +4225,15 @@ function askView(){
     mic.setAttribute("data-mp-ask-phase",p);
     mic.setAttribute("aria-pressed", S.hearing||S.speaking ? "true":"false");
     mic.textContent = p==="listening" ? "● Listening"
-      : p==="thinking" ? "Thinking"
+      : p==="looking"||p==="thinking" ? "Thinking"
+      : p==="answering" ? "Answering"
       : p==="speaking" ? "● Tap to stop"
       : "🎙 Hold to talk";
     mic.style.borderColor = p==="listening" ? "var(--danger)" : p==="speaking" ? "var(--accent)" : "";
     stateChip.setAttribute("data-phase",p);
     stateChip.textContent = p==="listening" ? "Listening — release to ask"
+      : p==="looking" ? "Looking up the records…"
+      : p==="answering" ? "Answering…"
       : p==="thinking" ? "Thinking…"
       : p==="speaking" ? "Speaking — tap the mic or Space to stop"
       : "Idle — hold the mic or Space to talk";
@@ -4208,10 +4269,30 @@ function askView(){
   mic.addEventListener("click", function(ev){ ev.preventDefault(); });
   mic.addEventListener("contextmenu", function(ev){ ev.preventDefault(); });
   foot.appendChild(mic);
+  var fileInp=el("input"); fileInp.type="file"; fileInp.multiple=true;
+  fileInp.accept=(window.mpAskAttach&&window.mpAskAttach.acceptList&&window.mpAskAttach.acceptList())||
+    "image/jpeg,image/png,image/webp,application/pdf,.pdf,.txt";
+  fileInp.style.display="none";
+  fileInp.setAttribute("data-mp-ask-file","1");
+  fileInp.addEventListener("change",function(){
+    var api=window.mpAskAttach;
+    if(!api||!fileInp.files||!fileInp.files.length) return;
+    api.readFiles(fileInp.files, S.askFiles||[]).then(function(list){
+      S.askFiles=list; paintChips();
+    },function(err){ toast((err&&err.message)||"Could not attach that file."); });
+    fileInp.value="";
+  });
+  var attachBtn=el("button","btn","Attach");
+  attachBtn.setAttribute("data-mp-ask-attach","1");
+  attachBtn.title="Attach a photo or file (JPEG, PNG, WebP, PDF)";
+  attachBtn.disabled=S.asking;
+  attachBtn.addEventListener("click",function(){ fileInp.click(); });
   var go2=el("button","btn pri",S.asking?"Asking…":"Ask"); go2.disabled=S.asking;
   go2.addEventListener("click",function(){ primeTTS(); send(inp.value); });
-  inp.addEventListener("keydown",function(e){ if(e.key==="Enter"){ primeTTS(); send(inp.value); } });
-  foot.appendChild(inp); foot.appendChild(go2);
+  inp.addEventListener("keydown",function(e){
+    if(e.key==="Enter" && (e.metaKey||e.ctrlKey)){ e.preventDefault(); primeTTS(); send(inp.value); }
+  });
+  foot.appendChild(inp); foot.appendChild(attachBtn); foot.appendChild(fileInp); foot.appendChild(go2);
   if(S.chat.length){
     var cl=el("button","btn","Clear");
     cl.addEventListener("click",function(){ hush(); S.chat=[]; render(); });
@@ -4222,8 +4303,8 @@ function askView(){
 
   var vn=el("div","hint");
   vn.textContent=hasServerVoice()
-    ? "Hold the mic or Space to talk — it listens only while you hold. Tap while it is speaking to stop. Typed questions still work."
-    : "Hold the mic or Space to talk — it listens only while you hold. Device voices are the fallback until the site voice is granted. Typed questions still work.";
+    ? "Hold the mic or Space to talk — it listens only while you hold. Tap while it is speaking to stop. Attach a photo or file, then Ask. Typed questions still work."
+    : "Hold the mic or Space to talk — it listens only while you hold. Device voices are the fallback until the site voice is granted. Attach a photo or file, then Ask.";
   vn.style.marginTop="calc(-1 * var(--space-2))";
   g.appendChild(vn);
   if(S.micBlocked){
@@ -4239,11 +4320,16 @@ function askView(){
 
   async function send(q){
     q=(q||"").trim();
-    if(!q||S.asking) return;
+    var files=(S.askFiles||[]).slice();
+    if((!q&&!files.length)||S.asking) return;
     hush();
-    S.chat.push({role:"user",content:q});
-    S.chat.push({role:"assistant",content:""});
-    S.asking=true; render();
+    var api=window.mpAskAttach;
+    var content=api&&api.userContent?api.userContent(q,files):q;
+    var display=api&&api.historyText?api.historyText(q,files):q;
+    S.chat.push({role:"user",content:display,attachments:files.map(function(a){
+      return {name:a.name,kind:a.kind,preview:a.preview||""}; })});
+    S.chat.push({role:"assistant",content:"",pending:true});
+    S.askFiles=[]; S.askPhase="looking"; S.asking=true; render();
     var slot=S.chat[S.chat.length-1];
     /* carry the thread so follow-ups like "and BH-06?" work; the standing
        instructions ride on the first user turn since sample keeps no memory */
@@ -4251,9 +4337,12 @@ function askView(){
     S.chat.slice(0,-2).forEach(function(m){
       if(m.content&&!m.error) turns.push({role:m.role,content:m.content});
     });
-    turns.push({role:"user",content:q});
-    turns[0]={role:"user",content:askSystem()+"\n\n---\n\n"+turns[0].content};
-    var offer=askTools();
+    turns.push({role:"user",content:content});
+    if(typeof turns[0].content==="string")
+      turns[0]={role:"user",content:askSystem()+"\n\n---\n\n"+turns[0].content};
+    else
+      turns.unshift({role:"user",content:askSystem()});
+    var offer=askTools(q);
     try{
       var lim=(S.sample.limits)?await S.sample.limits():null;
       var cap=lim&&lim.tools&&lim.tools.maxCount;
@@ -4261,7 +4350,7 @@ function askView(){
       if(lim&&!lim.tools){
         slot.error=true;
         slot.content="This view cannot run the assistant's lookups, so it cannot read the records. Open the portal in the Claude app or on claude.ai and ask again.";
-        S.asking=false; render(); return;
+        S.asking=false; S.askPhase=""; render(); return;
       }
       if(cap&&offer.length>cap) offer=offer.slice(0,cap);
     }catch(e){ S.askLimit={offered:offer.length, allowed:null, known:false}; }
@@ -4269,7 +4358,10 @@ function askView(){
       var res=await S.sample(turns,{
         tools:offer,
         modelTier:"default",
-        onText:function(ev){ slot.content=ev.text; render(); }
+        onText:function(ev){
+          S.askPhase="answering";
+          slot.content=ev.text; render();
+        }
       });
       slot.content=res.text||slot.content||"No answer came back.";
       speak(slot.content);
@@ -4281,7 +4373,7 @@ function askView(){
         ? "Too many questions at once — give it a moment and ask again."
         : "The assistant could not answer that. "+((e&&e.message)||"");
     }
-    S.asking=false; render();
+    S.asking=false; S.askPhase=""; render();
   }
 }
 

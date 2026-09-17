@@ -146,7 +146,7 @@ describe("motorpool ask-voice companion", () => {
 describe("Ask the log artifact voice loop", () => {
   it("uses hold-to-talk states and prefers the server voice", () => {
     const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
-    assert.match(html, /var BUILD = "2026-09-17 b"/);
+    assert.match(html, /var BUILD = "2026-09-17 c"/);
     assert.match(html, /Hold to talk/);
     assert.match(html, /data-mp-ask-mic/);
     assert.match(html, /data-mp-ask-state/);

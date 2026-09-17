@@ -24,6 +24,8 @@ describe("placeholder and host", () => {
     assert.doesNotMatch(html, /motorpool-host\.js/);
     assert.doesNotMatch(html, /motorpool-tts\.js/);
     assert.doesNotMatch(html, /motorpool-ask-voice\.js/);
+    assert.doesNotMatch(html, /motorpool-ask-attach\.js/);
+    assert.doesNotMatch(html, /motorpool-ask-leave\.js/);
     const shim = fs.readFileSync(
       path.join(__dirname, "../public/claude-shim.js"),
       "utf8"
@@ -31,6 +33,8 @@ describe("placeholder and host", () => {
     assert.match(shim, /motorpool-host\.js/);
     assert.match(shim, /motorpool-tts\.js/);
     assert.match(shim, /motorpool-ask-voice\.js/);
+    assert.match(shim, /motorpool-ask-attach\.js/);
+    assert.match(shim, /motorpool-ask-leave\.js/);
   });
 
   it("README tells the operator how to replace the Claude export and redeploy", () => {
