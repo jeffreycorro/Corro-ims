@@ -119,6 +119,18 @@ function fakeWindow(applicants) {
 }
 
 describe("hr-recruit companion wiring", () => {
+  it("lets the applicant editor keep several named exam scores", () => {
+    const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
+    assert.match(html, /Exam scores/);
+    assert.match(html, /Add exam score/);
+    assert.match(html, /id="ax-title"/);
+    assert.match(html, /id="ax-max"/);
+    assert.match(html, /data-edex/);
+    assert.match(html, /No exam scores yet/);
+    assert.match(html, /pfBand\("TEST RESULTS"\)/);
+    assert.match(html, /r\.title\|\|x\.title\|\|"Examination"/);
+  });
+
   it("is loaded by the shim after the shared name-key module, not from the artifact HTML", () => {
     const shim = fs.readFileSync(path.join(__dirname, "../public/claude-shim.js"), "utf8");
     const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
@@ -374,6 +386,102 @@ describe("hr-recruit pipeline search", () => {
     assert.equal(w.S.ui.pipelineSearch, "luisa");
     hr.setPipelineSearch("");
     assert.equal(hr.currentSearch(), "");
+  });
+});
+
+describe("hr-recruit applicant exam scores", () => {
+  it("normalizes free-form exam name, score, date, and notes", () => {
+    const w = fakeWindow();
+    const hr = loadRecruit(w);
+    const row = hr.normalizeExamScore({
+      title: "IQ Test",
+      score: "42",
+      max: "50",
+      takenOn: "2026-09-10",
+      notes: "First sitting",
+    });
+    assert.ok(row);
+    assert.match(row.id, /^es_/);
+    assert.equal(row.title, "IQ Test");
+    assert.equal(row.score, 42);
+    assert.equal(row.max, 50);
+    assert.equal(row.takenOn, "2026-09-10");
+    assert.equal(row.notes, "First sitting");
+    assert.equal(row.examId, "");
+  });
+
+  it("fills title from the catalog when only examId is stored", () => {
+    const w = fakeWindow();
+    w.S.exams = {
+      x001: { id: "x001", kind: "exam", title: "IQ and General Aptitude Test", maxScore: 50, passing: 30 },
+    };
+    const hr = loadRecruit(w);
+    const row = hr.normalizeExamScore({ examId: "x001", score: 40, takenOn: "2026-06-01" });
+    assert.equal(row.title, "IQ and General Aptitude Test");
+    assert.equal(row.max, 50);
+    assert.equal(row.score, 40);
+  });
+
+  it("adds, edits, and removes several scores on one applicant", () => {
+    const w = fakeWindow({
+      a1: { id: "a1", name: "Barrios, Luisa G.", exams: [] },
+    });
+    const hr = loadRecruit(w);
+    const a = w.S.applicants.a1;
+    const first = hr.appendExamScore(a, { title: "IQ Test", score: 42, max: 50, notes: "Walk-in" });
+    const second = hr.appendExamScore(a, { title: "Safety Knowledge", score: 28, max: 30, takenOn: "2026-09-12" });
+    assert.equal(a.exams.length, 2);
+    assert.equal(a.exams[0].title, "IQ Test");
+    assert.equal(a.exams[1].title, "Safety Knowledge");
+    assert.equal(a.exams[1].takenOn, "2026-09-12");
+    const edited = hr.updateExamScore(a, first.id, { score: 45, notes: "Retake" });
+    assert.equal(edited.score, 45);
+    assert.equal(edited.notes, "Retake");
+    assert.equal(edited.title, "IQ Test");
+    assert.equal(a.exams.length, 2);
+    assert.equal(hr.removeExamScore(a, second.id), true);
+    assert.equal(a.exams.length, 1);
+    assert.equal(a.exams[0].id, first.id);
+  });
+
+  it("keeps exam rows when Save puts an editor copy without them", async () => {
+    const w = fakeWindow({
+      a1: {
+        id: "a1",
+        name: "Barrios, Luisa G.",
+        exams: [{ id: "es_keep", title: "IQ Test", score: 42, max: 50, takenOn: "2026-09-10" }],
+      },
+    });
+    const hr = loadRecruit(w);
+    hr.install();
+    await w.put("applicants", "a1", { id: "a1", name: "Barrios, Luisa G.", notes: "Walk-in" });
+    assert.equal(w.S.applicants.a1.exams.length, 1);
+    assert.equal(w.S.applicants.a1.exams[0].title, "IQ Test");
+    assert.equal(w.S.applicants.a1.notes, "Walk-in");
+  });
+
+  it("lists every score on the application file, not only the first", () => {
+    const w = fakeWindow({
+      a1: {
+        id: "a1",
+        name: "Barrios, Luisa G.",
+        roleId: "ro06",
+        stage: "Written Exam",
+        exams: [
+          { id: "es1", title: "IQ Test", score: 42, max: 50, takenOn: "2026-09-10" },
+          { id: "es2", title: "Safety Knowledge", score: 21, max: 30, takenOn: "2026-09-12", notes: "Retake" },
+        ],
+      },
+    });
+    const hr = loadRecruit(w);
+    const html = hr.applicationFileHtml(w.S.applicants.a1);
+    assert.match(html, /Exam scores/);
+    assert.match(html, /IQ Test/);
+    assert.match(html, /Safety Knowledge/);
+    assert.match(html, /Retake/);
+    assert.match(html, /42/);
+    assert.match(html, /21/);
+    assert.match(hr.examScoreLine(w.S.applicants.a1.exams[1]), /Safety Knowledge: 21 \/ 30 \(2026-09-12\) — Retake/);
   });
 });
 
