@@ -14,9 +14,11 @@
 
   if (root.hrAttendance && root.hrAttendance.attached) return;
 
+  var STATUS_PENDING = "Has not yet arrived"; /* same label as the live artifact / PR #40 */
+
   var CLOSED_STATUSES = [
     "Present",
-    "Has not yet arrived",
+    STATUS_PENDING,
     "Present/Late",
     "Undertime",
     "Absent",
@@ -122,7 +124,7 @@
     var x = String(t || "").toLowerCase().replace(/\s+/g, " ").trim();
     if (!x) return "";
     if (/has\s+not\s+yet\s+arrived|not\s+yet\s+arrived|not\s+yet\s+in|^nya\b|^nyi\b/.test(x)) {
-      return "Has not yet arrived";
+      return STATUS_PENDING;
     }
     if (/present\s*\/\s*late/.test(x) || /present\s*\(\s*late\s*\)/.test(x) || x === "late" || x === "tardy") {
       return "Present/Late";
@@ -587,7 +589,7 @@
     if (st === "Leave with Pay") return 1;
     if (st === "Regular Holiday") return 1;
     if (st === "Half Day") return 0.5;
-    if (st === "Leave" || st === "Absent" || st === "Has not yet arrived" || st === "Rest Day" || st === "Special Holiday") return 0;
+    if (st === "Leave" || st === "Absent" || st === STATUS_PENDING || st === "Rest Day" || st === "Special Holiday") return 0;
     return 0;
   }
 
@@ -742,7 +744,8 @@
       t.undertime++;
       t.dates.present.push(rec.date);
       t.dates.undertime.push(rec.date);
-    } else if (st === "Has not yet arrived") {
+    } else if (st === STATUS_PENDING) {
+      t.pending = (t.pending || 0) + 1;
       t.waiting = (t.waiting || 0) + 1;
     } else if (st === "Absent") {
       t.absent++;
@@ -1180,6 +1183,7 @@
   }
 
   var api = {
+    STATUS_PENDING: STATUS_PENDING,
     CLOSED_STATUSES: CLOSED_STATUSES,
     DAY_STATUS_RX: DAY_STATUS_RX,
     isoDate: isoDate,

@@ -63,6 +63,7 @@ function loadRosterFns() {
       const p = String(n || "").split(",");
       return p.length > 1 ? p[1].trim() + " " + p[0].trim() : String(n || "");
     },
+    STATUS_PENDING: "Has not yet arrived",
   };
   const names = [
     "knownSepRec",
@@ -96,7 +97,7 @@ function loadRosterFns() {
   return ctx;
 }
 
-describe("staff concern sheet — live 17a HTML", () => {
+describe("staff concern sheet — live 18a HTML", () => {
   it("ships the separated apply list next to the artifact", () => {
     assert.equal(roster.count, 67);
     assert.equal(roster.employees.length, 67);
@@ -121,7 +122,7 @@ describe("staff concern sheet — live 17a HTML", () => {
     assert.match(html, /prev\.signedLink && !m\.signedLink/);
     assert.match(html, /hrSigSrc\(rec,"prepared"\)/);
     assert.match(html, /Object\.keys\(rec\.rows\|\|\{\}\)\.forEach\(id=>\{ if\(id\) seen\[id\]=true/);
-    assert.match(html, /const BUILD = "2026-09-17a"/);
+    assert.match(html, /const BUILD = "2026-09-18a"/);
     assert.match(html, /Has not yet arrived/);
     assert.match(html, /OT HRS/);
     assert.match(html, /Last name/);
@@ -279,14 +280,66 @@ describe("staff concern sheet — live 17a HTML", () => {
 
   it("treats Has not yet arrived as its own unpaid, non-absent status", () => {
     const ctx = loadRosterFns();
+    assert.equal(ctx.STATUS_PENDING, "Has not yet arrived");
     assert.equal(ctx.normStatus("Has not yet arrived"), "Has not yet arrived");
+    assert.equal(ctx.normStatus("Not yet arrived"), "Has not yet arrived");
     assert.equal(ctx.normStatus("not yet in"), "Has not yet arrived");
     assert.equal(ctx.normStatus("NYA"), "Has not yet arrived");
     assert.equal(ctx.dayCredit({ s: "Has not yet arrived" }), 0);
+    assert.equal(ctx.dayCredit({ s: ctx.STATUS_PENDING }), 0);
     assert.equal(ctx.dayCredit({ s: "Present" }), 1);
     assert.equal(ctx.dayCredit({ s: "Absent" }), 0);
+    assert.match(html, /const STATUS_PENDING = "Has not yet arrived"/);
     assert.match(html, /"Has not yet arrived"/);
     assert.match(html, /DAY_STATUS = \["Present","Has not yet arrived"/);
+    assert.doesNotMatch(html, /DAY_STATUS = \[[^\]]*"Not yet arrived"/);
+    assert.match(html, /if\(st===STATUS_PENDING\) return 0/);
+    assert.match(html, /else if\(r===STATUS_PENDING\) t\.pending\+\+/);
+    assert.match(html, /t\.pending\?tile\(t\.pending,STATUS_PENDING,"still to be settled before this day is filed","warn"\)/);
+  });
+
+  it("adds bulk rest and pending buttons that only change selects until Save", () => {
+    assert.match(html, /id="dm-allrest"/);
+    assert.match(html, /id="dm-allpending"/);
+    const rest = html.slice(html.indexOf('const dar=$("#dm-allrest"'));
+    const restBlock = rest.slice(0, rest.indexOf("const dpen="));
+    const pending = html.slice(html.indexOf('const dpen=$("#dm-allpending"'));
+    const pendingBlock = pending.slice(0, pending.indexOf("/* Write it down"));
+    assert.match(restBlock, /sel\.value="Rest Day"/);
+    assert.match(pendingBlock, /sel\.value=STATUS_PENDING/);
+    assert.doesNotMatch(restBlock, /dailySave|dailyCollect|render\(/);
+    assert.doesNotMatch(pendingBlock, /dailySave|dailyCollect|render\(/);
+  });
+
+  it("tells hosted HR that Drive being off is a site setting, not theirs", () => {
+    assert.match(html, /function hostedSite\(\)/);
+    assert.match(html, /function driveOffNote\(\)/);
+    assert.match(html, /script\[src\*="claude-shim"\]/);
+    assert.match(html, /h\+=driveOffNote\(\);/);
+    assert.match(html, /Google Drive is switched off for this site/);
+    assert.doesNotMatch(html, /mcp\s*:\s*true/);
+    const ctx = {
+      document: { querySelector: (sel) => (String(sel).includes("claude-shim") ? { src: "/claude-shim.js" } : null) },
+    };
+    vm.runInNewContext(extractFunction(html, "hostedSite") + "\n" + extractFunction(html, "driveOffNote"), ctx);
+    assert.equal(ctx.hostedSite(), true);
+    assert.match(ctx.driveOffNote(), /Google Drive is switched off for this site/);
+    assert.match(ctx.driveOffNote(), /not something you can fix/);
+    ctx.document.querySelector = () => null;
+    assert.equal(ctx.hostedSite(), false);
+    assert.match(ctx.driveOffNote(), /Google Drive is not connected in this browser/);
+    const driveMsg = extractFunction(html, "driveMessage");
+    const msgCtx = { hostedSite: () => true };
+    vm.runInNewContext(driveMsg, msgCtx);
+    assert.match(
+      msgCtx.driveMessage({ code: "capability_disabled" }),
+      /Google Drive is switched off for this site/
+    );
+    msgCtx.hostedSite = () => false;
+    assert.equal(
+      msgCtx.driveMessage({ code: "not_granted" }),
+      "Uploading is not available in this view. Open the folder in Drive and drag the file in instead."
+    );
   });
 
   it("keeps a just-attached signedLink when a stale memo snapshot arrives", () => {

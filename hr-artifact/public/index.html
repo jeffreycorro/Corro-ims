@@ -1150,7 +1150,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-09-17a";
+const BUILD = "2026-09-18a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -4963,7 +4963,7 @@ function payloadText(r){
 const DAY_STATUS_RX = /(Has\s+not\s+yet\s+arrived|Not\s+yet\s+arrived|Not\s+yet\s+in|Present\s*\/\s*Late|Under\s*time|Present|Absent|Regular\s+Holiday|Special\s+Holiday|Half\s*Day|Rest\s*Day|Day\s*[-–]?\s*Off|Leave)/i;
 function normStatus(t){
   const x=String(t||"").toLowerCase().replace(/\s+/g," ").trim();
-  if(/has\s+not\s+yet\s+arrived|not\s+yet\s+arrived|not\s+yet\s+in|^nya\b|^nyi\b/.test(x)) return "Has not yet arrived";
+  if(/has\s+not\s+yet\s+arrived|not\s+yet\s+arrived|not\s+yet\s+in|^nya\b|^nyi\b/.test(x)) return STATUS_PENDING;
   if(/present\s*\/\s*late/.test(x)) return "Present/Late";
   if(/under\s*time/.test(x)) return "Undertime";
   if(/^present/.test(x)) return "Present";
@@ -5521,7 +5521,7 @@ function leaveVerdictCell(r){
 function statusPill(st){
   if(st==="Absent")       return '<span class="pill crit">Absent</span>';
   if(st==="Present/Late") return '<span class="pill warn">Late</span>';
-  if(st==="Has not yet arrived") return '<span class="pill warn">Has not yet arrived</span>';
+  if(st===STATUS_PENDING) return '<span class="pill warn">'+esc(STATUS_PENDING)+'</span>';
   if(st==="Leave")        return '<span class="pill mut">On leave</span>';
   return '<span class="pill mut">'+esc(st||"—")+'</span>';
 }
@@ -7901,6 +7901,7 @@ async function browseFolder(id, name, trail){
    near-neighbours, so payroll needs them named separately. */
 const DAY_STATUS = ["Present","Has not yet arrived","Present/Late","Undertime","Absent","Leave","Leave with Pay",
                     "Regular Holiday","Special Holiday","Rest Day","Half Day"];
+const STATUS_PENDING = "Has not yet arrived";   /* Cassie / PR #40 label — one pending status, not a second "Not yet arrived" */
 const DAY_REASON = { "Absent":"AWOL", "Leave":"Approved Leave", "Present/Late":"" };
 function dailyId(d){ return "d"+String(d||"").replace(/-/g,""); }
 /* A month with no reports reads on every chart as a month when nobody was
@@ -8143,7 +8144,7 @@ function dailyGroups(rec){
 function dayCredit(r){
   const st=(r&&r.s)||"";
   if(st==="Absent") return 0;
-  if(st==="Has not yet arrived") return 0;   /* morning mark — not present, not absent */
+  if(st===STATUS_PENDING) return 0;   /* nobody is paid for a day still being watched */
   if(st==="Half Day") return 0.5;
   if(st==="Leave") return 0;                 /* plain leave is unpaid */
   if(st==="Leave with Pay") return 1;
@@ -8228,19 +8229,20 @@ function dailyRow(rec,e){
   return (rec.rows||{})[e.id] || {s:"Present", r:"", in:"", out:"", ot:null, day:null, hol:null};
 }
 function dailyTally(rec){
-  const t={present:0,late:0,absent:0,leave:0,holiday:0,waiting:0,other:0};
+  const t={present:0,late:0,absent:0,leave:0,holiday:0,pending:0,waiting:0,other:0};
   dailyGroups(rec).forEach(g=>g.people.forEach(e=>{
     const row=dailyRow(rec,e);
     const r=effectiveStatus(e.id, rec.date, row.s, row.r);
     if(r==="Present") t.present++;
     else if(r==="Present/Late") { t.present++; t.late++; }
     else if(r==="Undertime") { t.present++; t.undertime=(t.undertime||0)+1; }
-    else if(r==="Has not yet arrived") t.waiting++;
+    else if(r===STATUS_PENDING) t.pending++;
     else if(r==="Absent") t.absent++;
     else if(r==="Leave") t.leave++;
     else if(r==="Regular Holiday") t.holiday++;
     else t.other++;
   }));
+  t.waiting=t.pending;   /* PR #40 name; same count as pending */
   return t;
 }
 
@@ -8257,6 +8259,8 @@ function viewDaily(){
    + '<div class="f" style="margin:0"><label>Date</label><input id="dm-date" type="date" value="'+esc(d)+'"></div>'
    + '<button class="btn sm" data-dmshift="1" title="The day after">▸</button>'
    + '<button class="btn" id="dm-allpresent">Everyone present</button>'
+   + '<button class="btn" id="dm-allrest" title="Sundays and declared rest days">Everyone rest day</button>'
+   + '<button class="btn" id="dm-allpending" title="Start the morning with nobody marked in yet">Nobody in yet</button>'
    + '<button class="btn" id="dm-print">Print the report</button>'
    + '<button class="btn" id="dm-hrsig" title="Attach one or more HR e-signature JPEGs. Filenames match the person or slot.">'
    + (hrSigSrc()||hrSigSrc(null,"approved")?'Replace HR e-sigs':'Attach HR e-sigs')+'</button>'
@@ -8272,10 +8276,10 @@ function viewDaily(){
 
   h+='<div class="strip">'
    + tile(t.present,"Present",t.late?t.late+" of them late":"nobody late","ok")
-   + tile(t.waiting||0,"Has not yet arrived","not marked in yet",(t.waiting?"warn":"ok"))
    + tile(t.absent,"Absent","",t.absent?"crit":"ok")
    + tile(t.leave,"On leave","approved leave","acc")
    + tile(t.holiday+t.other,"Holiday or rest day","","acc")
+   + (t.pending?tile(t.pending,STATUS_PENDING,"still to be settled before this day is filed","warn"):"")
    + '</div>';
 
   if(!saved){
@@ -8595,7 +8599,7 @@ function printDaily(rec){
       const nf=nameLastFirst(e.name);
       const bad = r.s==="Absent";
       const warn = r.s==="Present/Late";
-      const wait = r.s==="Has not yet arrived";
+      const wait = r.s===STATUS_PENDING;
       const tone = bad?' style="background:#fbeceb;color:#9c3131;font-weight:700"'
                 :warn?' style="background:#fbf3e4"'
                 :wait?' style="background:#eef3f7;color:#3a5a6e"':'';
@@ -9524,17 +9528,32 @@ function empInfo(e,cs){
   return h;
 }
 
+function hostedSite(){
+  try{ return !!document.querySelector('script[src*="claude-shim"]'); }
+  catch(err){ return false; }
+}
+function driveOffNote(){
+  return hostedSite()
+    ? '<div class="rule"><b>Google Drive is switched off for this site</b>'
+      + 'That is why these rows have no <b>Upload</b> button and no <b>Match the files in Drive</b> button. '
+      + 'This is not something you can fix from your computer, and reloading will not help: the sign-in '
+      + 'decides it for everybody, and it is answering that Drive is off. '
+      + 'Send this to whoever maintains the site — they need to turn the Drive capability on. '
+      + 'Until then, paste a link into the <b>Drive link</b> box on any row by hand: open the file in Drive, '
+      + 'Share, Copy link.</div>'
+    : '<div class="rule"><b>Google Drive is not connected in this browser</b>'
+      + 'That is why there is no <b>Upload</b> button and no <b>Match the files in Drive</b> button on these rows. '
+      + 'Add the Google Drive connector to your Claude account, reload this page, and both appear. '
+      + 'Until then you can still paste a link into the <b>Drive link</b> box on any row by hand — open the file in '
+      + 'Drive, Share, Copy link.</div>';
+}
 function empDocs(e,c){
   /* "On file" came from the masterlist and only means somebody ticked a box.
      A row with no link has nothing to open — worth showing the difference. */
   const withFile = DOCS.filter(d=>((e.docs||{})[d.k]||{}).link).length;
   let h='<div class="stack">';
   if(S.mcpChecked && !S.mcpReady){
-    h+='<div class="rule"><b>Google Drive is not connected in this browser</b>'
-     + 'That is why there is no <b>Upload</b> button and no <b>Match the files in Drive</b> button on these rows. '
-     + 'Add the Google Drive connector to your Claude account, reload this page, and both appear. '
-     + 'Until then you can still paste a link into the <b>Drive link</b> box on any row by hand — open the file in '
-     + 'Drive, Share, Copy link.</div>';
+    h+=driveOffNote();
   }
   if(withFile===0 && c.have>0){
     h+='<div class="rule"><b>'+c.have+' rows say “On file” but none has a file attached yet</b>'
@@ -16128,7 +16147,10 @@ function driveMessage(e){
   if(c==="server_unavailable" || c==="upstream_error")
     return "Google Drive did not answer. The file MAY still have been uploaded — open the folder and check before trying again.";
   if(c==="not_granted" || c==="capability_disabled" || c==="capability_removed")
-    return "Uploading is not available in this view. Open the folder in Drive and drag the file in instead.";
+    return hostedSite()
+      ? "Google Drive is switched off for this site, so nothing can be uploaded from here — the site's "
+        + "maintainer has to turn it on. Open the folder in Drive and drag the file in instead."
+      : "Uploading is not available in this view. Open the folder in Drive and drag the file in instead.";
   return "The upload did not go through. Open the folder in Drive and add the file there instead.";
 }
 const fileToBase64 = f => new Promise((res,rej)=>{
@@ -18636,7 +18658,7 @@ function payAttendanceCard(kind, per, lines){
      + '</div></div></div>';
     return h;
   }
-  const abbr=st=>({"Present":"P","Has not yet arrived":"NY","Present/Late":"L","Undertime":"U","Absent":"A","Leave":"LV","Leave with Pay":"LP",
+  const abbr=st=>({ "Present":"P", [STATUS_PENDING]:"NY", "Present/Late":"L", "Undertime":"U", "Absent":"A", "Leave":"LV", "Leave with Pay":"LP",
     "Regular Holiday":"H","Special Holiday":"SH","Half Day":"HD","Rest Day":"R"}[st]||(st?"?":"·"));
   h+='<div class="note">P present · NY not yet arrived · L late · U undertime · A absent · LV leave · H holiday · R rest day. '
    + 'A small figure is overtime hours; a green 30 or 100 is the holiday premium. Click a date to open that report, '
@@ -18820,7 +18842,7 @@ function attendanceSummaryCard(months){
       if(st==="Present" || st==="Half Day") t.present++;
       else if(st==="Present/Late"){ t.present++; t.late++; }
       else if(st==="Undertime"){ t.present++; t.ut++; }
-      else if(st==="Has not yet arrived") t.waiting++;
+      else if(st===STATUS_PENDING) t.waiting++;
       else if(st==="Absent") t.absent++;
       else if(st==="Leave" || st==="Leave with Pay"){ t.leave++; if(r.s==="Absent") t.excused++; }
       t.ot+=Number(r.ot)||0;
@@ -19585,6 +19607,18 @@ function wire(){
     $$("[data-dms]").forEach(sel=>{ sel.value="Present"; });
     $$("[data-dmr]").forEach(i=>{ i.value=""; });
     toast("All set to present — change the exceptions");
+  };
+  const dar=$("#dm-allrest",v); if(dar) dar.onclick=()=>{
+    const n=$$("[data-dms]").length;
+    $$("[data-dms]").forEach(sel=>{ sel.value="Rest Day"; });
+    $$("[data-dmr]").forEach(i=>{ i.value=""; });
+    toast("All "+n+" set to rest day — change anyone who worked, then Save.");
+  };
+  const dpen=$("#dm-allpending",v); if(dpen) dpen.onclick=()=>{
+    const n=$$("[data-dms]").length;
+    $$("[data-dms]").forEach(sel=>{ sel.value=STATUS_PENDING; });
+    $$("[data-dmr]").forEach(i=>{ i.value=""; });
+    toast("All "+n+" set to not yet arrived — mark them in as they come.");
   };
   /* Write it down before redrawing: the redraw reads the record, not the
      boxes, so an unsaved tick would vanish on the way back. */
