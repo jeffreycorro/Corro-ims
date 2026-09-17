@@ -45,7 +45,7 @@ describe("motorpool ask-voice companion", () => {
     const w = fakeWindow(null);
     loadAskVoice(w);
     assert.equal(w.mpAskVoice.attached, true);
-    assert.deepEqual(w.mpAskVoice.STATES, ["idle", "listening", "thinking", "speaking"]);
+    assert.equal(Array.from(w.mpAskVoice.STATES).join(","), "idle,listening,thinking,speaking");
     assert.equal(typeof w.mpAskVoice.capture, "function");
     assert.equal(typeof w.mpAskVoice.release, "function");
     assert.equal(typeof w.mpAskVoice.interrupt, "function");

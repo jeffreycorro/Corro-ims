@@ -37,8 +37,10 @@
 
   function hush() {
     playGen += 1;
+    var ended = null;
     try {
       if (currentAudio) {
+        ended = currentAudio.onended;
         currentAudio.onended = null;
         currentAudio.onerror = null;
         currentAudio.pause();
@@ -51,6 +53,11 @@
       }
     } catch (e) {}
     setSpeaking(false);
+    if (typeof ended === "function") {
+      try {
+        ended();
+      } catch (e2) {}
+    }
   }
 
   function prime() {

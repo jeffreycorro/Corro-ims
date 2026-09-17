@@ -256,6 +256,7 @@
       if (!transcribeTried) getTranscribe();
       return false;
     }
+    if (window.mpTts && typeof window.mpTts.hush === "function") {
       try {
         window.mpTts.hush();
       } catch (e) {}
