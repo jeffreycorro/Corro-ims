@@ -294,6 +294,8 @@ describe("artifact wraps", () => {
     assert.match(shim, /data-hr-leave-numbers/);
     assert.match(shim, /hr-forms-fix\.js/);
     assert.match(shim, /hr-email-applicants\.js/);
+    assert.ok(shim.indexOf("hr-201-file.js") < shim.indexOf("hr-201-checklist.js"));
+    assert.ok(shim.indexOf("hr-201-checklist.js") < shim.indexOf("hr-leave-numbers.js"));
     assert.ok(shim.indexOf("hr-201-file.js") < shim.indexOf("hr-leave-numbers.js"));
     assert.ok(shim.indexOf("hr-leave-numbers.js") < shim.indexOf("hr-forms-fix.js"));
     assert.doesNotMatch(html, /hr-leave-numbers\.js/);

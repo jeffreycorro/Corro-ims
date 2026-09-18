@@ -19,7 +19,7 @@ describe("placeholder and privacy", () => {
     const shimIndex = html.indexOf("/claude-shim.js");
     const pwaIndex = html.indexOf("/pwa.js");
     assert.ok(shimIndex > -1 && pwaIndex > shimIndex, "pwa.js must load after the shim");
-    assert.match(html, /const BUILD = "2026-09-18f"/);
+    assert.match(html, /const BUILD = "2026-09-18g"/);
     assert.doesNotMatch(html, /hr-dictation\.js/);
     assert.doesNotMatch(html, /hr-memo\.js/);
     assert.doesNotMatch(html, /<script[^>]+hr-attendance\.js/);
@@ -28,6 +28,7 @@ describe("placeholder and privacy", () => {
     assert.doesNotMatch(html, /hr-recruit\.js/);
     assert.doesNotMatch(html, /hr-applicant-dedupe\.js/);
     assert.doesNotMatch(html, /hr-201-file\.js/);
+    assert.doesNotMatch(html, /hr-201-checklist\.js/);
     assert.doesNotMatch(html, /hr-leave-numbers\.js/);
     assert.doesNotMatch(html, /hr-onboarding-links\.js/);
     assert.doesNotMatch(html, /hr-ask-leave\.js/);
@@ -43,6 +44,7 @@ describe("placeholder and privacy", () => {
     assert.match(shim, /hr-applicant-dedupe\.js/);
     assert.match(shim, /hr-recruit\.js/);
     assert.match(shim, /hr-201-file\.js/);
+    assert.match(shim, /hr-201-checklist\.js/);
     assert.match(shim, /hr-leave-numbers\.js/);
     assert.match(shim, /hr-onboarding-links\.js/);
     assert.match(shim, /hr-ask-leave\.js/);
@@ -90,6 +92,8 @@ describe("placeholder and privacy", () => {
     assert.match(readme, /2026-09-18d/);
     assert.match(readme, /2026-09-18e/);
     assert.match(readme, /2026-09-18f/);
+    assert.match(readme, /2026-09-18g/);
+    assert.match(readme, /hr-201-checklist\.js/);
     assert.match(readme, /hr-ask-leave\.js/);
     assert.match(readme, /hr-ask-attach\.js/);
     assert.match(readme, /hr-form-drive-import\.js/);

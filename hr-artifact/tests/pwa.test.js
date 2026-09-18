@@ -119,6 +119,7 @@ describe("HR PWA bootstrap", () => {
     assert.doesNotMatch(sw, /hr-recruit/);
     assert.doesNotMatch(sw, /hr-applicant-dedupe/);
     assert.doesNotMatch(sw, /hr-201-file/);
+    assert.doesNotMatch(sw, /hr-201-checklist/);
     assert.doesNotMatch(sw, /hr-leave-numbers/);
     assert.doesNotMatch(sw, /hr-onboarding-links/);
     assert.doesNotMatch(sw, /hr-ask-leave/);
