@@ -292,8 +292,12 @@ describe("artifact wraps", () => {
     const db = fs.readFileSync(path.join(__dirname, "../netlify/functions/db.js"), "utf8");
     assert.match(shim, /hr-leave-numbers\.js/);
     assert.match(shim, /data-hr-leave-numbers/);
+    assert.match(shim, /hr-forms-fix\.js/);
+    assert.match(shim, /hr-email-applicants\.js/);
     assert.ok(shim.indexOf("hr-201-file.js") < shim.indexOf("hr-leave-numbers.js"));
+    assert.ok(shim.indexOf("hr-leave-numbers.js") < shim.indexOf("hr-forms-fix.js"));
     assert.doesNotMatch(html, /hr-leave-numbers\.js/);
+    assert.match(html, /id="l-no"/);
     assert.match(db, /hr-leave-numbers/);
     assert.match(db, /409/);
     assert.match(db, /rejectDuplicateLeaveNumber|conflictForWrite/);
@@ -459,6 +463,75 @@ describe("next LRF mint after reset / import", () => {
     S.leaves.imp = { id: "imp", no: "LRF2026-0200", status: "Filed" };
     hr.noteUsedLeaveNo("LRF2026-0200", S);
     assert.equal(hr.nextFreeLeave(S, 2026).no, "LRF2026-0201");
+  });
+});
+
+describe("renumber save path", () => {
+  it("applyRenumber binds the artifact store when host.S is empty", async () => {
+    const S = liveStores();
+    const host = fakeHost({});
+    host.__hrS = S;
+    delete host.S;
+    const plan = hr.planRenumber(S, { leaveId: "lvL", toNo: "LRF2026-0172" });
+    const out = await hr.applyRenumber(host, plan);
+    assert.equal(out.to, "LRF2026-0172");
+    assert.equal(S.leaves.lvL.no, "LRF2026-0172");
+    assert.equal(host.S, S);
+  });
+
+  it("treats the leave page as visible when #new-lv is on screen even if ui.view is unbound", () => {
+    const doc = {
+      getElementById(id) {
+        return id === "new-lv" ? { id: "new-lv" } : null;
+      },
+      querySelector() {
+        return null;
+      },
+    };
+    assert.equal(hr.isLeaveView({}, {}, doc), true);
+    assert.equal(hr.isLeaveView({}, { ui: { view: "leave" } }, {}), true);
+    assert.equal(hr.isLeaveView({}, { ui: { view: "dash" } }, { getElementById() { return null; }, querySelector() { return null; } }), false);
+  });
+
+  it("merges a typed free LRF onto the leave being saved and refuses a taken one", () => {
+    const S = liveStores();
+    const host = {
+      document: {
+        getElementById(id) {
+          return id === "l-no" ? { value: "LRF2026-0188" } : null;
+        },
+      },
+    };
+    const merged = hr.mergeTypedLeaveNo("leaves", "lvL", { id: "lvL", no: "LRF2026-0170", empId: "eL" }, S, host);
+    assert.equal(merged.no, "LRF2026-0188");
+    host.document.getElementById = (id) => (id === "l-no" ? { value: "LRF2026-0169" } : null);
+    const blocked = hr.mergeTypedLeaveNo("leaves", "lvL", { id: "lvL", no: "LRF2026-0170", empId: "eL" }, S, host);
+    assert.equal(blocked.no, "LRF2026-0170");
+  });
+
+  it("lets wrapPut persist a free typed number from the editor field", async () => {
+    const S = liveStores();
+    const wrote = [];
+    const host = {
+      S,
+      document: {
+        getElementById(id) {
+          return id === "l-no" ? { value: "LRF2026-0188" } : null;
+        },
+        readyState: "complete",
+        addEventListener() {},
+      },
+      async put(coll, id, obj) {
+        wrote.push({ coll, id, no: obj && obj.no });
+        S[coll] = S[coll] || {};
+        S[coll][id] = obj;
+      },
+    };
+    const api = loadOnWindow(host);
+    api.patchGlobals(host);
+    await host.put("leaves", "lvL", { id: "lvL", no: "LRF2026-0170", empId: "eL" });
+    assert.equal(S.leaves.lvL.no, "LRF2026-0188");
+    assert.equal(wrote[0].no, "LRF2026-0188");
   });
 });
 

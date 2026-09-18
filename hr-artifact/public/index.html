@@ -15776,7 +15776,7 @@ function lvEditor(id,presetEmp){
   const l = LV_DRAFT ? LV_DRAFT : id ? Object.assign({},S.leaves[id]) : {
     id:uid("lv"), no:"", empId:presetEmp||"", type:"SIL", from:TODAY, to:TODAY, half:false, days:1,
     reason:"", status:"Filed", filedOn:TODAY, approvedBy:"", approvedOn:"", covering:"", notes:"",
-    contact:"", printedOn:"", signedLink:"", signedTitle:"", signedOn:"" };
+    contact:"", project:"", printedOn:"", signedLink:"", signedTitle:"", signedOn:"" };
   const draw=()=>{
     const e=S.employees[l.empId], t=leaveType(l.type);
     const yr=(l.from||TODAY).slice(0,4);
@@ -15786,7 +15786,8 @@ function lvEditor(id,presetEmp){
     openModal({ title:(l.no?"Leave "+l.no:"New leave application"), wide:true,
       body:'<div class="stack">'
         + '<div class="grid3">'
-        + '<div class="f"><label>Number</label><input value="'+esc(l.no||"assigned when you save")+'" disabled></div>'
+        + '<div class="f"><label>Number</label><input id="l-no" class="mono" value="'+esc(l.no||"")+'" placeholder="assigned when you save">'
+        + (l.no?'<span class="hint">Admin can change this to any unused LRF. Two leaves cannot share a number.</span>':'')+'</div>'
         + '<div class="f"><label>Employee</label>'+empPicker("l-emp", l.empId)+'</div>'
         + '<div class="f"><label>Status</label><select id="l-status">'+LEAVE_STATUS.map(x=>'<option'+(l.status===x?" selected":"")+'>'+x+'</option>').join("")+'</select></div>'
         + '</div>'
@@ -15816,6 +15817,7 @@ function lvEditor(id,presetEmp){
         + '<div class="grid2">'
         + '<div class="f"><label>Work covered by</label>'+empPicker("l-cov", l.covering)+'</div>'
         + '<div class="f"><label>Contact while on leave</label><input id="l-contact" value="'+esc(l.contact||"")+'" placeholder="mobile number"></div>'
+        + '<div class="f"><label>Project / site</label><select id="l-proj">'+projOpts(l.project||(e&&e.project)||"")+'</select></div>'
         + '<div class="f"><label>Notes</label><input id="l-notes" value="'+esc(l.notes||"")+'"></div>'
         + '</div>'
         + signedBlock("leaves", l)
@@ -15830,6 +15832,8 @@ function lvEditor(id,presetEmp){
       l.reason=$("#l-reason").value; l.filedOn=$("#l-filed").value; l.approvedBy=$("#l-appby").value;
       l.approvedOn=$("#l-appon").value; l.covering=$("#l-cov").value; l.notes=$("#l-notes").value;
       l.contact=($("#l-contact")||{}).value||"";
+      const typedNo=($("#l-no")||{}).value; if(typedNo!=null && String(typedNo).trim()) l.no=String(typedNo).trim();
+      l.project=($("#l-proj")||{}).value||l.project||"";
       l.days=leaveDays(l.from,l.to,l.half);
     };
     ["#l-emp","#l-type","#l-from","#l-to","#l-half"].forEach(sel=>{ $(sel).onchange=()=>{ grab(); draw(); }; });
@@ -15884,7 +15888,7 @@ function pfLeaveBox(k){ return k ? (PF_LEAVE_MAP[k] || "Others, pls specify") : 
 function printLeave(l, opt){
   const e=S.employees[l.empId], t=leaveType(l.type);
   const chosen=pfLeaveBox(l.type);
-  const site = (e&&e.project) || "";
+  const site = l.project || (e&&e.project) || "";
   let boxes='<table class="pf-t">';
   PF_LEAVE_BOX.forEach((o,i)=>{
     const on = o===chosen;
@@ -18584,7 +18588,8 @@ function importAppsDialog(){
     let b='';
     if(!DOC){
       b='<div class="stack">'
-       + '<div class="note">The company mailbox is on GoDaddy (or Titan), which this portal cannot open directly. '
+       + '<div class="note">Applications also arrive at <b>hrcorcondev@gmail.com</b> — use <b>Import from email</b> on Pipeline to pull that inbox (or Bulk import JSON). ' 
+       + 'The older company mailbox on GoDaddy (or Titan) still cannot be opened directly. '
        + 'A small script on the HR Mac reads it for you — <b>read-only, nothing on the server is touched</b> — '
        + 'and writes a file this screen imports.</div>'
        + '<div><b>1. On the Mac, in Terminal, run the survey</b> (it asks for the mailbox password and downloads nothing):</div>'

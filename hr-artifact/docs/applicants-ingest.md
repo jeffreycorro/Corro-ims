@@ -177,6 +177,34 @@ From the HR artifact `SEED_ROLES`. Use these when the listing maps to a defined 
 
 If the vacancy is not one of these, omit `roleId` and send `position` / `dept` instead.
 
+## Cassie: Import from email (`hrcorcondev@gmail.com`)
+
+Pipeline was not picking up applications from that inbox because the visible import path was the Mac/GoDaddy JSON file (`Import from the mailbox`) plus **Bulk import JSON**. After this deploy:
+
+1. Sign in at [https://corcondev-hr.netlify.app](https://corcondev-hr.netlify.app).
+2. Open **Recruitment → Pipeline**.
+3. Click **Import from email**.
+4. Click **Pull from hrcorcondev@gmail.com**.
+5. New applicants appear at **Applied**. The same person (name or email) updates the existing row — it does not create a second copy.
+
+If Pull says the inbox is not connected, Jeffrey must set these on site **corcondev-hr** (Functions + Production) and **redeploy**:
+
+| Variable | Value |
+| --- | --- |
+| `HR_APPLICANTS_IMAP_USER` | `hrcorcondev@gmail.com` |
+| `HR_APPLICANTS_IMAP_PASS` | Gmail **app password** (Google Account → Security → App passwords). Not the mailbox login password. |
+
+Do not commit those values. They are small and stay under the Functions 4KB budget. The browser never sees the app password — only the signed-in `hr_session` cookie is sent.
+
+Until IMAP is on, Cassie can still:
+
+- **Import from the mailbox** — run the Mac `corro_applications.py` script and choose `applications.json` (existing GoDaddy / Titan path).
+- **Bulk import JSON** — paste `{ "applicants": [ { "name": "…" } ] }` through `applicants-ingest`.
+
+Both write the same `applicants` collection as the email pull.
+
+`GET` / `POST` `/.netlify/functions/applicants-email` requires the HR session cookie (not the ingest key).
+
 ## Security
 
 - Service-role Supabase keys stay on Netlify functions. The extractor must **not** embed `SUPABASE_SERVICE_ROLE` in a browser or agent prompt.

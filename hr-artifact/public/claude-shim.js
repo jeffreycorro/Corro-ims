@@ -855,6 +855,8 @@
     loadCompanion("/hr-recruit.js", "data-hr-recruit");
     loadCompanion("/hr-201-file.js", "data-hr-201-file");
     loadCompanion("/hr-leave-numbers.js", "data-hr-leave-numbers");
+    loadCompanion("/hr-forms-fix.js", "data-hr-forms-fix");
+    loadCompanion("/hr-email-applicants.js", "data-hr-email-applicants");
     loadCompanion("/hr-form-drive-import.js", "data-hr-form-drive-import");
     loadCompanion("/hr-onboarding-links.js", "data-hr-onboarding-links");
     loadCompanion("/hr-ask-leave.js", "data-hr-ask-leave");
