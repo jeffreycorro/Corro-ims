@@ -57,6 +57,36 @@ describe("applicants ingest validation", () => {
     assert.equal(ok.applicants.length, 1);
     assert.equal(ok.overwrite, false);
     assert.equal(ok.forceNew, false);
+    assert.equal(ok.updateOnly, false);
+  });
+
+  it("treats the extractor export wrapper as updateOnly overwrite-by-id", () => {
+    const parsed = parseIngestBody(
+      JSON.stringify({
+        asOf: "2026-09-18T13:05+08:00",
+        driveFolderId: "1G1TJ5rmI_rGEQcXjKLfYfy2dx9gtZRgC",
+        counts: { totalApplicants: 2, withResumeLink: 2, backfillPatched: 1, shortlist: 1 },
+        applicants: [
+          { id: "a_keep", name: "Ada", resumeLink: "https://drive.example/ada" },
+          { id: "a_gone", name: "Bess", resumeLink: "https://drive.example/bess" },
+        ],
+      })
+    );
+    assert.equal(parsed.updateOnly, true);
+    assert.equal(parsed.overwrite, true);
+    assert.equal(parsed.applicants.length, 2);
+  });
+
+  it("accepts the extractor CSV and marks it updateOnly", () => {
+    const csv =
+      "id,name,resumeLink,patchedInBackfill,isShortlist\n" +
+      'a_keep,"Lovelace, Ada",https://drive.example/ada,False,True\n';
+    const parsed = parseIngestBody(csv);
+    assert.equal(parsed.updateOnly, true);
+    assert.equal(parsed.overwrite, true);
+    assert.equal(parsed.applicants[0].id, "a_keep");
+    assert.equal(parsed.applicants[0].name, "Lovelace, Ada");
+    assert.equal(parsed.applicants[0].resumeLink, "https://drive.example/ada");
   });
 
   it("rejects batches larger than the documented max", () => {
@@ -79,6 +109,12 @@ describe("applicants ingest validation", () => {
     const row = normalizeItem({ name: "Ada", overwrite: true }, 0, { today: "2026-09-14" });
     assert.equal(row.ok, false);
     assert.match(row.error, /overwrite requires an explicit id/);
+  });
+
+  it("does not treat updateOnly as allowed without an explicit id", () => {
+    const row = normalizeItem({ name: "Ada", updateOnly: true }, 0, { today: "2026-09-14" });
+    assert.equal(row.ok, false);
+    assert.match(row.error, /updateOnly requires an explicit id/);
   });
 
   it("rejects a malformed appliedOn and unknown-looking ids", () => {
@@ -165,10 +201,62 @@ describe("applicants ingest persist", () => {
       { ...store, today: "2026-09-14" }
     );
     assert.equal(replaced.ok, true);
+    assert.equal(replaced.created.length, 0);
+    assert.equal(replaced.updated.length, 1);
+    assert.equal(replaced.updated[0].matchedBy, "id");
     const saved = store.docs.get("applicants/a_keep").data;
     assert.equal(saved.name, "Replacement");
     assert.equal(saved.notes, "updated");
     assert.equal(saved.exams[0].examId, "x1");
+    assert.equal(saved.stage, "Interview");
+    assert.equal(saved.source, "Walk-in");
+  });
+
+  it("updateOnly overwrites an existing id and never creates a missing id", async () => {
+    const store = memoryStore({
+      applicants: {
+        a_keep: {
+          id: "a_keep",
+          name: "Original",
+          stage: "Interview",
+          source: "Walk-in",
+          appliedOn: "2026-08-10",
+          resumeLink: "",
+          exams: [{ examId: "x1", score: 10 }],
+        },
+      },
+    });
+    const result = await ingestApplicants(
+      [
+        {
+          id: "a_keep",
+          name: "Original",
+          resumeLink: "https://drive.example/cv",
+          updateOnly: true,
+        },
+        {
+          id: "a_missing",
+          name: "Should Not Appear",
+          resumeLink: "https://drive.example/nope",
+          updateOnly: true,
+        },
+      ],
+      { ...store, today: "2026-09-18", batchUpdateOnly: true }
+    );
+    assert.equal(result.created.length, 0);
+    assert.equal(result.updated.length, 1);
+    assert.equal(result.updated[0].id, "a_keep");
+    assert.equal(result.errors.length, 1);
+    assert.match(result.errors[0].error, /not on Pipeline/);
+    assert.equal(store.docs.has("applicants/a_missing"), false);
+    const saved = store.docs.get("applicants/a_keep").data;
+    assert.equal(saved.resumeLink, "https://drive.example/cv");
+    assert.equal(saved.stage, "Interview");
+    assert.equal(saved.source, "Walk-in");
+    assert.equal(saved.appliedOn, "2026-08-10");
+    assert.equal(saved.exams[0].examId, "x1");
+    const rows = [...store.docs.values()].filter((r) => r.collection === "applicants");
+    assert.equal(rows.length, 1);
   });
 
   it("soft-fails a missing roleId without rejecting the rest of the batch", async () => {
@@ -499,6 +587,10 @@ describe("applicants ingest docs and secrets", () => {
     assert.match(doc, /Operations Manager/);
     assert.match(doc, /Driver \/ Equipment Operator/);
     assert.match(doc, /forceNew/);
+    assert.match(doc, /updateOnly/);
+    assert.match(doc, /Overwrite from extractor/);
+    assert.match(doc, /builder-latest-applicants-export/);
+    assert.match(doc, /1G1TJ5rmI_rGEQcXjKLfYfy2dx9gtZRgC/);
     assert.match(doc, /Consolidate duplicates/);
     assert.match(doc, /soft-dedupe|Soft-dedupe/);
     assert.doesNotMatch(doc, /sk-|service_role|eyJhbGci/);

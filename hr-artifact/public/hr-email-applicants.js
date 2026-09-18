@@ -7,7 +7,9 @@
   "use strict";
 
   var MAILBOX = "hrcorcondev@gmail.com";
-  var api = { attached: false, mailbox: MAILBOX };
+  var DRIVE_FOLDER =
+    "https://drive.google.com/drive/folders/1G1TJ5rmI_rGEQcXjKLfYfy2dx9gtZRgC";
+  var api = { attached: false, mailbox: MAILBOX, driveFolder: DRIVE_FOLDER };
 
   function $(id) {
     return typeof document !== "undefined" ? document.getElementById(id) : null;
@@ -90,6 +92,13 @@
       "<li>Click <b>Pull from " +
       box +
       "</b>. New people land at Applied; the same name or email updates the existing row.</li>" +
+      "<li>Ready export as of <b>18 Sep 2026</b>: 67 Pipeline applicants, all with <span class=\"mono\">resumeLink</span>. " +
+      "Use <b>Overwrite from extractor (by id)</b> — it updates those ids only and will not create new Pipeline rows. " +
+      'File: <span class="mono">builder-latest-applicants-export.json</span> or <span class="mono">.csv</span> ' +
+      '(<a href="' +
+      DRIVE_FOLDER +
+      '" target="_blank" rel="noopener">Drive folder</a> or <span class="mono">/workspace/hr-applications/</span> on the extractor box). ' +
+      "Shortlist 14 all have a CV link; 43 were backfill-patched (some Drive PDFs may still be stub size).</li>" +
       "<li>If Pull says the inbox is not connected, tell Jeffrey — he sets <span class=\"mono\">HR_APPLICANTS_IMAP_USER</span> / <span class=\"mono\">HR_APPLICANTS_IMAP_PASS</span> on site <b>corcondev-hr</b> (Gmail app password, Functions scope) and redeploys. Do not put the password in chat or git.</li>" +
       "<li>Until IMAP is on: use <b>Import from the mailbox</b> (Mac <span class=\"mono\">applications.json</span>) or <b>Bulk import JSON</span> — both write through the same Pipeline ingest.</li>" +
       "</ol></div>"
@@ -115,6 +124,7 @@
       foot:
         '<button class="btn" id="hr-email-mailbox" type="button">Import from the mailbox (JSON file)</button>' +
         '<button class="btn" id="hr-email-json" type="button">Bulk import JSON</button>' +
+        '<button class="btn" id="hr-email-overwrite" type="button">Overwrite from extractor (by id)</button>' +
         '<button class="btn pri" id="hr-email-pull" type="button">Pull from ' +
         MAILBOX +
         "</button>",
@@ -164,6 +174,18 @@
           root.hrRecruit.openPasteDoor();
         } else {
           toast("Bulk import JSON is on Pipeline after the recruit companion loads.", "err");
+        }
+      };
+    }
+    var overwriteBtn = $("hr-email-overwrite");
+    if (overwriteBtn) {
+      overwriteBtn.onclick = function () {
+        if (root.hrRecruit && typeof root.hrRecruit.openOverwriteDoor === "function") {
+          root.hrRecruit.openOverwriteDoor();
+        } else if (root.hrRecruit && typeof root.hrRecruit.openPasteDoor === "function") {
+          root.hrRecruit.openPasteDoor({ updateOnly: true, extractor: true });
+        } else {
+          toast("Extractor overwrite is on Pipeline after the recruit companion loads.", "err");
         }
       };
     }

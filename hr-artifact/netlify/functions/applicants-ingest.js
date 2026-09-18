@@ -44,6 +44,7 @@ function createHandler(deps = {}) {
         today: todayFn(),
         batchOverwrite: parsed.overwrite,
         batchForceNew: parsed.forceNew,
+        batchUpdateOnly: parsed.updateOnly,
       });
 
       return json(200, {

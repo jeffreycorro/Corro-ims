@@ -852,6 +852,7 @@
     loadCompanion("/hr-memo.js", "data-hr-memo");
     loadCompanion("/hr-tts.js", "data-hr-tts");
     loadCompanion("/hr-applicant-dedupe.js", "data-hr-applicant-dedupe");
+    loadCompanion("/hr-applicants-export.js", "data-hr-applicants-export");
     loadCompanion("/hr-recruit.js", "data-hr-recruit");
     loadCompanion("/hr-201-file.js", "data-hr-201-file");
     loadCompanion("/hr-leave-numbers.js", "data-hr-leave-numbers");

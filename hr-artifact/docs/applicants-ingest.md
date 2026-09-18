@@ -74,6 +74,7 @@ curl -sS -X POST 'https://corcondev-hr.netlify.app/.netlify/functions/applicants
 ```json
 {
   "overwrite": false,
+  "updateOnly": false,
   "forceNew": false,
   "applicants": [ { "name": "…", "…": "…" } ]
 }
@@ -81,7 +82,13 @@ curl -sS -X POST 'https://corcondev-hr.netlify.app/.netlify/functions/applicants
 
 `overwrite` at the top level only applies to rows that also send an explicit `id`.
 
-`forceNew: true` (batch or per row) skips the name/email soft-dedupe and always creates a new applicant.
+`updateOnly: true` (also accepted as `overwriteExistingOnly`) **never creates a Pipeline row**. It overwrites the matching `id` and skips any id that is not already on Pipeline. Use this for the GoDaddy extractor export.
+
+The 18 Sep 2026 extractor file (`asOf`, `driveFolderId`, or `counts.totalApplicants`) is treated as `updateOnly` even if those flags are omitted, so pasting the raw export cannot mint new `a_…` ids.
+
+CSV is accepted on the same URL when the first line is a header (`id,name,resumeLink,…`). Quoted names with commas are fine.
+
+`forceNew: true` (batch or per row) skips the name/email soft-dedupe and always creates a new applicant. `updateOnly` wins over `forceNew`.
 
 ## Soft-dedupe
 
@@ -129,9 +136,10 @@ On the applicant editor, a dated **Background check and observations** log sits 
 | `source` | no | `"Email"` | Override e.g. `"GoDaddy"`. |
 | `appliedOn` | no | today (Asia/Manila) | `YYYY-MM-DD`. |
 | `stage` | no | `"Applied"` | Unknown values default to Applied (warning). |
-| `id` | no | new `a_…` id | Never overwrites an existing id unless `overwrite: true` on that row (or batch `overwrite` **and** an explicit `id`). |
-| `overwrite` | no | `false` | Requires an explicit `id`. |
-| `forceNew` | no | `false` | Create a new row even when the name/email already exists. |
+| `id` | no | new `a_…` id | Never overwrites an existing id unless `overwrite: true` on that row (or batch `overwrite` **and** an explicit `id`). With `updateOnly`, a missing id is skipped — never created. |
+| `overwrite` | no | `false` | Requires an explicit `id`. When the id is not on Pipeline, a new row is created **unless** `updateOnly` is set. |
+| `updateOnly` | no | `false` | Overwrite existing ids only. Do not create new Pipeline rows. Alias: `overwriteExistingOnly`. |
+| `forceNew` | no | `false` | Create a new row even when the name/email already exists. Ignored when `updateOnly` is set. |
 
 Each created record also gets empty `exams`, `interviews`, `history`, and `background` arrays so the pipeline editor can open it.
 
@@ -151,7 +159,7 @@ Persistence is the same as the artifact `put("applicants", id, data)` path (`doc
 ```
 
 - HTTP **200** means the request was authenticated and parsed. `ok` is true only when every row succeeded.
-- New people land in `created`. Re-applications of someone already on file land in `updated` (`matchedBy` is `name` or `email`).
+- New people land in `created`. Re-applications of someone already on file, and **overwrite-by-id** updates, land in `updated` (`matchedBy` is `name`, `email`, or `id`).
 - Per-row failures go in `errors` (`index` is the position in `applicants`). Other rows still create or update.
 - A missing `roleId` match adds `warning` on that `created` / `updated` item; the applicant is still stored.
 - HTTP **401** — no session and no valid ingest key.
@@ -196,12 +204,35 @@ If Pull says the inbox is not connected, Jeffrey must set these on site **corcon
 
 Do not commit those values. They are small and stay under the Functions 4KB budget. The browser never sees the app password — only the signed-in `hr_session` cookie is sent.
 
+### Extractor overwrite (18 Sep 2026 ready export)
+
+The GoDaddy HR application extractor published a Pipeline patch — **67 applicants, all with `resumeLink`**. Overwrite by stable id only; do **not** create new Pipeline rows.
+
+| | |
+| --- | --- |
+| Drive folder | [HR applications export](https://drive.google.com/drive/folders/1G1TJ5rmI_rGEQcXjKLfYfy2dx9gtZRgC) |
+| Files | `builder-latest-applicants-export.json` and `.csv` |
+| On the extractor box | `/workspace/hr-applications/builder-latest-applicants-export.json` and `.csv` |
+| Shortlist | 14, all have `resumeLink` |
+| Backfill | 43 rows were backfill-patched; some Drive PDFs may still be stub size |
+
+Cassie / Jeffrey:
+
+1. Sign in at [https://corcondev-hr.netlify.app](https://corcondev-hr.netlify.app).
+2. Open **Recruitment → Pipeline** → **Import from email**.
+3. Click **Overwrite from extractor (by id)**.
+4. Choose or paste the JSON or CSV from the Drive folder (or from `/workspace/hr-applications/` on the extractor box).
+5. Click **Overwrite existing by id**. Expect **67 updated · 0 new**. Unknown ids are skipped.
+
+The extractor bot can POST the same JSON (or CSV) to `applicants-ingest` with `X-HR-Ingest-Key`. The `asOf` / `driveFolderId` wrapper forces `updateOnly`.
+
 Until IMAP is on, Cassie can still:
 
+- **Overwrite from extractor (by id)** — 18 Sep 2026 resumeLink patch, id-stable.
 - **Import from the mailbox** — run the Mac `corro_applications.py` script and choose `applications.json` (existing GoDaddy / Titan path).
-- **Bulk import JSON** — paste `{ "applicants": [ { "name": "…" } ] }` through `applicants-ingest`.
+- **Bulk import JSON** — paste `{ "applicants": [ { "name": "…" } ] }` through `applicants-ingest`. An extractor-shaped file still overwrites by id only.
 
-Both write the same `applicants` collection as the email pull.
+All of these write the same `applicants` collection as the email pull.
 
 `GET` / `POST` `/.netlify/functions/applicants-email` requires the HR session cookie (not the ingest key).
 
