@@ -242,7 +242,7 @@ Add from **Safari** only.
 3. Tap **Share** → **Add to Home Screen**.
 4. Keep the name **Motorpool** and tap **Add**.
 
-The optional service worker caches icons and `pwa.css` only. It does **not** cache `index.html`, `claude-shim.js`, `motorpool-host.js`, `motorpool-tts.js`, `motorpool-ask-voice.js`, or `/.netlify/functions/*`.
+The optional service worker caches icons and `pwa.css` only. It does **not** cache `index.html`, `claude-shim.js`, `motorpool-host.js`, `motorpool-tts.js`, `motorpool-ask-voice.js`, `motorpool-ask-attach.js`, `motorpool-ask-leave.js`, or `/.netlify/functions/*`.
 
 ## Files
 
@@ -254,9 +254,11 @@ motorpool-artifact/
   public/motorpool-host.js   ← blocks prompt/confirm/alert/print; registers builds/
   public/pwa.js
   public/pwa.css
-  public/motorpool-tts.js    ← ElevenLabs readback (loaded by the shim)
+  public/motorpool-tts.js    ← ElevenLabs readback; Stop talking cuts playback (loaded by the shim)
   public/motorpool-ask-voice.js ← hold-to-talk STT (loaded by the shim)
-  netlify/functions/         ← auth, db, office, sample, transcribe, tts
+  public/motorpool-ask-attach.js ← Ask photo/file attach (loaded by the shim)
+  public/motorpool-ask-leave.js ← HR leave lookup client for admin/HR (loaded by the shim)
+  netlify/functions/         ← auth, db, office, sample, transcribe, tts, hr-leave
   netlify/lib/               ← session, mp-access, capabilities, Anthropic, ElevenLabs
   supabase/migrations/
   tests/                     ← auth, thaw, isFuel, papers, variance, host

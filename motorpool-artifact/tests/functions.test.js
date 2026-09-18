@@ -6,6 +6,7 @@ const { handler: authHandler } = require("../netlify/functions/auth");
 const { handler: sampleHandler } = require("../netlify/functions/sample");
 const { handler: ttsHandler } = require("../netlify/functions/tts");
 const { handler: transcribeHandler } = require("../netlify/functions/transcribe");
+const { handler: hrLeaveHandler } = require("../netlify/functions/hr-leave");
 const { COOKIE_NAME, signSession } = require("../netlify/lib/session");
 
 const SECRET = "test-motorpool-gate-secret-value";
@@ -268,6 +269,66 @@ describe("motorpool netlify functions", () => {
       });
       assert.equal(res.statusCode, 200);
       assert.equal(JSON.parse(res.body).text, "Reserve is low.");
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it("refuses HR leave lookup to a yard-only session and serves it to admin", async () => {
+    process.env.SUPABASE_URL = "https://example.supabase.co";
+    process.env.SUPABASE_ANON_KEY = "anon-test";
+    process.env.SUPABASE_SERVICE_ROLE = "service-test";
+    process.env.MOTORPOOL_GATE_SECRET = SECRET;
+    const yard = signSession({ sub: "yard", method: "password", role: "staff", department: "motorpool" }, SECRET);
+    const denied = await hrLeaveHandler({
+      httpMethod: "POST",
+      headers: { cookie: `${COOKIE_NAME}=${encodeURIComponent(yard)}` },
+      body: JSON.stringify({ query: "Catherine Largo" }),
+    });
+    assert.equal(denied.statusCode, 200);
+    assert.equal(JSON.parse(denied.body).available, false);
+
+    const admin = signSession({ sub: "boss", method: "password", role: "admin", department: "admin" }, SECRET);
+    const originalFetch = global.fetch;
+    global.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes("collection=eq.employees")) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () =>
+            JSON.stringify([{ id: "eL", data: { id: "eL", empNo: "1282", name: "Largo, Catherine A." } }]),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify([
+            {
+              id: "lvL",
+              data: {
+                empId: "eL",
+                no: "LRF2026-0170",
+                type: "LWOP",
+                from: "2026-09-16",
+                status: "Approved",
+                reason: "Attend to family in Cebu",
+              },
+            },
+          ]),
+      };
+    };
+    try {
+      const res = await hrLeaveHandler({
+        httpMethod: "POST",
+        headers: { cookie: `${COOKIE_NAME}=${encodeURIComponent(admin)}` },
+        body: JSON.stringify({ query: "Catherine Largo" }),
+      });
+      assert.equal(res.statusCode, 200);
+      const body = JSON.parse(res.body);
+      assert.equal(body.available, true);
+      assert.equal(body.leave[0].reason, "Attend to family in Cebu");
     } finally {
       global.fetch = originalFetch;
     }

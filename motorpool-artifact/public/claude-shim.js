@@ -524,10 +524,12 @@
     if (Array.isArray(promptOrMessages)) {
       return promptOrMessages.map(function (m) {
         if (typeof m === "string") return { role: "user", content: m };
-        return {
+        var out = {
           role: m && m.role === "assistant" ? "assistant" : "user",
           content: m && m.content != null ? m.content : "",
         };
+        if (m && m.attachments && m.attachments.length) out.attachments = m.attachments;
+        return out;
       });
     }
     if (promptOrMessages && promptOrMessages.role) {
@@ -853,5 +855,7 @@
   loadCompanion("/motorpool-host.js", "data-mp-host");
   loadCompanion("/motorpool-tts.js", "data-mp-tts");
   loadCompanion("/motorpool-ask-voice.js", "data-mp-ask-voice");
+  loadCompanion("/motorpool-ask-attach.js", "data-mp-ask-attach");
+  loadCompanion("/motorpool-ask-leave.js", "data-mp-ask-leave");
 })();
 

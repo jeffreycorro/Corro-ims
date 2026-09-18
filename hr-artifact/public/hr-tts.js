@@ -15,6 +15,8 @@
   var currentUrl = null;
   var lastSpoken = "";
   var voiceOn = false;
+  var speaking = false;
+  var playGen = 0;
 
   try {
     voiceOn = localStorage.getItem(STORAGE_KEY) === "1";
@@ -26,13 +28,49 @@
     style.id = "hr-tts-styles";
     style.textContent =
       ".hr-tts-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}" +
-      ".hr-tts-status{font-size:11px;color:var(--ink3,#969999);min-height:1.2em}";
+      ".hr-tts-status{font-size:11px;color:var(--ink3,#969999);min-height:1.2em}" +
+      ".hr-tts-stop{font-weight:600}";
     (document.head || document.documentElement).appendChild(style);
   }
 
+  function paintStop() {
+    var btn = document.getElementById("hr-tts-stop");
+    if (!btn) return;
+    btn.hidden = !speaking;
+    btn.disabled = !speaking;
+    btn.textContent = "Stop talking";
+    if (speaking) {
+      btn.style.background = "var(--danger,#9c3131)";
+      btn.style.borderColor = "var(--danger,#9c3131)";
+      btn.style.color = "#fff";
+    } else {
+      btn.style.background = "";
+      btn.style.borderColor = "";
+      btn.style.color = "";
+    }
+    var play = document.getElementById("hr-tts-play");
+    if (play) play.textContent = speaking ? "Stop talking" : "Play reply";
+  }
+
+  function setSpeaking(on) {
+    on = !!on;
+    if (speaking === on) {
+      paintStop();
+      return;
+    }
+    speaking = on;
+    api.speaking = on;
+    paintStop();
+  }
+
   function hush() {
+    playGen += 1;
+    var ended = null;
     try {
       if (currentAudio) {
+        ended = currentAudio.onended;
+        currentAudio.onended = null;
+        currentAudio.onerror = null;
         currentAudio.pause();
         currentAudio.src = "";
         currentAudio = null;
@@ -42,6 +80,17 @@
         currentUrl = null;
       }
     } catch (e) {}
+    try {
+      if (typeof speechSynthesis !== "undefined" && speechSynthesis.cancel) {
+        speechSynthesis.cancel();
+      }
+    } catch (e2) {}
+    setSpeaking(false);
+    if (typeof ended === "function") {
+      try {
+        ended();
+      } catch (e3) {}
+    }
   }
 
   function playBase64(b64, mime) {
@@ -54,7 +103,23 @@
     var blob = new Blob([bytes], { type: mime || "audio/mpeg" });
     currentUrl = URL.createObjectURL(blob);
     currentAudio = new Audio(currentUrl);
-    return currentAudio.play().catch(function () {});
+    var myGen = playGen;
+    return new Promise(function (resolve) {
+      function done() {
+        if (myGen !== playGen) {
+          resolve();
+          return;
+        }
+        setSpeaking(false);
+        resolve();
+      }
+      currentAudio.onended = done;
+      currentAudio.onerror = done;
+      setSpeaking(true);
+      currentAudio.play().then(null, function () {
+        done();
+      });
+    });
   }
 
   function getTts() {
@@ -79,9 +144,12 @@
     var clean = String(text || "").replace(/[*_#`>]/g, "").replace(/\s+/g, " ").trim();
     if (!clean) return Promise.resolve();
     lastSpoken = clean;
+    hush();
+    var myGen = playGen;
     return getTts().then(function (fn) {
-      if (!fn) return;
+      if (!fn || myGen !== playGen) return;
       return fn(clean).then(function (out) {
+        if (myGen !== playGen) return;
         if (!out || !out.audioBase64) return;
         return playBase64(out.audioBase64, out.mimeType);
       });
@@ -140,12 +208,30 @@
     var play = document.createElement("button");
     play.type = "button";
     play.className = "btn hr-tts-play";
+    play.id = "hr-tts-play";
     play.textContent = "Play reply";
     play.addEventListener("click", function () {
+      if (speaking) {
+        hush();
+        return;
+      }
       var text = latestAssistantText(document);
       if (text) speak(text);
     });
     host.insertBefore(play, btn.nextSibling);
+    var stop = document.createElement("button");
+    stop.type = "button";
+    stop.className = "btn hr-tts-stop";
+    stop.id = "hr-tts-stop";
+    stop.setAttribute("data-hr-ask-stop-talk", "1");
+    stop.textContent = "Stop talking";
+    stop.hidden = true;
+    stop.disabled = true;
+    stop.addEventListener("click", function () {
+      hush();
+    });
+    host.insertBefore(stop, play.nextSibling);
+    paintStop();
     return btn;
   }
 
@@ -210,6 +296,7 @@
 
   var api = {
     attached: true,
+    speaking: false,
     speak: speak,
     hush: hush,
     latestAssistantText: latestAssistantText,

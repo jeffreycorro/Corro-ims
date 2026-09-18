@@ -460,10 +460,12 @@
     if (Array.isArray(promptOrMessages)) {
       return promptOrMessages.map(function (m) {
         if (typeof m === "string") return { role: "user", content: m };
-        return {
+        var out = {
           role: m && m.role === "assistant" ? "assistant" : "user",
           content: m && m.content != null ? m.content : "",
         };
+        if (m && m.attachments && m.attachments.length) out.attachments = m.attachments;
+        return out;
       });
     }
     if (promptOrMessages && promptOrMessages.role) {
@@ -854,6 +856,8 @@
     loadCompanion("/hr-201-file.js", "data-hr-201-file");
     loadCompanion("/hr-leave-numbers.js", "data-hr-leave-numbers");
     loadCompanion("/hr-onboarding-links.js", "data-hr-onboarding-links");
+    loadCompanion("/hr-ask-leave.js", "data-hr-ask-leave");
+    loadCompanion("/hr-ask-attach.js", "data-hr-ask-attach");
   }
 
   var apiObj = {

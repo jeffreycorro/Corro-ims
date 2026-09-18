@@ -137,11 +137,22 @@ function fakeWindow(ttsImpl) {
       constructor(url) {
         this.url = url;
         this.src = url;
+        this.onended = null;
+        this.onerror = null;
       }
       play() {
-        return Promise.resolve();
+        const self = this;
+        return Promise.resolve().then(() => {
+          if (typeof self.onended === "function") self.onended();
+        });
       }
       pause() {}
+    },
+    speechSynthesis: {
+      cancelCount: 0,
+      cancel() {
+        this.cancelCount += 1;
+      },
     },
     atob(s) {
       return Buffer.from(s, "base64").toString("binary");
@@ -175,5 +186,35 @@ describe("HR tts companion", () => {
     assert.match(w.hrTts.latestAssistantText(w.document), /Glory Mae/);
     await w.hrTts.speak("  **Late** on August 5.  ");
     assert.deepEqual(seen, ["Late on August 5."]);
+    assert.equal(w.hrTts.speaking, false);
+  });
+
+  it("hush interrupts playback and shows Stop talking while speaking", async () => {
+    const w = fakeWindow(async () => {
+      return { audioBase64: Buffer.from("mp3").toString("base64"), mimeType: "audio/mpeg" };
+    });
+    w.Audio = class HoldAudio {
+      constructor(url) {
+        this.url = url;
+        this.src = url;
+        this.onended = null;
+        this.paused = false;
+      }
+      play() {
+        return new Promise(() => {});
+      }
+      pause() {
+        this.paused = true;
+      }
+    };
+    loadTts(w);
+    await new Promise((r) => setTimeout(r, 0));
+    const pending = w.hrTts.speak("Hold this");
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(w.hrTts.speaking, true);
+    w.hrTts.hush();
+    assert.equal(w.hrTts.speaking, false);
+    assert.ok(w.speechSynthesis.cancelCount >= 1);
+    await pending;
   });
 });

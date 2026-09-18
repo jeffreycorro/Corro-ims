@@ -125,6 +125,6 @@ describe("artifact HTML carries the isolation fixes", () => {
     assert.match(html, /if\(v==="vrf"&&S\.view!=="vrf"\) S\.draft=null/);
     assert.match(html, /\["Requested by",vrfRequestedBy\(entry\)\|\|"—"\]/);
     assert.doesNotMatch(html, /\["Requested by",entry\.notes\?"":"MOTORPOOL DEPT\."\]/);
-    assert.match(html, /var BUILD = "2026-09-17 b"/);
+    assert.match(html, /var BUILD = "2026-09-17 d"/);
   });
 });

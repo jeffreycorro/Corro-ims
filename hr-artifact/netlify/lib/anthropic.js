@@ -36,13 +36,100 @@ function sampleLimits() {
   };
 }
 
+function stripDataUrl(value) {
+  const s = String(value || "");
+  const idx = s.indexOf(",");
+  return idx >= 0 ? s.slice(idx + 1) : s;
+}
+
+function attachmentBlock(att) {
+  if (!att || typeof att !== "object") return null;
+  if (att.type === "image" || att.type === "document" || att.type === "text" || att.type === "tool_result") {
+    return att;
+  }
+  if (att.kind === "image" && att.data) {
+    return {
+      type: "image",
+      source: {
+        type: "base64",
+        media_type: att.mediaType || "image/jpeg",
+        data: stripDataUrl(att.data),
+      },
+    };
+  }
+  if (att.kind === "document" && att.data) {
+    return {
+      type: "document",
+      source: {
+        type: "base64",
+        media_type: att.mediaType || "application/pdf",
+        data: stripDataUrl(att.data),
+      },
+    };
+  }
+  if (att.kind === "text" && att.text) {
+    return { type: "text", text: String(att.text) };
+  }
+  return null;
+}
+
+function normalizeBlock(block) {
+  if (block == null) return null;
+  if (typeof block === "string") return { type: "text", text: block };
+  if (typeof block !== "object") return { type: "text", text: String(block) };
+  if (block.type === "text" && block.text != null) {
+    return { type: "text", text: String(block.text) };
+  }
+  if ((block.type === "image" || block.type === "document") && block.source) {
+    const source = { ...block.source };
+    if (source.data) source.data = stripDataUrl(source.data);
+    return { type: block.type, source };
+  }
+  if (block.type === "tool_result" || block.type === "tool_use") return block;
+  return attachmentBlock(block);
+}
+
+function normalizeMessageContent(content, attachments) {
+  const extras = Array.isArray(attachments)
+    ? attachments.map(attachmentBlock).filter(Boolean)
+    : [];
+  if (typeof content === "string") {
+    const text = content;
+    if (!extras.length) return text;
+    return extras.concat(text ? [{ type: "text", text }] : []);
+  }
+  if (Array.isArray(content)) {
+    const blocks = content.map(normalizeBlock).filter(Boolean);
+    return extras.length ? extras.concat(blocks) : blocks;
+  }
+  if (content && typeof content === "object") {
+    const one = normalizeBlock(content);
+    const blocks = one ? [one] : [];
+    return extras.length ? extras.concat(blocks) : blocks.length === 1 ? blocks[0] : blocks;
+  }
+  if (extras.length) return extras;
+  return content == null ? "" : String(content);
+}
+
+function messagesHaveDocuments(messages) {
+  return (messages || []).some((m) => {
+    if (!m || !Array.isArray(m.content)) return false;
+    return m.content.some((b) => b && b.type === "document");
+  });
+}
+
 function normalizeMessages(promptOrMessages) {
   if (typeof promptOrMessages === "string") {
     return coalesceMessages([{ role: "user", content: promptOrMessages }]);
   }
   if (promptOrMessages && typeof promptOrMessages === "object" && !Array.isArray(promptOrMessages)) {
-    if (promptOrMessages.role && promptOrMessages.content != null) {
-      return coalesceMessages([promptOrMessages]);
+    if (promptOrMessages.role && (promptOrMessages.content != null || promptOrMessages.attachments)) {
+      return coalesceMessages([
+        {
+          role: promptOrMessages.role,
+          content: normalizeMessageContent(promptOrMessages.content, promptOrMessages.attachments),
+        },
+      ]);
     }
   }
   if (!Array.isArray(promptOrMessages) || promptOrMessages.length === 0) {
@@ -51,7 +138,7 @@ function normalizeMessages(promptOrMessages) {
   const messages = promptOrMessages.map((m) => {
     if (typeof m === "string") return { role: "user", content: m };
     const role = m && m.role === "assistant" ? "assistant" : "user";
-    return { role, content: m && m.content != null ? m.content : "" };
+    return { role, content: normalizeMessageContent(m && m.content, m && m.attachments) };
   });
   return coalesceMessages(messages);
 }
@@ -171,15 +258,20 @@ async function callAnthropic({ messages, tools, modelTier, mode, signal }) {
       "Respond with a single JSON object only. No markdown fences, no commentary, no extra keys beyond what was requested.";
   }
 
+  const headers = {
+    "content-type": "application/json",
+    "x-api-key": key,
+    "anthropic-version": ANTHROPIC_VERSION,
+  };
+  if (messagesHaveDocuments(messages)) {
+    headers["anthropic-beta"] = "pdfs-2024-09-25";
+  }
+
   let res;
   try {
     res = await fetch(ANTHROPIC_URL, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": key,
-        "anthropic-version": ANTHROPIC_VERSION,
-      },
+      headers,
       body: JSON.stringify(body),
       signal,
     });
@@ -219,7 +311,9 @@ module.exports = {
   extractToolCalls,
   mapAnthropicError,
   maxTokensForTier,
+  messagesHaveDocuments,
   modelForTier,
+  normalizeMessageContent,
   normalizeMessages,
   parseJsonText,
   sampleLimits,

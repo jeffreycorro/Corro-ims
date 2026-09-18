@@ -52,6 +52,11 @@
         currentUrl = null;
       }
     } catch (e) {}
+    try {
+      if (typeof speechSynthesis !== "undefined" && speechSynthesis.cancel) {
+        speechSynthesis.cancel();
+      }
+    } catch (e3) {}
     setSpeaking(false);
     if (typeof ended === "function") {
       try {

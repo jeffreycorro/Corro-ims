@@ -54,6 +54,12 @@ function fakeWindow(ttsImpl) {
         return Promise.resolve(null);
       },
     },
+    speechSynthesis: {
+      cancelCount: 0,
+      cancel() {
+        this.cancelCount += 1;
+      },
+    },
   };
   window.window = window;
   return window;
@@ -101,6 +107,7 @@ describe("motorpool tts companion", () => {
     assert.equal(w.mpTts.speaking, true);
     w.mpTts.hush();
     assert.equal(w.mpTts.speaking, false);
+    assert.ok(w.speechSynthesis.cancelCount >= 1);
     await pending;
   });
 
