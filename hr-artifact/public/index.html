@@ -1158,7 +1158,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-09-18e";
+const BUILD = "2026-09-18f";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -15262,7 +15262,7 @@ function viewCA(){
    + '<button class="'+(mode==="aging"?"on":"")+'" data-camode="aging">Aging</button></div>'
    + '<button class="btn pri" id="new-ca"><svg><use href="#i-plus"/></svg> New cash advance</button>'
    + '<button class="btn" id="ca-fromscan">New from a scanned form</button>'
-   + '<button class="btn" id="imp-ca">Import signed forms</button>'
+   + '<button class="btn" id="imp-ca">Import from Drive</button>'
    + (all.length?'<button class="btn" id="ca-csv"><svg><use href="#i-dl"/></svg> Export CSV</button>':"")+'</div>';
 
   const B={a:[],b:[],c:[],d:[]};
@@ -15656,7 +15656,7 @@ function viewLeave(){
    + '<button class="'+(mode==="balances"?"on":"")+'" data-lvmode="balances">Balances</button></div>'
    + '<button class="btn pri" id="new-lv"><svg><use href="#i-plus"/></svg> New leave application</button>'
    + '<button class="btn" id="lv-fromscan">New from a scanned form</button>'
-   + '<button class="btn" id="imp-lv">Import signed forms</button>'
+   + '<button class="btn" id="imp-lv">Import from Drive</button>'
    + (all.length?'<button class="btn" id="lv-csv"><svg><use href="#i-dl"/></svg> Export CSV</button>':"")+'</div>';
 
   const onLeaveNow=all.filter(l=>["Approved","Availed"].includes(l.status)&&l.from<=TODAY&&(l.to||l.from)>=TODAY);
@@ -16887,26 +16887,40 @@ function decisionBlocked(r){
 /* ============ importing records that already have a number ============ */
 /* Their leave and cash advance forms are already numbered (LRF2025-0126,
    CAF2025-0042). Importing must KEEP that number, not mint a new one, or the
-   paper and the portal stop agreeing. */
+   paper and the portal stop agreeing. The default door is Drive — the scans
+   are already there. Paste stays behind "Paste rows instead". */
 function importRecords(kind){
+  if(window.hrFormDriveImport && typeof window.hrFormDriveImport.open==="function"){
+    return window.hrFormDriveImport.open(kind);
+  }
+  return importRecordsPaste(kind);
+}
+function importRecordsPaste(kind){
   const isLeave = kind==="leave";
-  const cols = isLeave
-    ? "Form no, Employee no, Type, From, To, Days, Reason, Status, Filed on, Approved by"
-    : "Form no, Employee no, Date, Amount, Purpose, Particulars, Project, Status";
   const eg = isLeave
-    ? "LRF2025-0004\t1241\tVL\t2025-10-25\t2025-10-27\t1.5\tBirthday\tApproved\t2025-10-20\tCatherine Largo"
-    : "CAF2025-0042\t1241\t2026-01-13\t20000\tCash Advance\tHouse renovation\tDSWD Labangon\tReleased";
-  openModal({ title:isLeave?"Import leave records":"Import cash advances", wide:true,
+    ? "LRF2025-0004  1241  VL  2025-10-25  2025-10-27  1.5  Birthday  Approved"
+    : "CAF2025-0042  1241  2026-01-13  20000  Cash Advance  House renovation";
+  openModal({ title:isLeave?"Paste leave records":"Paste cash advances", wide:true,
     body:'<div class="stack">'
-      + '<div class="note">Keeps the number already printed on the form. One row per record, tab or comma separated, in this order:<br><b>'+esc(cols)+'</b></div>'
-      + '<div class="f"><label>Paste the rows</label><textarea id="ir-data" style="min-height:180px;font-family:var(--f-mono);font-size:11.5px" placeholder="'+esc(eg)+'"></textarea>'
-      + (isLeave?'<span class="hint">Type accepts the code (VL, SL, SIL, EL) or the full name.</span>':'')+'</div>'
+      + '<div class="note">Only if you already have a list. Each line is one signed form. '
+      + 'Start with the number printed on the paper, then the employee number. '
+      + 'That paper number is kept — the portal does not issue a new one.</div>'
+      + '<div class="f"><label>The list</label><textarea id="ir-data" style="min-height:180px;font-family:var(--f-mono);font-size:11.5px" placeholder="'+esc(eg)+'"></textarea>'
+      + (isLeave?'<span class="hint">Leave type can be the short code (VL, SL, SIL) or the full name.</span>':'')+'</div>'
       + '<div id="ir-prev"></div></div>',
-    foot:'<button class="btn" id="ir-check">Check</button><button class="btn pri" id="ir-go">Import</button>'});
+    foot:'<button class="btn" id="ir-back">Back to Drive</button><button class="btn" id="ir-check">Check</button><button class="btn pri" id="ir-go">Import</button>'});
+  const back=$("#ir-back"); if(back) back.onclick=()=>importRecords(kind);
   const parse=()=>{
     const raw=$("#ir-data").value.trim(); if(!raw) return null;
-    const d = raw.split("\n")[0].split("\t").length > raw.split("\n")[0].split(",").length ? "\t" : ",";
-    const rows=raw.split("\n").map(l=>l.split(d).map(x=>x.trim())).filter(r=>r.length>2 && r[0]);
+    const first=raw.split("\n")[0];
+    const tabs=first.split("\t").length, commas=first.split(",").length, spaces=first.trim().split(/\s{2,}|\t/).length;
+    const split=line=>{
+      if(tabs>=commas && tabs>2) return line.split("\t");
+      if(commas>2) return line.split(",");
+      if(spaces>2) return line.trim().split(/\s{2,}|\t/);
+      return line.trim().split(/\s+/);
+    };
+    const rows=raw.split("\n").map(l=>split(l).map(x=>x.trim())).filter(r=>r.length>2 && r[0]);
     return rows.filter(r=>!/^form\s*no/i.test(r[0]));
   };
   const findEmp=no=>Object.values(S.employees).find(e=>e.empNo===String(no).trim());

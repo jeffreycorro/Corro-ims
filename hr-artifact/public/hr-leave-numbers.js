@@ -728,9 +728,10 @@
   }
 
   function wrapImportRecords(host) {
-    var orig = host.importRecords;
+    var name = typeof host.importRecordsPaste === "function" ? "importRecordsPaste" : "importRecords";
+    var orig = host[name];
     if (typeof orig !== "function" || orig._hrLeaveNo) return false;
-    host.importRecords = function (kind) {
+    host[name] = function (kind) {
       var out = orig.apply(this, arguments);
       var go = host.document && host.document.getElementById("ir-go");
       if (go && !go._hrLeaveNo && str(kind) === "leave") {
@@ -754,7 +755,7 @@
       }
       return out;
     };
-    host.importRecords._hrLeaveNo = true;
+    host[name]._hrLeaveNo = true;
     return true;
   }
 

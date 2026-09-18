@@ -123,6 +123,7 @@ describe("HR PWA bootstrap", () => {
     assert.doesNotMatch(sw, /hr-onboarding-links/);
     assert.doesNotMatch(sw, /hr-ask-leave/);
     assert.doesNotMatch(sw, /hr-ask-attach/);
+    assert.doesNotMatch(sw, /hr-form-drive-import/);
     assert.match(sw, /\/\.netlify\//);
   });
 });
