@@ -8,6 +8,11 @@ const {
   emailKey,
   findIngestMatch,
 } = require("../../public/hr-applicant-dedupe");
+const {
+  looksLikeCsv,
+  looksLikeExtractor,
+  parseApplicantsExport,
+} = require("../../public/hr-applicants-export");
 
 const MAX_BATCH = 100;
 const ID_RE = /^[A-Za-z0-9._-]{1,80}$/;
@@ -123,11 +128,33 @@ function blankApplicant(id, today) {
 }
 
 function parseIngestBody(raw) {
+  if (typeof raw === "string" && looksLikeCsv(raw)) {
+    let parsed;
+    try {
+      parsed = parseApplicantsExport(raw, { format: "csv" });
+    } catch (cause) {
+      const err = new Error(cause && cause.message ? cause.message : "CSV must include applicants");
+      err.statusCode = 400;
+      throw err;
+    }
+    if (parsed.applicants.length > MAX_BATCH) {
+      const err = new Error(`At most ${MAX_BATCH} applicants per request`);
+      err.statusCode = 400;
+      throw err;
+    }
+    return {
+      applicants: parsed.applicants,
+      overwrite: parsed.overwrite === true,
+      forceNew: parsed.forceNew === true,
+      updateOnly: parsed.updateOnly === true,
+    };
+  }
+
   let body;
   try {
     body = typeof raw === "string" ? JSON.parse(raw || "{}") : raw || {};
   } catch {
-    const err = new Error("Body must be JSON");
+    const err = new Error("Body must be JSON or CSV");
     err.statusCode = 400;
     throw err;
   }
@@ -151,14 +178,18 @@ function parseIngestBody(raw) {
     err.statusCode = 400;
     throw err;
   }
+  const extractor = looksLikeExtractor(body);
+  const updateOnly =
+    body.updateOnly === true || body.overwriteExistingOnly === true || extractor;
   return {
     applicants: body.applicants,
-    overwrite: body.overwrite === true,
+    overwrite: body.overwrite === true || updateOnly,
     forceNew: body.forceNew === true,
+    updateOnly,
   };
 }
 
-function normalizeItem(item, index, { today, batchOverwrite } = {}) {
+function normalizeItem(item, index, { today, batchOverwrite, batchUpdateOnly } = {}) {
   if (!item || typeof item !== "object" || Array.isArray(item)) {
     return { ok: false, index, error: "applicant must be an object" };
   }
@@ -177,10 +208,16 @@ function normalizeItem(item, index, { today, batchOverwrite } = {}) {
     };
   }
 
-  if (item.overwrite === true && !explicitId) {
-    return { ok: false, index, error: "overwrite requires an explicit id" };
+  const updateOnly =
+    item.updateOnly === true || item.overwriteExistingOnly === true || batchUpdateOnly === true;
+  if ((item.overwrite === true || updateOnly) && !explicitId) {
+    return {
+      ok: false,
+      index,
+      error: updateOnly ? "updateOnly requires an explicit id" : "overwrite requires an explicit id",
+    };
   }
-  const overwrite = item.overwrite === true || (batchOverwrite === true && explicitId);
+  const overwrite = item.overwrite === true || updateOnly || (batchOverwrite === true && explicitId);
   const forceNew = item.forceNew === true;
 
   let appliedOn = asString(item.appliedOn);
@@ -211,10 +248,16 @@ function normalizeItem(item, index, { today, batchOverwrite } = {}) {
     id: id || null,
     explicitId,
     overwrite,
+    updateOnly,
     forceNew,
     appliedOn,
     stage,
     source: asString(item.source) || "Email",
+    provided: {
+      source: item.source != null && asString(item.source) !== "",
+      appliedOn: Boolean(asString(item.appliedOn)),
+      stage: Boolean(asString(item.stage)),
+    },
     fields,
     warnings,
   };
@@ -245,6 +288,7 @@ async function ingestApplicants(items, deps) {
   const today = deps.today || formatManilaDate();
   const batchOverwrite = deps.batchOverwrite === true;
   const batchForceNew = deps.batchForceNew === true;
+  const batchUpdateOnly = deps.batchUpdateOnly === true;
   const created = [];
   const updated = [];
   const errors = [];
@@ -277,7 +321,7 @@ async function ingestApplicants(items, deps) {
   }
 
   for (let i = 0; i < items.length; i += 1) {
-    const norm = normalizeItem(items[i], i, { today, batchOverwrite });
+    const norm = normalizeItem(items[i], i, { today, batchOverwrite, batchUpdateOnly });
     if (!norm.ok) {
       errors.push({ index: i, error: norm.error });
       continue;
@@ -302,7 +346,17 @@ async function ingestApplicants(items, deps) {
           }
           prior = existingData(row);
           matchedBy = "id";
+        } else if (norm.updateOnly) {
+          errors.push({
+            index: i,
+            id,
+            error: `id ${id} is not on Pipeline; skipped (updateOnly)`,
+          });
+          continue;
         }
+      } else if (norm.updateOnly) {
+        errors.push({ index: i, error: "updateOnly requires an explicit id" });
+        continue;
       } else if (!forceNew) {
         const match = findIngestMatch(
           { name: norm.name, email: norm.fields.email, roleId: norm.fields.roleId },
@@ -332,9 +386,9 @@ async function ingestApplicants(items, deps) {
       } else if (prior && norm.overwrite) {
         doc = { ...blankApplicant(id, today), ...prior, id };
         doc.name = norm.name;
-        doc.source = norm.source;
-        doc.appliedOn = norm.appliedOn;
-        doc.stage = norm.stage;
+        if (norm.provided && norm.provided.source) doc.source = norm.source;
+        if (norm.provided && norm.provided.appliedOn) doc.appliedOn = norm.appliedOn;
+        if (norm.provided && norm.provided.stage) doc.stage = norm.stage;
         Object.assign(doc, norm.fields);
       } else {
         doc = blankApplicant(id, today);
@@ -374,8 +428,8 @@ async function ingestApplicants(items, deps) {
       else known.push(doc);
       const entry = { id, name: doc.name };
       if (warnings.length) entry.warning = warnings.join("; ");
-      if (matchedBy && matchedBy !== "id") {
-        entry.matchedBy = matchedBy;
+      if (prior) {
+        entry.matchedBy = matchedBy || "id";
         updated.push(entry);
       } else {
         created.push(entry);

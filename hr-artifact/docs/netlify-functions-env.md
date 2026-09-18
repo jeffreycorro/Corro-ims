@@ -60,6 +60,8 @@ Local `netlify dev` can still use `GOOGLE_SERVICE_ACCOUNT_JSON` or `GOOGLE_SERVI
 | `SUPABASE_SERVICE_ROLE` | Functions | Docs, locks, profile lookup |
 | `HR_SESSION_SECRET` | Functions | Cookie HMAC. Prefer this over any leftover gate secret. |
 | `HR_APPLICANTS_INGEST_KEY` | Functions | GoDaddy extractor |
+| `HR_APPLICANTS_IMAP_USER` | Functions, optional | `hrcorcondev@gmail.com` (~24 B) |
+| `HR_APPLICANTS_IMAP_PASS` | Functions, optional | Gmail app password (~20 B). Never the account login password. |
 | `ANTHROPIC_API_KEY` | Functions | `sample` |
 | `OPENAI_API_KEY` | Functions | `transcribe` |
 | `ELEVENLABS_API_KEY` | Functions | `tts` |

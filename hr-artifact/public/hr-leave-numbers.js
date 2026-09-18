@@ -494,8 +494,14 @@
 
   async function applyRenumber(host, plan) {
     if (!plan || plan.error) throw new Error((plan && plan.error) || "Nothing to renumber.");
-    var S = host.S;
-    var leave = S.leaves[plan.leave.id];
+    var S = storeOf(host) || {};
+    if (host) host.S = S;
+    S.leaves = S.leaves || {};
+    var leave = S.leaves[plan.leave && plan.leave.id];
+    if (!leave && plan.leave) {
+      leave = plan.leave;
+      S.leaves[leave.id] = leave;
+    }
     if (!leave) throw new Error("That leave is no longer on file.");
     var toNo = plan.to;
     var parsed = parseLrf(toNo);
@@ -765,11 +771,71 @@
     return true;
   }
 
+  function mergeTypedLeaveNo(coll, id, obj, S, host) {
+    if (!obj || coll !== "leaves") return obj;
+    var typed = readTypedLeaveNo(host);
+    if (!typed || !parseLrf(typed)) return obj;
+    if (sameLeaveNo(obj.no, typed)) return obj;
+    if (numberInUse(S, typed, { leaveId: id })) return obj;
+    obj.no = typed;
+    return obj;
+  }
+
+  function syncLeaveRegisterAfterRenumber(host, S, leave, fromNo, toNo) {
+    if (!leave || !fromNo || !toNo || sameLeaveNo(fromNo, toNo)) return Promise.resolve();
+    var parsed = parseLrf(toNo);
+    if (!parsed) return Promise.resolve();
+    var regs = matchingDocreg(S, leave, fromNo);
+    var chain = Promise.resolve();
+    var origPut = host.put && host.put._hrLeaveNoOrig ? host.put._hrLeaveNoOrig : null;
+    function write(coll, id, rec) {
+      if (typeof host.put === "function") return host.put(coll, id, rec);
+      if (origPut) return origPut(coll, id, rec);
+      return Promise.resolve();
+    }
+    if (regs.length) {
+      regs.forEach(function (d) {
+        chain = chain.then(function () {
+          var nd = cloneOf(host, d);
+          nd.no = toNo;
+          nd.year = parsed.year;
+          nd.seq = parsed.seq;
+          nd.refId = nd.refId || leave.id;
+          nd.empId = nd.empId || leave.empId;
+          nd.notes = appendNote(nd.notes, "Renumbered from " + fromNo + " to " + toNo);
+          return write("docreg", nd.id, nd);
+        });
+      });
+      return chain;
+    }
+    if (typeof host.uid !== "function") return chain;
+    var rid = host.uid("d");
+    return write("docreg", rid, {
+      id: rid,
+      no: toNo,
+      seriesKey: LV,
+      year: parsed.year,
+      seq: parsed.seq,
+      title: "Leave Request Form",
+      tags: ["leave", "renumbered"],
+      empId: leave.empId || "",
+      date: leave.filedOn || todayISO(host),
+      status: "Issued",
+      module: "leave",
+      refId: leave.id,
+      link: leave.signedLink || "",
+      notes: "Created when " + fromNo + " was renumbered to " + toNo,
+      issuedBy: (S.settings && S.settings.hrHead) || "",
+    });
+  }
+
   function wrapPut(host) {
     var orig = host.put;
     if (typeof orig !== "function" || orig._hrLeaveNo) return false;
+    host.put._hrLeaveNoOrig = orig;
     host.put = function (coll, id, obj) {
       var S = storeOf(host);
+      obj = mergeTypedLeaveNo(coll, id, obj, S, host);
       var conflict = conflictForWrite(coll, id, obj, S);
       if (conflict) {
         if (host.toast) host.toast(conflict.message, "err");
@@ -779,9 +845,15 @@
       }
       var prev = S && S[coll] ? S[coll][id] : undefined;
       var had = !!(S && S[coll] && Object.prototype.hasOwnProperty.call(S[coll], id));
-      return Promise.resolve(orig.apply(this, arguments)).then(function (out) {
+      var fromNo = prev && prev.no;
+      return Promise.resolve(orig.call(this, coll, id, obj)).then(function (out) {
         if (obj && obj.no && (coll === "leaves" || (coll === "docreg" && isLvDocreg(obj)))) {
           noteUsedLeaveNo(obj.no, S);
+        }
+        if (coll === "leaves" && obj && obj.no && fromNo && !sameLeaveNo(fromNo, obj.no)) {
+          return syncLeaveRegisterAfterRenumber(host, S, obj, fromNo, obj.no).then(function () {
+            return out;
+          });
         }
         return out;
       }).catch(function (e) {
@@ -907,11 +979,79 @@
     (doc.head || doc.documentElement).appendChild(style);
   }
 
+  function isLeaveView(host, S, doc) {
+    if (S && S.ui && S.ui.view === "leave") return true;
+    if (!doc) return false;
+    if (doc.getElementById && doc.getElementById("new-lv")) return true;
+    if (doc.querySelector && (doc.querySelector("[data-lvmode]") || doc.querySelector("[data-open-lv]"))) {
+      return true;
+    }
+    return false;
+  }
+
+  function leaveModalRoot(doc) {
+    if (!doc || !doc.querySelector) return null;
+    return (
+      doc.querySelector(".modal.open") ||
+      doc.querySelector(".modal[open]") ||
+      doc.querySelector("#modal") ||
+      doc.querySelector(".modal")
+    );
+  }
+
+  function readTypedLeaveNo(host) {
+    var doc = host && host.document;
+    var el = doc && doc.getElementById && doc.getElementById("l-no");
+    if (el && el.value) return str(el.value).trim();
+    var modal = leaveModalRoot(doc);
+    if (!modal || !modal.querySelector) return "";
+    var labeled = modal.querySelector("#l-no");
+    if (labeled && labeled.value) return str(labeled.value).trim();
+    return "";
+  }
+
+  function enableLeaveNumberField(host, leaveNo) {
+    var doc = host && host.document;
+    if (!doc) return null;
+    var el = doc.getElementById && doc.getElementById("l-no");
+    if (!el) {
+      var modal = leaveModalRoot(doc);
+      if (!modal) return null;
+      var labels = modal.querySelectorAll ? modal.querySelectorAll("label") : [];
+      var i;
+      for (i = 0; i < labels.length; i += 1) {
+        if (!/^\s*number\s*$/i.test(labels[i].textContent || "")) continue;
+        var box = labels[i].parentNode;
+        el = box && box.querySelector ? box.querySelector("input") : null;
+        if (el) break;
+      }
+      if (!el) {
+        var disabled = modal.querySelectorAll ? modal.querySelectorAll("input[disabled]") : [];
+        el = disabled[0] || null;
+      }
+    }
+    if (!el) return null;
+    if (!el.id) el.id = "l-no";
+    el.disabled = false;
+    el.removeAttribute && el.removeAttribute("disabled");
+    if (el.className != null && String(el.className).indexOf("mono") < 0) {
+      el.className = (el.className ? el.className + " " : "") + "mono";
+    }
+    var shown = str(el.value);
+    if (!shown || /^assigned when you save$/i.test(shown)) {
+      if (leaveNo) el.value = leaveNo;
+    }
+    el.title = "Admin can change this to any unused LRF. Two leaves cannot share a number.";
+    return el;
+  }
+
   function injectChrome(host) {
     var S = storeOf(host);
     host.S = S;
     var doc = host.document;
-    if (!S || !S.ui || S.ui.view !== "leave" || !doc) return;
+    if (!doc) return;
+    enableLeaveNumberField(host);
+    if (!isLeaveView(host, S, doc)) return;
     var view = doc.getElementById("view") || doc.body;
     if (!view || !view.querySelector) return;
     ensureStyles(doc);
@@ -1079,15 +1219,21 @@
 
   async function renumber(opts, host) {
     host = host || (typeof window !== "undefined" ? window : null);
-    if (!host || !host.S) throw new Error("Open the HR portal and sign in first.");
-    var plan = planRenumber(host.S, opts || {}, host);
+    var S = storeOf(host);
+    if (!host || !S || !(S.leaves || S.docreg || S.employees)) {
+      throw new Error("Open the HR portal and sign in first.");
+    }
+    if (host) host.S = S;
+    var plan = planRenumber(S, opts || {}, host);
     return applyRenumber(host, plan);
   }
 
   async function fixLiveDuplicate169(host) {
     host = host || (typeof window !== "undefined" ? window : null);
-    if (!host || !host.S) throw new Error("Open the HR portal and sign in first.");
-    var plan = planLiveDuplicate169(host.S, host);
+    var S = storeOf(host);
+    if (!host || !S || !S.leaves) throw new Error("Open the HR portal and sign in first.");
+    if (host) host.S = S;
+    var plan = planLiveDuplicate169(S, host);
     var out = await applyRenumber(host, plan);
     if (typeof host.render === "function") host.render();
     if (host.toast) {
@@ -1101,6 +1247,24 @@
       );
     }
     return out;
+  }
+
+  function wrapOpenModal(host) {
+    var orig = host.openModal;
+    if (typeof orig !== "function" || orig._hrLeaveNo) return false;
+    host.openModal = function (opts) {
+      var out = orig.apply(this, arguments);
+      try {
+        var title = str(opts && opts.title);
+        if (/^leave\b/i.test(title) || /^new leave/i.test(title)) {
+          var noMatch = title.match(/LRF\s*[-–]?\s*(?:19|20)\d{2}\s*[-–]?\s*\d{1,6}/i);
+          enableLeaveNumberField(host, noMatch ? noMatch[0] : "");
+        }
+      } catch (e) {}
+      return out;
+    };
+    host.openModal._hrLeaveNo = true;
+    return true;
   }
 
   function wrapRender(host) {
@@ -1131,6 +1295,7 @@
       putMany: wrapPutMany(host),
       citedLeaveJobs: wrapCitedLeaveJobs(host),
       importRecords: wrapImportRecords(host),
+      openModal: wrapOpenModal(host),
       render: wrapRender(host),
     };
   }
@@ -1183,6 +1348,10 @@
     noteUsedLeaveNo: noteUsedLeaveNo,
     bindArtifactStore: bindArtifactStore,
     storeOf: storeOf,
+    isLeaveView: isLeaveView,
+    enableLeaveNumberField: enableLeaveNumberField,
+    readTypedLeaveNo: readTypedLeaveNo,
+    mergeTypedLeaveNo: mergeTypedLeaveNo,
     counterHigh: counterHigh,
     listDuplicateLeaveNos: listDuplicateLeaveNos,
     matchingDocreg: matchingDocreg,

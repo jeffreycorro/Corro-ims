@@ -9,10 +9,10 @@
 (function (root) {
   "use strict";
 
-  if (root.hrRecruit && root.hrRecruit.version === "1.5.0") return;
+  if (root.hrRecruit && root.hrRecruit.version === "1.6.0") return;
 
   var api = {
-    version: "1.5.0",
+    version: "1.6.0",
     attached: false,
     openAppId: "",
     roleFilter: "",
@@ -52,7 +52,20 @@
       .replace(/"/g, "&quot;");
   }
 
-  function parsePaste(text) {
+  function exportApi() {
+    return (
+      root.hrApplicantsExport ||
+      (typeof window !== "undefined" && window.hrApplicantsExport) ||
+      (typeof globalThis !== "undefined" && globalThis.hrApplicantsExport) ||
+      {}
+    );
+  }
+
+  function parsePaste(text, opts) {
+    var exp = exportApi();
+    if (typeof exp.parseApplicantsExport === "function") {
+      return exp.parseApplicantsExport(text, opts);
+    }
     var raw = String(text || "").trim();
     if (!raw) throw new Error("Paste a JSON array or { \"applicants\": [ … ] }.");
     var data;
@@ -302,16 +315,36 @@
     return json;
   }
 
-  function bindImport() {
+  function bindImport(opts) {
+    opts = opts || {};
     var go = $("#hr-recruit-import");
     if (!go || go.getAttribute("data-bound") === "1") return;
     go.setAttribute("data-bound", "1");
+    var ta = $("#hr-recruit-json");
+    var file = $("#hr-recruit-file");
+    var st = $("#hr-recruit-status");
+    if (file) {
+      file.onchange = function () {
+        var chosen = file.files && file.files[0];
+        if (!chosen || typeof FileReader === "undefined") return;
+        var reader = new FileReader();
+        reader.onload = function () {
+          if (ta) ta.value = String(reader.result || "");
+          if (st) st.textContent = chosen.name + " loaded";
+        };
+        reader.readAsText(chosen);
+      };
+    }
     go.onclick = async function () {
-      var ta = $("#hr-recruit-json");
-      var st = $("#hr-recruit-status");
       var raw = ta ? ta.value : "";
+      var box = $("#hr-recruit-update-only");
+      var updateOnly = opts.updateOnly === true || (box && box.checked);
       try {
-        var payload = parsePaste(raw);
+        var payload = parsePaste(raw, { updateOnly: updateOnly });
+        if (updateOnly) {
+          payload.overwrite = true;
+          payload.updateOnly = true;
+        }
         go.disabled = true;
         if (st) st.textContent = "Saving…";
         var result = await postIngest(payload);
@@ -334,28 +367,61 @@
     };
   }
 
-  function openPasteDoor() {
+  function openPasteDoor(opts) {
     if (typeof root.openModal !== "function") {
       toast("The import door is not available in this view.", "err");
       return;
     }
+    opts = opts || {};
+    var exp = exportApi();
+    var updateOnly = opts.updateOnly === true || opts.extractor === true;
+    var folder = (exp && exp.DRIVE_FOLDER_URL) || "https://drive.google.com/drive/folders/1G1TJ5rmI_rGEQcXjKLfYfy2dx9gtZRgC";
+    var jsonUrl = (exp && exp.EXPORT_JSON_URL) || "https://drive.google.com/file/d/1sfAgcO2aXeGsAsn1CsIDg7_36bVp_3AI/view";
+    var csvUrl = (exp && exp.EXPORT_CSV_URL) || "https://drive.google.com/file/d/1Mpguswqx_anA5sxmJ1VvyzI0kCy3805L/view";
+    var note = updateOnly
+      ? '<div class="note">Ready export as of <b>18 Sep 2026</b>: 67 Pipeline applicants, all with <span class="mono">resumeLink</span>. ' +
+        "<b>Overwrite by stable id only</b> — this does not create new Pipeline rows. Unknown ids are skipped. " +
+        "Shortlist 14 all have a CV link; 43 were backfill-patched (some Drive PDFs may still be stub size). " +
+        'Download <a href="' +
+        esc(jsonUrl) +
+        '" target="_blank" rel="noopener">builder-latest-applicants-export.json</a> or <a href="' +
+        esc(csvUrl) +
+        '" target="_blank" rel="noopener">.csv</a> ' +
+        '(<a href="' +
+        esc(folder) +
+        '" target="_blank" rel="noopener">Drive folder</a> or <span class="mono">/workspace/hr-applications/</span> on the extractor box), then paste or choose the file.</div>'
+      : '<div class="note">Paste JSON from the extractor: <span class="mono">{ "applicants": [ { "name": "…" } ] }</span> ' +
+        "or a bare array, or the extractor CSV (<span class=\"mono\">id,name,resumeLink</span>). Required field is <b>name</b>. " +
+        "Optional: email, mobile, roleId (ro01–ro10), position, dept, resumeLink, notes, source (default Email), appliedOn. " +
+        "Same person (normalized name, or the same email) updates the existing row unless you send " +
+        '<span class="mono">forceNew: true</span>. An extractor export (asOf / Drive folder / all rows have id) ' +
+        "overwrites those ids only and will not mint new rows.</div>";
     root.openModal({
-      title: "Bulk import applicants",
+      title: updateOnly ? "Overwrite Pipeline from extractor" : "Bulk import applicants",
       wide: true,
       body:
         '<div class="stack">' +
-        '<div class="note">Paste JSON from the extractor: <span class="mono">{ "applicants": [ { "name": "…" } ] }</span> ' +
-        "or a bare array. Required field is <b>name</b>. Optional: email, mobile, roleId (ro01–ro10), " +
-        "position, dept, resumeLink, notes, source (default Email), appliedOn. " +
-        "Same person (normalized name, or the same email) updates the existing row unless you send " +
-        "<span class=\"mono\">forceNew: true</span>.</div>" +
-        '<div class="f"><label>JSON</label><textarea id="hr-recruit-json" style="min-height:220px" ' +
-        'placeholder="{ &quot;applicants&quot;: [ { &quot;name&quot;: &quot;Dela Cruz, Juan&quot;, &quot;roleId&quot;: &quot;ro02&quot;, &quot;source&quot;: &quot;GoDaddy&quot; } ] }"></textarea></div>' +
+        note +
+        '<div class="f"><label>File</label><input type="file" id="hr-recruit-file" accept=".json,.csv,application/json,text/csv"></div>' +
+        '<div class="f"><label>JSON or CSV</label><textarea id="hr-recruit-json" style="min-height:220px" ' +
+        'placeholder="{ &quot;applicants&quot;: [ { &quot;id&quot;: &quot;a_…&quot;, &quot;name&quot;: &quot;Dela Cruz, Juan&quot;, &quot;resumeLink&quot;: &quot;https://drive.google.com/…&quot; } ] }"></textarea></div>' +
+        '<label class="chk" style="display:flex;gap:8px;align-items:flex-start">' +
+        '<input type="checkbox" id="hr-recruit-update-only"' +
+        (updateOnly ? " checked disabled" : "") +
+        ">" +
+        "<span>Overwrite existing Pipeline rows by <b>id</b> only — do not create new rows</span></label>" +
         '<div class="lbl" id="hr-recruit-status"></div>' +
         "</div>",
-      foot: '<button class="btn pri" id="hr-recruit-import" type="button">Import</button>',
+      foot:
+        '<button class="btn pri" id="hr-recruit-import" type="button">' +
+        (updateOnly ? "Overwrite existing by id" : "Import") +
+        "</button>",
     });
-    bindImport();
+    bindImport({ updateOnly: updateOnly });
+  }
+
+  function openOverwriteDoor() {
+    return openPasteDoor({ updateOnly: true, extractor: true });
   }
 
   function reasonLabel(reason) {
@@ -1645,6 +1711,7 @@
   }
 
   api.parsePaste = parsePaste;
+  api.openOverwriteDoor = openOverwriteDoor;
   api.injectButton = injectButton;
   api.injectConsolidateButton = injectConsolidateButton;
   api.injectRoleFilter = injectRoleFilter;

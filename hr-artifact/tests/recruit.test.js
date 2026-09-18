@@ -12,8 +12,15 @@ function loadDedupe(windowLike) {
   return windowLike.hrApplicantDedupe;
 }
 
+function loadExport(windowLike) {
+  const src = fs.readFileSync(path.join(__dirname, "../public/hr-applicants-export.js"), "utf8");
+  vm.runInNewContext(src, windowLike);
+  return windowLike.hrApplicantsExport;
+}
+
 function loadRecruit(windowLike) {
   loadDedupe(windowLike);
+  loadExport(windowLike);
   const src = fs.readFileSync(path.join(__dirname, "../public/hr-recruit.js"), "utf8");
   vm.runInNewContext(src, windowLike);
   return windowLike.hrRecruit;
@@ -135,11 +142,14 @@ describe("hr-recruit companion wiring", () => {
     const shim = fs.readFileSync(path.join(__dirname, "../public/claude-shim.js"), "utf8");
     const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
     assert.match(shim, /hr-applicant-dedupe\.js/);
+    assert.match(shim, /hr-applicants-export\.js/);
     assert.match(shim, /hr-recruit\.js/);
     assert.match(shim, /data-hr-recruit/);
-    assert.ok(shim.indexOf("hr-applicant-dedupe.js") < shim.indexOf("hr-recruit.js"));
+    assert.ok(shim.indexOf("hr-applicant-dedupe.js") < shim.indexOf("hr-applicants-export.js"));
+    assert.ok(shim.indexOf("hr-applicants-export.js") < shim.indexOf("hr-recruit.js"));
     assert.doesNotMatch(html, /hr-recruit\.js/);
     assert.doesNotMatch(html, /hr-applicant-dedupe\.js/);
+    assert.doesNotMatch(html, /hr-applicants-export\.js/);
   });
 });
 
@@ -155,6 +165,42 @@ describe("hr-recruit paste door", () => {
     assert.throws(() => hr.parsePaste(""), /Paste/);
     assert.throws(() => hr.parsePaste("{"), /not valid JSON/);
     assert.throws(() => hr.parsePaste("{}"), /applicants/);
+  });
+
+  it("parses the extractor JSON wrapper and CSV as overwrite-by-id only", () => {
+    const hr = loadRecruit(fakeWindow());
+    const json = hr.parsePaste(
+      JSON.stringify({
+        asOf: "2026-09-18T13:05+08:00",
+        driveFolderId: "1G1TJ5rmI_rGEQcXjKLfYfy2dx9gtZRgC",
+        counts: { totalApplicants: 1, withResumeLink: 1, backfillPatched: 0, shortlist: 1 },
+        notes: ["Overwrite-by-id only — do not create new rows."],
+        applicants: [
+          {
+            id: "a_keep",
+            name: "Culpa, Cyrel",
+            resumeLink: "https://drive.google.com/file/d/abc/view",
+            patchedInBackfill: false,
+            isShortlist: true,
+          },
+        ],
+      })
+    );
+    assert.equal(json.updateOnly, true);
+    assert.equal(json.overwrite, true);
+    assert.equal(json.extractor, true);
+    assert.equal(json.applicants[0].id, "a_keep");
+    assert.equal(json.applicants[0].resumeLink, "https://drive.google.com/file/d/abc/view");
+
+    const csv = hr.parsePaste(
+      "id,name,resumeLink,patchedInBackfill,isShortlist\r\n" +
+        'a_keep,"Antonino, Vince Michael B.",https://drive.google.com/file/d/xyz/view,False,False\r\n'
+    );
+    assert.equal(csv.updateOnly, true);
+    assert.equal(csv.fromCsv, true);
+    assert.equal(csv.applicants[0].id, "a_keep");
+    assert.equal(csv.applicants[0].name, "Antonino, Vince Michael B.");
+    assert.equal(typeof hr.openOverwriteDoor, "function");
   });
 
   it("injects Bulk import JSON next to Log an applicant", () => {
