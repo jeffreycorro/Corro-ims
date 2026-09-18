@@ -469,9 +469,9 @@ describe("next LRF mint after reset / import", () => {
 describe("renumber save path", () => {
   it("applyRenumber binds the artifact store when host.S is empty", async () => {
     const S = liveStores();
-    const host = fakeHost({});
+    const host = fakeHost(S);
     host.__hrS = S;
-    delete host.S;
+    host.S = {};
     const plan = hr.planRenumber(S, { leaveId: "lvL", toNo: "LRF2026-0172" });
     const out = await hr.applyRenumber(host, plan);
     assert.equal(out.to, "LRF2026-0172");

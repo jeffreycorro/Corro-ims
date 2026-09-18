@@ -84,22 +84,20 @@ function applicantFromEmail(msg, today) {
 
 function parseImapFetch(raw) {
   const text = String(raw || "");
-  const blocks = text.split(/\r?\n\* \d+ FETCH /i).slice(1);
+  const blocks = text.split(/\* \d+ FETCH /i).slice(1);
   return blocks
     .map(function (block) {
-      const headers = block.match(/BODY\[HEADER(?:\.FIELDS \([^)]+\))?\](?:<\d+>)? \{(\d+)\}\r?\n([\s\S]*)$/i);
-      const bodyM = block.match(/BODY\[(?:TEXT|1)\](?:<\d+>)? \{(\d+)\}\r?\n([\s\S]*)$/i);
-      const headerText = headers ? headers[2].slice(0, Number(headers[1]) || headers[2].length) : block;
       function hdr(name) {
-        const re = new RegExp("^" + name + ":\\s*([\\s\\S]*?)(?=\\r?\\n\\S|\\r?\\n\\r?\\n|$)", "im");
-        const m = headerText.match(re);
+        const re = new RegExp("^" + name + ":\\s*(.+)$", "im");
+        const m = block.match(re);
         return m ? m[1].replace(/\r?\n[ \t]+/g, " ").trim() : "";
       }
+      const bodyM = block.match(/BODY\[(?:TEXT|1)\][^\n]*\n([\s\S]*?)(?:\n\)|\nA\d+\s|$)/i);
       return {
         from: hdr("From"),
         subject: hdr("Subject"),
         date: hdr("Date"),
-        body: bodyM ? bodyM[2].slice(0, Number(bodyM[1]) || 4000) : "",
+        body: bodyM ? String(bodyM[1]).trim() : "",
       };
     })
     .filter(function (m) {

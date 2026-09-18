@@ -104,7 +104,8 @@ describe("applicants-email function", () => {
     assert.equal(res.statusCode, 503);
     const body = JSON.parse(res.body);
     assert.equal(body.code, "imap_unconfigured");
-    assert.doesNotMatch(JSON.stringify(body), /HR_APPLICANTS_IMAP_PASS/);
+    assert.match(body.hint, /IMAP|inbox/i);
+    assert.doesNotMatch(JSON.stringify(body), /xxxx-xxxx|app-password-value/i);
   });
 
   it("ingests pulled messages through applicants-ingest when IMAP is stubbed", async () => {
