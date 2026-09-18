@@ -235,6 +235,30 @@ describe("duplicates and paper numbers", () => {
     assert.equal(again.why, "duplicate");
   });
 
+  it("imported high LRF advances the mint counter so the next new leave is max+1", async () => {
+    const leaveNumbers = require("../public/hr-leave-numbers");
+    const S = stores({
+      leaves: {
+        lvOld: { id: "lvOld", empId: "eJ", no: "LRF2026-0001", status: "Approved" },
+      },
+    });
+    const host = hostFrom(S, { hrLeaveNumbers: leaveNumbers });
+    assert.equal(leaveNumbers.nextFreeLeave(S, 2026).no, "LRF2026-0002");
+    const file = {
+      id: "f142",
+      title: "1241-LEAVE LRF2026-0142.jpg",
+      viewUrl: "https://drive.google.com/file/d/f142/view",
+    };
+    const row = hr.classifyRow(S, "leave", file, hr.parseFormScanTitle(file.title, "leave"), host);
+    assert.equal(row.no, "LRF2026-0142");
+    const out = await hr.writeRow(host, "leave", row);
+    assert.equal(out.made, true);
+    assert.equal(out.rec.no, "LRF2026-0142");
+    assert.equal(S.series.LV.lastByYear[2026], 142);
+    assert.equal(S.counters.LV.seq, 142);
+    assert.equal(leaveNumbers.nextFreeLeave(S, 2026).no, "LRF2026-0143");
+  });
+
   it("refuses to write a row with no paper number", async () => {
     const S = stores();
     const host = hostFrom(S);

@@ -874,6 +874,33 @@
     return row;
   }
 
+  function bumpMintFromPaper(host, no, kind) {
+    var parsed = parseFormNo(no, kind);
+    if (!parsed || !host) return;
+    var S = host.S || {};
+    var key = kind === CA ? "CA" : "LV";
+    S.series = S.series || {};
+    S.series[key] = S.series[key] || { key: key, prefix: parsed.prefix || (kind === CA ? "CAF" : "LRF"), pad: 4 };
+    var ser = S.series[key];
+    ser.lastByYear = ser.lastByYear || {};
+    if ((ser.lastByYear[parsed.year] | 0) < parsed.seq) ser.lastByYear[parsed.year] = parsed.seq;
+    S.counters = S.counters || {};
+    var slot = S.counters[key] || {};
+    slot.lastByYear = slot.lastByYear || {};
+    if ((slot.lastByYear[parsed.year] | 0) < parsed.seq) slot.lastByYear[parsed.year] = parsed.seq;
+    slot.year = parsed.year;
+    if ((slot.seq | 0) < parsed.seq) slot.seq = parsed.seq;
+    if ((slot.lastSeq | 0) < parsed.seq) slot.lastSeq = parsed.seq;
+    S.counters[key] = slot;
+    var lv =
+      host.hrLeaveNumbers ||
+      (typeof globalThis !== "undefined" && globalThis.hrLeaveNumbers) ||
+      (typeof window !== "undefined" && window.hrLeaveNumbers);
+    if (lv && typeof lv.noteUsedLeaveNo === "function" && kind !== CA) {
+      lv.noteUsedLeaveNo(parsed.no, S);
+    }
+  }
+
   async function writeRow(host, kind, row) {
     if (!rowReady(row)) return { made: false, skipped: true, why: "incomplete" };
     if (formNoOnFile(host.S, kind, row.no) || fileAlreadyLinked(host.S, kind, row.file && row.file.viewUrl)) {
@@ -886,6 +913,7 @@
     if (!str(rec.no)) return { made: false, skipped: true, why: "no-number" };
     var coll = isLeave ? "leaves" : "advances";
     await host.put(coll, rec.id, rec);
+    bumpMintFromPaper(host, rec.no, kind);
     var haveReg = values(host.S && host.S.docreg).some(function (x) {
       return x && x.no && sameFormNo(x.no, rec.no, kind);
     });
@@ -1132,6 +1160,7 @@
     rowsFromFiles: rowsFromFiles,
     rowReady: rowReady,
     writeRow: writeRow,
+    bumpMintFromPaper: bumpMintFromPaper,
     searchFormScanFiles: searchFormScanFiles,
   };
   return api;

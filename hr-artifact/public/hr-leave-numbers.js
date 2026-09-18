@@ -10,6 +10,13 @@
  * stores. This companion refuses a second LRF2026-0169 (or any LV number) and
  * gives Jeffrey a one-shot renumber that updates the leave, its register row,
  * and signed-copy metadata.
+ *
+ * The artifact keeps `const S` — that is not window.S. An earlier wrap of
+ * nextSeq / peekNo / allocate read host.S (empty on the live site) and
+ * proposed LRF2026-0001 after a crash even when LRF2026-0142+ were on file.
+ * Mint now binds the real store, takes max(original nextSeq, paper high,
+ * series/counter lastByYear), and Drive-imported paper numbers bump that
+ * high-water mark.
  */
 (function (root, factory) {
   var api = factory();
@@ -177,6 +184,32 @@
     return mx;
   }
 
+  function yearMapHigh(map, year) {
+    if (!map || typeof map !== "object") return 0;
+    var n = map[year] != null ? map[year] : map[String(year)];
+    return n | 0;
+  }
+
+  function counterHigh(S, year) {
+    var mx = 0;
+    var y = year | 0;
+    var ser = S && S.series && S.series[LV];
+    if (ser) {
+      mx = Math.max(mx, yearMapHigh(ser.lastByYear, y));
+      if ((ser.year | 0) === y && (ser.lastSeq | 0) > mx) mx = ser.lastSeq | 0;
+      if ((ser.year | 0) === y && (ser.seq | 0) > mx) mx = ser.seq | 0;
+    }
+    var c = S && S.counters;
+    var lv = c && (c[LV] || c.LV || c.lv);
+    if (lv && typeof lv === "object") {
+      mx = Math.max(mx, bumpSeq(mx, lv, y), yearMapHigh(lv.lastByYear, y), lv.lastSeq | 0);
+      if ((lv.year | 0) === y && (lv.seq | 0) > mx) mx = lv.seq | 0;
+    }
+    if (c && c[String(y)] != null) mx = Math.max(mx, c[String(y)] | 0);
+    if (c && c[y] != null) mx = Math.max(mx, c[y] | 0);
+    return mx;
+  }
+
   function leavePaperHigh(S, year) {
     var mx = 0;
     values(S && S.leaves).forEach(function (l) {
@@ -190,7 +223,65 @@
       var p = parseLrf(f && f.no);
       if (p && p.year === (year | 0) && p.seq > mx) mx = p.seq;
     });
-    return mx;
+    return Math.max(mx, counterHigh(S, year));
+  }
+
+  function noteUsedLeaveNo(no, hostOrS) {
+    var p = parseLrf(no);
+    if (!p) return 0;
+    var S = hostOrS && hostOrS.S ? storeOf(hostOrS) : hostOrS || {};
+    if (!S || typeof S !== "object") return p.seq;
+    S.series = S.series || {};
+    S.series[LV] = S.series[LV] || { key: LV, prefix: "LRF", pad: 4 };
+    var ser = S.series[LV];
+    ser.lastByYear = ser.lastByYear || {};
+    if ((ser.lastByYear[p.year] | 0) < p.seq) ser.lastByYear[p.year] = p.seq;
+    S.counters = S.counters || {};
+    var lv = S.counters[LV] || {};
+    lv.lastByYear = lv.lastByYear || {};
+    if ((lv.lastByYear[p.year] | 0) < p.seq) lv.lastByYear[p.year] = p.seq;
+    if ((lv.year | 0) === p.year || !lv.year) {
+      lv.year = p.year;
+      if ((lv.seq | 0) < p.seq) lv.seq = p.seq;
+      if ((lv.lastSeq | 0) < p.seq) lv.lastSeq = p.seq;
+    }
+    S.counters[LV] = lv;
+    return p.seq;
+  }
+
+  /* Artifact state is `const S` — a global lexical binding, not window.S.
+     Attendance / payroll inject a classic script so companions can see it.
+     Without that bind, nextSeq wraps read an empty store and restart at 0001. */
+  function bindArtifactStore(host) {
+    host = host || (typeof window !== "undefined" ? window : null);
+    if (!host) return {};
+    if (host.__hrS && (host.__hrS.leaves || host.__hrS.docreg || host.__hrS.employees)) {
+      host.S = host.__hrS;
+      return host.__hrS;
+    }
+    if (host.S && (host.S.leaves || host.S.docreg || host.S.employees || host.S.series)) {
+      return host.S;
+    }
+    try {
+      if (typeof document !== "undefined" && document.createElement) {
+        var s = document.createElement("script");
+        s.textContent = "window.__hrS=S;window.S=S;";
+        (document.documentElement || document.head || document.body).appendChild(s);
+        if (s.parentNode) s.parentNode.removeChild(s);
+      }
+    } catch (e) {}
+    if (host.__hrS) {
+      host.S = host.__hrS;
+      return host.__hrS;
+    }
+    return host.S || {};
+  }
+
+  function storeOf(host) {
+    if (host && host.S && typeof host.S === "object" && (host.S.leaves || host.S.docreg || host.S.series || host.S.employees)) {
+      return host.S;
+    }
+    return bindArtifactStore(host);
   }
 
   function nextFreeLeave(S, year, host) {
@@ -531,7 +622,8 @@
   }
 
   async function allocateLeave(host, orig, meta) {
-    var S = host.S;
+    var S = storeOf(host);
+    host.S = S;
     var s = S.series && S.series[LV];
     if (!s) return orig.call(host, LV, meta);
 
@@ -566,6 +658,12 @@
 
     var year = new Date().getFullYear();
     var next = nextFreeLeave(S, year, host);
+    if (typeof host.nextSeq === "function") {
+      var fromSeq = host.nextSeq._hrLeaveNo
+        ? next.seq
+        : Math.max(next.seq, host.nextSeq(LV, year) | 0);
+      if (fromSeq > next.seq) next = { year: year, seq: fromSeq, no: formatLrf(year, fromSeq, S, host) };
+    }
     var clash = numberInUse(S, next.no, { leaveId: meta && meta.refId });
     if (clash) {
       if (host.toast) host.toast(conflictMessage(next.no, "portal", empName(S, clash)), "err");
@@ -597,6 +695,7 @@
     entry.year = next.year;
     entry.seq = next.seq;
     await host.put("docreg", entry.id, entry);
+    noteUsedLeaveNo(entry.no, S);
     return entry;
   }
 
@@ -613,7 +712,7 @@
     host.paperHigh = function (key, year) {
       var mx = orig.apply(this, arguments) || 0;
       if (str(key) !== LV) return mx;
-      return Math.max(mx, leavePaperHigh(host.S, year));
+      return Math.max(mx, leavePaperHigh(storeOf(host), year));
     };
     host.paperHigh._hrLeaveNo = true;
     return true;
@@ -623,8 +722,13 @@
     var orig = host.nextSeq;
     if (typeof orig !== "function" || orig._hrLeaveNo) return false;
     host.nextSeq = function (key, year) {
-      if (str(key) !== LV) return orig.apply(this, arguments);
-      return nextFreeLeave(host.S, year, host).seq;
+      var fromOrig = orig.apply(this, arguments) | 0;
+      if (str(key) !== LV) return fromOrig;
+      /* Always keep the artifact's own max(leaves/docreg)+1, even when
+         host.S is empty after a crash/reload. Never restart at 0001
+         while a higher number is already on file. */
+      var fromPaper = nextFreeLeave(storeOf(host), year, host).seq | 0;
+      return Math.max(1, fromOrig, fromPaper);
     };
     host.nextSeq._hrLeaveNo = true;
     return true;
@@ -634,8 +738,17 @@
     var orig = host.peekNo;
     if (typeof orig !== "function" || orig._hrLeaveNo) return false;
     host.peekNo = function (key) {
-      if (str(key) !== LV) return orig.apply(this, arguments);
-      return nextFreeLeave(host.S, new Date().getFullYear(), host).no;
+      var fromOrig = orig.apply(this, arguments);
+      if (str(key) !== LV) return fromOrig;
+      var S = storeOf(host);
+      var year = new Date().getFullYear();
+      var next = nextFreeLeave(S, year, host);
+      var origP = parseLrf(fromOrig);
+      if (origP && origP.year === next.year && origP.seq > next.seq) {
+        return formatLrf(origP.year, origP.seq, S, host);
+      }
+      if ((!fromOrig || parseLrf(fromOrig)) && next.seq >= 1) return next.no;
+      return fromOrig || next.no;
     };
     host.peekNo._hrLeaveNo = true;
     return true;
@@ -656,19 +769,25 @@
     var orig = host.put;
     if (typeof orig !== "function" || orig._hrLeaveNo) return false;
     host.put = function (coll, id, obj) {
-      var conflict = conflictForWrite(coll, id, obj, host.S);
+      var S = storeOf(host);
+      var conflict = conflictForWrite(coll, id, obj, S);
       if (conflict) {
         if (host.toast) host.toast(conflict.message, "err");
         var err = new Error(conflict.message);
         err.code = DUP_CODE;
         return Promise.reject(err);
       }
-      var prev = host.S && host.S[coll] ? host.S[coll][id] : undefined;
-      var had = !!(host.S && host.S[coll] && Object.prototype.hasOwnProperty.call(host.S[coll], id));
-      return Promise.resolve(orig.apply(this, arguments)).catch(function (e) {
-        if (isDupError(e) && host.S && host.S[coll]) {
-          if (had) host.S[coll][id] = prev;
-          else delete host.S[coll][id];
+      var prev = S && S[coll] ? S[coll][id] : undefined;
+      var had = !!(S && S[coll] && Object.prototype.hasOwnProperty.call(S[coll], id));
+      return Promise.resolve(orig.apply(this, arguments)).then(function (out) {
+        if (obj && obj.no && (coll === "leaves" || (coll === "docreg" && isLvDocreg(obj)))) {
+          noteUsedLeaveNo(obj.no, S);
+        }
+        return out;
+      }).catch(function (e) {
+        if (isDupError(e) && S && S[coll]) {
+          if (had) S[coll][id] = prev;
+          else delete S[coll][id];
           if (host.toast) {
             host.toast(
               (e.body && e.body.error) || e.message || "That leave number is already in use.",
@@ -687,13 +806,14 @@
     var orig = host.putMany;
     if (typeof orig !== "function" || orig._hrLeaveNo) return false;
     host.putMany = function (coll, entries, onProgress) {
+      var S = storeOf(host);
       var seen = {};
       var i;
       for (i = 0; i < (entries || []).length; i += 1) {
         var pair = entries[i];
         var id = pair && pair[0];
         var obj = pair && pair[1];
-        var conflict = conflictForWrite(coll, id, obj, host.S);
+        var conflict = conflictForWrite(coll, id, obj, S);
         if (!conflict && obj && obj.no && (coll === "leaves" || (coll === "docreg" && isLvDocreg(obj)))) {
           var key = (parseLrf(obj.no) || {}).key || normLeaveNo(obj.no);
           if (key && seen[key]) {
@@ -711,7 +831,15 @@
           return Promise.reject(err);
         }
       }
-      return orig.apply(this, arguments);
+      return Promise.resolve(orig.apply(this, arguments)).then(function (out) {
+        for (i = 0; i < (entries || []).length; i += 1) {
+          var rec = entries[i] && entries[i][1];
+          if (rec && rec.no && (coll === "leaves" || (coll === "docreg" && isLvDocreg(rec)))) {
+            noteUsedLeaveNo(rec.no, S);
+          }
+        }
+        return out;
+      });
     };
     host.putMany._hrLeaveNo = true;
     return true;
@@ -721,7 +849,7 @@
     var orig = host.citedLeaveJobs;
     if (typeof orig !== "function" || orig._hrLeaveNo) return false;
     host.citedLeaveJobs = function () {
-      return filterCitedJobs(orig.apply(this, arguments) || [], host.S);
+      return filterCitedJobs(orig.apply(this, arguments) || [], storeOf(host));
     };
     host.citedLeaveJobs._hrLeaveNo = true;
     return true;
@@ -739,7 +867,7 @@
         go._hrLeaveNo = true;
         go.onclick = function () {
           var ta = host.document.getElementById("ir-data");
-          var clashes = importClashNos(host.S, parseImportRows(ta && ta.value));
+          var clashes = importClashNos(storeOf(host), parseImportRows(ta && ta.value));
           if (clashes.length) {
             if (host.toast) {
               host.toast(
@@ -780,7 +908,8 @@
   }
 
   function injectChrome(host) {
-    var S = host.S;
+    var S = storeOf(host);
+    host.S = S;
     var doc = host.document;
     if (!S || !S.ui || S.ui.view !== "leave" || !doc) return;
     var view = doc.getElementById("view") || doc.body;
@@ -846,7 +975,8 @@
   }
 
   function openRenumberModal(host, opts) {
-    var S = host.S;
+    var S = storeOf(host);
+    host.S = S;
     var leaves = values(S && S.leaves).slice().sort(function (a, b) {
       return str(b.from).localeCompare(str(a.from)) || str(a.no).localeCompare(str(b.no));
     });
@@ -912,7 +1042,7 @@
     var idEl = host.document.getElementById("hr-lv-ren-id");
     var toEl = host.document.getElementById("hr-lv-ren-to");
     var plan = planRenumber(
-      host.S,
+      storeOf(host),
       { leaveId: idEl && idEl.value, toNo: toEl && toEl.value },
       host
     );
@@ -991,6 +1121,7 @@
   function patchGlobals(host) {
     host = host || (typeof window !== "undefined" ? window : null);
     if (!host) return {};
+    bindArtifactStore(host);
     return {
       paperHigh: wrapPaperHigh(host),
       nextSeq: wrapNextSeq(host),
@@ -1049,6 +1180,10 @@
     conflictForWrite: conflictForWrite,
     leavePaperHigh: leavePaperHigh,
     nextFreeLeave: nextFreeLeave,
+    noteUsedLeaveNo: noteUsedLeaveNo,
+    bindArtifactStore: bindArtifactStore,
+    storeOf: storeOf,
+    counterHigh: counterHigh,
     listDuplicateLeaveNos: listDuplicateLeaveNos,
     matchingDocreg: matchingDocreg,
     replaceNoInText: replaceNoInText,
