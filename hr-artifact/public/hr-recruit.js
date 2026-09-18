@@ -376,15 +376,20 @@
     var exp = exportApi();
     var updateOnly = opts.updateOnly === true || opts.extractor === true;
     var folder = (exp && exp.DRIVE_FOLDER_URL) || "https://drive.google.com/drive/folders/1G1TJ5rmI_rGEQcXjKLfYfy2dx9gtZRgC";
+    var jsonUrl = (exp && exp.EXPORT_JSON_URL) || "https://drive.google.com/file/d/1sfAgcO2aXeGsAsn1CsIDg7_36bVp_3AI/view";
+    var csvUrl = (exp && exp.EXPORT_CSV_URL) || "https://drive.google.com/file/d/1Mpguswqx_anA5sxmJ1VvyzI0kCy3805L/view";
     var note = updateOnly
       ? '<div class="note">Ready export as of <b>18 Sep 2026</b>: 67 Pipeline applicants, all with <span class="mono">resumeLink</span>. ' +
         "<b>Overwrite by stable id only</b> — this does not create new Pipeline rows. Unknown ids are skipped. " +
         "Shortlist 14 all have a CV link; 43 were backfill-patched (some Drive PDFs may still be stub size). " +
-        'Paste or choose <span class="mono">builder-latest-applicants-export.json</span> or <span class="mono">.csv</span> ' +
-        '(Drive folder or <span class="mono">/workspace/hr-applications/</span> on the extractor box). ' +
-        'Folder: <a href="' +
+        'Download <a href="' +
+        esc(jsonUrl) +
+        '" target="_blank" rel="noopener">builder-latest-applicants-export.json</a> or <a href="' +
+        esc(csvUrl) +
+        '" target="_blank" rel="noopener">.csv</a> ' +
+        '(<a href="' +
         esc(folder) +
-        '" target="_blank" rel="noopener">HR applications export</a>.</div>'
+        '" target="_blank" rel="noopener">Drive folder</a> or <span class="mono">/workspace/hr-applications/</span> on the extractor box), then paste or choose the file.</div>'
       : '<div class="note">Paste JSON from the extractor: <span class="mono">{ "applicants": [ { "name": "…" } ] }</span> ' +
         "or a bare array, or the extractor CSV (<span class=\"mono\">id,name,resumeLink</span>). Required field is <b>name</b>. " +
         "Optional: email, mobile, roleId (ro01–ro10), position, dept, resumeLink, notes, source (default Email), appliedOn. " +

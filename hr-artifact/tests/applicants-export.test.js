@@ -9,6 +9,10 @@ const {
   DRIVE_FOLDER_ID,
   DRIVE_FOLDER_URL,
   EXPORT_JSON,
+  EXPORT_JSON_ID,
+  EXPORT_CSV_ID,
+  EXPORT_JSON_URL,
+  EXPORT_CSV_URL,
 } = require("../public/hr-applicants-export");
 
 describe("hr-applicants-export", () => {
@@ -32,6 +36,10 @@ describe("hr-applicants-export", () => {
     assert.equal(parsed.applicants.length, 2);
     assert.equal(parsed.driveFolderId, DRIVE_FOLDER_ID);
     assert.match(EXPORT_JSON, /builder-latest-applicants-export\.json/);
+    assert.equal(EXPORT_JSON_ID, "1sfAgcO2aXeGsAsn1CsIDg7_36bVp_3AI");
+    assert.equal(EXPORT_CSV_ID, "1Mpguswqx_anA5sxmJ1VvyzI0kCy3805L");
+    assert.match(EXPORT_JSON_URL, /1sfAgcO2aXeGsAsn1CsIDg7_36bVp_3AI/);
+    assert.match(EXPORT_CSV_URL, /1Mpguswqx_anA5sxmJ1VvyzI0kCy3805L/);
   });
 
   it("parses quoted CSV names and resume links", () => {

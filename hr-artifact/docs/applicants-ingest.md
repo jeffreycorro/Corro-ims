@@ -210,8 +210,9 @@ The GoDaddy HR application extractor published a Pipeline patch — **67 applica
 
 | | |
 | --- | --- |
-| Drive folder | [HR applications export](https://drive.google.com/drive/folders/1G1TJ5rmI_rGEQcXjKLfYfy2dx9gtZRgC) |
-| Files | `builder-latest-applicants-export.json` and `.csv` |
+| Drive folder | [HR applications export](https://drive.google.com/drive/folders/1G1TJ5rmI_rGEQcXjKLfYfy2dx9gtZRgC) (`1G1TJ5rmI_rGEQcXjKLfYfy2dx9gtZRgC`) |
+| JSON | [builder-latest-applicants-export.json](https://drive.google.com/file/d/1sfAgcO2aXeGsAsn1CsIDg7_36bVp_3AI/view) (`1sfAgcO2aXeGsAsn1CsIDg7_36bVp_3AI`) |
+| CSV | [builder-latest-applicants-export.csv](https://drive.google.com/file/d/1Mpguswqx_anA5sxmJ1VvyzI0kCy3805L/view) (`1Mpguswqx_anA5sxmJ1VvyzI0kCy3805L`) |
 | On the extractor box | `/workspace/hr-applications/builder-latest-applicants-export.json` and `.csv` |
 | Shortlist | 14, all have `resumeLink` |
 | Backfill | 43 rows were backfill-patched; some Drive PDFs may still be stub size |

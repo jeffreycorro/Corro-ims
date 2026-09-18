@@ -9,7 +9,15 @@
   var MAILBOX = "hrcorcondev@gmail.com";
   var DRIVE_FOLDER =
     "https://drive.google.com/drive/folders/1G1TJ5rmI_rGEQcXjKLfYfy2dx9gtZRgC";
-  var api = { attached: false, mailbox: MAILBOX, driveFolder: DRIVE_FOLDER };
+  var EXPORT_JSON_URL = "https://drive.google.com/file/d/1sfAgcO2aXeGsAsn1CsIDg7_36bVp_3AI/view";
+  var EXPORT_CSV_URL = "https://drive.google.com/file/d/1Mpguswqx_anA5sxmJ1VvyzI0kCy3805L/view";
+  var api = {
+    attached: false,
+    mailbox: MAILBOX,
+    driveFolder: DRIVE_FOLDER,
+    exportJsonUrl: EXPORT_JSON_URL,
+    exportCsvUrl: EXPORT_CSV_URL,
+  };
 
   function $(id) {
     return typeof document !== "undefined" ? document.getElementById(id) : null;
@@ -94,7 +102,11 @@
       "</b>. New people land at Applied; the same name or email updates the existing row.</li>" +
       "<li>Ready export as of <b>18 Sep 2026</b>: 67 Pipeline applicants, all with <span class=\"mono\">resumeLink</span>. " +
       "Use <b>Overwrite from extractor (by id)</b> — it updates those ids only and will not create new Pipeline rows. " +
-      'File: <span class="mono">builder-latest-applicants-export.json</span> or <span class="mono">.csv</span> ' +
+      'File: <a href="' +
+      EXPORT_JSON_URL +
+      '" target="_blank" rel="noopener">builder-latest-applicants-export.json</a> or <a href="' +
+      EXPORT_CSV_URL +
+      '" target="_blank" rel="noopener">.csv</a> ' +
       '(<a href="' +
       DRIVE_FOLDER +
       '" target="_blank" rel="noopener">Drive folder</a> or <span class="mono">/workspace/hr-applications/</span> on the extractor box). ' +

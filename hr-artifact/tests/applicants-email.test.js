@@ -158,6 +158,8 @@ describe("applicants-email function", () => {
     assert.match(ui, /hrcorcondev@gmail.com/);
     assert.match(ui, /Overwrite from extractor \(by id\)/);
     assert.match(ui, /1G1TJ5rmI_rGEQcXjKLfYfy2dx9gtZRgC/);
+    assert.match(ui, /1sfAgcO2aXeGsAsn1CsIDg7_36bVp_3AI/);
+    assert.match(ui, /1Mpguswqx_anA5sxmJ1VvyzI0kCy3805L/);
     assert.match(ui, /builder-latest-applicants-export/);
     assert.match(docs, /Cassie: Import from email/);
     assert.match(docs, /updateOnly/);

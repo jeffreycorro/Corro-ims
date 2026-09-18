@@ -18,6 +18,10 @@
     "https://drive.google.com/drive/folders/1G1TJ5rmI_rGEQcXjKLfYfy2dx9gtZRgC";
   var EXPORT_JSON = "builder-latest-applicants-export.json";
   var EXPORT_CSV = "builder-latest-applicants-export.csv";
+  var EXPORT_JSON_ID = "1sfAgcO2aXeGsAsn1CsIDg7_36bVp_3AI";
+  var EXPORT_CSV_ID = "1Mpguswqx_anA5sxmJ1VvyzI0kCy3805L";
+  var EXPORT_JSON_URL = "https://drive.google.com/file/d/1sfAgcO2aXeGsAsn1CsIDg7_36bVp_3AI/view";
+  var EXPORT_CSV_URL = "https://drive.google.com/file/d/1Mpguswqx_anA5sxmJ1VvyzI0kCy3805L/view";
 
   var HEADER_MAP = {
     id: "id",
@@ -248,6 +252,10 @@
     DRIVE_FOLDER_URL: DRIVE_FOLDER_URL,
     EXPORT_JSON: EXPORT_JSON,
     EXPORT_CSV: EXPORT_CSV,
+    EXPORT_JSON_ID: EXPORT_JSON_ID,
+    EXPORT_CSV_ID: EXPORT_CSV_ID,
+    EXPORT_JSON_URL: EXPORT_JSON_URL,
+    EXPORT_CSV_URL: EXPORT_CSV_URL,
     parseApplicantsExport: parseApplicantsExport,
     parseCsv: parseCsv,
     looksLikeCsv: looksLikeCsv,

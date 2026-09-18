@@ -591,6 +591,8 @@ describe("applicants ingest docs and secrets", () => {
     assert.match(doc, /Overwrite from extractor/);
     assert.match(doc, /builder-latest-applicants-export/);
     assert.match(doc, /1G1TJ5rmI_rGEQcXjKLfYfy2dx9gtZRgC/);
+    assert.match(doc, /1sfAgcO2aXeGsAsn1CsIDg7_36bVp_3AI/);
+    assert.match(doc, /1Mpguswqx_anA5sxmJ1VvyzI0kCy3805L/);
     assert.match(doc, /Consolidate duplicates/);
     assert.match(doc, /soft-dedupe|Soft-dedupe/);
     assert.doesNotMatch(doc, /sk-|service_role|eyJhbGci/);
