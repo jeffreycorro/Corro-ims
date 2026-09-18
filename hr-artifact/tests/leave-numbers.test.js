@@ -350,6 +350,119 @@ describe("artifact wraps", () => {
     assert.equal(toasts[0].kind, "err");
   });
 
+  it("does not restart at 0001 when host.S is empty but the artifact nextSeq sees 0142+", () => {
+    const host = {
+      nextSeq(key, year) {
+        if (key !== "LV") return 1;
+        return year === 2026 ? 143 : 1;
+      },
+      peekNo(key) {
+        return key === "LV" ? "LRF2026-0143" : "X-0001";
+      },
+      paperHigh() {
+        return 0;
+      },
+      fmtNo(s, seq, year) {
+        return "LRF" + year + "-" + String(seq).padStart(4, "0");
+      },
+      document: { readyState: "complete", addEventListener() {} },
+    };
+    host.window = host;
+    const api = loadOnWindow(host);
+    api.patchGlobals(host);
+    assert.equal(host.nextSeq("LV", 2026), 143);
+    assert.equal(host.peekNo("LV"), "LRF2026-0143");
+    assert.equal(host.nextSeq("CA", 2026), 1);
+  });
+});
+
+describe("next LRF mint after reset / import", () => {
+  it("starts an empty year at 0001", () => {
+    const S = { leaves: {}, docreg: {}, filed: {}, series: { LV: { key: "LV", prefix: "LRF", pad: 4 } } };
+    assert.equal(hr.leavePaperHigh(S, 2026), 0);
+    assert.equal(hr.nextFreeLeave(S, 2026).no, "LRF2026-0001");
+    assert.equal(hr.nextFreeLeave(S, 2026).seq, 1);
+  });
+
+  it("proposes 0143 when the highest on file is 0142", () => {
+    const S = {
+      leaves: {
+        a: { id: "a", no: "LRF2026-0001", status: "Filed" },
+        b: { id: "b", no: "LRF2026-0142", status: "Filed", empId: "eM" },
+      },
+      docreg: {},
+      filed: {},
+      series: { LV: { key: "LV", prefix: "LRF", pad: 4 } },
+    };
+    assert.equal(hr.leavePaperHigh(S, 2026), 142);
+    assert.equal(hr.nextFreeLeave(S, 2026).no, "LRF2026-0143");
+  });
+
+  it("skips a taken 0001 and mints past the real max", () => {
+    const S = {
+      leaves: {
+        bern: { id: "bern", no: "LRF2026-0001", empId: "eB", status: "Filed" },
+        mon: { id: "mon", no: "LRF2026-0142", empId: "eM", status: "Filed" },
+      },
+      docreg: {},
+      filed: {},
+      employees: { eB: emp("eB", "Bernadez, Brinneshiel M.") },
+      series: { LV: { key: "LV", prefix: "LRF", pad: 4 } },
+    };
+    const clash = hr.conflictForWrite(
+      "leaves",
+      "lvNew",
+      { id: "lvNew", no: "LRF2026-0001", empId: "eC" },
+      S
+    );
+    assert.ok(clash);
+    assert.match(clash.message, /Bernadez|already/);
+    assert.equal(hr.nextFreeLeave(S, 2026).no, "LRF2026-0143");
+    const host = {
+      S: {},
+      nextSeq() {
+        return 1;
+      },
+      peekNo() {
+        return "LRF2026-0001";
+      },
+      paperHigh() {
+        return 0;
+      },
+      fmtNo(s, seq, year) {
+        return "LRF" + year + "-" + String(seq).padStart(4, "0");
+      },
+      document: { readyState: "complete", addEventListener() {} },
+    };
+    host.S = S;
+    host.window = host;
+    const api = loadOnWindow(host);
+    api.patchGlobals(host);
+    assert.equal(host.nextSeq("LV", 2026), 143);
+    assert.equal(host.peekNo("LV"), "LRF2026-0143");
+  });
+
+  it("imported high paper number advances the series / counter the UI mints from", () => {
+    const S = {
+      leaves: { a: { id: "a", no: "LRF2026-0001", status: "Filed" } },
+      docreg: {},
+      filed: {},
+      series: { LV: { key: "LV", prefix: "LRF", pad: 4 } },
+      counters: {},
+    };
+    assert.equal(hr.nextFreeLeave(S, 2026).no, "LRF2026-0002");
+    hr.noteUsedLeaveNo("LRF2026-0142", S);
+    assert.equal(S.series.LV.lastByYear[2026], 142);
+    assert.equal(S.counters.LV.seq, 142);
+    assert.equal(hr.leavePaperHigh(S, 2026), 142);
+    assert.equal(hr.nextFreeLeave(S, 2026).no, "LRF2026-0143");
+    S.leaves.imp = { id: "imp", no: "LRF2026-0200", status: "Filed" };
+    hr.noteUsedLeaveNo("LRF2026-0200", S);
+    assert.equal(hr.nextFreeLeave(S, 2026).no, "LRF2026-0201");
+  });
+});
+
+describe("allocate lock", () => {
   it("allocate(LV) does not proceed without the series lock when db is up", async () => {
     const S = liveStores();
     S.series = { LV: { key: "LV", prefix: "LRF", pad: 4, pattern: "{PREFIX}{YYYY}-{NNNN}" } };
