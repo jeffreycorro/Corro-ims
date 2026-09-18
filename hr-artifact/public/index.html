@@ -528,7 +528,14 @@ const DOCS = [
   {k:"qclast",    n:"Quitclaim — Last Salary",                    g:"Quitclaim", opt:1},
   {k:"qc13pr",    n:"Quitclaim — Pro-rated 13th Month",           g:"Quitclaim", opt:1},
   {k:"qc13",      n:"Quitclaim — 13th Month Pay",                 g:"Quitclaim", opt:1},
-  {k:"govrefuse", n:"Refusal of Government-mandated Deductions",  g:"Statutory", opt:1}
+  {k:"govrefuse", n:"Refusal of Government-mandated Deductions",  g:"Statutory", opt:1},
+  /* Concerns log 2026-09-18 — Cassie / Maria. Appended so the masterlist
+     bit string still maps to the first 33 columns. */
+  {k:"coeccd",   n:"COE (CCD)",                                              g:"Employment"},
+  {k:"coeemp",   n:"COE (from employee)",                                    g:"Recruitment"},
+  {k:"reqcheck", n:"Employee requirement checklist",                         g:"Recruitment"},
+  {k:"kasabutan",n:"KASABUTAN sa dili pagperma sa Government Mandated Benefits", g:"Statutory"},
+  {k:"nbi",      n:"NBI Clearance",                                          g:"Clearances", exp:1}
 ];
 const DOCG = ["Recruitment","Identification","Clearances","Statutory","Employment","Records on file","Separation","Quitclaim"];
 const DSTAT = {on:"On file", miss:"Missing", exp:"For renewal", na:"N/A"};
@@ -905,6 +912,8 @@ async function put(coll,id,obj){
      than waiting to be adopted from a manpower report. */
   if(coll==="employees" && obj && S.ready && !S.employees[id] && obj.status!=="Separated" && !obj.rosterConfirmed)
     obj.rosterConfirmed=TODAY;
+  if(coll==="employees" && obj && typeof hr201Checklist!=="undefined" && hr201Checklist.applyEmployee)
+    hr201Checklist.applyEmployee(obj, DOCS, TODAY);
   S[coll][id]=obj; lsSaveSoon();
   if(!S.db) return;
   try{ await S.db.doc(coll+"/"+id).set(obj); }
@@ -1158,7 +1167,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-09-18f";
+const BUILD = "2026-09-18g";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -1730,11 +1739,22 @@ async function fillBlankPositionsFromMaster(){
 }
 function activeEmps(){ return empList().filter(e=>!empSeparatedAsOf(e, TODAY)); }
 function compliance(e){
-  const d=e.docs||{}; let need=0,have=0,missing=[];
-  DOCS.forEach(x=>{ if(x.opt) return;
-    const v=d[x.k]||{s:"miss"}; if(v.s==="na") return; need++;
-    if(v.s==="on") have++; else missing.push(x); });
-  return {need,have,missing,pct: need? Math.round(have/need*100):100};
+  if(typeof hr201Checklist!=="undefined" && hr201Checklist.complianceOf)
+    return hr201Checklist.complianceOf(e, DOCS);
+  const d=e.docs||{}; let need=0,have=0,onFile=0,na=0,missing=[];
+  const naRe=/^(n\/?a|n\.a\.?|not\s*applicable|na)$/i;
+  const sep=/separated/i.test(String(e&&e.status||""));
+  DOCS.forEach(x=>{
+    if(x.opt && x.g!=="Separation") return;
+    const v=d[x.k]||{s:"miss"};
+    const s=String(v.s||"miss");
+    const treatNa = naRe.test(s) || (!sep && x.g==="Separation" && s!=="on");
+    need++;
+    if(treatNa){ have++; na++; return; }
+    if(s==="on"){ have++; onFile++; return; }
+    missing.push(x);
+  });
+  return {need,have,onFile,na,missing,pct: need? Math.round(have/need*100):100};
 }
 function empNTEs(id){ return Object.values(S.nte).filter(n=>n.empId===id).sort((a,b)=>(b.issued||"").localeCompare(a.issued||"")); }
 function empWU(id){ return Object.values(S.writeups).filter(w=>w.empId===id).sort((a,b)=>(b.date||"").localeCompare(a.date||"")); }
@@ -4310,11 +4330,12 @@ function printChecklist(e, no, opt){
        ["Resume / Biodata", on("resume"), "TOR or Diploma if applicable", on("tor")],
        ["Birth Certificate", on("psa"), "Photo (1x1 or 2x2)", on("photo")||!!(e&&e.photoLink)],
        ["Driver's License", on("license"), "TIN No. "+((e&&e.tinNo)||"__________"), on("tin")||!!(e&&e.tinNo)],
-       ["Barangay / Police / NBI Clearance", on("brgy"), "Government Valid ID", on("govid")],
-       ["SSS "+((e&&e.sssNo)||""), on("sss")||!!(e&&e.sssNo), "Decline in Government Mandated Benefits", on("benefack")],
-       ["Pag-IBIG "+((e&&e.pagibigNo)||""), on("hdmf")||!!(e&&e.pagibigNo), "Vaccine Card", on("vax")],
-       ["PhilHealth "+((e&&e.philhealthNo)||""), on("phic")||!!(e&&e.philhealthNo), "Medical Certificate", on("med")],
-       ["COE", false, "Drug Tests", on("drug")],
+       ["Barangay / Police Clearance", on("brgy"), "NBI Clearance", on("nbi")],
+       ["Government Valid ID", on("govid"), "SSS "+((e&&e.sssNo)||""), on("sss")||!!(e&&e.sssNo)],
+       ["Pag-IBIG "+((e&&e.pagibigNo)||""), on("hdmf")||!!(e&&e.pagibigNo), "PhilHealth "+((e&&e.philhealthNo)||""), on("phic")||!!(e&&e.philhealthNo)],
+       ["Decline in Government Mandated Benefits", on("benefack")||on("kasabutan")||on("govrefuse"), "Vaccine Card", on("vax")],
+       ["Medical Certificate", on("med"), "COE (CCD)", on("coeccd")],
+       ["COE (from employee)", on("coeemp"), "Drug Tests", on("drug")],
        ["Training Certificates, pls specify", on("certs"), null, false]])
    + pfBand("EMPLOYMENT REQUIREMENTS")
    + two([
@@ -7452,9 +7473,9 @@ function viewGaps(){
       + r.missing.map(d=>'<span class="pill mut" style="margin:1px 2px 1px 0">'+esc(d.n)+'</span>').join("")+'</td>'
       + '<td><button class="btn sm" data-emp-open="'+esc(r.e.id)+'" data-goto="employees">Open</button></td></tr>').join("")
    + '</tbody></table></div></div>';
-  h+='<div class="note">Only documents the checklist treats as required are counted. Anything marked '
-   + '<b>not applicable</b> on a file is left out, so a driver with no licence on record shows, and a mason '
-   + 'does not.</div>';
+  h+='<div class="note">Required rows and the Separations section are counted. A row marked '
+   + '<b>N/A</b> counts as complete. While the person is not Separated, Separations is treated as N/A '
+   + 'so it does not drag the percentage down.</div>';
   return h;
 }
 function gapCSV(){
@@ -9642,7 +9663,7 @@ function empDocs(e,c){
      + 'need pointing at the right row before anyone can open one from here.</div>';
   }
   h+='<div class="row"><div style="flex:1;min-width:180px">'+meterBar(c.pct)+'</div>'
-   + '<span class="lbl">'+c.have+' on file · '+c.missing.length+' outstanding · '+(DOCS.length-c.need)+' marked N/A</span>'
+   + '<span class="lbl">'+((c.onFile!=null)?c.onFile:c.have)+' on file · '+c.missing.length+' outstanding · '+(c.na!=null?c.na:(DOCS.length-c.need))+' marked N/A</span>'
    + '<span class="pill '+(withFile? (withFile>=c.have?"ok":"warn") : "crit")+'">'+withFile+' with a file attached</span>'
    + '<button class="btn sm pri" id="match-files">Match the files in Drive to these rows</button>'
    + (e.folderLink?'<a class="btn sm" href="'+esc(e.folderLink)+'" target="_blank" rel="noopener noreferrer"><svg><use href="#i-folder"/></svg> Open the folder</a>':"")
@@ -17019,7 +17040,8 @@ const GUESS = [
   [/birth\s*cert|\bpsa\b|\bnso\b/i,       "psa"],
   [/\bid\s*picture\b|photo|2\s*x\s*2|1\s*x\s*1/i,"photo"],
   /* clearances */
-  [/barangay|police\s*clearance|\bnbi\b/i, "brgy"],
+  [/\bnbi\b|nbi\s*clearance/i,             "nbi"],
+  [/barangay|police\s*clearance/i,         "brgy"],
   [/drug\s*test|\bdtr\d{4}\b/i,           "drug"],
   [/med(ical)?\s*cert|\bmedcert\b|medical\s*exam|annual\s*physical/i,"med"],
   [/vaccin|\bvax\b|booster/i,               "vax"],
@@ -17030,10 +17052,14 @@ const GUESS = [
   [/\btin\b|\bbir\b|\b2316\b|\b1902\b/i,"tin"],
   /* employment */
   [/probationary\s*contract|contract.*probation/i,"contractprob"],
-  [/contract|kasabutan|employment\s*agreement/i,"contract"],
+  [/kasabutan|dili\s*pagperma|refusal.*(?:gov|benefit|deduct)|gov(?:ernment)?[\s-]*man(?:dated)?/i,"kasabutan"],
+  [/contract|employment\s*agreement/i,"contract"],
   [/job\s*desc|\bjd\b/i,                   "jd"],
   [/training\s*record|\btraining\b|\btesda\b|\bnc\s*ii\b|first\s*aid/i,"training"],
   [/handbook|code\s*of\s*(discipline|conduct)|\bcod\b|\bqmpp\b|quality\s*manual/i,"handbook"],
+  [/coe\s*\(?\s*from\s*employee|previous\s*employer.*coe|coe.*previous/i,"coeemp"],
+  [/coe\s*\(?\s*ccd|certificate\s*of\s*employment.*ccd|ccd.*coe|\bcoe\b|certificate\s*of\s*employment/i,"coeccd"],
+  [/requirement\s*checklist|\br39\b|employee\s*requirement/i,"reqcheck"],
   [/benefit.*deduction|refusal.*benefit/i,  "benefack"],
   [/\bppe\b|uniform/i,                      "ppe"],
   /* records on file */
