@@ -1035,12 +1035,20 @@ function mergeIncomingDoc(coll, incoming, local){
     if(local.no && !String(next.no||"").trim()) next.no=local.no;
     return next;
   }
-  if(coll==="employees" && local.status==="Separated" && incoming.status!=="Separated"){
-    return Object.assign({}, incoming, {
-      status:"Separated",
-      separatedOn:local.separatedOn||incoming.separatedOn||"",
-      separationReason:local.separationReason||incoming.separationReason||""
-    });
+  if(coll==="employees"){
+    /* A live 201 classification is the source of truth. The 2026-09-16
+       separated-roster backfill must not pin Separated over Project-based
+       (or Regular / Probationary / …) after HR writes it — that is why
+       Ben Pasion kept flipping back. A stale Regular snapshot still must
+       not un-separate someone HR just marked. */
+    if(empStatusIsLive(incoming)) return incoming;
+    if(local.status==="Separated" && incoming.status!=="Separated"){
+      return Object.assign({}, incoming, {
+        status:"Separated",
+        separatedOn:local.separatedOn||incoming.separatedOn||"",
+        separationReason:local.separationReason||incoming.separationReason||""
+      });
+    }
   }
   return incoming;
 }
@@ -1150,7 +1158,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-09-18e";
+const BUILD = "2026-09-18f";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -1618,19 +1626,48 @@ function knownSepRec(e){
   const no=normNo(e.empNo!=null?e.empNo:e.emp_no);
   return no ? (KNOWN_SEP[no]||null) : null;
 }
+function empStatusIsLive(e){
+  const s=String((e&&e.status)||"").trim();
+  return s==="Probationary"||s==="Regular"||s==="Project-based"||s==="Fixed-term"||s==="Consultant";
+}
 function empStatusIsSeparated(e){
   const s=String((e&&e.status)||"").trim();
   if(s==="Separated") return true;
   return /^(resigned|terminated|awol)$/i.test(s);
 }
+function sepRosterWouldApply(e){
+  /* Only backfill unmarked / leftover rows. A 201 status HR already set
+     (Project-based, Regular, …) must stick across reload and DMR save. */
+  if(!e || e.status==="Separated" || empStatusIsLive(e)) return false;
+  return !!knownSepRec(e);
+}
 function empSeparatedAsOf(e, date){
   if(!e) return false;
+  /* Employee master (Supabase 201) wins. The static apply-list is only a
+     hint for people who were never classified. */
+  if(empStatusIsLive(e)) return false;
   const known=knownSepRec(e);
   if(!empStatusIsSeparated(e) && !known) return false;
+  if(!empStatusIsSeparated(e) && known){
+    const s=String(e.status||"").trim();
+    if(s && !/^(active|resigned|terminated|awol)$/i.test(s)) return false;
+  }
   const on=String((e.separatedOn||(known&&known.separatedOn)||"")).slice(0,10);
   const day=String(date||"").slice(0,10);
   if(!on) return true;
   return !day || on<=day;
+}
+function empPosition(e){
+  if(!e) return "";
+  const direct=String(e.position||e.jobTitle||e.title||e.job||"").trim();
+  if(direct) return direct;
+  if(e.roleId && S.roles && S.roles[e.roleId])
+    return String(S.roles[e.roleId].title||"").trim();
+  return "";
+}
+function dayStatusOf(row){
+  const s=String((row&&(row.s||row.status))||"").trim();
+  return s || "Present";
 }
 async function loadKnownSep(){
   if(KNOWN_SEP) return KNOWN_SEP;
@@ -1650,13 +1687,41 @@ async function applySeparatedRoster(){
   await loadKnownSep();
   const entries=[];
   empList().forEach(e=>{
+    if(!sepRosterWouldApply(e)) return;
     const rec=knownSepRec(e);
-    if(!rec || e.status==="Separated") return;
     const n=clone(e);
     n.status="Separated";
     if(rec.separatedOn && !n.separatedOn) n.separatedOn=rec.separatedOn;
     if(rec.separationReason && !n.separationReason) n.separationReason=rec.separationReason;
     n.statusBasis=n.statusBasis||"Applied from the 2026-09-16 separated roster";
+    S.employees[n.id]=n;
+    entries.push([n.id,n]);
+  });
+  if(entries.length) await putMany("employees", entries);
+  return entries.length;
+}
+function masterPositionByEmpNo(){
+  const map={};
+  (typeof SEED!=="undefined"?SEED:[]).forEach(r=>{
+    const no=normNo(r&&r[0]); const pos=String((r&&r[3])||"").trim();
+    if(no && pos) map[no]=pos;
+  });
+  (typeof MANPOWER_NEW!=="undefined"?MANPOWER_NEW:[]).forEach(n=>{
+    const no=normNo(n&&n.empNo); const pos=String((n&&n.position)||"").trim();
+    if(no && pos && !map[no]) map[no]=pos;
+  });
+  return map;
+}
+async function fillBlankPositionsFromMaster(){
+  /* Prefer the 201 / masterlist title when the live row is blank. Never invent. */
+  const map=masterPositionByEmpNo();
+  const entries=[];
+  empList().forEach(e=>{
+    if(empPosition(e)) return;
+    const pos=map[normNo(e.empNo)];
+    if(!pos) return;
+    const n=clone(e);
+    n.position=pos;
     S.employees[n.id]=n;
     entries.push([n.id,n]);
   });
@@ -8108,7 +8173,9 @@ function persistRosterOnDay(rec){
     if(!e || !e.id || omit.has(e.id)) return;
     const prev=rec.rows[e.id]||{};
     const site=prev.site || dailySiteOf(rec,e) || e.project || "ADMINS";
-    rec.rows[e.id]=Object.assign({s:"Present", r:"", in:"", out:"", ot:null, day:null, hol:null}, prev, {site:site});
+    const next=Object.assign({s:"Present", r:"", in:"", out:"", ot:null, day:null, hol:null}, prev, {site:site});
+    if(!next.s) next.s="Present";
+    rec.rows[e.id]=next;
     extra.add(e.id);
   });
   rec.extra=[...extra].filter(id=>id && !omit.has(id));
@@ -8226,7 +8293,9 @@ function holSelect(attr, id, code, disabled){
 function dayVal(r,k,fallback){ return (r && r[k]!=null && r[k]!=="") ? Number(r[k]) : fallback; }
 
 function dailyRow(rec,e){
-  return (rec.rows||{})[e.id] || {s:"Present", r:"", in:"", out:"", ot:null, day:null, hol:null};
+  const r=(rec.rows||{})[e.id] || {s:"Present", r:"", in:"", out:"", ot:null, day:null, hol:null};
+  if(!r.s) r.s="Present";
+  return r;
 }
 function dailyTally(rec){
   const t={present:0,late:0,absent:0,leave:0,holiday:0,pending:0,waiting:0,other:0};
@@ -8259,7 +8328,7 @@ function viewDaily(){
    + '<div class="f" style="margin:0"><label>Date</label><input id="dm-date" type="date" value="'+esc(d)+'"></div>'
    + '<button class="btn sm" data-dmshift="1" title="The day after">▸</button>'
    + '<button class="btn" id="dm-allpresent">Everyone present</button>'
-   + '<button class="btn" id="dm-allrest" title="Sundays and declared rest days">Everyone rest day</button>'
+   + '<button class="btn" id="dm-allrest" title="Sundays and declared rest days">Mark all Rest day</button>'
    + '<button class="btn" id="dm-allpending" title="Start the morning with nobody marked in yet">Nobody in yet</button>'
    + '<button class="btn" id="dm-print">Print the report</button>'
    + '<button class="btn" id="dm-hrsig" title="Attach one or more HR e-signature JPEGs. Filenames match the person or slot.">'
@@ -8452,9 +8521,9 @@ function viewDaily(){
        + '<td class="mono">'+n+'</td><td class="mono">'+esc(e.empNo||"—")+'</td>'
        + '<td><b>'+esc(nf.last||"—")+'</b></td>'
        + '<td>'+esc(nf.first||"—")+'</td>'
-       + '<td style="font-size:11.5px">'+esc(e.position||"—")+'</td>'
+       + '<td style="font-size:11.5px">'+esc(empPosition(e)||"—")+'</td>'
        + '<td><select data-dms="'+esc(e.id)+'" style="'+sty+'">'
-       + DAY_STATUS.map(x=>'<option'+(r.s===x?" selected":"")+'>'+x+'</option>').join("")+'</select></td>'
+       + DAY_STATUS.map(x=>'<option'+(dayStatusOf(r)===x?" selected":"")+'>'+x+'</option>').join("")+'</select></td>'
        + '<td><input data-dmin="'+esc(e.id)+'" value="'+esc(r.in||"")+'" placeholder="8:00 AM" title="Required for Present/Late" style="'+sty
        +   ((r.s==="Present/Late" && !String(r.in||"").trim())?';border-color:var(--crit)':'')+'"></td>'
        + '<td><input data-dmout="'+esc(e.id)+'" value="'+esc(r.out||"")+'" placeholder="5:00 PM" title="Required for Undertime" style="'+sty
@@ -8508,7 +8577,7 @@ function dailyCollect(){
       else if(spec){ const xp=document.querySelector('[data-dmexpick="'+id+'"]');
         ex = xp ? (Number(xp.value)?1:0) : (prevRow.ex!=null?prevRow.ex:""); }
     }
-    rec.rows[id]={ s:sel.value, r:reason, site,
+    rec.rows[id]={ s:sel.value||"Present", r:reason, site,
       in:g("data-dmin"), out:g("data-dmout"),
       ot:num(g("data-dmot")), day:num(g("data-dmday")),
       hol:(function(){ const el=document.querySelector('[data-dmhol="'+id+'"]');
@@ -8607,8 +8676,8 @@ function printDaily(rec){
         + '<td class="mono" style="text-align:center">'+esc(e.empNo||"")+'</td>'
         + '<td>'+esc(nf.last)+'</td>'
         + '<td>'+esc(nf.first)+'</td>'
-        + '<td>'+esc(e.position||"")+'</td>'
-        + '<td'+tone+'>'+esc(r.s)+'</td>'
+        + '<td>'+esc(empPosition(e)||"")+'</td>'
+        + '<td'+tone+'>'+esc(dayStatusOf(r))+'</td>'
         + '<td style="text-align:center">'+esc(r.ot!=null && r.ot!==""?r.ot:"")+'</td>'
         + '<td'+(bad?' style="background:#fbeceb;color:#9c3131"':'')+'>'+esc(r.r||"")+'</td></tr>';
     });
@@ -8782,7 +8851,7 @@ function viewSalaries(){
     const r=currentRate(e), n=rateHistory(e).length;
     h+='<tr><td class="mono">'+esc(e.empNo||"—")+'</td>'
      + '<td><b>'+esc(flipName(e.name))+'</b></td>'
-     + '<td><input data-setpos="'+esc(e.id)+'" value="'+esc(e.position||"")+'" placeholder="not set" style="'+fld2+'"></td>'
+     + '<td><input data-setpos="'+esc(e.id)+'" value="'+esc(empPosition(e)||"")+'" placeholder="not set" style="'+fld2+'"></td>'
      + '<td><select data-setarea="'+esc(e.id)+'" style="'+fld2+'">'
      + '<option value="">— none —</option>'
      + dailySites().map(x=>'<option'+((e.project||"")===x?" selected":"")+'>'+esc(x)+'</option>').join("")
@@ -19794,8 +19863,11 @@ function wire(){
     $$("[data-dmr]").forEach(i=>{ i.value=""; });
     toast("All set to present — change the exceptions");
   };
-  const dar=$("#dm-allrest",v); if(dar) dar.onclick=()=>{
+  const dar=$("#dm-allrest",v); if(dar) dar.onclick=async()=>{
     const n=$$("[data-dms]").length;
+    if(!n) return;
+    if(!await askConfirm("Mark all "+n+" people on this day’s list as Rest day?\n\nNobody is saved yet. Change anyone who worked, then press Save.",
+      {title:"Mark all Rest day", yes:"Mark Rest day", danger:false, no:"Cancel"})) return;
     $$("[data-dms]").forEach(sel=>{ sel.value="Rest Day"; });
     $$("[data-dmr]").forEach(i=>{ i.value=""; });
     toast("All "+n+" set to rest day — change anyone who worked, then Save.");
@@ -20236,6 +20308,9 @@ function wire(){
       const sup=S.employees[emp.supervisorId];
       emp.supervisor = sup ? flipName(sup.name) : "";
     }
+    if(k==="status"){
+      emp.statusBasis="Set on the 201 file";
+    }
     await put("employees",emp.id,emp);
     if(["name","dept","status","position","project","dateHired","contractEnd"].includes(k)) render();
   });
@@ -20362,6 +20437,7 @@ $("#q").addEventListener("input",e=>{
     await verifyRoster();
     await loadKnownSep();
     await applySeparatedRoster();
+    await fillBlankPositionsFromMaster();
     seedStatus(S.db ? "shared · live" : "this device only");
     /* use("mcp") can take ten seconds. Do not hold up the page for it — let it
        land and redraw, so the Upload buttons appear rather than never showing. */

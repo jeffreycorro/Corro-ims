@@ -19,7 +19,7 @@ describe("placeholder and privacy", () => {
     const shimIndex = html.indexOf("/claude-shim.js");
     const pwaIndex = html.indexOf("/pwa.js");
     assert.ok(shimIndex > -1 && pwaIndex > shimIndex, "pwa.js must load after the shim");
-    assert.match(html, /const BUILD = "2026-09-18e"/);
+    assert.match(html, /const BUILD = "2026-09-18f"/);
     assert.doesNotMatch(html, /hr-dictation\.js/);
     assert.doesNotMatch(html, /hr-memo\.js/);
     assert.doesNotMatch(html, /<script[^>]+hr-attendance\.js/);
@@ -89,6 +89,7 @@ describe("placeholder and privacy", () => {
     assert.match(readme, /2026-09-18c/);
     assert.match(readme, /2026-09-18d/);
     assert.match(readme, /2026-09-18e/);
+    assert.match(readme, /2026-09-18f/);
     assert.match(readme, /hr-ask-leave\.js/);
     assert.match(readme, /hr-ask-attach\.js/);
     assert.match(readme, /hr-form-drive-import\.js/);
