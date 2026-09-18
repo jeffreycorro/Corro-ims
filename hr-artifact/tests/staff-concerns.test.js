@@ -33,7 +33,7 @@ function extractFunction(src, name) {
 
 function loadRosterFns() {
   const ctx = {
-    S: { daily: {}, employees: {}, settings: {}, ui: { dailyDate: "2026-09-16" } },
+    S: { daily: {}, employees: {},     settings: {}, ui: { dailyDate: "2026-09-16" }, roles: {} },
     TODAY: "2026-09-16",
     KNOWN_SEP: null,
     FIRST_ADDED: null,
@@ -67,8 +67,12 @@ function loadRosterFns() {
   };
   const names = [
     "knownSepRec",
+    "empStatusIsLive",
     "empStatusIsSeparated",
+    "sepRosterWouldApply",
     "empSeparatedAsOf",
+    "empPosition",
+    "dayStatusOf",
     "mergeIncomingDoc",
     "hrSigSrc",
     "lastSiteBefore",
@@ -122,7 +126,7 @@ describe("staff concern sheet — live 18a HTML", () => {
     assert.match(html, /prev\.signedLink && !m\.signedLink/);
     assert.match(html, /hrSigSrc\(rec,"prepared"\)/);
     assert.match(html, /Object\.keys\(rec\.rows\|\|\{\}\)\.forEach\(id=>\{ if\(id\) seen\[id\]=true/);
-    assert.match(html, /const BUILD = "2026-09-18d"/);
+    assert.match(html, /const BUILD = "2026-09-18e"/);
     assert.match(html, /Has not yet arrived/);
     assert.match(html, /OT HRS/);
     assert.match(html, /Last name/);
@@ -306,6 +310,8 @@ describe("staff concern sheet — live 18a HTML", () => {
     const pending = html.slice(html.indexOf('const dpen=$("#dm-allpending"'));
     const pendingBlock = pending.slice(0, pending.indexOf("/* Write it down"));
     assert.match(restBlock, /sel\.value="Rest Day"/);
+    assert.match(restBlock, /askConfirm/);
+    assert.match(html, /Mark all Rest day/);
     assert.match(pendingBlock, /sel\.value=STATUS_PENDING/);
     assert.doesNotMatch(restBlock, /dailySave|dailyCollect|render\(/);
     assert.doesNotMatch(pendingBlock, /dailySave|dailyCollect|render\(/);
@@ -357,7 +363,7 @@ describe("staff concern sheet — live 18a HTML", () => {
     const ctx = loadRosterFns();
     ctx.KNOWN_SEP = { 1243: { separatedOn: "", separationReason: "" } };
     assert.equal(
-      ctx.empSeparatedAsOf({ id: "a", empNo: "1243", status: "Regular" }, "2026-09-16"),
+      ctx.empSeparatedAsOf({ id: "a", empNo: "1243", status: "" }, "2026-09-16"),
       true
     );
     assert.equal(
@@ -384,12 +390,86 @@ describe("staff concern sheet — live 18a HTML", () => {
     );
 
     ctx.S.employees = {
-      e1243: { id: "e1243", empNo: "1243", name: "Adolfo", status: "Regular" },
+      e1243: { id: "e1243", empNo: "1243", name: "Adolfo", status: "" },
       e1250: { id: "e1250", empNo: "1250", name: "Armenio", status: "Regular" },
     };
     const list = ctx.dailyPeople({ date: "2026-09-16", rows: {}, extra: [], omit: [] });
     assert.ok(!list.some((e) => e.id === "e1243"));
     assert.ok(list.some((e) => e.id === "e1250"));
+  });
+
+  it("lets a 201 Project-based status for Ben Pasion stick over the stale apply-list", () => {
+    const ctx = loadRosterFns();
+    ctx.KNOWN_SEP = {
+      1351: { separatedOn: "2026-09-02", separationReason: "Duplicate record" },
+      1243: { separatedOn: "", separationReason: "" },
+    };
+    const ben = {
+      id: "e1351",
+      empNo: "1351",
+      name: "Pasion, Ben",
+      status: "Project-based",
+      project: "Balaga",
+      position: "Mason",
+    };
+    assert.equal(ctx.empStatusIsLive(ben), true);
+    assert.equal(ctx.sepRosterWouldApply(ben), false);
+    assert.equal(ctx.empSeparatedAsOf(ben, "2026-09-18"), false);
+    assert.equal(ctx.sepRosterWouldApply({ id: "e1243", empNo: "1243", status: "" }), true);
+    assert.equal(ctx.sepRosterWouldApply({ id: "e1243", empNo: "1243", status: "Regular" }), false);
+    assert.equal(ctx.sepRosterWouldApply({ id: "e1351", empNo: "1351", status: "Separated" }), false);
+
+    const incoming = {
+      id: "e1351",
+      empNo: "1351",
+      name: "Pasion, Ben",
+      status: "Project-based",
+      project: "Balaga",
+    };
+    const local = {
+      id: "e1351",
+      empNo: "1351",
+      name: "Pasion, Ben",
+      status: "Separated",
+      separatedOn: "2026-09-02",
+    };
+    const next = ctx.mergeIncomingDoc("employees", incoming, local);
+    assert.equal(next.status, "Project-based");
+
+    ctx.S.employees = {
+      e1351: ben,
+      e1243: { id: "e1243", empNo: "1243", name: "Adolfo", status: "Separated" },
+      e1250: { id: "e1250", empNo: "1250", name: "Armenio", status: "Regular" },
+    };
+    const list = ctx.dailyPeople({ date: "2026-09-18", rows: {}, extra: [], omit: [] });
+    assert.ok(list.some((e) => e.id === "e1351"), "project-based Ben stays on Daily Manpower");
+    assert.ok(!list.some((e) => e.id === "e1243"), "true Separated stay off the list");
+    assert.ok(list.some((e) => e.id === "e1250"));
+  });
+
+  it("shows master position titles and defaults a blank day status to Present", () => {
+    const ctx = loadRosterFns();
+    ctx.S.roles = { ro1: { id: "ro1", title: "Office Engineer" } };
+    assert.equal(ctx.empPosition({ position: "MASON" }), "MASON");
+    assert.equal(ctx.empPosition({ jobTitle: "DRIVER" }), "DRIVER");
+    assert.equal(ctx.empPosition({ roleId: "ro1" }), "Office Engineer");
+    assert.equal(ctx.empPosition({ position: "", jobTitle: "" }), "");
+    assert.equal(ctx.dayStatusOf({ s: "" }), "Present");
+    assert.equal(ctx.dayStatusOf({}), "Present");
+    assert.equal(ctx.dayStatusOf({ s: "Has not yet arrived" }), "Has not yet arrived");
+    assert.match(html, /function empPosition/);
+    assert.match(html, /function dayStatusOf/);
+    assert.match(html, /function fillBlankPositionsFromMaster/);
+    assert.match(html, /esc\(empPosition\(e\)\|\|"—"\)/);
+    assert.match(html, /s:sel\.value\|\|"Present"/);
+    assert.match(html, /if\(!next\.s\) next\.s="Present"/);
+
+    ctx.S.employees = {
+      e1351: { id: "e1351", empNo: "1351", name: "Pasion, Ben", status: "Project-based", project: "Balaga" },
+    };
+    const rec = { date: "2026-09-18", rows: { e1351: { s: "", r: "", site: "Balaga" } }, extra: ["e1351"], omit: [] };
+    ctx.persistRosterOnDay(rec);
+    assert.equal(rec.rows.e1351.s, "Present");
   });
 
   it("prints the HR e-sig in the Daily Monitoring memo chain slot", () => {

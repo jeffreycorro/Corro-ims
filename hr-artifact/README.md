@@ -8,7 +8,7 @@ Do **not** rewrite, minify, or modernize the HTML artifact. Paste the Claude exp
 
 ### 1. Paste the real artifact
 
-`public/index.html` should be the Claude artifact HTML export. Current deploy is **build 2026-09-18d** (Ask the records: Stop talking while a reply is read aloud, on top of 2026-09-18c photo/file attach, chat states, and leave answers that include the Reason for Leave field, on top of 2026-09-18b / multiple exam-score rows on an applicant, on top of 2026-09-18a / Claude's three surgical patches on 2026-09-17a: one pending status that pays 0, bulk rest/pending buttons that only change selects until Save, and hosted-site Drive-off copy). If you replace it, keep the shim script tag in `<head>`.
+`public/index.html` should be the Claude artifact HTML export. Current deploy is **build 2026-09-18e** (Attendance / Daily Manpower: a 201 Project-based or Regular status sticks instead of the stale separated-roster re-apply, master Position titles show when present, blank day status defaults to Present, and Mark all Rest day confirms before changing the visible list — on top of 2026-09-18d Ask Stop talking, 2026-09-18c photo/file attach, 2026-09-18b exam-score rows, and 2026-09-18a pending / bulk rest / Drive-off copy). If you replace it, keep the shim script tag in `<head>`.
 
 ### 2. Inject the shim (one-line change)
 
