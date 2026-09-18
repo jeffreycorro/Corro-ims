@@ -1150,7 +1150,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-09-18c";
+const BUILD = "2026-09-18d";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -19447,9 +19447,15 @@ function wire(){
   const askGoBtn=$("#ask-go",v);
   if(askGoBtn) askGoBtn.onclick=()=>{ const t=$("#ask-q",v); if(t) askRun(t.value); };
   const askStopBtn=$("#ask-stop",v);
-  if(askStopBtn) askStopBtn.onclick=()=>{ if(ASK_BUSY) ASK_BUSY.abort(); };
+  if(askStopBtn) askStopBtn.onclick=()=>{
+    if(ASK_BUSY) ASK_BUSY.abort();
+    try{ if(window.hrTts && window.hrTts.hush) window.hrTts.hush(); }catch(e){}
+  };
   const askClearBtn=$("#ask-clear",v);
-  if(askClearBtn) askClearBtn.onclick=()=>{ S.ui.ask=[]; S.ui.askFiles=[]; render(); };
+  if(askClearBtn) askClearBtn.onclick=()=>{
+    try{ if(window.hrTts && window.hrTts.hush) window.hrTts.hush(); }catch(e){}
+    S.ui.ask=[]; S.ui.askFiles=[]; render();
+  };
   const askBox=$("#ask-q",v);
   if(askBox) askBox.onkeydown=(ev)=>{
     if(ev.key==="Enter" && (ev.metaKey||ev.ctrlKey)){ ev.preventDefault(); askRun(askBox.value); } };
@@ -20359,6 +20365,11 @@ $("#q").addEventListener("input",e=>{
     const st=document.getElementById("build-stamp");
     if(st) st.textContent="BUILD "+BUILD;
   }
+  try{
+    if(typeof location!=="undefined" && /^(localhost|127\.0\.0\.1)$/.test(location.hostname)){
+      window.__hrS=S; window.__hrRender=render; window.__hrAskTools=askTools;
+    }
+  }catch(e){}
 })();
 </script>
 

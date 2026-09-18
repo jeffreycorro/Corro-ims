@@ -365,7 +365,7 @@ var SIGNATORIES = [
 ];
 var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
 /* Shown on the Ask screen, so a screenshot says which version someone is on. */
-var BUILD = "2026-09-17 c";
+var BUILD = "2026-09-17 d";
 var DAY = 86400000, MO = 30.44;
 
 /* Part categories that were entered under two spellings and so split a unit's
@@ -3901,9 +3901,14 @@ function pickedVoice(){
   for(var i=0;i<S.voices.length;i++) if(S.voices[i].name===S.voiceName) return S.voices[i];
   return S.voices[0]||null;
 }
-/* Chrome cuts long utterances off partway, so feed it a sentence at a time. */
+/* Chrome cuts long utterances off partway, so feed it a sentence at a time.
+   cancel() fires onerror, which used to call next() and keep reading — a
+   generation counter lets Stop talking cut the whole paragraph. */
+var utterGen=0;
 function utter(text,onDone){
   if(!TTS||!text) return;
+  utterGen+=1;
+  var myGen=utterGen;
   var clean=String(text).replace(/[*_#`>]/g,"").replace(/\s+/g," ").trim();
   var parts=clean.match(/[^.!?;\n]+[.!?;]?/g)||[clean];
   var chunks=[], cur="";
@@ -3914,12 +3919,14 @@ function utter(text,onDone){
   if(cur.trim()) chunks.push(cur.trim());
   var v=pickedVoice(), i=0;
   (function next(){
+    if(myGen!==utterGen) return;
     if(i>=chunks.length){ if(onDone) onDone(); return; }
     var u=new SpeechSynthesisUtterance(chunks[i++]);
     if(v){ u.voice=v; u.lang=v.lang; } else u.lang=S.voiceLang;
     u.rate=0.98; u.pitch=1;
-    u.onend=next; u.onerror=next;
-    try{ TTS.speak(u); }catch(e){ if(onDone) onDone(); }
+    u.onend=function(){ if(myGen===utterGen) next(); };
+    u.onerror=function(){ if(myGen===utterGen) next(); };
+    try{ TTS.speak(u); }catch(e){ if(myGen===utterGen && onDone) onDone(); }
   })();
 }
 function speak(text){
@@ -3942,9 +3949,15 @@ function speak(text){
   catch(e){ S.speaking=false; }
 }
 function hush(){
+  utterGen+=1;
   S.speaking=false;
   try{ if(window.mpTts && window.mpTts.hush) window.mpTts.hush(); }catch(e){}
   try{ if(TTS) TTS.cancel(); }catch(e){}
+  try{ if(typeof speechSynthesis!=="undefined" && speechSynthesis.cancel) speechSynthesis.cancel(); }catch(e){}
+}
+function stopTalk(){
+  hush();
+  if(S.ready && S.view==="ask") render();
 }
 function listen(inp,onFinal,setBusy){
   if(window.mpAskVoice && typeof window.mpAskVoice.capture==="function"){
@@ -4007,10 +4020,10 @@ function bindAskTalkKeys(){
     if(e.repeat) return;
     if(!isAskSpaceTarget(e.target)) return;
     e.preventDefault();
+    if(S.speaking){ hush(); if(S.ready && S.view==="ask") render(); }
+    if(S.asking) return;
     var mic=document.querySelector("[data-mp-ask-mic='1']");
     if(!mic || mic.disabled) return;
-    if(S.speaking){ hush(); }
-    if(S.asking) return;
     try{ mic.dispatchEvent(new PointerEvent("pointerdown",{bubbles:true,button:0})); }
     catch(err){ if(mic.onpointerdown) mic.onpointerdown({preventDefault:function(){},button:0}); }
   });
@@ -4052,6 +4065,15 @@ function askView(){
   var vh=el("div","hd");
   vh.appendChild(el("h3",null,"Ask"));
   var vr=el("div","row"); vr.style.marginLeft="auto";
+  if(S.speaking){
+    var stopHdr=el("button","btn","Stop talking");
+    stopHdr.setAttribute("data-mp-ask-stop","1");
+    stopHdr.setAttribute("type","button");
+    stopHdr.title="Stop the voice. The answer stays on screen.";
+    stopHdr.style.cssText="background:var(--danger);border-color:var(--danger);color:#fff;font-weight:600";
+    stopHdr.addEventListener("click",function(ev){ ev.preventDefault(); ev.stopPropagation(); stopTalk(); });
+    vr.appendChild(stopHdr);
+  }
   var spk=el("button","btn sm",(S.voiceOut?"🔊 Reading aloud":"🔇 Silent"));
   spk.addEventListener("click",function(){
     S.voiceOut=!S.voiceOut;
@@ -4157,9 +4179,10 @@ function askView(){
       if(m.content&&!m.error){
         var bar=el("div","row"); bar.style.marginTop="var(--space-1)";
         bar.appendChild(el("span","hint","answered from the posted records"));
-        var pl=el("button","btn sm",S.speaking?"Stop":"🔊 Play");
+        var pl=el("button","btn sm",S.speaking?"Stop talking":"🔊 Play");
+        if(S.speaking) pl.setAttribute("data-mp-ask-stop","1");
         pl.addEventListener("click",function(){
-          if(S.speaking){ hush(); render(); return; }
+          if(S.speaking){ stopTalk(); return; }
           speak(m.content);
           render();
         });
@@ -4180,7 +4203,7 @@ function askView(){
     : phase==="looking" ? "Looking up the records…"
     : phase==="answering" ? "Answering…"
     : phase==="thinking" ? "Thinking…"
-    : phase==="speaking" ? "Speaking — tap the mic or Space to stop"
+    : phase==="speaking" ? "Speaking — press Stop talking"
     : "Idle — hold the mic or Space to talk";
   thread.appendChild(stateChip);
   if(!S.askFiles) S.askFiles=[];
@@ -4209,12 +4232,12 @@ function askView(){
   inp.style.flex="1"; inp.style.minWidth="180px"; inp.disabled=S.asking;
   var mic=el("button","btn",
     phase==="listening" ? "● Listening"
-    : phase==="thinking" ? "Thinking"
-    : phase==="speaking" ? "● Tap to stop"
+    : phase==="looking"||phase==="thinking" ? "Thinking"
+    : phase==="answering" ? "Answering"
     : "🎙 Hold to talk");
   mic.setAttribute("data-mp-ask-mic","1");
   mic.setAttribute("data-mp-ask-phase",phase);
-  mic.title="Hold to talk. Tap while it is speaking to stop.";
+  mic.title="Hold to talk. Holding again while it is speaking also stops the voice.";
   mic.setAttribute("aria-pressed", S.hearing||S.speaking ? "true":"false");
   if(phase==="listening") mic.style.borderColor="var(--danger)";
   else if(phase==="speaking") mic.style.borderColor="var(--accent)";
@@ -4227,7 +4250,6 @@ function askView(){
     mic.textContent = p==="listening" ? "● Listening"
       : p==="looking"||p==="thinking" ? "Thinking"
       : p==="answering" ? "Answering"
-      : p==="speaking" ? "● Tap to stop"
       : "🎙 Hold to talk";
     mic.style.borderColor = p==="listening" ? "var(--danger)" : p==="speaking" ? "var(--accent)" : "";
     stateChip.setAttribute("data-phase",p);
@@ -4235,7 +4257,7 @@ function askView(){
       : p==="looking" ? "Looking up the records…"
       : p==="answering" ? "Answering…"
       : p==="thinking" ? "Thinking…"
-      : p==="speaking" ? "Speaking — tap the mic or Space to stop"
+      : p==="speaking" ? "Speaking — press Stop talking"
       : "Idle — hold the mic or Space to talk";
   }
   function beginHold(ev){
@@ -4268,6 +4290,15 @@ function askView(){
   mic.addEventListener("pointercancel", endHold);
   mic.addEventListener("click", function(ev){ ev.preventDefault(); });
   mic.addEventListener("contextmenu", function(ev){ ev.preventDefault(); });
+  if(S.speaking){
+    var stopFoot=el("button","btn","Stop talking");
+    stopFoot.setAttribute("data-mp-ask-stop","1");
+    stopFoot.setAttribute("type","button");
+    stopFoot.title="Stop the voice. The answer stays on screen.";
+    stopFoot.style.cssText="background:var(--danger);border-color:var(--danger);color:#fff;font-weight:600";
+    stopFoot.addEventListener("click",function(ev){ ev.preventDefault(); ev.stopPropagation(); stopTalk(); });
+    foot.appendChild(stopFoot);
+  }
   foot.appendChild(mic);
   var fileInp=el("input"); fileInp.type="file"; fileInp.multiple=true;
   fileInp.accept=(window.mpAskAttach&&window.mpAskAttach.acceptList&&window.mpAskAttach.acceptList())||
@@ -4298,13 +4329,26 @@ function askView(){
     cl.addEventListener("click",function(){ hush(); S.chat=[]; render(); });
     foot.appendChild(cl);
   }
+  thread.addEventListener("click", function(ev){
+    if(!S.speaking) return;
+    var t=ev.target;
+    if(!t) return;
+    var tag=t.tagName?String(t.tagName).toLowerCase():"";
+    if(tag==="textarea"||tag==="input"||tag==="select"||tag==="option") return;
+    if(t.closest){
+      if(t.closest("[data-mp-ask-mic='1']")) return;
+      if(t.closest("textarea,input,select")) return;
+      if(t.closest("button") && !t.closest("[data-mp-ask-stop='1']")) return;
+    }
+    stopTalk();
+  });
   thread.appendChild(foot);
   g.appendChild(thread);
 
   var vn=el("div","hint");
   vn.textContent=hasServerVoice()
-    ? "Hold the mic or Space to talk — it listens only while you hold. Tap while it is speaking to stop. Attach a photo or file, then Ask. Typed questions still work."
-    : "Hold the mic or Space to talk — it listens only while you hold. Device voices are the fallback until the site voice is granted. Attach a photo or file, then Ask.";
+    ? "Hold the mic or Space to talk — it listens only while you hold. Press Stop talking to cut the voice; the answer stays on screen. Attach a photo or file, then Ask. Typed questions still work."
+    : "Hold the mic or Space to talk — it listens only while you hold. Press Stop talking to cut the voice. Device voices are the fallback until the site voice is granted. Attach a photo or file, then Ask.";
   vn.style.marginTop="calc(-1 * var(--space-2))";
   g.appendChild(vn);
   if(S.micBlocked){
@@ -9797,5 +9841,10 @@ try{
 
 render();
 boot();
+try{
+  if(typeof location!=="undefined" && /^(localhost|127\.0\.0\.1)$/.test(location.hostname)){
+    window.__mpS=S; window.__mpRender=render;
+  }
+}catch(e){}
 })();
 </script>

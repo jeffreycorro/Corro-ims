@@ -39,5 +39,6 @@ describe("Ask the log artifact attach wiring", () => {
     assert.match(html, /mpAskAttach/);
     assert.match(html, /name:"leave_for"/);
     assert.match(html, /Hold to talk/);
+    assert.match(html, /Stop talking/);
   });
 });

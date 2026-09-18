@@ -24,6 +24,7 @@
       "[data-mp-ask-mic='1']{touch-action:none;-webkit-user-select:none;user-select:none;min-width:7.5em}" +
       "[data-mp-ask-mic='1'][data-mp-ask-phase='listening']{border-color:var(--danger,#9c3131)!important;color:var(--danger,#9c3131)}" +
       "[data-mp-ask-mic='1'][data-mp-ask-phase='speaking']{border-color:var(--accent,#2aa0c0)!important}" +
+      "[data-mp-ask-stop='1']{min-width:7.5em}" +
       "[data-mp-ask-state='1'][data-phase='listening']{color:var(--danger,#9c3131)}" +
       "[data-mp-ask-state='1'][data-phase='thinking']{color:var(--warn,#b5811a)}" +
       "[data-mp-ask-state='1'][data-phase='speaking']{color:var(--accent,#2aa0c0)}";

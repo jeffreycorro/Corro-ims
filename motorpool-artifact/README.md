@@ -254,7 +254,7 @@ motorpool-artifact/
   public/motorpool-host.js   ← blocks prompt/confirm/alert/print; registers builds/
   public/pwa.js
   public/pwa.css
-  public/motorpool-tts.js    ← ElevenLabs readback (loaded by the shim)
+  public/motorpool-tts.js    ← ElevenLabs readback; Stop talking cuts playback (loaded by the shim)
   public/motorpool-ask-voice.js ← hold-to-talk STT (loaded by the shim)
   public/motorpool-ask-attach.js ← Ask photo/file attach (loaded by the shim)
   public/motorpool-ask-leave.js ← HR leave lookup client for admin/HR (loaded by the shim)
