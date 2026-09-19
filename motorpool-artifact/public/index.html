@@ -365,7 +365,7 @@ var SIGNATORIES = [
 ];
 var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
 /* Shown on the Ask screen, so a screenshot says which version someone is on. */
-var BUILD = "2026-09-17 d";
+var BUILD = "2026-09-19 a";
 var DAY = 86400000, MO = 30.44;
 
 /* Part categories that were entered under two spellings and so split a unit's
@@ -880,7 +880,7 @@ function buildIndex(){
   _vrfs.forEach(function(v){
     if(v && !(v.requestedBy||"").trim()) v.requestedBy=vrfRequestedBy(v);
   });
-  _vrfs.sort(function(a,b){ return (parseDate(b.date)||0)-(parseDate(a.date)||0); });
+  _vrfs=vrfLogSortNewestFirst(_vrfs);
 }
 function usedVrfNumbers(){
   var used={};
@@ -1412,6 +1412,55 @@ function projectFilterSelect(value,onChange,opts){
   wrap.setCode=function(code){ sel.value=normProj(code||""); };
   return wrap;
 }
+function vehicleSiteCode(vehicle){
+  if(!vehicle) return "";
+  return normProj(vehicle.site||vehicle.project||"");
+}
+function projectFieldLocked(){ return false; }
+function applyVehicleProjectDefault(draft,vehicle){
+  draft=draft||{};
+  var site=vehicleSiteCode(vehicle);
+  var current=normProj(draft.project||"");
+  var overridden=Boolean(draft.projectOverridden);
+  var prevDefault=normProj(draft.vehicleSiteDefault||"");
+  if(overridden&&current!==prevDefault){
+    return {project:current,projectOverridden:true,overridden:true,applied:false,locked:false,vehicleSiteDefault:site};
+  }
+  if(!site){
+    return {project:current,projectOverridden:overridden,overridden:overridden,applied:false,locked:false,vehicleSiteDefault:""};
+  }
+  if(current===site){
+    return {project:site,projectOverridden:false,overridden:false,applied:false,locked:false,vehicleSiteDefault:site};
+  }
+  if(!overridden||!current||current===prevDefault){
+    return {project:site,projectOverridden:false,overridden:false,applied:current!==site,locked:false,vehicleSiteDefault:site};
+  }
+  return {project:current,projectOverridden:true,overridden:true,applied:false,locked:false,vehicleSiteDefault:site};
+}
+function markProjectOverride(draft,nextProject,vehicle){
+  var site=vehicleSiteCode(vehicle);
+  var next=normProj(nextProject||"");
+  var overridden=next!==site;
+  return {project:next,projectOverridden:overridden,overridden:overridden,locked:false,vehicleSiteDefault:site};
+}
+function isFuelReserveSupplier(s){
+  return String(s==null?"":s).trim().toUpperCase()==="FUEL RESERVE";
+}
+function fuelSpendKind(draft){
+  draft=draft||{};
+  var work=String(draft.work||"").toUpperCase();
+  var lines=draft.lines||[];
+  var hasFuel=false, fromReserve=work==="FUEL-RES";
+  for(var i=0;i<lines.length;i++){
+    var l=lines[i]||{};
+    if(isFuel(l.cat)) hasFuel=true;
+    if(isFuelReserveSupplier(l.supplier)) fromReserve=true;
+  }
+  if(work==="FUEL-BULK") return "fuel-bulk";
+  if(fromReserve&&work!=="FUEL-STN") return "fuel-issue";
+  if(hasFuel||work==="FUEL-STN") return "fuel-bulk";
+  return "job";
+}
 function projectPicker(value,onChange,opts){
   opts=opts||{};
   var wrap=el("div");
@@ -1419,6 +1468,8 @@ function projectPicker(value,onChange,opts){
   var inp=el("input");
   inp.placeholder=opts.placeholder||"type a project code or name…";
   inp.setAttribute("autocomplete","off");
+  inp.disabled=false;
+  inp.readOnly=false;
   var dlId="pj-"+Math.random().toString(36).slice(2,8);
   var dl=document.createElement("datalist"); dl.id=dlId;
   var current=normProj(value||"");
@@ -1445,7 +1496,7 @@ function projectPicker(value,onChange,opts){
     if(rowP&&rowP.status==="Archived"){
       hint.textContent="This file uses an archived project. It stays on the record.";
     }else{
-      hint.textContent=opts.hint||"Pick a project on file. Use Manage to add or archive.";
+      hint.textContent=opts.hint||"Pick a project on file. A unit can fill this as a default — you can still change it. Use Manage to add or archive.";
     }
   }
   fillList();
@@ -1482,10 +1533,15 @@ function projectPicker(value,onChange,opts){
   wrap.getCode=function(){ return current; };
   wrap.setCode=function(code){
     current=normProj(code||"");
+    inp.disabled=false;
+    inp.readOnly=false;
     inp.value=current;
     fillList();
     paintHint();
   };
+  wrap.input=inp;
+  wrap.isLocked=function(){ return false; };
+  wrap.setLocked=function(){ inp.disabled=false; inp.readOnly=false; };
   return wrap;
 }
 function openProjectsManager(opts){
@@ -1682,9 +1738,9 @@ function varianceTol(){
    is only the log entry for an approved, not-yet-liquidated VRF — never a
    free-standing document staff author on the Reserves screen. */
 var RSV_KINDS={
-  "job":       {label:"Job / repair",              evidence:false},
-  "fuel-issue":{label:"Fuel for a unit",           evidence:true},
-  "fuel-bulk": {label:"Bulk fuel into the reserve",evidence:true}
+  "job":       {label:"Job / repair",                         evidence:false},
+  "fuel-issue":{label:"Fuel Reserve — drum dispense",         evidence:true},
+  "fuel-bulk": {label:"Fuel Purchase — bulk into the drums",  evidence:true}
 };
 function rsvKind(r){ return (r&&r.kind)||"job"; }
 function needsEvidence(r){
@@ -3248,7 +3304,7 @@ var YARD=[
       return S.reserves.filter(function(r){
         return r.status==="Requested"||r.status==="Approved"||r.status==="Flagged"; }).length; }},
   {id:"vrf",    ic:"✎", label:"New VRF"},
-  {id:"fuel",   ic:"⛽", label:"Fuel reserve"},
+  {id:"fuel",   ic:"⛽", label:"Fuel"},
   {id:"down",   ic:"⚠", label:"Workshop", count:function(){
       return openBreakdowns().length+openJOs().length; }},
   {id:"tasks",  ic:"✓", label:"Tasks", count:function(){
@@ -3298,7 +3354,7 @@ function go(v){
    you are is a step, and the step you were standing on is kept.
 --------------------------------------------------------------- */
 var VIEW_NAMES={yard:"the yard board",ask:"Ask the log",remind:"Reminders",
-  rsv:"Reserves",vrf:"the VRF form",fuel:"Fuel reserve",down:"Workshop",
+  rsv:"Reserves",vrf:"the VRF form",fuel:"Fuel",down:"Workshop",
   tasks:"Tasks",store:"Store",vrflog:"the VRF log",parts:"History",fleet:"Fleet",
   approve:"Approvals",spend:"Spend",fuelecon:"Fuel economics",consume:"Consumption",
   inv:"Inventory",plan:"Maintenance plan",health:"Data health"};
@@ -5918,26 +5974,48 @@ function invView(){
 /* ---- VRF log ----
    The operational list: find a form by its number, print it, and get to the
    signed copy in Drive. Everything else about a VRF lives on its sheet. */
+function vrfWhenMs(v){
+  if(!v) return 0;
+  var raw=v.date||v.createdAt||v.at||"";
+  var d=parseDate(raw);
+  if(d) return d.getTime();
+  var t=Date.parse(String(raw));
+  return isFinite(t)?t:0;
+}
+function vrfNoNum(v){
+  var n=parseInt(String((v&&v.vrf)||"").replace(/\D/g,""),10);
+  return isFinite(n)?n:0;
+}
+function vrfLogSortNewestFirst(list){
+  return (list||[]).slice().sort(function(a,b){
+    var db=vrfWhenMs(b), da=vrfWhenMs(a);
+    if(db!==da) return db-da;
+    return vrfNoNum(b)-vrfNoNum(a);
+  });
+}
 function vrfLogVisible(list){
   var cur=parseInt(S.cfg&&S.cfg.nextVrf,10)||0;
-  var pinned=[], rest=[];
-  (list||[]).forEach(function(v){
-    var n=parseInt(String(v&&v.vrf||"").replace(/\D/g,""),10);
-    if(v&&(v.held||(isFinite(n)&&cur&&n>=cur-40&&n<=cur+10))) pinned.push(v);
-    else rest.push(v);
-  });
-  var out=pinned.concat(rest.slice(0,250));
-  var seen={};
-  return out.filter(function(v){
+  var sorted=vrfLogSortNewestFirst(list);
+  var seen={}, kept=[];
+  function take(v){
     var k=String(v&&v.vrf||"");
-    if(!k||seen[k]) return false;
-    seen[k]=1; return true;
+    if(!k||seen[k]) return;
+    seen[k]=1; kept.push(v);
+  }
+  sorted.forEach(function(v){
+    var n=parseInt(String(v&&v.vrf||"").replace(/\D/g,""),10);
+    if(v&&(v.held||(isFinite(n)&&cur&&n>=cur-40&&n<=cur+10))) take(v);
   });
+  sorted.forEach(function(v){
+    if(kept.length>=300) return;
+    take(v);
+  });
+  return vrfLogSortNewestFirst(kept);
 }
 function vrfLogView(){
   var w=el("div");
-  w.appendChild(pageHead("VRF log","Every form, by number",
-    "Type a VRF number to go straight to it. Print gives you the A4 form with its attachments; the Drive button opens the signed copy, or searches for it when no link has been saved yet."));
+  w.appendChild(pageHead("VRF log","Newest first",
+    "Latest VRF is at the top. Type a VRF number to go straight to it. Print gives you the A4 form with its attachments; the Drive button opens the signed copy, or searches for it when no link has been saved yet."));
   var g=el("div","grid"); g.style.gap="var(--space-4)";
 
   var bar=el("div","f3");
@@ -7283,7 +7361,8 @@ function openVrf(entry,tab){
 /* ---- new VRF ---- */
 function blankLine(){ return {cat:"",item:"",supplier:"",qty:"",unit:"pc",price:"",liters:"",work:"",remarks:""}; }
 function blankVrfDraft(){
-  return {date:iso(),veh:"",project:"",purpose:"",odo:"",work:"",
+  return {date:iso(),veh:"",project:"",projectOverridden:false,vehicleSiteDefault:"",
+    purpose:"",odo:"",work:"",
     requestedBy:signedInName(),lines:[blankLine(),blankLine(),blankLine()],
     photos:[],gateOverride:null,reserve:"",jo:"",vrfNo:""};
 }
@@ -7342,8 +7421,12 @@ function vrfView(){
     {hint:"Search by code, name or plate."});
   hb.appendChild(fld("Vehicle",vSel));
 
-  var pSel=projectPicker(d.project,function(code){ d.project=code; },
-    {hint:"Pick a project on file. Use Manage to add or archive."});
+  var pSel=projectPicker(d.project,function(code){
+    var next=markProjectOverride(d,code,vehicle(d.veh));
+    d.project=next.project;
+    d.projectOverridden=next.projectOverridden;
+    d.vehicleSiteDefault=next.vehicleSiteDefault;
+  },{hint:"Filled from the unit when you type a code — you can still change it. Use Manage to add or archive."});
   hb.appendChild(fld("Project",pSel));
   g0.appendChild(hb);
 
@@ -7490,12 +7573,14 @@ function vrfView(){
     plate.value=v?(v.plate||"—"):"";
     if(!d.odo){ var pv=lastOdo(d.veh); if(pv!=null){ d.odo=String(pv); oIn.value=d.odo; } }
     odoNote(); fillReserves(); fillWorkRefs(); drawMeter();
-    if(v&&v.site&&!d.project){
-      var siteRow=findProject(v.site);
-      if(siteRow&&siteRow.status!=="Archived"){
-        d.project=siteRow.code; pSel.setCode(siteRow.code);
-      }
-    }
+    var siteRow=v&&v.site?findProject(v.site):null;
+    var siteVeh=siteRow&&siteRow.status!=="Archived"?{site:siteRow.code}:v;
+    var next=applyVehicleProjectDefault(d,siteVeh);
+    d.project=next.project;
+    d.projectOverridden=next.projectOverridden;
+    d.vehicleSiteDefault=next.vehicleSiteDefault;
+    if(next.applied) pSel.setCode(next.project);
+    pSel.setLocked();
   }
   if(d.veh){ var v0=vehicle(d.veh); plate.value=v0?(v0.plate||"—"):""; }
   odoNote();
@@ -7596,11 +7681,14 @@ function vrfView(){
       /* supplier */
       var ss=el("select"); ss.appendChild(new Option("—",""));
       ss.appendChild(new Option("MOTORPOOL INVENTORY","MOTORPOOL INVENTORY"));
-      ss.appendChild(new Option("FUEL RESERVE","FUEL RESERVE"));
       S.suppliers.forEach(function(s){ ss.appendChild(new Option(s.name,s.name)); });
+      ss.appendChild(new Option("FUEL RESERVE — drum dispense (not a purchase)","FUEL RESERVE"));
       ss.value=l.supplier;
       ss.addEventListener("change",function(){
         l.supplier=ss.value;
+        if(isFuelReserveSupplier(ss.value)){
+          toast("Fuel Reserve — litres come off the yard drums. For a Fuel Purchase pick the station or supplier instead.");
+        }
         if(String(ss.value).toUpperCase()==="MOTORPOOL INVENTORY"){
           var e2=onHandOf(l.cat,l.item);
           if(e2&&e2.avgCost!=null&&!l.price){ l.price=String(e2.avgCost); recalc(); drawLines(); return; }
@@ -7638,7 +7726,7 @@ function vrfView(){
   var addb=el("button","btn sm","+ Add line");
   addb.addEventListener("click",function(){ d.lines.push(blankLine()); drawLines(); });
   lh.appendChild(addb);
-  var note=el("span","note","Supplier is per line — pick MOTORPOOL INVENTORY for a stock withdrawal, FUEL RESERVE for a drum dispense.");
+  var note=el("span","note","Supplier is per line — pick the station or supplier for a Fuel Purchase. FUEL RESERVE is only a drum dispense, not a purchase.");
   lh.appendChild(note);
   lc.appendChild(lh);
   var lb=el("div","bd flush"); var sc=el("div","scroll"); sc.appendChild(lt); lb.appendChild(sc);
@@ -7687,10 +7775,10 @@ function vrfView(){
 
   var gc=el("div","card");
   var gh=el("div","hd"); gh.appendChild(el("h3",null,"Fuel"));
-  gh.appendChild(el("span","note","Gauge reading, gauge photo and fuel-check stops do not block this form."));
+  gh.appendChild(el("span","note","Fuel Purchase = buy from a station or supplier. Fuel Reserve = take litres from the yard drums."));
   gc.appendChild(gh);
   var gb=el("div","bd");
-  gb.appendChild(el("div","hint","Raise a fuel line the same way as any other line. Send it for approval or post it now. The reserve log only lists the approved VRF afterwards."));
+  gb.appendChild(el("div","hint","Raise a fuel line the same way as any other line. Pick the real supplier for a Fuel Purchase. Use FUEL RESERVE only when the litres come off the drums."));
   gc.appendChild(gb);
   g.appendChild(gc);
 
@@ -7776,7 +7864,7 @@ async function sendForApproval(d,btn){
     var litres=rows.reduce(function(a,l){
       return a+(isFuel(l.cat)?(parseFloat(l.liters)||parseFloat(l.qty)||0):0); },0);
     S.reserves.push({no:String(no),vrfNo:String(vno),date:d.date||iso(),
-      kind:fuelish?"fuel-issue":"job",veh:d.veh,work:d.work,
+      kind:fuelSpendKind({work:d.work,lines:rows}),veh:d.veh,work:d.work,
       litres:fuelish?litres:null,
       project:d.project,budget:total,needBy:"",
       scope:(d.purpose?d.purpose+" — ":"")+summary,
@@ -7954,8 +8042,8 @@ function previewVrf(d){
 function fuelView(){
   var f=fifo();
   var w=el("div");
-  w.appendChild(pageHead("Fuel reserve","Diesel drums on site",
-    "Stock is counted in "+CONTAINER_L+"-litre containers. Costing is worked out in the Office screens — here it is litres."));
+  w.appendChild(pageHead("Fuel","Reserve dispense and purchases",
+    "Two different records. Fuel Reserve takes litres off the yard drums. Fuel Purchase records a delivery into those drums. Stock is counted in "+CONTAINER_L+"-litre containers."));
   var g=el("div","grid"); g.style.gap="14px";
   g.appendChild(stats([
     ["On hand", nnum(f.onHand,0)+" L", nnum(f.onHand/CONTAINER_L,0)+" containers", true,
@@ -7978,7 +8066,7 @@ function fuelView(){
   }
 
   /* dispense form */
-  var fc=el("div","card"), fh=el("div","hd"); fh.appendChild(el("h3",null,"Dispense from the drums"));
+  var fc=el("div","card"), fh=el("div","hd"); fh.appendChild(el("h3",null,"Fuel Reserve — dispense from the drums"));
   fc.appendChild(fh);
   var fb=el("div","bd");
   var form=el("div","f3");
@@ -8112,8 +8200,8 @@ function fuelView(){
 
   /* bulk purchase into the reserve — approved the same way, evidenced the same way */
   var bc=el("div","card");
-  var bh=el("div","hd"); bh.appendChild(el("h3",null,"Record a bulk delivery"));
-  bh.appendChild(el("span","note","Buying fuel into the drums is spend — raise that VRF on New VRF, then record the delivery here against the approved entry on the reserve log."));
+  var bh=el("div","hd"); bh.appendChild(el("h3",null,"Fuel Purchase — record a bulk delivery"));
+  bh.appendChild(el("span","note","A Fuel Purchase buys fuel into the drums — raise that VRF on New VRF, then record the delivery here against the approved purchase. This is not a Fuel Reserve dispense."));
   bc.appendChild(bh);
   var bbd=el("div","bd");
   function bfld(l,n,h){ var x=el("div","field"); x.appendChild(el("label",null,l)); x.appendChild(n);
