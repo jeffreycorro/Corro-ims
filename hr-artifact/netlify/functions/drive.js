@@ -18,10 +18,12 @@ const { formatManilaIso } = require("../lib/manila");
 
 const limitDrive = createLimiter({
   windowMs: 15 * 60 * 1000,
-  max: 400,
+  max: 2000,
   message: "Too many Drive requests. Try again in a moment.",
 });
 
+/* AWS Lambda / Netlify Function request bodies sit around 6 MB. Leave/CA
+   scans above this oneshot go through create_file_init + chunks in the shim. */
 const ONESHOT_MAX = 3.5 * 1024 * 1024;
 
 async function envelope(event, extra) {

@@ -1167,7 +1167,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-09-18g";
+const BUILD = "2026-09-19a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -15575,6 +15575,7 @@ function printCA(a, opt){
       together on one line meant one signature stood for two approvals. */
    + pfSign([
        {who:"Department Head",  name:S.settings.hrHead||"",     role:S.settings.hrTitle||"HR Officer"},
+       leaveCaEvaluators()[0],
        {who:"Finance",          name:S.settings.financeHead||"", role:S.settings.financeTitle||"Finance Officer"},
        {who:"Approved by",      name:S.settings.signatory||"",   role:S.settings.signatoryTitle||"CEO / President"}])
    + pfFoot("Cash Advance Request Form No.", a.no)
@@ -15945,6 +15946,7 @@ function printLeave(l, opt){
    + pfBand(t.k==="SIL"?"SIL APPROVAL":"APPROVAL")
    + pfSign([
        {who:"Immediate Supervisor", name:(e&&e.supervisor)||"", role:"Signature"},
+       leaveCaEvaluators()[0],
        {who:"HR Department",        name:S.settings.hrHead||"", role:"Signature"},
        {who:"Final Approval (Management)", name:S.settings.signatory||"", role:"Signature"}])
    + pfFoot("Leave Request Form No.", l.no)
@@ -16300,7 +16302,10 @@ function incidentPaper(i, no, draft){
    contentMimeType,disableConversionToGoogleType} and returns the new file
    with its id and viewUrl. */
 const DRIVE_SERVER = "Google Drive";
-const MAX_UPLOAD_MB = 15;
+/* Scanned Leave / CA approvals are often 15–40 MB phone PDFs. The old 15 MB
+   cap is what staff read as "file upload quota has been reached". Netlify
+   Functions still oneshot at ~3.5 MB; the shim chunks anything larger. */
+const MAX_UPLOAD_MB = 80;
 let MCP=null, MCP_TRIED=false;
 async function getMcp(){
   if(MCP_TRIED) return MCP;
@@ -16309,8 +16314,19 @@ async function getMcp(){
   return MCP;
 }
 /* Each failure has a different fix, so each gets its own sentence. */
+function leaveCaEvaluators(st){
+  st=st||((typeof S!=="undefined" && S && S.settings)||{});
+  const name=String((st&&st.payrollBy)||"Catherine A. Largo").trim();
+  const role=String((st&&st.payrollTitle)||"Safety Officer").trim();
+  return [{who:"Evaluated by", name:name, role:role, key:"payrollBy"}];
+}
 function driveMessage(e){
   const c = e && e.code;
+  const raw = String((e&&e.message)||(e&&e.text)||"");
+  if(c==="quota_exceeded" || /quota|storage.?full/i.test(raw))
+    return "Google Drive has no space left for this upload. The portal accepts Leave/CA scans up to "
+      + MAX_UPLOAD_MB + " MB. If it still fails, Jeffrey must set GOOGLE_DRIVE_DELEGATED_USER to a Workspace "
+      + "mailbox with free space (or share a Shared Drive folder with the service account).";
   if(c==="server_not_connected") return "Google Drive is not connected to your Claude account. Add the Google Drive connector, then try again.";
   if(c==="needs_reauth")         return "Your Google Drive connection needs signing in again. Reconnect it in Claude, then try again.";
   if(c==="blocked_by_policy")    return "Your organisation's policy blocks this upload.";
@@ -17805,20 +17821,24 @@ function payRate(e, kind){
 function payKindOf(e){
   return String((e||{}).rateType||"").toLowerCase()==="monthly" ? "semi" : "weekly";
 }
-/* Everyone on the run for a period. Someone separated since is still owed for
-   the days they worked before they left, so a past period keeps them — Ben
-   Pasion was dropped from the August 20–26 run exactly this way. */
+/* Active payroll roster matches Daily Manpower: Separated / resigned /
+   terminated / AWOL are off the list. A past period still keeps a leaver who
+   has credited days in that window (final pay). Status must be the 201
+   flags already used by empStatusIsSeparated — not a bare !== "Separated",
+   which left resigned leavers on every run. */
+function payRosterInclude(e, per){
+  const asOf = (per && per.to) || TODAY;
+  const leaver = (typeof empSeparatedAsOf==="function" && empSeparatedAsOf(e, asOf))
+    || (typeof empStatusIsSeparated==="function" && empStatusIsSeparated(e));
+  if(!leaver) return true;
+  if(!per || !per.from || !per.to) return false;
+  return payDates(per.from, per.to).some(d=>{
+    const r=((dailyGet(d)||{}).rows||{})[e.id];
+    return r && dayCredit(r)>0;
+  });
+}
 function payPeople(kind, per){
-  const owed = e => {
-    if(e.status!=="Separated") return true;
-    if(!per) return false;
-    if(e.separatedOn && e.separatedOn >= per.from) return true;
-    return payDates(per.from, per.to).some(d=>{
-      const r=((dailyGet(d)||{}).rows||{})[e.id];
-      return r && dayCredit(r)>0;
-    });
-  };
-  return empList().filter(e=>payKindOf(e)===kind && owed(e))
+  return empList().filter(e=>payKindOf(e)===kind && payRosterInclude(e, per))
     .sort((a,b)=>String(a.name||"").localeCompare(String(b.name||"")));
 }
 

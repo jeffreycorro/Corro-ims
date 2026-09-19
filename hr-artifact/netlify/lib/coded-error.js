@@ -6,6 +6,7 @@ const STATUS_BY_CODE = {
   capability_removed: 403,
   cancelled: 499,
   rate_limited: 429,
+  quota_exceeded: 403,
   prompt_too_large: 413,
   bad_request: 400,
   server_not_connected: 503,
