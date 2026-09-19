@@ -233,6 +233,18 @@ node --test
 
 Functions need Netlify (`npx netlify dev --dir .`) plus the env vars above. Without them, `npx serve public` still opens the artifact (local store).
 
+## Verify after deploy (corcondev-motorpool)
+
+After this folder merges to the branch the **separate** Motorpool Netlify site tracks (usually `main`):
+
+1. Confirm the live Ask / footer BUILD is **2026-09-19 a** (hard refresh if a service worker or tab still shows `2026-09-17 d`).
+2. **New VRF → Vehicle code:** type a unit that has an assigned site. Project fills as a default. Change the project to another code — it must stay editable and keep the override. Clearing the project to type a different one must not snap back to the unit site.
+3. **New VRF fuel line:** pick `Fuel — Diesel` and a station/supplier (not FUEL RESERVE). Send for approval — the reserve log chip should read **Fuel Purchase**, not **Fuel Reserve**. FUEL RESERVE is labelled *drum dispense (not a purchase)* and sits after the real suppliers.
+4. **Fuel tab:** two cards — **Fuel Reserve — dispense from the drums** and **Fuel Purchase — record a bulk delivery**.
+5. **VRF log:** newest form at the top (date, then VRF number). Subtitle is **Newest first**.
+
+HR and Materials are out of scope.
+
 ## Install on iPhone
 
 Add from **Safari** only.

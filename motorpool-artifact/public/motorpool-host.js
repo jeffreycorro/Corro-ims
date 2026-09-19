@@ -331,8 +331,26 @@
     stripReserveCreateForm(w);
     relabelReservesAsLog(w);
   }
+  function unlockProjectFields(root) {
+    root = root || (typeof document !== "undefined" ? document : null);
+    if (!root || !root.querySelectorAll) return 0;
+    var unlocked = 0;
+    var nodes = root.querySelectorAll(".pj-manage input");
+    for (var i = 0; i < nodes.length; i++) {
+      var inp = nodes[i];
+      try {
+        if (inp.disabled || inp.readOnly) {
+          inp.disabled = false;
+          inp.readOnly = false;
+          unlocked += 1;
+        }
+      } catch (e) {}
+    }
+    return unlocked;
+  }
   function decorateVrfView(w) {
     hideFuelCheckGateway(w);
+    unlockProjectFields(w);
     if (!w || !w.querySelectorAll) return;
     var banners = w.querySelectorAll(".banner");
     for (var i = 0; i < banners.length; i++) {
@@ -351,6 +369,7 @@
     stripReserveCreateForm(root);
     relabelReservesAsLog(root);
     hideFuelCheckGateway(root);
+    unlockProjectFields(root);
   }
   function installProductOverlays(global) {
     global = global || (typeof window !== "undefined" ? window : this);
@@ -408,6 +427,7 @@
     stripReserveCreateForm: stripReserveCreateForm,
     relabelReservesAsLog: relabelReservesAsLog,
     hideFuelCheckGateway: hideFuelCheckGateway,
+    unlockProjectFields: unlockProjectFields,
     wrapPostVrfIfGated: wrapPostVrfIfGated,
     installProductOverlays: installProductOverlays,
     applyYardOverlays: applyYardOverlays,

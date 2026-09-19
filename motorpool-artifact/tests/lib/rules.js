@@ -817,6 +817,8 @@
       date: now || "",
       veh: "",
       project: "",
+      projectOverridden: false,
+      vehicleSiteDefault: "",
       purpose: "",
       odo: "",
       work: "",
@@ -828,6 +830,111 @@
       jo: "",
       vrfNo: "",
     };
+  }
+
+  function normProjCode(p) {
+    return String(p == null ? "" : p).trim();
+  }
+
+  function vehicleSiteCode(vehicle) {
+    if (!vehicle) return "";
+    return normProjCode(vehicle.site || vehicle.project || "");
+  }
+
+  function projectFieldLocked() {
+    return false;
+  }
+
+  function applyVehicleProjectDefault(draft, vehicle) {
+    draft = draft || {};
+    var site = vehicleSiteCode(vehicle);
+    var current = normProjCode(draft.project);
+    var overridden = Boolean(draft.projectOverridden);
+    var prevDefault = normProjCode(draft.vehicleSiteDefault);
+    if (overridden && current !== prevDefault) {
+      return {
+        project: current,
+        projectOverridden: true,
+        overridden: true,
+        applied: false,
+        locked: false,
+        vehicleSiteDefault: site,
+      };
+    }
+    if (!site) {
+      return {
+        project: current,
+        projectOverridden: overridden,
+        overridden: overridden,
+        applied: false,
+        locked: false,
+        vehicleSiteDefault: "",
+      };
+    }
+    if (current === site) {
+      return {
+        project: site,
+        projectOverridden: false,
+        overridden: false,
+        applied: false,
+        locked: false,
+        vehicleSiteDefault: site,
+      };
+    }
+    if (!overridden || !current || current === prevDefault) {
+      return {
+        project: site,
+        projectOverridden: false,
+        overridden: false,
+        applied: current !== site,
+        locked: false,
+        vehicleSiteDefault: site,
+      };
+    }
+    return {
+      project: current,
+      projectOverridden: true,
+      overridden: true,
+      applied: false,
+      locked: false,
+      vehicleSiteDefault: site,
+    };
+  }
+
+  function markProjectOverride(draft, nextProject, vehicle) {
+    var site = vehicleSiteCode(vehicle);
+    var next = normProjCode(nextProject);
+    var overridden = next !== site;
+    return {
+      project: next,
+      projectOverridden: overridden,
+      overridden: overridden,
+      locked: false,
+      vehicleSiteDefault: site,
+    };
+  }
+
+  function isFuelReserveSupplier(s) {
+    return String(s == null ? "" : s)
+      .trim()
+      .toUpperCase() === "FUEL RESERVE";
+  }
+
+  function fuelSpendKind(draft) {
+    draft = draft || {};
+    var work = String(draft.work || "").toUpperCase();
+    var lines = draft.lines || [];
+    var hasFuel = false;
+    var fromReserve = work === "FUEL-RES";
+    for (var i = 0; i < lines.length; i++) {
+      var l = lines[i] || {};
+      if (isFuel(l.cat)) hasFuel = true;
+      if (isFuelReserveSupplier(l.supplier)) fromReserve = true;
+    }
+    if (work === "FUEL-BULK") return "fuel-bulk";
+    if (fromReserve && work !== "FUEL-STN") return "fuel-issue";
+    if (hasFuel || work === "FUEL-STN") return "fuel-bulk";
+    return "job";
   }
 
   function usedVrfNumbers(vrfs, reserves) {
@@ -870,26 +977,52 @@
     return out;
   }
 
+  function vrfWhenMs(v) {
+    if (!v) return 0;
+    var raw = v.date || v.createdAt || v.at || "";
+    var s = String(raw);
+    var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+    if (m) return Date.UTC(+m[1], +m[2] - 1, +m[3]);
+    m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(s);
+    if (m) return Date.UTC(+m[3], +m[1] - 1, +m[2]);
+    var t = Date.parse(s);
+    return isFinite(t) ? t : 0;
+  }
+
+  function vrfNoNum(v) {
+    var n = parseInt(String((v && v.vrf) || "").replace(/\D/g, ""), 10);
+    return isFinite(n) ? n : 0;
+  }
+
+  function vrfLogSortNewestFirst(list) {
+    return (list || []).slice().sort(function (a, b) {
+      var db = vrfWhenMs(b);
+      var da = vrfWhenMs(a);
+      if (db !== da) return db - da;
+      return vrfNoNum(b) - vrfNoNum(a);
+    });
+  }
+
   function vrfLogVisible(list, nextVrf) {
     var cur = parseInt(nextVrf, 10) || 0;
-    var pinned = [];
-    var rest = [];
-    (list || []).forEach(function (v) {
-      var n = parseInt(String((v && v.vrf) || "").replace(/\D/g, ""), 10);
-      if (v && (v.held || (isFinite(n) && cur && n >= cur - 40 && n <= cur + 10))) {
-        pinned.push(v);
-      } else {
-        rest.push(v);
-      }
-    });
-    var out = pinned.concat(rest.slice(0, 250));
+    var sorted = vrfLogSortNewestFirst(list);
     var seen = {};
-    return out.filter(function (v) {
+    var kept = [];
+    function take(v) {
       var k = String((v && v.vrf) || "");
-      if (!k || seen[k]) return false;
+      if (!k || seen[k]) return;
       seen[k] = 1;
-      return true;
+      kept.push(v);
+    }
+    sorted.forEach(function (v) {
+      var n = parseInt(String((v && v.vrf) || "").replace(/\D/g, ""), 10);
+      if (v && (v.held || (isFinite(n) && cur && n >= cur - 40 && n <= cur + 10))) take(v);
     });
+    sorted.forEach(function (v) {
+      if (kept.length >= 300) return;
+      take(v);
+    });
+    return vrfLogSortNewestFirst(kept);
   }
 
   function photoFingerprint(x) {
@@ -1133,10 +1266,16 @@
     lineMoney: lineMoney,
     vrfRequestedBy: vrfRequestedBy,
     blankVrfDraft: blankVrfDraft,
+    applyVehicleProjectDefault: applyVehicleProjectDefault,
+    markProjectOverride: markProjectOverride,
+    projectFieldLocked: projectFieldLocked,
+    fuelSpendKind: fuelSpendKind,
+    isFuelReserveSupplier: isFuelReserveSupplier,
     usedVrfNumbers: usedVrfNumbers,
     nextFreeVrf: nextFreeVrf,
     heldReserveVrfs: heldReserveVrfs,
     vrfLogVisible: vrfLogVisible,
+    vrfLogSortNewestFirst: vrfLogSortNewestFirst,
     mergePhotoLists: mergePhotoLists,
     missingJoCloseFields: missingJoCloseFields,
     missingList: missingList,

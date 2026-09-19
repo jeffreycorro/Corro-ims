@@ -175,7 +175,7 @@ describe("motorpool host companion", () => {
     assert.match(html, /function isFuelBypass/);
     assert.match(html, /function bypassAttribution/);
     assert.match(html, /function logBypassFuelVrf/);
-    assert.match(html, /var BUILD = "2026-09-17 d"/);
+    assert.match(html, /var BUILD = "2026-09-19 a"/);
     assert.match(html, /Approved VRFs waiting to be liquidated/);
     assert.match(html, /Reserves is a log, not a maker/);
     assert.match(html, /Raise the VRF here/);
@@ -199,6 +199,16 @@ describe("motorpool host companion", () => {
     assert.equal(host.fuelVrfRequiresBypass(), false);
     assert.equal(host.reserveCreatePathAllowed(), false);
     assert.equal(host.reservesAreLogOnly(), true);
+    assert.equal(typeof host.unlockProjectFields, "function");
+    const locked = { disabled: true, readOnly: true };
+    const unlockedRoot = {
+      querySelectorAll(sel) {
+        return sel === ".pj-manage input" ? [locked] : [];
+      },
+    };
+    assert.equal(host.unlockProjectFields(unlockedRoot), 1);
+    assert.equal(locked.disabled, false);
+    assert.equal(locked.readOnly, false);
 
     const card = {
       className: "card",
