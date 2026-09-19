@@ -107,3 +107,20 @@ Gzip + base64 of the SA JSON still lands around 2KB and remains fragile. Splitti
 2. Signed-in `GET /.netlify/functions/auth` → `capabilities.sample`, `mcp`, `transcribe`, `tts` match the keys you kept.
 3. Drive search from the artifact works (folders still shared with the service-account email).
 4. Applicants ingest still accepts `X-HR-Ingest-Key`.
+
+## Leave / CA file-upload quota (2026-09-19)
+
+Staff were blocked with “file upload quota has been reached” when attaching a signed Leave or Cash Advance scan.
+
+What the code now does:
+
+- Client cap is **80 MB** (`MAX_UPLOAD_MB` in `public/index.html`). It was 15 MB. Netlify Functions still oneshot at **3.5 MB**; `claude-shim.js` already chunks anything larger. Do not invent a second storage backend.
+- Drive HTTP `storageQuotaExceeded` / `quotaExceeded` is mapped to `quota_exceeded` with an operator-facing sentence. The artifact toast tells staff the portal is no longer the 15 MB wall.
+
+Code cannot create Drive space. If a scan still fails after this deploy, Jeffrey must do one of these on **corcondev-hr**:
+
+1. **Preferred.** Set Functions env `GOOGLE_DRIVE_DELEGATED_USER` to a Workspace mailbox that owns (or has space in) the HR 201 / inbox folders. Service accounts have little or no My Drive quota of their own.
+2. Move the HR 201 / inbox / memo folders onto a **Shared Drive** and share that drive with the service-account email as Content manager. Uploads then count against the Shared Drive, not the SA.
+3. Free space on the Drive account that currently receives uploads, and confirm the 201 / `_INBOX` folders are still shared with the service-account email.
+
+No new Netlify Blob store is required for Leave/CA attachments. Blobs stay for the Google service-account JSON only.

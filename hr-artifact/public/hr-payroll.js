@@ -1128,12 +1128,18 @@
     };
   }
 
+  function empStatusIsSeparated(e) {
+    var s = String((e && e.status) || "").trim();
+    if (s === "Separated") return true;
+    return /^(resigned|terminated|awol)$/i.test(s);
+  }
+
   function peopleForKind(kind, S) {
     S = S || store();
     var list = [];
     Object.keys(S.employees || {}).forEach(function (id) {
       var e = S.employees[id];
-      if (!e || e.status === "Separated") return;
+      if (!e || empStatusIsSeparated(e)) return;
       if (payKindOf(e) !== kind) return;
       list.push(e);
     });
@@ -1192,7 +1198,7 @@
   }
 
   function markOnPeoplePay(e, source) {
-    if (!e || e.status === "Separated") return e;
+    if (!e || empStatusIsSeparated(e)) return e;
     var today = todayISO();
     if (!e.rosterConfirmed) e.rosterConfirmed = today;
     ensureEmpRate(e, today);
@@ -1206,14 +1212,14 @@
     var have = {};
     var list = [];
     (standing || []).forEach(function (e) {
-      if (!e || !e.id || have[e.id] || e.status === "Separated") return;
+      if (!e || !e.id || have[e.id] || empStatusIsSeparated(e)) return;
       have[e.id] = true;
       ensureEmpRate(e);
       list.push(e);
     });
     Object.keys(S.employees || {}).forEach(function (id) {
       var e = S.employees[id];
-      if (!e || have[id] || e.status === "Separated") return;
+      if (!e || have[id] || empStatusIsSeparated(e)) return;
       if (e.rosterConfirmed || first[id]) {
         ensureEmpRate(e);
         list.push(e);
@@ -1245,7 +1251,7 @@
   }
 
   function adoptNewEmployee(obj, id) {
-    if (!obj || obj.status === "Separated") return obj;
+    if (!obj || empStatusIsSeparated(obj)) return obj;
     var key = id || obj.id || "";
     /* Seeded 201s are e1250; a hand-added 201 or hire is uid("e") → e_…. */
     if (!obj.rosterConfirmed && /^e_/.test(String(key))) markOnPeoplePay(obj, "201");
@@ -1262,7 +1268,7 @@
     });
     ids.forEach(function (empId) {
       var e = S.employees && S.employees[empId];
-      if (!e || e.status === "Separated" || e.rosterConfirmed) return;
+      if (!e || empStatusIsSeparated(e) || e.rosterConfirmed) return;
       var parked = false;
       if (typeof root.parkedIds === "function") {
         try {
@@ -1280,6 +1286,7 @@
     });
   }
 
+  api.empStatusIsSeparated = empStatusIsSeparated;
   api.peopleForKind = peopleForKind;
   api.peopleAndPayList = peopleAndPayList;
   api.mergePeoplePay = mergePeoplePay;
@@ -2206,7 +2213,7 @@
     var S = store();
     var q = (S.ui && S.ui.contribQ) || "";
     var list = Object.values(S.employees || {}).filter(function (e) {
-      return e && e.status !== "Separated" && nameMatches(e, q);
+      return e && !empStatusIsSeparated(e) && nameMatches(e, q);
     });
     list.sort(function (a, b) {
       return String(a.empNo || "").localeCompare(String(b.empNo || ""));

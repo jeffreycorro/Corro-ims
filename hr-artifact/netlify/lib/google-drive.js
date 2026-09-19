@@ -223,11 +223,26 @@ function mapFile(file) {
   };
 }
 
+function driveQuotaReason(json, msg) {
+  const errors = (json && json.error && json.error.errors) || [];
+  const reasons = errors.map((e) => String((e && e.reason) || "")).join(" ");
+  const hay = `${reasons} ${msg || ""} ${JSON.stringify(json || {})}`;
+  return /storageQuotaExceeded|quotaExceeded|uploadQuotaExceeded|storage quota|upload quota|quota has been reached/i.test(
+    hay
+  );
+}
+
 function mapDriveHttpError(status, json) {
   const msg =
     (json && json.error && (json.error.message || json.error.status)) ||
     (json && json.error_description) ||
     `Google Drive ${status}`;
+  if (driveQuotaReason(json, msg)) {
+    return codedError(
+      "quota_exceeded",
+      "Google Drive storage quota is full for the uploader. Set GOOGLE_DRIVE_DELEGATED_USER to a Workspace mailbox with free space, or upload into a Shared Drive the service account can write to."
+    );
+  }
   if (status === 401) return codedError("needs_reauth", String(msg));
   if (status === 403) return codedError("tool_error", String(msg));
   if (status === 404) {
@@ -654,6 +669,7 @@ module.exports = {
   getAccessToken,
   mapFile,
   mapDriveHttpError,
+  driveQuotaReason,
   ocrEnabled,
   parseServiceAccount,
   readFileContent,

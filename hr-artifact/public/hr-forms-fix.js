@@ -100,6 +100,13 @@
     return [st.hrHead, st.payrollBy, st.hrStaff, st.financeHead, st.signatory].filter(Boolean);
   }
 
+  function leaveCaEvaluators(S) {
+    var st = (S && S.settings) || {};
+    var name = str(st.payrollBy || "Catherine A. Largo").trim();
+    var role = str(st.payrollTitle || "Safety Officer").trim();
+    return [{ who: "Evaluated by", name: name, role: role, key: "payrollBy" }];
+  }
+
   function looksLikeSessionIdentity(S, name, empId) {
     var n = name || empName(S, empId);
     if (!n) return false;
@@ -643,6 +650,7 @@
     decoratePaperHtml: decoratePaperHtml,
     isoMarkHtml: isoMarkHtml,
     looksLikeSessionIdentity: looksLikeSessionIdentity,
+    leaveCaEvaluators: leaveCaEvaluators,
     TPL_ID: TPL_ID,
     REQUIRED_PHRASE: REQUIRED_PHRASE,
   };
