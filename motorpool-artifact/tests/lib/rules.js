@@ -758,6 +758,29 @@
     return no ? [no] : [];
   }
 
+  function vrfPrintWatermark(entry) {
+    if (!entry) return "FOR APPROVAL";
+    if (entry.held || entry.src === "reserve-hold") return "FOR APPROVAL";
+    var st = String(entry.status || "").trim();
+    if (!st || st === "Requested" || /^for approval$/i.test(st) || /^sent for approval$/i.test(st)) {
+      return "FOR APPROVAL";
+    }
+    if (st === "Rejected") return "FOR APPROVAL";
+    return "APPROVED";
+  }
+
+  function photoOwnersForOpenVrf(entry, reserve, counts) {
+    var owners = photoOwnersForVrf(entry).slice();
+    var vrfNo = owners[0];
+    var have = counts && vrfNo ? Number(counts[vrfNo] || 0) : 0;
+    if (entry && (entry.held || entry.status === "Requested") && reserve && !have) {
+      owners = owners.concat(photoOwnersForReserve(reserve));
+    }
+    return owners.filter(function (x, i, a) {
+      return x && a.indexOf(x) === i;
+    });
+  }
+
   function moneyNum(v) {
     if (v == null || v === "") return 0;
     if (typeof v === "number") return isFinite(v) ? v : 0;
@@ -1354,6 +1377,8 @@
     missingFuelApproveFields: missingFuelApproveFields,
     photoOwnersForReserve: photoOwnersForReserve,
     photoOwnersForVrf: photoOwnersForVrf,
+    photoOwnersForOpenVrf: photoOwnersForOpenVrf,
+    vrfPrintWatermark: vrfPrintWatermark,
     moneyNum: moneyNum,
     lineMoney: lineMoney,
     vrfRequestedBy: vrfRequestedBy,
