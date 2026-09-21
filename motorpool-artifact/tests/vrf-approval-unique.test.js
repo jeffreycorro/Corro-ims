@@ -4,6 +4,8 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const { spawnSync } = require("node:child_process");
+const os = require("node:os");
 const {
   usedVrfNumbers,
   nextFreeVrf,
@@ -23,6 +25,15 @@ describe("VRF approval required — no Post VRF bypass", () => {
     assert.equal(staffMayDirectPostVrf(), false);
     assert.equal(canDirectPostVrf({ role: "admin" }), false);
     assert.equal(canDirectPostVrf({ role: "staff", department: "motorpool" }), false);
+  });
+
+  it("keeps the artifact script syntactically valid", () => {
+    const match = html.match(/<script(?![^>]*src)[^>]*>([\s\S]*?)<\/script>/);
+    assert.ok(match && match[1], "inline artifact script");
+    const tmp = path.join(os.tmpdir(), "motorpool-artifact-check.js");
+    fs.writeFileSync(tmp, match[1]);
+    const checked = spawnSync(process.execPath, ["--check", tmp], { encoding: "utf8" });
+    assert.equal(checked.status, 0, checked.stderr || "node --check failed");
   });
 
   it("removes the Post VRF control from the create/edit form", () => {

@@ -890,7 +890,7 @@ function usedVrfNumbers(exceptReserve){
   (S.reserves||[]).forEach(function(r){
     if(!r) return;
     if(exceptReserve!=null&&String(r.no)===String(exceptReserve)) return;
-    if(String(r.status||")==="Rejected") return;
+    if(String(r.status||"") === "Rejected") return;
     add(r.vrfNo);
     (r.vrfs||[]).forEach(add);
   });
@@ -932,7 +932,7 @@ function shouldRemintHeldVrf(r){
   if(postedVrfNumbers()[no]) return true;
   return (S.reserves||[]).some(function(o){
     if(!o||String(o.no)===String(r.no)) return false;
-    if(String(o.status||")==="Rejected") return false;
+    if(String(o.status||"") === "Rejected") return false;
     if(String(o.vrfNo||"").trim()===no) return true;
     return (o.vrfs||[]).some(function(x){ return String(x)===no; });
   });
