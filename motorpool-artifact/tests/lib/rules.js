@@ -758,9 +758,11 @@
     return no ? [no] : [];
   }
 
-  function photoOwnersForOpenVrf(entry, reserve) {
+  function photoOwnersForOpenVrf(entry, reserve, counts) {
     var owners = photoOwnersForVrf(entry).slice();
-    if (entry && (entry.held || entry.status === "Requested") && reserve) {
+    var vrfNo = owners[0];
+    var have = counts && vrfNo ? Number(counts[vrfNo] || 0) : 0;
+    if (entry && (entry.held || entry.status === "Requested") && reserve && !have) {
       owners = owners.concat(photoOwnersForReserve(reserve));
     }
     return owners.filter(function (x, i, a) {

@@ -56,6 +56,7 @@ describe("9/21 15:28 — held FOR APPROVAL VRF stays printable with photos", () 
     const hold = { vrf: "5901", reserve: "88", held: true, status: "Requested" };
     const reserve = { no: "88", vrfNo: "5901", vrfs: [] };
     assert.deepEqual(photoOwnersForOpenVrf(hold, reserve), ["5901", "RSV-88"]);
+    assert.deepEqual(photoOwnersForOpenVrf(hold, reserve, { 5901: 1 }), ["5901"]);
     assert.deepEqual(photoOwnersForReserve(reserve), ["RSV-88", "5901"]);
     assert.deepEqual(photoOwnersForOpenVrf({ vrf: "5795", reserve: "3" }, {
       no: "3",

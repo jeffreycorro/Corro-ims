@@ -2100,7 +2100,8 @@ function photoOwnersForOpenVrf(entry){
   /* A hold saved pictures under the VRF number and RSV-{no}. After remint,
      the reserve copy is the fallback until copyPhotos finishes. Posted
      sibling VRFs are still isolated — only Requested holds use this. */
-  if(entry&&(entry.held||entry.status==="Requested")&&entry.reserve){
+  var vrfNo=owners[0];
+  if(entry&&(entry.held||entry.status==="Requested")&&entry.reserve&&!photoCount(vrfNo)){
     var r=typeof reserveBy==="function"?reserveBy(entry.reserve):null;
     if(r) owners=owners.concat(photoOwnersForReserve(r));
   }
