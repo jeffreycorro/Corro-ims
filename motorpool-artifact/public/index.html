@@ -365,7 +365,7 @@ var SIGNATORIES = [
 ];
 var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
 /* Shown on the Ask screen, so a screenshot says which version someone is on. */
-var BUILD = "2026-09-21 b";
+var BUILD = "2026-09-21 c";
 var DAY = 86400000, MO = 30.44;
 
 /* Part categories that were entered under two spellings and so split a unit's
@@ -957,6 +957,9 @@ async function remintHeldVrfCollisions(){
     }catch(e){}
   }
   await saveReserves();
+  for(var ci=0;ci<changes.length;ci++){
+    try{ await copyPhotos(changes[ci].from, changes[ci].to); }catch(e){}
+  }
   _vrfs=null;
   return changes;
 }
@@ -1020,6 +1023,14 @@ function vrfByNo(no){
   var vi=vrfIndex();
   for(var i=0;i<vi.length;i++) if(String(vi[i].vrf)===String(no)) return vi[i];
   return null;
+}
+function heldVrfEntry(r){
+  var no=String((r&&r.vrfNo)||"").trim();
+  if(!no) return null;
+  var hit=vrfByNo(no);
+  if(hit) return hit;
+  _vrfs=null;
+  return vrfByNo(no);
 }
 function openVrfs(){ return vrfIndex().filter(function(v){ return v.status==="Open"; }); }
 /* A VRF closes against evidence when it spends a fuel reserve; the photos live
@@ -1087,6 +1098,7 @@ async function postReserveVrf(r){
   if((r.vrfs||[]).length) return String(r.vrfs[0]);
   var lines=(r.draftLines||[]).filter(function(l){ return l.cat; });
   if(!lines.length) return null;
+  var prevNo=String(r.vrfNo||"").trim();
   if(shouldRemintHeldVrf(r)){
     var nxt=nextFreeVrf(S.cfg.nextVrf, r.no);
     r.vrfNo=String(nxt);
@@ -1121,6 +1133,7 @@ async function postReserveVrf(r){
       notes:note};
   });
   await appendLedger(mk,rows);
+  try{ if(prevNo&&prevNo!==String(no)) await copyPhotos(prevNo, String(no)); }catch(e){}
   try{ await copyPhotos(rsvOwner(r.no), String(no)); }catch(e){}
   return String(no);
 }
@@ -1972,6 +1985,9 @@ async function saveReserves(){
     S.rsvYears=years;
     await writeDoc("reserves/index",{years:years});
   }
+  /* A send-for-approval hold is only on the reserve log. Drop the VRF
+     index so VRF Logs can show it as Requested without a full reload. */
+  _vrfs=null;
 }
 async function claimReserveNo(){
   if(!S.db){
@@ -2078,6 +2094,17 @@ function photoOwnersForVrf(entry){
   var no=typeof entry==="object"?entry.vrf:entry;
   no=String(no==null?"":no).trim();
   return no?[no]:[];
+}
+function photoOwnersForOpenVrf(entry){
+  var owners=photoOwnersForVrf(entry).slice();
+  /* A hold saved pictures under the VRF number and RSV-{no}. After remint,
+     the reserve copy is the fallback until copyPhotos finishes. Posted
+     sibling VRFs are still isolated — only Requested holds use this. */
+  if(entry&&(entry.held||entry.status==="Requested")&&entry.reserve){
+    var r=typeof reserveBy==="function"?reserveBy(entry.reserve):null;
+    if(r) owners=owners.concat(photoOwnersForReserve(r));
+  }
+  return owners.filter(function(x,i,a){ return x&&a.indexOf(x)===i; });
 }
 async function listPhotos(vrf){
   var owner=String(vrf);
@@ -2927,7 +2954,7 @@ var JO_CHECKS={
 function vrfChip(v){
   var m={"Open":["warn","Open — awaiting liquidation"],
     "Closed":["ok","Liquidated"],"Legacy":["mute","From the old workbooks"],
-    "Requested":["warn","Requested — waiting for approval"]};
+    "Requested":["warn","Requested — FOR APPROVAL"]};
   var x=m[v.status]||["mute",v.status];
   return el("span","chip "+x[0],x[1]);
 }
@@ -4760,6 +4787,24 @@ function openReserve(no,asApprover){
   if(r.needBy) ch.appendChild(el("span","chip mute","needed by "+r.needBy));
   lf.appendChild(ch);
   hd.appendChild(lf);
+  if(r.vrfNo){
+    var topActs=el("div","row");
+    topActs.style.flex="none";
+    var prHold=el("button","btn pri","Print");
+    prHold.addEventListener("click",function(){
+      var held=heldVrfEntry(r);
+      if(!held){ toast("VRF "+r.vrfNo+" is not on the log yet — refresh once."); return; }
+      printVrfNo(held);
+    });
+    var openHold=el("button","btn","Open VRF");
+    openHold.addEventListener("click",function(){
+      var held=heldVrfEntry(r);
+      if(!held){ toast("VRF "+r.vrfNo+" is not on the log yet — refresh once."); return; }
+      m.remove(); openVrf(held);
+    });
+    topActs.appendChild(prHold); topActs.appendChild(openHold);
+    hd.appendChild(topActs);
+  }
   b.appendChild(hd);
 
   var sc=el("div"); sc.style.margin="var(--space-4) 0";
@@ -4811,39 +4856,52 @@ function openReserve(no,asApprover){
     }
   }
 
-  if(rsvKind(r)!=="job"){
-    var pcard=el("div","card"); pcard.style.marginBottom="var(--space-4)";
-    var pch=el("div","hd");
-    pch.appendChild(el("h3",null,rsvKind(r)==="fuel-bulk"?"Drum photo on the request":"Gauge photo on the request"));
-    pch.appendChild(el("span","note","Taken before any fuel moved."));
-    pcard.appendChild(pch);
-    var pcb=el("div","bd");
-    var pgal=el("div","pgrid");
-    pgal.appendChild(el("div","hint","Loading…"));
-    pcb.appendChild(pgal);
-    pcard.appendChild(pcb);
-    b.appendChild(pcard);
-    listPhotosMany(photoOwnersForReserve(r)).then(function(list){
-      pgal.innerHTML="";
-      list=list.filter(function(x){ return x.kind!=="link"&&x.data; });
-      if(!list.length){
-        var nb=el("div","banner warn");
-        nb.innerHTML="<b>No picture of the gauge on this request.</b> Optional — it does not block approval.";
-        pgal.appendChild(nb);
-        return;
-      }
-      list.forEach(function(x){
-        var c=el("div","pcell");
-        var im=document.createElement("img"); im.src=x.data;
-        im.addEventListener("click",function(){ lightbox(x.data); });
-        c.appendChild(im);
-        var cp=el("div","cap");
-        cp.appendChild(el("div",null,x.caption||"gauge"));
-        cp.appendChild(el("div","hint",(x.by||"—")+" · "+(x.at||"")));
-        c.appendChild(cp); pgal.appendChild(c);
-      });
+  var pcard=el("div","card"); pcard.style.marginBottom="var(--space-4)";
+  var pch=el("div","hd");
+  pch.appendChild(el("h3",null,rsvKind(r)==="job"
+    ?"Attachments on this request"
+    :(rsvKind(r)==="fuel-bulk"?"Drum photo on the request":"Gauge photo on the request")));
+  pch.appendChild(el("span","note",rsvKind(r)==="job"
+    ?"The pictures saved with this VRF — they stay after Send for approval."
+    :"Taken before any fuel moved."));
+  pcard.appendChild(pch);
+  var pcb=el("div","bd");
+  var pgal=el("div","pgrid");
+  pgal.appendChild(el("div","hint","Loading…"));
+  pcb.appendChild(pgal);
+  pcard.appendChild(pcb);
+  b.appendChild(pcard);
+  listPhotosMany(photoOwnersForReserve(r)).then(function(list){
+    pgal.innerHTML="";
+    var links=list.filter(function(x){ return x.kind==="link"; });
+    list=list.filter(function(x){ return x.kind!=="link"&&x.data; });
+    if(!list.length&&!links.length){
+      var nb=el("div","banner warn");
+      nb.innerHTML=rsvKind(r)==="job"
+        ?"<b>No pictures on this request.</b> Open the VRF to attach them — they print with the form."
+        :"<b>No picture of the gauge on this request.</b> Optional — it does not block approval.";
+      pgal.appendChild(nb);
+      return;
+    }
+    list.forEach(function(x){
+      var c=el("div","pcell");
+      var im=document.createElement("img"); im.src=x.data;
+      im.addEventListener("click",function(){ lightbox(x.data); });
+      c.appendChild(im);
+      var cp=el("div","cap");
+      cp.appendChild(el("div",null,x.caption||(rsvKind(r)==="job"?"attachment":"gauge")));
+      cp.appendChild(el("div","hint",(x.by||"—")+" · "+(x.at||"")));
+      c.appendChild(cp); pgal.appendChild(c);
     });
-  }
+    links.forEach(function(x){
+      var row=el("div","row");
+      row.style.cssText="grid-column:1/-1;padding:6px 0;border-bottom:1px solid var(--rule)";
+      var a=el("a",null,x.caption||x.url);
+      a.href=x.url; a.target="_blank"; a.rel="noopener noreferrer";
+      row.appendChild(a);
+      pgal.appendChild(row);
+    });
+  });
 
   if((r.draftLines||[]).length){
     var dlc=el("div","card"); dlc.style.marginBottom="var(--space-4)";
@@ -6097,7 +6155,7 @@ function vrfLogView(){
   var fw=workSelect(S.regWork,"— every job —");
   var fs2=el("select");
   [["","every status"],["Open","open — awaiting liquidation"],["Closed","liquidated"],
-   ["Requested","requested — not yet approved"],
+   ["Requested","requested — FOR APPROVAL"],
    ["Legacy","from the old workbooks"]].forEach(function(o){ fs2.appendChild(new Option(o[1],o[0])); });
   fs2.value=S.regStatus||"";
   bar.appendChild(f2("Find",q)); bar.appendChild(f2("Type of job",fw)); bar.appendChild(f2("Status",fs2));
@@ -6877,7 +6935,7 @@ function askDriveLink(entry,after){
 }
 async function printVrfNo(entry){
   var ph=[];
-  try{ ph=await listPhotosMany(photoOwnersForVrf(entry)); }catch(e){}
+  try{ ph=await listPhotosMany(photoOwnersForOpenVrf(entry)); }catch(e){}
   printVrf(entry,ph);
 }
 
@@ -6916,12 +6974,21 @@ function openVrf(entry,tab){
   hd.appendChild(rgt);
   b.appendChild(hd);
 
+  var waiting=!!(entry.held||entry.status==="Requested");
+  if(waiting){
+    var wait=el("div","banner warn"); wait.style.marginTop="var(--space-3)";
+    wait.innerHTML="<b>Sent for approval — VRF "+esc(String(entry.vrf))+" is held.</b> "+
+      "Photos and print work now. The office still has to approve before it posts.";
+    b.appendChild(wait);
+    if(tab==="liq") tab="photos";
+  }
+
   var tabs=el("div","row"); tabs.style.margin="var(--space-4) 0";
-  [["lines","Lines & jobs"],
-   ["photos","Attachments"+(photoCountMany(photoOwnersForVrf(entry))?" ("+photoCountMany(photoOwnersForVrf(entry))+")":"")],
-   ["jo","Job order"+(joForVrf(entry.vrf).length?" ("+joForVrf(entry.vrf).length+")":"")],
-   ["liq","Liquidate"+(entry.status==="Open"?" ●":"")]]
-    .forEach(function(o){
+  var tabDefs=[["lines","Lines & jobs"],
+   ["photos","Attachments"+(photoCountMany(photoOwnersForOpenVrf(entry))?" ("+photoCountMany(photoOwnersForOpenVrf(entry))+")":"")],
+   ["jo","Job order"+(joForVrf(entry.vrf).length?" ("+joForVrf(entry.vrf).length+")":"")]];
+  if(!waiting) tabDefs.push(["liq","Liquidate"+(entry.status==="Open"?" ●":"")]);
+  tabDefs.forEach(function(o){
       var bt=el("button","btn"+(tab===o[0]?" pri":""),o[1]);
       bt.addEventListener("click",function(){ openVrf(entry,o[0]); });
       tabs.appendChild(bt);
@@ -6930,7 +6997,7 @@ function openVrf(entry,tab){
   var pr=el("button","btn","Print / save as PDF");
   pr.addEventListener("click",async function(){
     pr.disabled=true; pr.textContent="Preparing…";
-    var ph=await listPhotosMany(photoOwnersForVrf(entry));
+    var ph=await listPhotosMany(photoOwnersForOpenVrf(entry));
     pr.disabled=false; pr.textContent="Print / save as PDF";
     printVrf(entry,ph);
   });
@@ -7372,7 +7439,7 @@ function openVrf(entry,tab){
       openVrf(entry,"photos");
     });
 
-    listPhotosMany(photoOwnersForVrf(entry)).then(function(list){
+    listPhotosMany(photoOwnersForOpenVrf(entry)).then(function(list){
       gal.innerHTML="";
       var links=list.filter(function(x){ return x.kind==="link"; });
       list=list.filter(function(x){ return x.kind!=="link"; });
@@ -7948,15 +8015,20 @@ async function sendForApproval(d,btn){
     if(d.photos&&d.photos.length){
       btn.textContent="Saving photos…";
       for(var pi=0;pi<d.photos.length;pi++){
-        try{ await addPhoto(String(vno),{data:d.photos[pi].data,w:d.photos[pi].w,
-          h:d.photos[pi].h,bytes:d.photos[pi].bytes,caption:d.photos[pi].caption,by:who}); }catch(e){
+        try{
+          await addPhotoToOwners([String(vno), rsvOwner(no)],{data:d.photos[pi].data,w:d.photos[pi].w,
+            h:d.photos[pi].h,bytes:d.photos[pi].bytes,caption:d.photos[pi].caption,by:who});
+        }catch(e){
           toast("Photo could not be saved: "+((e&&e.message)||"try again")); }
       }
     }
     S.draft=null;
-    toast("VRF "+vno+" sent for approval at "+peso(total)+" — the number is held for it.");
-    S.view="rsv"; render();
-    openReserve(no);
+    _vrfs=null;
+    toast("VRF "+vno+" sent for approval at "+peso(total)+" — it is on VRF Logs as Requested / FOR APPROVAL.");
+    S.view="vrflog"; S.logQ=String(vno); render();
+    var held=vrfByNo(vno);
+    if(held) openVrf(held,"photos");
+    else openReserve(no);
   }catch(e){
     btn.disabled=false; btn.textContent="Send for approval";
     toast("Could not send it. Nothing was saved — try again.");

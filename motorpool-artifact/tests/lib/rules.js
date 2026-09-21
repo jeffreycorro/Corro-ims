@@ -758,6 +758,16 @@
     return no ? [no] : [];
   }
 
+  function photoOwnersForOpenVrf(entry, reserve) {
+    var owners = photoOwnersForVrf(entry).slice();
+    if (entry && (entry.held || entry.status === "Requested") && reserve) {
+      owners = owners.concat(photoOwnersForReserve(reserve));
+    }
+    return owners.filter(function (x, i, a) {
+      return x && a.indexOf(x) === i;
+    });
+  }
+
   function moneyNum(v) {
     if (v == null || v === "") return 0;
     if (typeof v === "number") return isFinite(v) ? v : 0;
@@ -1354,6 +1364,7 @@
     missingFuelApproveFields: missingFuelApproveFields,
     photoOwnersForReserve: photoOwnersForReserve,
     photoOwnersForVrf: photoOwnersForVrf,
+    photoOwnersForOpenVrf: photoOwnersForOpenVrf,
     moneyNum: moneyNum,
     lineMoney: lineMoney,
     vrfRequestedBy: vrfRequestedBy,
