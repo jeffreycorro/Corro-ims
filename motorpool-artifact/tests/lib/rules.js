@@ -937,10 +937,35 @@
     return "job";
   }
 
-  function usedVrfNumbers(vrfs, reserves) {
+  function normVrfNo(n) {
+    return String(n == null ? "" : n).trim();
+  }
+
+  function isPostedVrfRow(v) {
+    if (!v) return false;
+    if (v.held || v.src === "reserve-hold") return false;
+    return Boolean(normVrfNo(v.vrf || v));
+  }
+
+  function reserveOwnsPostedVrf(r) {
+    var no = normVrfNo(r && r.vrfNo);
+    if (!no) return false;
+    return (r.vrfs || []).some(function (x) {
+      return String(x) === no;
+    });
+  }
+
+  function liveReserveStatus(status) {
+    var st = String(status || "");
+    return st !== "Rejected";
+  }
+
+  /** Ledger rows plus pending/approved reserve holds. Rejected numbers may be reused. */
+  function usedVrfNumbers(vrfs, reserves, opts) {
+    opts = opts || {};
     var used = {};
     function add(n) {
-      n = String(n == null ? "" : n).trim();
+      n = normVrfNo(n);
       if (n) used[n] = 1;
     }
     (vrfs || []).forEach(function (v) {
@@ -948,8 +973,25 @@
     });
     (reserves || []).forEach(function (r) {
       if (!r) return;
+      if (opts.exceptReserve != null && String(r.no) === String(opts.exceptReserve)) return;
+      if (!liveReserveStatus(r.status) && !opts.includeRejected) return;
       add(r.vrfNo);
       (r.vrfs || []).forEach(add);
+    });
+    return used;
+  }
+
+  function vrfNumberTaken(no, vrfs, reserves, opts) {
+    no = normVrfNo(no);
+    if (!no) return false;
+    return !!usedVrfNumbers(vrfs, reserves, opts)[no];
+  }
+
+  function postedVrfNumbers(vrfs) {
+    var used = {};
+    (vrfs || []).forEach(function (v) {
+      if (!isPostedVrfRow(v)) return;
+      used[normVrfNo(v.vrf || v)] = 1;
     });
     return used;
   }
@@ -960,6 +1002,56 @@
     used = used || {};
     while (used[String(n)]) n += 1;
     return n;
+  }
+
+  /** Staff (and admin) raise a VRF; only office approval may post it. */
+  function staffMayDirectPostVrf() {
+    return false;
+  }
+
+  function canDirectPostVrf() {
+    return false;
+  }
+
+  function shouldRemintHeldVrf(r, vrfs, reserves) {
+    if (!r || !normVrfNo(r.vrfNo)) return false;
+    var st = String(r.status || "");
+    if (st === "Rejected" || st === "Closed") return false;
+    if (reserveOwnsPostedVrf(r)) return false;
+    var no = normVrfNo(r.vrfNo);
+    var posted = !!postedVrfNumbers(vrfs)[no];
+    var otherHold = (reserves || []).some(function (o) {
+      if (!o || String(o.no) === String(r.no)) return false;
+      if (!liveReserveStatus(o.status)) return false;
+      if (normVrfNo(o.vrfNo) === no) return true;
+      return (o.vrfs || []).some(function (x) {
+        return String(x) === no;
+      });
+    });
+    return posted || otherHold;
+  }
+
+  function remintHeldVrf(r, vrfs, reserves, from) {
+    if (!shouldRemintHeldVrf(r, vrfs, reserves)) return null;
+    var used = usedVrfNumbers(vrfs, reserves, { exceptReserve: r.no });
+    var next = nextFreeVrf(from || r.vrfNo || 1, used);
+    var prev = normVrfNo(r.vrfNo);
+    r.vrfNo = String(next);
+    return { from: prev, to: String(next), reserve: String(r.no) };
+  }
+
+  function repairDuplicateHeldVrfs(reserves, vrfs, from) {
+    var changes = [];
+    var start = parseInt(from, 10);
+    if (!isFinite(start) || start < 1) start = 1;
+    (reserves || []).forEach(function (r) {
+      var ch = remintHeldVrf(r, vrfs, reserves, start);
+      if (!ch) return;
+      changes.push(ch);
+      var n = parseInt(ch.to, 10);
+      if (isFinite(n) && n + 1 > start) start = n + 1;
+    });
+    return changes;
   }
 
   function heldReserveVrfs(reserves, existing) {
@@ -1272,6 +1364,14 @@
     fuelSpendKind: fuelSpendKind,
     isFuelReserveSupplier: isFuelReserveSupplier,
     usedVrfNumbers: usedVrfNumbers,
+    vrfNumberTaken: vrfNumberTaken,
+    postedVrfNumbers: postedVrfNumbers,
+    isPostedVrfRow: isPostedVrfRow,
+    staffMayDirectPostVrf: staffMayDirectPostVrf,
+    canDirectPostVrf: canDirectPostVrf,
+    shouldRemintHeldVrf: shouldRemintHeldVrf,
+    remintHeldVrf: remintHeldVrf,
+    repairDuplicateHeldVrfs: repairDuplicateHeldVrfs,
     nextFreeVrf: nextFreeVrf,
     heldReserveVrfs: heldReserveVrfs,
     vrfLogVisible: vrfLogVisible,

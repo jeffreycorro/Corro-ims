@@ -236,6 +236,28 @@
       /^Create reserve/i.test(t)
     );
   }
+  function isPostVrfButton(el) {
+    var t = textOf(el);
+    return t === "Post VRF" || t === "Posting…" || /^Post VRF\b/i.test(t);
+  }
+  function staffMayDirectPostVrf() {
+    return false;
+  }
+  function stripPostVrfBypass(root) {
+    root = root || (typeof document !== "undefined" ? document : null);
+    if (!root || !root.querySelectorAll) return 0;
+    var removed = 0;
+    var buttons = root.querySelectorAll("button");
+    for (var i = 0; i < buttons.length; i++) {
+      if (!isPostVrfButton(buttons[i])) continue;
+      var btn = buttons[i];
+      if (btn && btn.parentNode) {
+        btn.parentNode.removeChild(btn);
+        removed += 1;
+      }
+    }
+    return removed;
+  }
   function stripReserveCreateForm(root) {
     root = root || (typeof document !== "undefined" ? document : null);
     if (!root || !root.querySelectorAll) return 0;
@@ -302,30 +324,28 @@
     global[name] = wrapped;
     return true;
   }
-  function wrapPostVrfIfGated(global) {
-    if (!global || typeof global.postVrf !== "function" || global.postVrf.__mpNoFuelGates) return false;
-    var src = "";
-    try {
-      src = Function.prototype.toString.call(global.postVrf);
-    } catch (e) {}
-    if (!/Fuel needs an approved reserve|fuel check has stopped this request/.test(src)) {
-      global.postVrf.__mpNoFuelGates = true;
+  function wrapPostVrfRequireApproval(global) {
+    if (!global || typeof global.postVrf !== "function" || global.postVrf.__mpApprovalRequired) {
       return false;
     }
-    var orig = global.postVrf;
     global.postVrf = function (d, btn) {
-      if (d) {
-        var who = String((d.requestedBy || "staff").trim() || "staff");
-        var when = typeof global.iso === "function" ? global.iso() : "";
-        d.gateOverride = Object.assign(
-          { bypass: true, reason: "Posted from VRF maker", by: who, at: when },
-          d.gateOverride || {}
-        );
+      if (btn) {
+        try {
+          btn.disabled = false;
+          btn.textContent = "Post VRF";
+        } catch (e) {}
       }
-      return orig.apply(this, arguments);
+      if (typeof global.toast === "function") {
+        global.toast("Send this VRF for approval. The office posts it after it is approved.");
+      }
+      return null;
     };
+    global.postVrf.__mpApprovalRequired = true;
     global.postVrf.__mpNoFuelGates = true;
     return true;
+  }
+  function wrapPostVrfIfGated(global) {
+    return wrapPostVrfRequireApproval(global);
   }
   function decorateReservesView(w) {
     stripReserveCreateForm(w);
@@ -351,15 +371,16 @@
   function decorateVrfView(w) {
     hideFuelCheckGateway(w);
     unlockProjectFields(w);
+    stripPostVrfBypass(w);
     if (!w || !w.querySelectorAll) return;
     var banners = w.querySelectorAll(".banner");
     for (var i = 0; i < banners.length; i++) {
       var t = textOf(banners[i]);
-      if (/Two ways out of this form/.test(t) || /gauge photo is optional/i.test(t)) {
+      if (/Two ways out of this form/.test(t) || /gauge photo is optional/i.test(t) || /Post VRF/.test(t)) {
         banners[i].innerHTML =
           "<div><b>Raise the VRF here.</b> Fuel does not need a gauge reading, a gauge photo, or a fuel check. " +
           "<b>Send for approval</b> holds the number until the office approves it — then it appears on the reserve log. " +
-          "<b>Post VRF</b> records it now. Reserves is only that log; do not invent a reserve there.</div>";
+          "There is no Post VRF on this form. Reserves is only that log; do not invent a reserve there.</div>";
       }
     }
   }
@@ -370,11 +391,12 @@
     relabelReservesAsLog(root);
     hideFuelCheckGateway(root);
     unlockProjectFields(root);
+    stripPostVrfBypass(root);
   }
   function installProductOverlays(global) {
     global = global || (typeof window !== "undefined" ? window : this);
     if (!global) return false;
-    wrapPostVrfIfGated(global);
+    wrapPostVrfRequireApproval(global);
     wrapView(global, "rsvView", function (w) {
       decorateReservesView(w);
     });
@@ -428,6 +450,10 @@
     relabelReservesAsLog: relabelReservesAsLog,
     hideFuelCheckGateway: hideFuelCheckGateway,
     unlockProjectFields: unlockProjectFields,
+    staffMayDirectPostVrf: staffMayDirectPostVrf,
+    isPostVrfButton: isPostVrfButton,
+    stripPostVrfBypass: stripPostVrfBypass,
+    wrapPostVrfRequireApproval: wrapPostVrfRequireApproval,
     wrapPostVrfIfGated: wrapPostVrfIfGated,
     installProductOverlays: installProductOverlays,
     applyYardOverlays: applyYardOverlays,
