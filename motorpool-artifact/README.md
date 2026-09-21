@@ -237,11 +237,13 @@ Functions need Netlify (`npx netlify dev --dir .`) plus the env vars above. With
 
 After this folder merges to the branch the **separate** Motorpool Netlify site tracks (usually `main`):
 
-1. Confirm the live Ask / footer BUILD is **2026-09-19 a** (hard refresh if a service worker or tab still shows `2026-09-17 d`).
-2. **New VRF → Vehicle code:** type a unit that has an assigned site. Project fills as a default. Change the project to another code — it must stay editable and keep the override. Clearing the project to type a different one must not snap back to the unit site.
-3. **New VRF fuel line:** pick `Fuel — Diesel` and a station/supplier (not FUEL RESERVE). Send for approval — the reserve log chip should read **Fuel Purchase**, not **Fuel Reserve**. FUEL RESERVE is labelled *drum dispense (not a purchase)* and sits after the real suppliers.
-4. **Fuel tab:** two cards — **Fuel Reserve — dispense from the drums** and **Fuel Purchase — record a bulk delivery**.
-5. **VRF log:** newest form at the top (date, then VRF number). Subtitle is **Newest first**.
+1. Confirm the live Ask / footer BUILD is **2026-09-21 a** (hard refresh if a service worker or tab still shows `2026-09-19 a`).
+2. **New VRF:** the only primary action is **Send for approval**. There is no **Post VRF** button. Staff cannot skip Jeffrey’s office approval.
+3. After deploy, open Office → Approvals. If a pending VRF still shows **58528** beside an already-posted 58528, refresh once — boot remints the pending hold to the next free number and leaves the posted ledger row untouched.
+4. **New VRF → Vehicle code:** type a unit that has an assigned site. Project fills as a default. Change the project to another code — it must stay editable and keep the override. Clearing the project to type a different one must not snap back to the unit site.
+5. **New VRF fuel line:** pick `Fuel — Diesel` and a station/supplier (not FUEL RESERVE). Send for approval — the reserve log chip should read **Fuel Purchase**, not **Fuel Reserve**. FUEL RESERVE is labelled *drum dispense (not a purchase)* and sits after the real suppliers.
+6. **Fuel tab:** two cards — **Fuel Reserve — dispense from the drums** and **Fuel Purchase — record a bulk delivery**.
+7. **VRF log:** newest form at the top (date, then VRF number). Subtitle is **Newest first**.
 
 HR and Materials are out of scope.
 

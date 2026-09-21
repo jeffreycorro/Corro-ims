@@ -175,7 +175,7 @@ describe("motorpool host companion", () => {
     assert.match(html, /function isFuelBypass/);
     assert.match(html, /function bypassAttribution/);
     assert.match(html, /function logBypassFuelVrf/);
-    assert.match(html, /var BUILD = "2026-09-19 a"/);
+    assert.match(html, /var BUILD = "2026-09-21 a"/);
     assert.match(html, /Approved VRFs waiting to be liquidated/);
     assert.match(html, /Reserves is a log, not a maker/);
     assert.match(html, /Raise the VRF here/);
@@ -230,16 +230,33 @@ describe("motorpool host companion", () => {
     assert.equal(card.parentNode.removed, card);
 
     let called = 0;
-    w.postVrf = function postVrf(d, btn) {
-      // Fuel needs an approved reserve behind it
-      called += 1;
-      return d && d.gateOverride;
+    const toasts = [];
+    w.toast = function (msg) {
+      toasts.push(msg);
     };
-    assert.equal(host.wrapPostVrfIfGated(w), true);
+    w.postVrf = function postVrf() {
+      called += 1;
+      return { posted: true };
+    };
+    assert.equal(host.staffMayDirectPostVrf(), false);
+    assert.equal(host.wrapPostVrfRequireApproval(w), true);
     const ov = w.postVrf({ requestedBy: "Jun" }, null);
-    assert.equal(called, 1);
-    assert.equal(ov.bypass, true);
-    assert.match(ov.reason, /VRF maker/);
+    assert.equal(called, 0);
+    assert.equal(ov, null);
+    assert.match(toasts[0] || "", /Send this VRF for approval/);
+
+    const postBtn = { textContent: "Post VRF", parentNode: { removeChild(el) { this.removed = el; } } };
+    postBtn.parentNode.removeChild = function (el) {
+      this.removed = el;
+    };
+    const vrfRoot = {
+      querySelectorAll(sel) {
+        if (sel === "button") return [postBtn];
+        return [];
+      },
+    };
+    assert.equal(host.stripPostVrfBypass(vrfRoot), 1);
+    assert.equal(postBtn.parentNode.removed, postBtn);
   });
 
   it("registers the current BUILD once when the doc is missing", async () => {

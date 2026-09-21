@@ -365,7 +365,7 @@ var SIGNATORIES = [
 ];
 var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
 /* Shown on the Ask screen, so a screenshot says which version someone is on. */
-var BUILD = "2026-09-19 a";
+var BUILD = "2026-09-21 a";
 var DAY = 86400000, MO = 30.44;
 
 /* Part categories that were entered under two spellings and so split a unit's
@@ -882,24 +882,83 @@ function buildIndex(){
   });
   _vrfs=vrfLogSortNewestFirst(_vrfs);
 }
-function usedVrfNumbers(){
+function usedVrfNumbers(exceptReserve){
   var used={};
   function add(n){ n=String(n==null?"":n).trim(); if(n) used[n]=1; }
   (_vrfs||[]).forEach(function(v){ if(v) add(v.vrf); });
-  allLines().forEach(function(r){ if(r) add(r.vrf); });
+  allLines().forEach(function(r){ if(r&&r.src!=="reserve-hold") add(r.vrf); });
   (S.reserves||[]).forEach(function(r){
     if(!r) return;
+    if(exceptReserve!=null&&String(r.no)===String(exceptReserve)) return;
+    if(String(r.status||")==="Rejected") return;
     add(r.vrfNo);
     (r.vrfs||[]).forEach(add);
   });
   return used;
 }
-function nextFreeVrf(from){
+function postedVrfNumbers(){
+  var used={};
+  function add(n){ n=String(n==null?"":n).trim(); if(n) used[n]=1; }
+  allLines().forEach(function(r){ if(r&&r.vrf&&r.src!=="reserve-hold") add(r.vrf); });
+  (_vrfs||[]).forEach(function(v){
+    if(v&&v.vrf&&!v.held&&v.src!=="reserve-hold") add(v.vrf);
+  });
+  return used;
+}
+function vrfNumberTaken(no, exceptReserve){
+  no=String(no==null?"":no).trim();
+  if(!no) return false;
+  return !!usedVrfNumbers(exceptReserve)[no];
+}
+function nextFreeVrf(from, exceptReserve){
   var n=parseInt(from,10);
   if(!isFinite(n)||n<1) n=1;
-  var used=usedVrfNumbers();
+  var used=usedVrfNumbers(exceptReserve);
   while(used[String(n)]) n+=1;
   return n;
+}
+function staffMayDirectPostVrf(){ return false; }
+function reserveOwnsPostedVrf(r){
+  var no=String((r&&r.vrfNo)||"").trim();
+  if(!no) return false;
+  return (r.vrfs||[]).some(function(x){ return String(x)===no; });
+}
+function shouldRemintHeldVrf(r){
+  if(!r||!String(r.vrfNo||"").trim()) return false;
+  var st=String(r.status||"");
+  if(st==="Rejected"||st==="Closed") return false;
+  if(reserveOwnsPostedVrf(r)) return false;
+  var no=String(r.vrfNo).trim();
+  if(postedVrfNumbers()[no]) return true;
+  return (S.reserves||[]).some(function(o){
+    if(!o||String(o.no)===String(r.no)) return false;
+    if(String(o.status||")==="Rejected") return false;
+    if(String(o.vrfNo||"").trim()===no) return true;
+    return (o.vrfs||[]).some(function(x){ return String(x)===no; });
+  });
+}
+async function remintHeldVrfCollisions(){
+  var changes=[];
+  var start=S.cfg&&S.cfg.nextVrf;
+  (S.reserves||[]).forEach(function(r){
+    if(!shouldRemintHeldVrf(r)) return;
+    var prev=String(r.vrfNo);
+    var next=nextFreeVrf(start, r.no);
+    r.vrfNo=String(next);
+    start=next+1;
+    changes.push({from:prev,to:String(next),reserve:String(r.no)});
+  });
+  if(!changes.length) return changes;
+  if(isFinite(start)&&S.cfg&&start>S.cfg.nextVrf){
+    S.cfg.nextVrf=start;
+    try{
+      await writeDoc(PATHS.cfg,{nextVrf:S.cfg.nextVrf,pass:S.cfg.pass,fuel:S.cfg.fuel||null,
+        varianceTol:S.cfg.varianceTol,nextReserve:S.cfg.nextReserve,driveFolder:S.cfg.driveFolder||""});
+    }catch(e){}
+  }
+  await saveReserves();
+  _vrfs=null;
+  return changes;
 }
 function addHeldReserveVrfs(){
   /* An approved VRF can sit on the reserve log with a held number and never
@@ -1028,7 +1087,16 @@ async function postReserveVrf(r){
   if((r.vrfs||[]).length) return String(r.vrfs[0]);
   var lines=(r.draftLines||[]).filter(function(l){ return l.cat; });
   if(!lines.length) return null;
+  if(shouldRemintHeldVrf(r)){
+    var nxt=nextFreeVrf(S.cfg.nextVrf, r.no);
+    r.vrfNo=String(nxt);
+    if(nxt+1>(S.cfg.nextVrf||0)) S.cfg.nextVrf=nxt+1;
+  }
   var no=r.vrfNo||String(await claimVrf());
+  if(postedVrfNumbers()[String(no)]){
+    no=String(await claimVrf());
+    r.vrfNo=String(no);
+  }
   var mk=monthKey(r.date)||iso().slice(0,7);
   var v=vehicle(r.veh);
   var rows=lines.map(function(l){
@@ -1267,6 +1335,9 @@ async function loadAll(){
   }
   await harvestProjects(true);
   _vrfs=null; _lw=null;
+  /* Pending holds that share a number already on the ledger (the 58528
+     Post-VRF + send-for-approval pair) get a new number. The posted row stays. */
+  try{ await remintHeldVrfCollisions(); }catch(e){}
 }
 async function listCollectionIds(name,ok){
   if(!S.db||!S.db.collection) return [];
@@ -7383,7 +7454,7 @@ function workSelect(value,blankLabel){
 function vrfView(){
   var w=el("div");
   var headRow=pageHead("Vehicle Request Form","Raise a VRF",
-    "One form per request. The number is assigned when you post, so two people encoding at once cannot land on the same VRF.");
+    "One form per request. The number is assigned when you send it for approval. The office posts it after Jeffrey approves — there is no Post VRF on this form.");
   var clr=el("button","btn sm","Clear form");
   clr.title="Wipe this draft so the next VRF does not keep another form's photos or amounts.";
   clr.addEventListener("click",function(){ S.draft=null; render(); toast("New VRF cleared."); });
@@ -7398,7 +7469,7 @@ function vrfView(){
   var path=el("div","banner info");
   path.innerHTML="<div><b>Raise the VRF here.</b> Fuel does not need a gauge reading, a gauge photo, or a fuel check. "+
     "<b>Send for approval</b> holds the number until the office approves it — then it appears on the reserve log. "+
-    "<b>Post VRF</b> records it now. Reserves is only that log; do not invent a reserve there.</div>";
+    "There is no Post VRF on this form. Reserves is only that log; do not invent a reserve there.</div>";
   g.appendChild(path);
 
   var head=el("div","card");
@@ -7467,7 +7538,7 @@ function vrfView(){
     if(rv.over){
       var bn=el("div","banner warn"); bn.style.marginTop="var(--space-2)";
       bn.innerHTML="<b>This VRF puts RSV-"+esc(rr.no)+" over its approved budget by "+
-        esc((rv.pct*100).toFixed(1))+"%.</b> It can still be posted — the reserve will be flagged when it is liquidated, and the office will ask for a justification.";
+        esc((rv.pct*100).toFixed(1))+"%.</b> Send it for approval — the reserve will be flagged when it is liquidated, and the office will ask for a justification.";
       rmeter.appendChild(bn);
     }
   }
@@ -7766,9 +7837,6 @@ function vrfView(){
     sendForApproval(d,send);
   });
   foot.appendChild(send);
-  var post=el("button","btn"+(d.reserve?" pri":""),"Post VRF");
-  post.addEventListener("click",function(){ postVrf(d,post); });
-  foot.appendChild(post);
   lb.appendChild(foot);
   lc.appendChild(lb);
   g.appendChild(lc);
@@ -7858,6 +7926,7 @@ async function sendForApproval(d,btn){
   try{
     var no=await claimReserveNo();
     var vno=await claimVrf();
+    if(vrfNumberTaken(vno)) vno=await claimVrf();
     var summary=rows.map(function(l){
       return (l.item||normCat(l.cat))+" ×"+(l.qty||1); }).join(", ");
     var fuelish=rows.some(function(l){ return isFuel(l.cat); });
@@ -7895,82 +7964,10 @@ async function sendForApproval(d,btn){
 }
 
 async function postVrf(d,btn){
-  if(!d.veh){ toast("Pick a unit first."); return; }
-  if(!d.work){ toast("Pick the type of job — it is what makes this VRF findable later."); return; }
-  /* Fuel is a normal VRF. No approved-reserve prerequisite, no fuel-check stop,
-     no gauge / photo wall, no parallel bypass-to-create-reserve path. */
-  var rows=d.lines.filter(function(l){ return l.cat && (moneyNum(l.qty)||moneyNum(l.price)); });
-  if(!rows.length){ toast("Add at least one line with a category and a figure."); return; }
-  btn.disabled=true; btn.textContent="Posting…";
-  try{
-    /* a reserve holds its VRF number from the moment it is raised, so posting
-       uses that number instead of burning a new one */
-    var no = d.vrfNo || await claimVrf();
-    var v = vehicle(d.veh);
-    var mk = monthKey(d.date)||iso().slice(0,7);
-    var out = rows.map(function(l){
-      var sp=partSpec(l.cat);
-      var qty=moneyNum(l.qty), price=moneyNum(l.price);
-      return {month:mk,date:d.date,vrf:String(no),veh:d.veh,name:v?v.desc:"",
-        work:l.work||d.work,
-        cat:l.cat, sub:sp?sp.sub:(isFuel(l.cat)?"Fuel":""),
-        grp: isFuel(l.cat)?"Fuel":"Maintenance",
-        item:l.item, qty:qty, price:price, total:qty*price,
-        supplier:l.supplier, project:d.project, liters:parseFloat(l.liters)||null,
-        odo:parseFloat(String(d.odo).replace(/,/g,""))||null,
-        requestedBy:d.requestedBy||"",
-        override: (isFuel(l.cat)&&d.gateOverride)?d.gateOverride:null,
-        bypass: isFuel(l.cat)&&isFuelBypass(d.gateOverride),
-        reserve: d.reserve||"", vstatus:"Open",
-        jo: (d.jo&&d.jo.indexOf("JO:")===0)?d.jo.slice(3):"",
-        task: (d.jo&&d.jo.indexOf("T:")===0)?d.jo.slice(2):"",
-        notes: (isFuel(l.cat)&&isFuelBypass(d.gateOverride))
-          ? bypassAttribution(d.gateOverride,{unit:d.veh,litres:l.liters||l.qty,by:d.requestedBy})
-          : d.purpose};
-    });
-    await appendLedger(mk,out);
-    /* a line drawn against the reserve is also a withdrawal from the drums */
-    var draws = out.filter(function(r){ return r.supplier==="FUEL RESERVE" && r.liters>0; });
-    if(draws.length){
-      await appendRows("withdrawals", draws.map(function(r){
-        return {date:r.date,vrf:r.vrf,vehicle:r.veh,project:r.project,fuel:/gas/i.test(r.cat)?"Gasoline":"Diesel",
-          cont:Math.round(r.liters/CONTAINER_L),liters:r.liters,cost:null,rate:null,operator:d.requestedBy};
-      }));
-    }
-    if(d.photos&&d.photos.length){
-      btn.textContent="Saving photos…";
-      for(var pi=0;pi<d.photos.length;pi++){
-        try{ await addPhoto(String(no),{data:d.photos[pi].data,w:d.photos[pi].w,h:d.photos[pi].h,
-          bytes:d.photos[pi].bytes,caption:d.photos[pi].caption,by:d.requestedBy}); }catch(e){
-          toast("Photo could not be saved: "+((e&&e.message)||"try again")); }
-      }
-    }
-    if(d.reserve){
-      var rr=reserveBy(d.reserve);
-      if(rr){
-        rr.vrfs=(rr.vrfs||[]).concat([String(no)]);
-        await saveReserves();
-      }
-    }
-    /* the work record keeps the VRF number, so the job order shows what it cost */
-    if(d.jo&&d.jo.indexOf("JO:")===0){
-      var jj=joBy(d.jo.slice(3));
-      if(jj&&!jj.vrf){ try{ await saveJO(jj.no,{vrf:String(no)}); }catch(e){} }
-    }else if(d.jo&&d.jo.indexOf("T:")===0){
-      var tt=taskBy(d.jo.slice(2));
-      if(tt&&!tt.vrf){ try{ await saveTask(tt.no,{vrf:String(no)}); }catch(e){} }
-    }
-    var nPhotos=(d.photos||[]).length;
-    S.draft=null;
-    toast("VRF "+no+" posted · "+out.length+" line"+(out.length>1?"s":"")+
-      (nPhotos?" · "+nPhotos+" attachment"+(nPhotos>1?"s":""):""));
-    render();
-    var entry=vrfByNo(no);
-    if(entry) openVrf(entry,"lines");
-  }catch(e){
-    btn.disabled=false; btn.textContent="Post VRF";
-    toast("Could not post the VRF. Nothing was saved — try again.");
-  }
+  /* Direct post is removed. Staff send for approval; the office posts the
+     held number when Jeffrey approves. Portal admin is not a Post-VRF gate. */
+  if(btn){ btn.disabled=false; btn.textContent="Post VRF"; }
+  toast("Send this VRF for approval. The office posts it after it is approved.");
 }
 
 function previewVrf(d){
