@@ -758,6 +758,17 @@
     return no ? [no] : [];
   }
 
+  function vrfPrintWatermark(entry) {
+    if (!entry) return "FOR APPROVAL";
+    if (entry.held || entry.src === "reserve-hold") return "FOR APPROVAL";
+    var st = String(entry.status || "").trim();
+    if (!st || st === "Requested" || /^for approval$/i.test(st) || /^sent for approval$/i.test(st)) {
+      return "FOR APPROVAL";
+    }
+    if (st === "Rejected") return "FOR APPROVAL";
+    return "APPROVED";
+  }
+
   function photoOwnersForOpenVrf(entry, reserve, counts) {
     var owners = photoOwnersForVrf(entry).slice();
     var vrfNo = owners[0];
@@ -1367,6 +1378,7 @@
     photoOwnersForReserve: photoOwnersForReserve,
     photoOwnersForVrf: photoOwnersForVrf,
     photoOwnersForOpenVrf: photoOwnersForOpenVrf,
+    vrfPrintWatermark: vrfPrintWatermark,
     moneyNum: moneyNum,
     lineMoney: lineMoney,
     vrfRequestedBy: vrfRequestedBy,

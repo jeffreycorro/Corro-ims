@@ -17,6 +17,7 @@ const {
   shouldRemintHeldVrf,
   staffMayDirectPostVrf,
   canDirectPostVrf,
+  vrfPrintWatermark,
 } = require("./lib/rules");
 
 const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
@@ -77,6 +78,16 @@ describe("9/21 15:28 — held FOR APPROVAL VRF stays printable with photos", () 
     assert.equal(posted[0].vrf, "5828");
   });
 
+  it("watermarks a hold FOR APPROVAL and a posted VRF APPROVED", () => {
+    assert.equal(vrfPrintWatermark({ vrf: "5901", held: true, status: "Requested" }), "FOR APPROVAL");
+    assert.equal(vrfPrintWatermark({ vrf: "5901", src: "reserve-hold", status: "Requested" }), "FOR APPROVAL");
+    assert.equal(vrfPrintWatermark({ vrf: "5901", status: "Requested" }), "FOR APPROVAL");
+    assert.equal(vrfPrintWatermark({ vrf: "5828", status: "Open" }), "APPROVED");
+    assert.equal(vrfPrintWatermark({ vrf: "5795", status: "Closed" }), "APPROVED");
+    assert.equal(vrfPrintWatermark({ vrf: "1001", status: "Legacy" }), "APPROVED");
+    assert.equal(vrfPrintWatermark(null), "FOR APPROVAL");
+  });
+
   it("does not restore a Post VRF bypass", () => {
     assert.equal(staffMayDirectPostVrf(), false);
     assert.equal(canDirectPostVrf({ role: "admin" }), false);
@@ -133,6 +144,12 @@ describe("artifact HTML — hold print / photos / log after Send for approval", 
     assert.match(html, /Photos and print work now/);
     assert.match(html, /if\(!waiting\) tabDefs\.push\(\["liq"/);
     assert.match(html, /listPhotosMany\(photoOwnersForOpenVrf\(entry\)\)/);
-    assert.match(html, /var BUILD = "2026-09-21 c"/);
+    assert.match(html, /var BUILD = "2026-09-21 d"/);
+    assert.match(html, /function vrfPrintWatermark/);
+    assert.match(html, /function vrfMarkNode/);
+    assert.match(html, /d\.appendChild\(vrfMarkNode\(mark\)\)/);
+    assert.match(html, /ph\.appendChild\(vrfMarkNode\(mark\)\)/);
+    assert.match(html, /print-color-adjust:exact/);
+    assert.match(html, /@media print\{\.vrfdoc>\.vmark\{position:fixed;inset:12mm\}\}/);
   });
 });

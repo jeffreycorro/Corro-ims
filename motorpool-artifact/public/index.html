@@ -253,7 +253,15 @@ svg text{font-family:var(--font-body)}
 }
 /* the printable VRF form */
 #printArea{display:none}
-.vrfdoc{background:#fff;color:#111;font-family:var(--font-body);padding:14mm 12mm;max-width:210mm;margin:0 auto}
+.vrfdoc{background:#fff;color:#111;font-family:var(--font-body);padding:14mm 12mm;max-width:210mm;margin:0 auto;position:relative;overflow:hidden}
+.vrfdoc .vmark{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  pointer-events:none;z-index:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.vrfdoc .vmark span{font-family:var(--font-heading);font-weight:700;font-size:72px;letter-spacing:.12em;
+  text-transform:uppercase;color:rgba(28,28,28,.16);transform:rotate(-32deg);white-space:nowrap;
+  border:5px solid rgba(28,28,28,.16);padding:6px 22px;line-height:1}
+.vrfdoc>*:not(.vmark){position:relative;z-index:1}
+.vrfdoc .vph{position:relative}
+.vrfdoc .vph .vmark{z-index:0}
 .vrfdoc .vhead{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;
   border-bottom:2px solid #111;padding-bottom:8px}
 .vrfdoc .vco{font-family:var(--font-heading);font-weight:700;font-size:16px;letter-spacing:.02em;line-height:1.2}
@@ -302,6 +310,7 @@ svg text{font-family:var(--font-body)}
   .rail,.topbar,.noprint,.btn{display:none!important}
   body.printing>*{display:none!important}
   body.printing>#printArea{display:block!important}
+  body.printing>#printArea .vmark{position:fixed;inset:12mm}
   #printArea{display:none}
   @page{size:A4;margin:0}
   #app{display:block}
@@ -365,7 +374,7 @@ var SIGNATORIES = [
 ];
 var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
 /* Shown on the Ask screen, so a screenshot says which version someone is on. */
-var BUILD = "2026-09-21 c";
+var BUILD = "2026-09-21 d";
 var DAY = 86400000, MO = 30.44;
 
 /* Part categories that were entered under two spellings and so split a unit's
@@ -2958,6 +2967,24 @@ function vrfChip(v){
     "Requested":["warn","Requested — FOR APPROVAL"]};
   var x=m[v.status]||["mute",v.status];
   return el("span","chip "+x[0],x[1]);
+}
+/* Printed paper must say whether Jeffrey has approved it. Holds and anything
+   still waiting use the same VRF Logs wording. Posted / open / closed forms
+   are APPROVED. */
+function vrfPrintWatermark(entry){
+  if(!entry) return "FOR APPROVAL";
+  if(entry.held||entry.src==="reserve-hold") return "FOR APPROVAL";
+  var st=String(entry.status||"").trim();
+  if(!st||st==="Requested"||/^for approval$/i.test(st)||/^sent for approval$/i.test(st))
+    return "FOR APPROVAL";
+  if(st==="Rejected") return "FOR APPROVAL";
+  return "APPROVED";
+}
+function vrfMarkNode(label){
+  var mk=el("div","vmark");
+  mk.setAttribute("aria-hidden","true");
+  mk.appendChild(el("span",null,label||"FOR APPROVAL"));
+  return mk;
 }
 function joStatusChip(j){
   var m={"Open":["mute","Open"],"In progress":["accent","In progress"],
@@ -6636,7 +6663,9 @@ function partsView(){
    gives the file to put in Drive. */
 function buildVrfDoc(entry,photos){
   var v=vehicle(entry.veh)||{};
+  var mark=vrfPrintWatermark(entry);
   var d=el("div","vrfdoc");
+  d.appendChild(vrfMarkNode(mark));
   var hd=el("div","vhead");
   var l=el("div");
   var co=el("div","vco",CO); l.appendChild(co);
@@ -6719,6 +6748,7 @@ function buildVrfDoc(entry,photos){
   photos=(photos||[]).filter(function(x){ return x.kind!=="link"&&x.data; });
   if(photos.length){
     var ph=el("div","vph");
+    ph.appendChild(vrfMarkNode(mark));
     ph.appendChild(el("h4",null,"Attachments — VRF "+entry.vrf+"  ("+photos.length+")"));
     var gr=el("div","vgrid");
     photos.forEach(function(x,n){
@@ -6754,7 +6784,11 @@ function buildVrfDoc(entry,photos){
 var VRFDOC_CSS = [
 "@page{size:A4;margin:12mm}",
 "body{margin:0;background:#fff;color:#111;font:13px/1.45 'Archivo',system-ui,sans-serif}",
-".vrfdoc{background:#fff;color:#111;padding:0;max-width:190mm;margin:0 auto}",
+".vrfdoc{background:#fff;color:#111;padding:0;max-width:190mm;margin:0 auto;position:relative;overflow:hidden}",
+".vmark{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;z-index:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}",
+".vmark span{font-family:'Archivo Narrow',system-ui,sans-serif;font-weight:700;font-size:72px;letter-spacing:.12em;text-transform:uppercase;color:rgba(28,28,28,.16);transform:rotate(-32deg);white-space:nowrap;border:5px solid rgba(28,28,28,.16);padding:6px 22px;line-height:1}",
+".vrfdoc>*:not(.vmark){position:relative;z-index:1}",
+"@media print{.vrfdoc>.vmark{position:fixed;inset:12mm}}",
 ".vhead{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;border-bottom:2px solid #111;padding-bottom:8px}",
 ".vco{font-family:'Archivo Narrow',system-ui,sans-serif;font-weight:700;font-size:16px;line-height:1.2}",
 ".vaddr{font-size:10px;color:#444;margin-top:2px}",
@@ -6775,7 +6809,7 @@ var VRFDOC_CSS = [
 ".vsig .nm{font-size:10.5px;font-weight:700;margin-top:3px}",
 ".vsig .rl{font-size:9px;color:#555}",
 ".vsig .cap{font-size:8.5px;letter-spacing:.1em;text-transform:uppercase;color:#666}",
-".vph{margin-top:14px;page-break-before:always}",
+".vph{margin-top:14px;page-break-before:always;position:relative}",
 ".vph h4{font-family:'Archivo Narrow',sans-serif;font-size:12px;letter-spacing:.1em;text-transform:uppercase;border-bottom:1px solid #111;padding-bottom:3px;margin-bottom:8px}",
 ".vgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}",
 ".vgrid figure{margin:0;break-inside:avoid}",
@@ -6803,6 +6837,7 @@ function printVrf(entry,photos){
   var bar=el("div");
   bar.style.cssText="display:flex;gap:var(--space-2);align-items:center;padding:var(--space-3) var(--space-4);border-bottom:1px solid var(--rule);position:sticky;top:0;background:var(--surface);z-index:2;flex-wrap:wrap";
   bar.appendChild(el("strong",null,"VRF "+entry.vrf));
+  bar.appendChild(el("span","chip "+(vrfPrintWatermark(entry)==="APPROVED"?"ok":"warn"),vrfPrintWatermark(entry)));
   bar.appendChild(el("span","hint",(photos&&photos.length?photos.length+" attachment"+(photos.length>1?"s":"")+" included":"no attachments")));
   var sp=el("div"); sp.style.flex="1"; bar.appendChild(sp);
 
