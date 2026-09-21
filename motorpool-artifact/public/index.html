@@ -261,7 +261,7 @@ svg text{font-family:var(--font-body)}
   border:5px solid rgba(28,28,28,.16);padding:6px 22px;line-height:1}
 .vrfdoc>*:not(.vmark){position:relative;z-index:1}
 .vrfdoc .vph{position:relative}
-.vrfdoc .vph .vmark{z-index:0}
+.vrfdoc .vph .vmark{display:none}
 .vrfdoc .vhead{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;
   border-bottom:2px solid #111;padding-bottom:8px}
 .vrfdoc .vco{font-family:var(--font-heading);font-weight:700;font-size:16px;letter-spacing:.02em;line-height:1.2}
@@ -311,6 +311,7 @@ svg text{font-family:var(--font-body)}
   body.printing>*{display:none!important}
   body.printing>#printArea{display:block!important}
   body.printing>#printArea .vmark{position:fixed;inset:12mm}
+  body.printing>#printArea .vph .vmark{display:flex;position:absolute}
   #printArea{display:none}
   @page{size:A4;margin:0}
   #app{display:block}
@@ -6788,7 +6789,8 @@ var VRFDOC_CSS = [
 ".vmark{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;z-index:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}",
 ".vmark span{font-family:'Archivo Narrow',system-ui,sans-serif;font-weight:700;font-size:72px;letter-spacing:.12em;text-transform:uppercase;color:rgba(28,28,28,.16);transform:rotate(-32deg);white-space:nowrap;border:5px solid rgba(28,28,28,.16);padding:6px 22px;line-height:1}",
 ".vrfdoc>*:not(.vmark){position:relative;z-index:1}",
-"@media print{.vrfdoc>.vmark{position:fixed;inset:12mm}}",
+"@media print{.vrfdoc>.vmark{position:fixed;inset:12mm}.vph .vmark{display:flex;position:absolute}}",
+".vph .vmark{display:none}",
 ".vhead{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;border-bottom:2px solid #111;padding-bottom:8px}",
 ".vco{font-family:'Archivo Narrow',system-ui,sans-serif;font-weight:700;font-size:16px;line-height:1.2}",
 ".vaddr{font-size:10px;color:#444;margin-top:2px}",

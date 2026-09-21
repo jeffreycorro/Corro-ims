@@ -150,6 +150,6 @@ describe("artifact HTML — hold print / photos / log after Send for approval", 
     assert.match(html, /d\.appendChild\(vrfMarkNode\(mark\)\)/);
     assert.match(html, /ph\.appendChild\(vrfMarkNode\(mark\)\)/);
     assert.match(html, /print-color-adjust:exact/);
-    assert.match(html, /@media print\{\.vrfdoc>\.vmark\{position:fixed;inset:12mm\}\}/);
+    assert.match(html, /@media print\{\.vrfdoc>\.vmark\{position:fixed;inset:12mm\}/);
   });
 });
