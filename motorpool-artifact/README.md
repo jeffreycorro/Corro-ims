@@ -108,6 +108,7 @@ Site settings → Environment variables. Copy `.env.example`.
 | `SUPABASE_AUTH_ENABLED` | Functions, optional | Default **on** when URL + anon key are set. Set `false` only to disable Auth. |
 | `MOTORPOOL_OPEN_YARD` | Functions, optional | Local / demo only. When `true`, the yard stays open even if Auth is configured. Leave unset on production. |
 | `MOTORPOOL_OFFICE_PASS_HASH` | Functions, optional | SHA-256 **hex** of the office pass (64 lowercase hex chars). Never put the plaintext here. Generate locally: `printf '%s' 'your-pass' \| openssl dgst -sha256` |
+| `APPROVE_VRF_SECRET` (or `MOTORPOOL_APPROVE_SECRET`) | Functions **only** | Shared secret for `/.netlify/functions/approve-vrf`. Noah/Builder send it instead of the Office passcode. Never commit the value. See **Gated approve-vrf API** below. |
 | `ANTHROPIC_API_KEY` | Functions **only** | Enables Ask the log (`claude.use("sample")`). Never put this in the shim or `index.html`. |
 | `ANTHROPIC_MODEL` | Functions, optional | Override the default model (`claude-sonnet-4-5`). |
 | `OPENAI_API_KEY` | Functions **only** | Enables Ask the log hold-to-talk (`claude.use("transcribe")`). Never commit the key. Without it, the mic falls back to the browser Web Speech API. |
@@ -131,6 +132,32 @@ Without `SUPABASE_URL` / `SUPABASE_ANON_KEY` the artifact still opens (open yard
 
 Without `ANTHROPIC_API_KEY` the shim still resolves `sample` to `null` and Ask the log shows “The assistant is not available in this view.” Without `ELEVENLABS_API_KEY`, `tts` is `null` and the page falls back to the device’s Web Speech voices. Without `OPENAI_API_KEY`, hold-to-talk still works via the browser speech recognizer.
 
+### Gated approve-vrf API (Noah / Builder after Jeffrey yes)
+
+`POST /.netlify/functions/approve-vrf` does **one** thing: approve a single named pending VRF (hold status **Requested** — waiting for approval) so it posts to the ledger with `vstatus: Open`, the same write as Office → Approvals → Approve. It does not list, reject, edit amounts, or mint a new number. Uniqueness remint from PR #54 still runs if that hold collides with an already-posted VRF.
+
+This endpoint does **not** use the Office passcode or a browser session cookie. The env secret replaces the Office pass for this one action only.
+
+**Jeffrey — set the secret on Netlify `corcondev-motorpool`, then redeploy:**
+
+1. Site configuration → Environment variables.
+2. Add `APPROVE_VRF_SECRET` (or `MOTORPOOL_APPROVE_SECRET`). Scope **Functions** / Production. Generate a long random string locally — do not paste it into git, chat, or the artifact.
+3. Trigger a **redeploy** so the function reloads the env.
+4. After Jeffrey’s per-VRF **yes**, Builder/Noah call the endpoint with that secret + the VRF number only.
+
+**Example curl**
+
+```bash
+curl -sS -X POST 'https://corcondev-motorpool.netlify.app/.netlify/functions/approve-vrf' \
+  -H 'Authorization: Bearer '"$APPROVE_VRF_SECRET" \
+  -H 'Content-Type: application/json' \
+  -d '{"vrf":"5812","approverNote":"jeffrey-yes via Noah"}'
+```
+
+`X-Approve-Secret: …` is accepted instead of `Authorization`. Body may use `"vrfNumber": 5812` or `"vrf":"RSV-12"` (reserve-number form). Wrong or missing secret → `401`. Missing VRF → `404`. Already posted or ambiguous duplicate → `409`. The function never logs the secret.
+
+**Builder / Noah call pattern (after Jeffrey yes):** do not open a remote browser and do not type the Office pass. POST `{ "vrf": "<held number>" }` with the secret. Optional `approverNote` is stored on the reserve (`approvedVia: "api"`). Full notes: [`docs/approve-vrf-api.md`](docs/approve-vrf-api.md).
+
 ### 6. Access control
 
 **App-level login (required when Auth is configured):** `/.netlify/functions/auth` accepts the company-portal Supabase email/password, or a short-lived `access_token` from the portal Motorpool deeplink (URL hash only). It then checks `profiles` and issues an httpOnly cookie. `/.netlify/functions/db`, `sample`, `transcribe`, `tts`, and `office` return 401 without that cookie. The service role key, Anthropic key, OpenAI key, and ElevenLabs key never leave Netlify Functions.
@@ -144,6 +171,8 @@ Without `ANTHROPIC_API_KEY` the shim still resolves `sample` to `null` and Ask t
 **Open yard (local / demo only):** If `SUPABASE_URL` and `SUPABASE_ANON_KEY` are unset, or `MOTORPOOL_OPEN_YARD=true`, the yard stays open. Do not set `MOTORPOOL_OPEN_YARD` on production (`corcondev-motorpool`).
 
 **Office soft gate (separate):** hashed pass in the artifact (`config/app.pass`) and/or `MOTORPOOL_OFFICE_PASS_HASH` on the host (`/.netlify/functions/office` accepts a hash only — plaintext is rejected). This is the figures-zone pass, not staff login.
+
+**Approve-vrf API (separate, secret only):** `/.netlify/functions/approve-vrf` does **not** use the staff cookie or the Office passcode. After Jeffrey’s per-VRF yes, Builder/Noah POST the VRF number plus `APPROVE_VRF_SECRET`. See the section below.
 
 **Deprecated shared gate:** `MOTORPOOL_GATE_SECRET` is not a staff password anymore. Leave `MOTORPOOL_GATE_REQUIRED` unset. Only set `MOTORPOOL_GATE_REQUIRED=true` if you deliberately want the old shared-password method as an extra wall.
 
@@ -237,13 +266,14 @@ Functions need Netlify (`npx netlify dev --dir .`) plus the env vars above. With
 
 After this folder merges to the branch the **separate** Motorpool Netlify site tracks (usually `main`):
 
-1. Confirm the live Ask / footer BUILD is **2026-09-21 a** (hard refresh if a service worker or tab still shows `2026-09-19 a`).
+1. Confirm the live Ask / footer BUILD is **2026-09-21 b** (hard refresh if a service worker or tab still shows `2026-09-21 a`).
 2. **New VRF:** the only primary action is **Send for approval**. There is no **Post VRF** button. Staff cannot skip Jeffrey’s office approval.
 3. After deploy, open Office → Approvals. If a pending VRF still shows **58528** beside an already-posted 58528, refresh once — boot remints the pending hold to the next free number and leaves the posted ledger row untouched.
 4. **New VRF → Vehicle code:** type a unit that has an assigned site. Project fills as a default. Change the project to another code — it must stay editable and keep the override. Clearing the project to type a different one must not snap back to the unit site.
 5. **New VRF fuel line:** pick `Fuel — Diesel` and a station/supplier (not FUEL RESERVE). Send for approval — the reserve log chip should read **Fuel Purchase**, not **Fuel Reserve**. FUEL RESERVE is labelled *drum dispense (not a purchase)* and sits after the real suppliers.
 6. **Fuel tab:** two cards — **Fuel Reserve — dispense from the drums** and **Fuel Purchase — record a bulk delivery**.
 7. **VRF log:** newest form at the top (date, then VRF number). Subtitle is **Newest first**.
+8. **approve-vrf API:** after `APPROVE_VRF_SECRET` is set and the site is redeployed, a wrong secret must `401` and a missing VRF must `404`. Do not put the real secret in the repo.
 
 HR and Materials are out of scope.
 
@@ -272,10 +302,11 @@ motorpool-artifact/
   public/motorpool-ask-voice.js ← hold-to-talk STT (loaded by the shim)
   public/motorpool-ask-attach.js ← Ask photo/file attach (loaded by the shim)
   public/motorpool-ask-leave.js ← HR leave lookup client for admin/HR (loaded by the shim)
-  netlify/functions/         ← auth, db, office, sample, transcribe, tts, hr-leave
-  netlify/lib/               ← session, mp-access, capabilities, Anthropic, ElevenLabs
+  netlify/functions/         ← auth, db, office, approve-vrf, sample, transcribe, tts, hr-leave
+  netlify/lib/               ← session, mp-access, capabilities, approve-from-hold, Anthropic, ElevenLabs
+  docs/approve-vrf-api.md    ← Jeffrey env + curl + Noah/Builder call pattern
   supabase/migrations/
-  tests/                     ← auth, thaw, isFuel, papers, variance, host
+  tests/                     ← auth, approve-vrf, thaw, isFuel, papers, variance, host
   tests/lib/                 ← rule copies only — not a second UI
 ```
 
