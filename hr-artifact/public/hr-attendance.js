@@ -910,9 +910,17 @@
 
   /* Parked new hires are not on atWork() — Add someone puts them on that day's
      extra only. Staff expect them to keep showing from that first day until
-     the 201 status is Separated. Use the existing status / separatedOn fields. */
+     they leave. Separated / Resigned / Terminated / AWOL, any casing. */
+  function leaverStatus(e) {
+    var s = String((e && e.status) || "").trim();
+    return /^(separated|resigned|terminated|awol)$/i.test(s);
+  }
+
   function empSeparatedAsOf(e, date) {
-    if (!e || e.status !== "Separated") return false;
+    if (typeof root.empSeparatedAsOf === "function" && root.empSeparatedAsOf !== empSeparatedAsOf) {
+      try { return !!root.empSeparatedAsOf(e, date); } catch (err) {}
+    }
+    if (!e || !leaverStatus(e)) return false;
     var on = isoDate(e.separatedOn);
     if (!on) return true;
     return on < isoDate(date);
@@ -923,7 +931,9 @@
     var map = {};
     Object.keys(ctx.daily || {}).forEach(function (id) {
       var rec = ctx.daily[id];
-      if (!rec || !rec.date) return;
+      /* Filed scans name everyone who ever worked that day. Carrying them
+         forward fills today's sheet with people long gone. */
+      if (!rec || !rec.date || rec.fixed) return;
       var d = isoDate(rec.date);
       if (!d) return;
       var seen = {};
@@ -961,7 +971,7 @@
     }
     return Object.keys(ctx.employees || {})
       .map(function (id) { return ctx.employees[id]; })
-      .filter(function (e) { return e && e.status !== "Separated"; });
+      .filter(function (e) { return e && !leaverStatus(e); });
   }
 
   function rosterPeopleForDay(rec, ctx) {
@@ -984,10 +994,27 @@
       have[e.id] = true;
       list.push(e);
     }
-    standingEmployees(ctx).forEach(add);
-    (rec.extra || []).forEach(function (id) { add(emps[id]); });
+    standingEmployees(ctx).forEach(function (e) {
+      if (empSeparatedAsOf(e, date)) return;
+      add(e);
+    });
+    var firstSeen = firstAttendanceIndex(ctx);
+    var today = typeof root.TODAY === "string" ? root.TODAY : "";
+    var open = !!(today && (!date || date >= today));
+    (rec.extra || []).forEach(function (id) {
+      var e = emps[id];
+      if (!e) return;
+      if ((rec.callback || []).indexOf(id) >= 0) { add(e); return; }
+      if (empSeparatedAsOf(e, date)) {
+        /* Today's saved extra is the whole roster, not a callback. A leaver
+           already on an earlier day must not be marked again today. */
+        if (open) return;
+        if (firstSeen[id] && firstSeen[id] < date) return;
+      }
+      add(e);
+    });
     if (date) {
-      var first = firstAttendanceIndex(ctx);
+      var first = firstSeen;
       Object.keys(emps).forEach(function (id) {
         var e = emps[id];
         var start = first[id];

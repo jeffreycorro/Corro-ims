@@ -1027,10 +1027,23 @@ function mergeIncomingDoc(coll, incoming, local){
     next.omit=[...omit];
     next.order=mergeIdList(incoming.order, local.order);
     next.siteOrder=mergeIdList(incoming.siteOrder, local.siteOrder);
+    next.callback=mergeIdList(incoming.callback, local.callback);
     if(local.hrSigLink && !next.hrSigLink) next.hrSigLink=local.hrSigLink;
     if(local.hrSigData && !next.hrSigData) next.hrSigData=local.hrSigData;
     next.hrSigs=Object.assign({}, local.hrSigs||{}, incoming.hrSigs||{});
     if((local.log||[]).length>(next.log||[]).length) next.log=local.log;
+    /* A stale snapshot must not put resigned / separated names back on
+       today's open sheet. Past dates keep every saved row. */
+    if(dayIsOpen(next)){
+      const drop=id=>{
+        const e=S.employees&&S.employees[id];
+        return !!(e && empSeparatedAsOf(e, next.date) && !openDayKeepsLeaver(next, id));
+      };
+      Object.keys(next.rows||{}).forEach(id=>{ if(drop(id)) delete next.rows[id]; });
+      next.extra=(next.extra||[]).filter(id=>!drop(id));
+      next.order=(next.order||[]).filter(id=>!drop(id));
+      next.callback=(next.callback||[]).filter(id=>!omit.has(id));
+    }
     return next;
   }
   if(coll==="memos"){
@@ -1049,9 +1062,20 @@ function mergeIncomingDoc(coll, incoming, local){
        separated-roster backfill must not pin Separated over Project-based
        (or Regular / Probationary / …) after HR writes it — that is why
        Ben Pasion kept flipping back. A stale Regular snapshot still must
-       not un-separate someone HR just marked. */
-    if(empStatusIsLive(incoming)) return incoming;
-    if(local.status==="Separated" && incoming.status!=="Separated"){
+       not un-separate someone HR just marked on Daily Manpower. */
+    const incomingLive=empStatusIsLive(incoming);
+    const localSep=empStatusIsSeparated(local);
+    const hrMarked=/marked separated/i.test(String((local&&local.statusBasis)||""));
+    if(localSep && incomingLive && hrMarked){
+      return Object.assign({}, incoming, {
+        status:"Separated",
+        separatedOn:local.separatedOn||incoming.separatedOn||"",
+        separationReason:local.separationReason||incoming.separationReason||"",
+        statusBasis:local.statusBasis
+      });
+    }
+    if(incomingLive) return incoming;
+    if(localSep && !empStatusIsSeparated(incoming)){
       return Object.assign({}, incoming, {
         status:"Separated",
         separatedOn:local.separatedOn||incoming.separatedOn||"",
@@ -1167,7 +1191,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-09-19a";
+const BUILD = "2026-09-22a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -1641,14 +1665,44 @@ function empStatusIsLive(e){
 }
 function empStatusIsSeparated(e){
   const s=String((e&&e.status)||"").trim();
-  if(s==="Separated") return true;
-  return /^(resigned|terminated|awol)$/i.test(s);
+  return /^(separated|resigned|terminated|awol)$/i.test(s);
 }
 function sepRosterWouldApply(e){
   /* Only backfill unmarked / leftover rows. A 201 status HR already set
      (Project-based, Regular, …) must stick across reload and DMR save. */
-  if(!e || e.status==="Separated" || empStatusIsLive(e)) return false;
+  if(!e || empStatusIsSeparated(e) || empStatusIsLive(e)) return false;
   return !!knownSepRec(e);
+}
+/* Today and any later date are the sheet Cassie marks. A saved snapshot
+   must not put leavers back on it. Earlier dates keep whoever was filed. */
+function dayIsOpen(rec){
+  const day=String((rec&&rec.date)||"").slice(0,10);
+  return !day || day>=TODAY;
+}
+function openDayKeepsLeaver(rec, id){
+  return (rec&&rec.callback||[]).indexOf(id)>=0;
+}
+function stripOpenDayLeavers(rec){
+  if(!rec || rec.fixed || !dayIsOpen(rec)) return false;
+  const cb=new Set(rec.callback||[]);
+  let changed=false;
+  const hide=id=>{
+    const e=S.employees&&S.employees[id];
+    return !!(e && empSeparatedAsOf(e, rec.date) && !cb.has(id));
+  };
+  Object.keys(rec.rows||{}).forEach(id=>{
+    if(!hide(id)) return;
+    delete rec.rows[id];
+    changed=true;
+  });
+  const extra=(rec.extra||[]).filter(id=>!hide(id));
+  if(extra.length!==(rec.extra||[]).length){ rec.extra=extra; changed=true; }
+  if(rec.order){
+    const order=rec.order.filter(id=>!hide(id));
+    if(order.length!==rec.order.length){ rec.order=order; changed=true; }
+  }
+  if(changed) FIRST_ADDED=null;
+  return changed;
 }
 function empSeparatedAsOf(e, date){
   if(!e) return false;
@@ -8036,31 +8090,48 @@ function dailyPeople(rec){
   /* A day read from a filed scan already names everyone who was on it. Its
      rows ARE the roster — counting today's staff as present on a day in March
      would invent attendance nobody recorded. */
-  if(rec && rec.fixed){
+  rec=rec||{};
+  if(rec.fixed){
     return sortByRosterOrder(
       Object.keys(rec.rows||{}).map(id=>S.employees[id]).filter(Boolean),
       dailyOrderOf(rec)
     );
   }
   const omit=new Set(rec.omit||[]);
-  const extra=new Set(rec.extra||[]);
-  const list=atWork().filter(e=>!omit.has(e.id) && !empSeparatedAsOf(e, rec.date));
+  const open=dayIsOpen(rec);
+  const list=[];
+  const have=new Set();
+  const add=e=>{
+    if(!e || !e.id || omit.has(e.id) || have.has(e.id)) return;
+    have.add(e.id);
+    list.push(e);
+  };
+  atWork().forEach(e=>{
+    if(empSeparatedAsOf(e, rec.date)) return;
+    add(e);
+  });
+  /* Save writes the whole standing list into extra. That is not a callback.
+     On an open day (today and later) a leaver stays off unless HR added them
+     for this day only. A past day keeps whoever that saved report named. */
   (rec.extra||[]).forEach(id=>{
     const e=S.employees[id];
-    if(!e || omit.has(id) || list.some(x=>x.id===e.id)) return;
-    /* A separated callback stays on the extra day only. */
-    if(empSeparatedAsOf(e, rec.date) && !extra.has(id)) return;
-    list.push(e);
+    if(!e) return;
+    if(empSeparatedAsOf(e, rec.date) && open && !openDayKeepsLeaver(rec, id)) return;
+    add(e);
   });
-  /* Somebody added to a day by hand stays on the days after it until they are
-     marked Separated — a new hire or a worker lent to a site is on tomorrow too. */
+  if(!open){
+    Object.keys(rec.rows||{}).forEach(id=>add(S.employees[id]));
+  }
+  /* Somebody added to a day by hand stays on the days after it until they
+     leave — a new hire or a worker lent to a site is on tomorrow too.
+     Resigned / separated names do not roll forward onto a later sheet. */
   if(rec.date){
     const first=firstAddedIndex();
     Object.keys(first).forEach(id=>{
-      if(first[id]>rec.date || omit.has(id) || list.some(x=>x.id===id)) return;
-      const e=S.employees[id]; if(!e) return;
-      if(empSeparatedAsOf(e, rec.date) && !extra.has(id)) return;
-      list.push(e);
+      if(first[id]>rec.date) return;
+      const e=S.employees[id];
+      if(!e || empSeparatedAsOf(e, rec.date)) return;
+      add(e);
     });
   }
   return sortByRosterOrder(list, dailyOrderOf(rec));
@@ -8187,6 +8258,8 @@ function persistRosterOnDay(rec){
   if(!rec) return rec;
   rec.rows=rec.rows||{};
   rec.omit=rec.omit||[];
+  rec.callback=rec.callback||[];
+  stripOpenDayLeavers(rec);
   const omit=new Set(rec.omit);
   const extra=new Set(rec.extra||[]);
   const people=dailyPeople(rec);
@@ -8199,10 +8272,15 @@ function persistRosterOnDay(rec){
     rec.rows[e.id]=next;
     extra.add(e.id);
   });
-  rec.extra=[...extra].filter(id=>id && !omit.has(id));
+  rec.extra=[...extra].filter(id=>{
+    if(!id || omit.has(id)) return false;
+    const e=S.employees[id];
+    return !(e && dayIsOpen(rec) && empSeparatedAsOf(e, rec.date) && !openDayKeepsLeaver(rec, id));
+  });
   rec.order=people.map(e=>e.id);
   rec.siteOrder=dailyGroups(rec).map(g=>g.site);
   applyHrSigsToRec(rec);
+  FIRST_ADDED=null;
   return rec;
 }
 /* Site order follows the filed report (or yesterday's layout), admin last. */
@@ -8336,8 +8414,27 @@ function dailyTally(rec){
   return t;
 }
 
+function commitLeaverStrip(before, rec){
+  const key=rec&&rec.id;
+  if(!rec || !key || commitLeaverStrip.busy[key]) return;
+  const ch=before ? dailyDiff(before, rec) : [];
+  if(before && !ch.length) return;
+  commitLeaverStrip.busy[key]=true;
+  rec.log=((before&&before.log)||[]).slice();
+  rec.log.unshift({ at:nowStamp(), by:whoEdits(), why:"resigned and separated names taken off this open day",
+    n:ch.length, ch:ch.slice(0,40), first:!before });
+  if(rec.log.length>DAILY_LOG_MAX) rec.log.length=DAILY_LOG_MAX;
+  rec.editedOn=rec.log[0].at; rec.editedBy=rec.log[0].by;
+  Promise.resolve(put("daily", rec.id, rec)).then(()=>{},()=>{}).then(()=>{ commitLeaverStrip.busy[key]=false; });
+}
+commitLeaverStrip.busy={};
 function viewDaily(){
   const d=S.ui.dailyDate||TODAY;
+  const savedRec=dailyGet(d);
+  if(savedRec){
+    const beforeStrip=clone(savedRec);
+    if(stripOpenDayLeavers(savedRec)) commitLeaverStrip(beforeStrip, clone(savedRec));
+  }
   const rec=dailyGet(d)||dailyBlank(d);
   const groups=dailyGroups(rec);
   const t=dailyTally(rec);
@@ -8639,6 +8736,9 @@ function dailyAddPerson(){
     const id=$("#da-emp").value; if(!id){ closeModal(); return; }
     rec.extra=(rec.extra||[]).concat([id]).filter((v,i,a)=>a.indexOf(v)===i);
     rec.omit=(rec.omit||[]).filter(x=>x!==id);
+    if(empSeparatedAsOf(S.employees[id], d)){
+      rec.callback=(rec.callback||[]).concat([id]).filter((v,i,a)=>a.indexOf(v)===i);
+    }
     rec.rows[id]={s:"Present", r:"", site:$("#da-site").value};
     await dailySave(rec, "added to the day by hand");
     closeModal(); toast(flipName((S.employees[id]||{}).name||"")+" added","ok"); render();
@@ -20009,6 +20109,7 @@ function wire(){
     const id=e.currentTarget.dataset.dmdrop, rec=dailyCollect();
     rec.omit=(rec.omit||[]).concat([id]).filter((x,i,a)=>a.indexOf(x)===i);
     rec.extra=(rec.extra||[]).filter(x=>x!==id);
+    rec.callback=(rec.callback||[]).filter(x=>x!==id);
     await dailySave(rec, "taken off the day"); render();
   });
   on("[data-dmsite]","change",async e=>{

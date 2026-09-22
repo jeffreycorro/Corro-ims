@@ -70,6 +70,9 @@ function loadRosterFns() {
     "empStatusIsLive",
     "empStatusIsSeparated",
     "sepRosterWouldApply",
+    "dayIsOpen",
+    "openDayKeepsLeaver",
+    "stripOpenDayLeavers",
     "empSeparatedAsOf",
     "empPosition",
     "dayStatusOf",
@@ -126,7 +129,7 @@ describe("staff concern sheet — live 18a HTML", () => {
     assert.match(html, /prev\.signedLink && !m\.signedLink/);
     assert.match(html, /hrSigSrc\(rec,"prepared"\)/);
     assert.match(html, /Object\.keys\(rec\.rows\|\|\{\}\)\.forEach\(id=>\{ if\(id\) seen\[id\]=true/);
-    assert.match(html, /const BUILD = "2026-09-19a"/);
+    assert.match(html, /const BUILD = "2026-09-22a"/);
     assert.match(html, /Has not yet arrived/);
     assert.match(html, /OT HRS/);
     assert.match(html, /Last name/);
@@ -445,6 +448,138 @@ describe("staff concern sheet — live 18a HTML", () => {
     assert.ok(list.some((e) => e.id === "e1351"), "project-based Ben stays on Daily Manpower");
     assert.ok(!list.some((e) => e.id === "e1243"), "true Separated stay off the list");
     assert.ok(list.some((e) => e.id === "e1250"));
+  });
+
+  it("keeps resigned and separated names off today's open monitoring list", () => {
+    const ctx = loadRosterFns();
+    ctx.S.employees = {
+      e1250: { id: "e1250", empNo: "1250", name: "Armenio", status: "Regular", project: "ADMINS" },
+      e1243: { id: "e1243", empNo: "1243", name: "Adolfo", status: "Separated", separatedOn: "2026-08-31" },
+      eRes: { id: "eRes", empNo: "1260", name: "Canoy", status: "Resigned", separatedOn: "2026-08-01" },
+      eLow: { id: "eLow", empNo: "1261", name: "Capuno", status: "separated" },
+      eAwol: { id: "eAwol", empNo: "1262", name: "Coja", status: "AWOL" },
+      e1351: { id: "e1351", empNo: "1351", name: "Pasion, Ben", status: "Project-based", project: "Balaga" },
+    };
+    assert.equal(ctx.empStatusIsSeparated({ status: "separated" }), true);
+    assert.equal(ctx.empStatusIsSeparated({ status: "RESIGNED" }), true);
+    assert.equal(ctx.empStatusIsSeparated({ status: "Terminated" }), true);
+    assert.equal(ctx.empStatusIsSeparated({ status: "Regular" }), false);
+    assert.equal(ctx.dayIsOpen({ date: "2026-09-16" }), true);
+    assert.equal(ctx.dayIsOpen({ date: "2026-09-15" }), false);
+
+    const snap = {
+      date: "2026-09-16",
+      rows: {
+        e1250: { s: "Present", site: "ADMINS" },
+        e1243: { s: "Present", site: "ADMINS" },
+        eRes: { s: "Present", site: "ADMINS" },
+        eLow: { s: "Present", site: "ADMINS" },
+        eAwol: { s: "Present", site: "ADMINS" },
+        e1351: { s: "Present", site: "Balaga" },
+      },
+      extra: ["e1250", "e1243", "eRes", "eLow", "eAwol", "e1351"],
+      omit: [],
+    };
+    const today = ctx.dailyPeople(snap);
+    assert.ok(today.some((e) => e.id === "e1250"));
+    assert.ok(today.some((e) => e.id === "e1351"), "live Project-based stays");
+    assert.ok(!today.some((e) => e.id === "e1243"));
+    assert.ok(!today.some((e) => e.id === "eRes"));
+    assert.ok(!today.some((e) => e.id === "eLow"));
+    assert.ok(!today.some((e) => e.id === "eAwol"));
+
+    const past = {
+      date: "2026-09-15",
+      rows: snap.rows,
+      extra: snap.extra.slice(),
+      omit: [],
+    };
+    const filed = ctx.dailyPeople(past);
+    assert.ok(filed.some((e) => e.id === "e1243"), "past saved day keeps the leaver");
+    assert.ok(filed.some((e) => e.id === "eRes"));
+
+    ctx.S.daily.d20260915 = {
+      id: "d20260915",
+      date: "2026-09-15",
+      rows: snap.rows,
+      extra: snap.extra.slice(),
+    };
+    ctx.FIRST_ADDED = null;
+    const blank = ctx.dailyPeople({ date: "2026-09-16", rows: {}, extra: [], omit: [] });
+    assert.ok(blank.some((e) => e.id === "e1250"));
+    assert.ok(!blank.some((e) => e.id === "e1243"), "yesterday's snapshot does not fill today's blank sheet");
+    assert.ok(!blank.some((e) => e.id === "eRes"));
+
+    const callback = ctx.dailyPeople({
+      date: "2026-09-16",
+      rows: { e1243: { s: "Present", site: "ADMINS" } },
+      extra: ["e1243"],
+      callback: ["e1243"],
+      omit: [],
+    });
+    assert.ok(callback.some((e) => e.id === "e1243"), "explicit same-day callback stays");
+
+    const open = {
+      id: "d20260916",
+      date: "2026-09-16",
+      rows: {
+        e1250: { s: "Present", site: "ADMINS", ot: 1 },
+        e1243: { s: "Present", site: "ADMINS" },
+        eRes: { s: "Present", site: "TAWASON" },
+      },
+      extra: ["e1250", "e1243", "eRes"],
+      order: ["e1243", "e1250", "eRes"],
+      omit: [],
+    };
+    assert.equal(ctx.stripOpenDayLeavers(open), true);
+    assert.ok(!open.rows.e1243);
+    assert.ok(!open.rows.eRes);
+    assert.equal(open.rows.e1250.ot, 1);
+    assert.ok(!open.extra.includes("e1243"));
+    assert.ok(open.extra.includes("e1250"));
+    ctx.persistRosterOnDay(open);
+    assert.ok(!open.rows.e1243);
+    assert.ok(open.rows.e1250);
+    assert.ok(!open.extra.includes("eRes"));
+
+    const merged = ctx.mergeIncomingDoc(
+      "daily",
+      {
+        date: "2026-09-16",
+        extra: ["e1243", "e1250"],
+        rows: { e1243: { s: "Present" }, e1250: { s: "Present", ot: 2 } },
+        omit: [],
+      },
+      { date: "2026-09-16", extra: ["eRes"], rows: { eRes: { s: "Present", site: "ADMINS" } }, omit: [] }
+    );
+    assert.ok(!merged.extra.includes("e1243"));
+    assert.ok(!merged.extra.includes("eRes"));
+    assert.ok(merged.extra.includes("e1250"));
+    assert.equal(merged.rows.e1250.ot, 2);
+    assert.equal(merged.rows.e1243, undefined);
+    assert.equal(merged.rows.eRes, undefined);
+
+    const pastMerge = ctx.mergeIncomingDoc(
+      "daily",
+      { date: "2026-09-10", extra: ["e1243"], rows: { e1243: { s: "Present", site: "A" } }, omit: [] },
+      { date: "2026-09-10", extra: [], rows: {}, omit: [] }
+    );
+    assert.equal(pastMerge.rows.e1243.s, "Present");
+    assert.ok(pastMerge.extra.includes("e1243"));
+
+    const kept = ctx.mergeIncomingDoc(
+      "employees",
+      { id: "e1243", empNo: "1243", status: "Regular" },
+      {
+        id: "e1243",
+        empNo: "1243",
+        status: "Separated",
+        separatedOn: "2026-08-31",
+        statusBasis: "Marked separated on the Daily Manpower screen",
+      }
+    );
+    assert.equal(kept.status, "Separated");
+    assert.equal(kept.separatedOn, "2026-08-31");
   });
 
   it("shows master position titles and defaults a blank day status to Present", () => {

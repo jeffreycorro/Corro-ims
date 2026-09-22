@@ -519,6 +519,60 @@ describe("manpower attendance core", () => {
     assert.ok(!after.some((e) => e.id === "e1401"), "separated callback does not roll forward");
   });
 
+  it("does not put resigned or separated people back on a later or open day", () => {
+    S.employees.e1402 = Object.assign(emp("e1402", "1402", "Left, Lou"), {
+      status: "Resigned",
+      separatedOn: "2026-08-01",
+    });
+    S.employees.e1403 = Object.assign(emp("e1403", "1403", "Gone, Gus"), {
+      status: "separated",
+    });
+    S.daily.d20260824 = {
+      id: "d20260824",
+      date: "2026-08-24",
+      extra: ["e1402", "e1403"],
+      rows: {
+        e1402: { s: "Present", r: "" },
+        e1403: { s: "Present", r: "" },
+      },
+    };
+    const standing = [S.employees.e1250];
+    const next = hr.rosterPeopleForDay(
+      { date: "2026-08-25", extra: ["e1402", "e1403"], rows: {} },
+      Object.assign(ctxFrom(S), { standing })
+    );
+    assert.ok(next.some((e) => e.id === "e1250"));
+    assert.ok(!next.some((e) => e.id === "e1402"), "Resigned does not roll forward from yesterday's extra");
+    assert.ok(!next.some((e) => e.id === "e1403"), "lowercase separated does not roll forward");
+    assert.equal(hr.empSeparatedAsOf(S.employees.e1402, "2026-08-25"), true);
+    assert.equal(hr.empSeparatedAsOf({ status: "AWOL" }, "2026-08-25"), true);
+    assert.equal(hr.empSeparatedAsOf({ status: "Terminated" }, "2026-08-25"), true);
+    assert.equal(hr.empSeparatedAsOf({ status: "Regular" }, "2026-08-25"), false);
+
+    const windowLike = { window: {}, document: undefined, TODAY: "2026-08-25" };
+    windowLike.window = windowLike;
+    const live = loadAttendance(windowLike);
+    const open = live.rosterPeopleForDay(
+      { date: "2026-08-25", extra: ["e1402"], rows: { e1402: { s: "Present" } } },
+      {
+        employees: S.employees,
+        daily: S.daily,
+        standing: standing,
+      }
+    );
+    assert.ok(!open.some((e) => e.id === "e1402"), "open monitoring day drops a snapshotted leaver");
+    const called = live.rosterPeopleForDay(
+      {
+        date: "2026-08-25",
+        extra: ["e1402"],
+        callback: ["e1402"],
+        rows: { e1402: { s: "Present" } },
+      },
+      { employees: S.employees, daily: S.daily, standing: standing }
+    );
+    assert.ok(called.some((e) => e.id === "e1402"), "explicit callback still shows on the open day");
+  });
+
   it("does not invent people on a filed (fixed) historical day", () => {
     S.employees.e1400 = emp("e1400", "1400", "Nuevo, Ana");
     S.daily.d20260810 = {
