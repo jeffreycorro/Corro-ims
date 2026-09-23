@@ -4,6 +4,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("path");
+const vm = require("node:vm");
 const appr = require("../public/hr-approver");
 
 const SIG = "data:image/png;base64,QQQ";
@@ -462,11 +463,11 @@ describe("approver password gate", () => {
 });
 
 describe("approver tab wiring", () => {
-  it("is loaded by the shim and the HR build is 2026-09-23a", () => {
+  it("is loaded by the shim and the HR build is 2026-09-23b", () => {
     const shim = fs.readFileSync(path.join(__dirname, "../public/claude-shim.js"), "utf8");
     const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
     assert.match(shim, /hr-approver\.js/);
-    assert.match(html, /const BUILD = "2026-09-23a"/);
+    assert.match(html, /const BUILD = "2026-09-23b"/);
     const view = appr.approverHtml(
       {},
       {
@@ -542,5 +543,227 @@ describe("approver tab wiring", () => {
     assert.ok(waiting);
     assert.equal(waiting.selected, true);
     assert.ok(sel.options.indexOf(waiting) < sel.options.indexOf(approved));
+  });
+});
+
+function extractFunction(src, name) {
+  const needle = "function " + name + "(";
+  const start = src.indexOf(needle);
+  if (start < 0) throw new Error("missing " + name);
+  let i = src.indexOf("{", start);
+  let depth = 0;
+  for (; i < src.length; i += 1) {
+    const ch = src[i];
+    if (ch === "{") depth += 1;
+    else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) return src.slice(start, i + 1);
+    }
+  }
+  throw new Error("unclosed " + name);
+}
+
+function loadLeaveCaSigs() {
+  const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
+  const ctx = {
+    S: { settings: {}, employees: {}, ui: {} },
+    TODAY: "2026-09-23",
+    toasts: [],
+    toast(msg, kind) {
+      ctx.toasts.push({ msg: msg, kind: kind });
+    },
+    dailyGet() {
+      return null;
+    },
+    esc(s) {
+      return String(s == null ? "" : s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    },
+    normNo(v) {
+      return String(v == null ? "" : v).replace(/[^0-9]/g, "");
+    },
+    flipName(n) {
+      const p = String(n || "").split(",");
+      return p.length > 1 ? p[1].trim() + " " + p[0].trim() : String(n || "");
+    },
+  };
+  ctx.nameLastFirst = function (n) {
+    const s = String(n || "").trim();
+    if (s.indexOf(",") >= 0) {
+      const p = s.split(",");
+      return { last: p[0].trim(), first: p.slice(1).join(",").trim() };
+    }
+    const parts = s.split(/\s+/);
+    return { last: parts[parts.length - 1] || "", first: parts.slice(0, -1).join(" ") };
+  };
+  const names = [
+    "hrSigSrc",
+    "foldSigName",
+    "hrSigSlotDefs",
+    "matchHrSigFilename",
+    "leaveCaEvaluators",
+    "findHrSig",
+    "leaveCaSig",
+    "leaveCaMissingSigs",
+    "leaveCaPrintBlocked",
+    "pfSign",
+  ];
+  vm.runInNewContext(names.map((n) => extractFunction(html, n)).join("\n"), ctx);
+  return ctx;
+}
+
+describe("Leave and Cash Advance e-signatures", () => {
+  const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
+  const approverSrc = fs.readFileSync(path.join(__dirname, "../public/hr-approver.js"), "utf8");
+
+  it("keeps the approver password gate and stamps Jeffrey only on Approve", () => {
+    assert.match(approverSrc, /var APPROVER_PASSWORD = "032589"/);
+    assert.match(approverSrc, /function approveRecord/);
+    assert.match(approverSrc, /pdfIncludesSignature = true/);
+    assert.match(approverSrc, /signatureStamp = sig/);
+    assert.match(html, /const BUILD = "2026-09-23b"/);
+    assert.match(html, /function leaveCaPrintBlocked/);
+    assert.match(html, /leaveCaSig\("dept"\)/);
+    assert.match(html, /leaveCaSig\("evaluated"\)/);
+    const ca = html.slice(html.indexOf("function printCA"), html.indexOf("function printCA") + 3200);
+    const leave = html.slice(html.indexOf("function printLeave"), html.indexOf("function printLeave") + 3200);
+    assert.match(ca, /leaveCaPrintBlocked/);
+    assert.match(ca, /leaveCaEvaluators\(\)\[0\]/);
+    assert.match(leave, /leaveCaPrintBlocked/);
+    assert.match(leave, /leaveCaSig\("dept"\)/);
+    assert.match(html, /handleSignedPick[\s\S]{0,400}leaveCaPrintBlocked/);
+    assert.match(html, /function markPrinted[\s\S]{0,400}leaveCaPrintBlocked/);
+  });
+
+  it("blocks print until Domingo and Catherine images are on file, then stamps those two columns", () => {
+    const ctx = loadLeaveCaSigs();
+    ctx.S.settings = {
+      hrHead: "Domingo C. Monte Jr.",
+      hrTitle: "HR Officer",
+      payrollBy: "Catherine A. Largo",
+      payrollTitle: "Safety Officer",
+      financeHead: "",
+      financeTitle: "Finance Officer",
+      signatory: "Jeffrey James M. Corro",
+      hrSigs: {
+        prepared: { data: "data:image/png;base64,CASSIE", name: "Prepared by", title: "cassie.jpg", slot: "prepared" },
+      },
+    };
+    const blocked = ctx.leaveCaPrintBlocked();
+    assert.match(blocked, /Cannot print or send this for approval/);
+    assert.match(blocked, /Department Head — Domingo C\. Monte Jr\./);
+    assert.match(blocked, /domingo, monte, hr-head, or approved/);
+    assert.match(blocked, /Evaluated by — Catherine A\. Largo/);
+    assert.match(blocked, /catherine, largo, evaluated, or payroll/);
+    assert.match(blocked, /Settings → HR e-signatures/);
+    assert.equal(ctx.leaveCaSig("dept"), "");
+    assert.equal(ctx.leaveCaSig("evaluated"), "");
+
+    ctx.S.settings.hrSigs.approved = {
+      data: "data:image/png;base64,DOMINGO",
+      name: "Approved by",
+      title: "domingo.jpg",
+      slot: "approved",
+    };
+    assert.match(ctx.leaveCaPrintBlocked(), /Evaluated by — Catherine A\. Largo/);
+    assert.doesNotMatch(ctx.leaveCaPrintBlocked(), /Department Head/);
+    assert.equal(ctx.leaveCaSig("dept"), "data:image/png;base64,DOMINGO");
+    assert.notEqual(ctx.leaveCaSig("dept"), "data:image/png;base64,CASSIE");
+
+    ctx.S.settings.hrSigs.e9 = {
+      data: "data:image/png;base64,CATHERINE",
+      name: "Largo, Catherine A.",
+      title: "catherine-largo.jpg",
+      slot: "",
+    };
+    assert.equal(ctx.leaveCaSig("evaluated"), "data:image/png;base64,CATHERINE");
+    assert.equal(ctx.leaveCaPrintBlocked(), "");
+
+    const caHtml = ctx.pfSign([
+      { who: "Department Head", name: "Domingo C. Monte Jr.", role: "HR Officer", src: ctx.leaveCaSig("dept") },
+      Object.assign({}, ctx.leaveCaEvaluators()[0], { src: ctx.leaveCaSig("evaluated") }),
+      { who: "Finance", name: "", role: "Finance Officer", missing: "Finance officer name — Settings" },
+      { who: "Approved by", name: "Jeffrey James M. Corro", role: "CEO / President" },
+    ]);
+    assert.match(caHtml, /Department Head/);
+    assert.match(caHtml, /data:image\/png;base64,DOMINGO/);
+    assert.match(caHtml, /data:image\/png;base64,CATHERINE/);
+    assert.match(caHtml, /Finance officer name — Settings/);
+    assert.doesNotMatch(caHtml, /name not set — Settings/);
+    const approvedAt = caHtml.indexOf("Approved by");
+    const approvedInk = caHtml.indexOf('class="ink"', caHtml.indexOf('class="ink"', caHtml.indexOf('class="ink"', caHtml.indexOf('class="ink"') + 1) + 1) + 1);
+    assert.ok(approvedInk > approvedAt || approvedAt > 0);
+    assert.match(caHtml.slice(caHtml.lastIndexOf('class="ink"')), /&nbsp;/);
+    assert.doesNotMatch(caHtml.slice(caHtml.lastIndexOf('class="ink"')), /base64/);
+
+    ctx.S.settings.financeHead = "Set In Settings";
+    const named = ctx.pfSign([
+      { who: "Finance", name: ctx.S.settings.financeHead, role: "Finance Officer", missing: "Finance officer name — Settings" },
+    ]);
+    assert.match(named, /Set In Settings/);
+    assert.doesNotMatch(named, /Finance officer name — Settings/);
+    assert.doesNotMatch(named, /name not set/);
+  });
+
+  it("files domingo and catherine JPEGs on their slots and still files Corro.jpg on HR head when that is the name", () => {
+    const ctx = loadLeaveCaSigs();
+    ctx.S.settings = {
+      hrStaff: "Maria Trina Cassandra A. Moran",
+      hrHead: "Domingo C. Monte Jr.",
+      payrollBy: "Catherine A. Largo",
+      signatory: "Jeffrey James M. Corro",
+      president: "Jeffrey James M. Corro",
+    };
+    ctx.S.employees = {};
+    assert.equal(ctx.matchHrSigFilename("domingo.jpg").slot, "approved");
+    assert.equal(ctx.matchHrSigFilename("monte.jpg").slot, "approved");
+    assert.equal(ctx.matchHrSigFilename("catherine.jpg").slot, "evaluated");
+    assert.equal(ctx.matchHrSigFilename("largo.jpg").slot, "evaluated");
+    assert.equal(ctx.matchHrSigFilename("evaluated-by.jpg").slot, "evaluated");
+    assert.equal(ctx.matchHrSigFilename("jeffrey.jpg").slot, "signatory");
+    assert.equal(ctx.matchHrSigFilename("signatory.jpg").slot, "signatory");
+    assert.equal(ctx.matchHrSigFilename("Corro.jpg").slot, "signatory");
+    const slots = ctx.hrSigSlotDefs();
+    const signatory = slots.find((s) => s.k === "signatory");
+    assert.ok(signatory);
+    assert.equal(signatory.aliases.indexOf("corro"), -1);
+
+    ctx.S.settings.hrHead = "Jeffrey James Corro";
+    assert.equal(ctx.matchHrSigFilename("Corro.jpg").slot, "approved");
+    assert.equal(ctx.matchHrSigFilename("cassie.jpg").slot, "prepared");
+  });
+
+  it("keeps Domingo and Catherine when Approve stamps the last column", () => {
+    const ctx = loadLeaveCaSigs();
+    const caCols = [
+      { who: "Department Head", name: "Domingo C. Monte Jr.", role: "HR Officer", src: "data:image/png;base64,DOMINGO" },
+      { who: "Evaluated by", name: "Catherine A. Largo", role: "Safety Officer", src: "data:image/png;base64,CATHERINE" },
+      { who: "Finance", name: "", role: "Finance Officer" },
+      { who: "Approved by", name: "Jeffrey James M. Corro", role: "CEO / President" },
+    ];
+    const caIdx = appr.stampColumnIndex(caCols, appr.caStampTest);
+    assert.equal(caIdx, 3);
+    const caStamped = appr.stampSignHtml(ctx.pfSign(caCols), caIdx, SIG, "2026-09-23");
+    assert.ok(caStamped.indexOf("base64,DOMINGO") < caStamped.indexOf("base64,CATHERINE"));
+    assert.ok(caStamped.indexOf("base64,CATHERINE") < caStamped.indexOf("base64,QQQ"));
+    assert.match(caStamped, /Date: 2026-09-23/);
+
+    const leaveCols = [
+      { who: "Immediate Supervisor", name: "Site Lead", role: "Signature" },
+      { who: "Evaluated by", name: "Catherine A. Largo", role: "Safety Officer", src: "data:image/png;base64,CATHERINE" },
+      { who: "HR Department", name: "Domingo C. Monte Jr.", role: "Signature", src: "data:image/png;base64,DOMINGO" },
+      { who: "Final Approval (Management)", name: "Jeffrey James M. Corro", role: "Signature" },
+    ];
+    const leaveIdx = appr.stampColumnIndex(leaveCols, appr.leaveStampTest);
+    assert.equal(leaveIdx, 3);
+    const leaveStamped = appr.stampSignHtml(ctx.pfSign(leaveCols), leaveIdx, SIG, "2026-09-23");
+    assert.match(leaveStamped, /Immediate Supervisor/);
+    assert.ok(leaveStamped.indexOf("base64,CATHERINE") < leaveStamped.indexOf("base64,DOMINGO"));
+    assert.ok(leaveStamped.indexOf("base64,DOMINGO") < leaveStamped.indexOf("base64,QQQ"));
+    const supervisorInk = leaveStamped.slice(leaveStamped.indexOf('class="ink"'), leaveStamped.indexOf("base64,CATHERINE"));
+    assert.match(supervisorInk, /&nbsp;/);
   });
 });

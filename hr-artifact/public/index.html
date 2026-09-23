@@ -842,7 +842,8 @@ function toast(msg,kind){
   if(kind==="err"){ t.style.background="var(--crit-soft)"; t.style.color="var(--crit)"; t.style.borderColor="var(--crit)"; }
   if(kind==="ok"){ t.style.background="var(--ok-soft)"; t.style.color="var(--ok)"; t.style.borderColor="var(--ok)"; }
   t.textContent=msg; document.body.appendChild(t);
-  setTimeout(()=>t.remove(),2600);
+  const stay=Math.min(14000, Math.max(2600, String(msg||"").length*45));
+  setTimeout(()=>t.remove(), stay);
 }
 
 /* ============ state + store ============ */
@@ -1192,7 +1193,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-09-23a";
+const BUILD = "2026-09-23b";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -2123,13 +2124,15 @@ function pfNote(t){ return '<div class="pf-note">'+t+'</div>'; }
    "name not set" under every one of them. Eight forms printed that way. Accept
    both rather than leave the trap open. */
 function pfSign(cols){
-  cols=(cols||[]).map(c=>Array.isArray(c) ? {who:c[0], name:c[1], role:c[2]} : (c||{}));
+  cols=(cols||[]).map(c=>Array.isArray(c) ? {who:c[0], name:c[1], role:c[2], src:c[3]} : (c||{}));
   return '<table class="pf-sign"><tr>'
     + cols.map(c=>'<td class="who">'+esc(c.who)+'</td>').join("")+'</tr><tr>'
-    + cols.map(()=>'<td class="ink">&nbsp;</td>').join("")+'</tr><tr>'
+    + cols.map(c=>'<td class="ink">'+(c.src
+        ? '<img src="'+esc(c.src)+'" alt="Signature" style="max-height:48px;max-width:168px;display:block;margin:0 auto 2px">'
+        : '&nbsp;')+'</td>').join("")+'</tr><tr>'
     + cols.map(c=>'<td><span class="nm">'
         + (c.name ? esc(c.name)
-                  : '<i style="font-weight:400;color:#9c3131">name not set — Settings</i>')+'</span>'
+                  : '<i style="font-weight:400;color:#9c3131">'+(c.missing?esc(c.missing):"name not set — Settings")+'</i>')+'</span>'
         + '<span class="rl">'+esc(c.role||"Signature over printed name")+'</span></td>').join("")+'</tr><tr>'
     + cols.map(()=>'<td style="text-align:left;font-size:10px">Date: ______________</td>').join("")+'</tr></table>';
 }
@@ -8451,7 +8454,7 @@ function viewDaily(){
    + '<button class="btn" id="dm-allpending" title="Start the morning with nobody marked in yet">Nobody in yet</button>'
    + '<button class="btn" id="dm-print">Print the report</button>'
    + '<button class="btn" id="dm-hrsig" title="Attach one or more HR e-signature JPEGs. Filenames match the person or slot.">'
-   + (hrSigSrc()||hrSigSrc(null,"approved")?'Replace HR e-sigs':'Attach HR e-sigs')+'</button>'
+   + (hrSigSrc()||hrSigSrc(null,"approved")||hrSigSrc(null,"evaluated")||hrSigSrc(null,"signatory")?'Replace HR e-sigs':'Attach HR e-sigs')+'</button>'
    + hrSigPills()
    + '<button class="btn pri" id="dm-save">Save</button>'
    + '<button class="btn" id="dm-add">Add someone</button>'
@@ -12770,14 +12773,16 @@ function viewSettings(){
 
   h+='<div class="card"><div class="card-h"><h3>HR e-signatures</h3></div><div class="card-b stack">'
    + '<div class="row">'
-   + '<button class="btn" id="set-hrsig">'+(hrSigSrc()||hrSigSrc(null,"approved")?"Add / replace e-sigs":"Attach HR e-sigs")+'</button>'
+   + '<button class="btn" id="set-hrsig">'+(hrSigSrc()||hrSigSrc(null,"approved")||hrSigSrc(null,"evaluated")||hrSigSrc(null,"signatory")?"Add / replace e-sigs":"Attach HR e-sigs")+'</button>'
    + hrSigPills()
    + '</div>'
    + '<div class="note">Attach one or more JPEG/PNG files. The filename is kept and matched to a slot or person: '
    + '<span class="mono">prepared.jpg</span>, <span class="mono">cassie.jpg</span>, <span class="mono">moran.jpg</span> → Prepared by; '
-   + '<span class="mono">approved.jpg</span>, <span class="mono">hr-head.jpg</span>, or the HR head’s surname → Approved by; '
+   + '<span class="mono">domingo.jpg</span>, <span class="mono">monte.jpg</span>, <span class="mono">hr-head.jpg</span>, <span class="mono">approved.jpg</span> → Department Head (Domingo C. Monte Jr.) on Leave and Cash Advance, and the HR Officer line on the Daily Manpower report; '
+   + '<span class="mono">catherine.jpg</span>, <span class="mono">largo.jpg</span>, <span class="mono">evaluated.jpg</span>, <span class="mono">payroll.jpg</span> → Evaluated by (Catherine A. Largo) on Leave and Cash Advance; '
+   + '<span class="mono">jeffrey.jpg</span>, <span class="mono">signatory.jpg</span>, <span class="mono">ceo.jpg</span>, <span class="mono">president.jpg</span> → Final approval, stamped when the Approver tab approves; '
    + 'a four-digit employee number or a unique last name attaches to that person. '
-   + 'Used on the printed Daily Monitoring report. The same control is on Daily Manpower.</div>'
+   + 'Leave and Cash Advance will not print or go for approval until the Department Head and Evaluated by images are on file. The same control is on Daily Manpower.</div>'
    + hrSigPreviewList()
    + '</div></div>';
 
@@ -15638,6 +15643,7 @@ function caEditor(id){
 }
 /* Their Cash Advance Request Form, reproduced. Sections I–IV, footer number. */
 function printCA(a, opt){
+  const miss=leaveCaPrintBlocked(); if(miss){ toast(miss,"err"); return; }
   const e=S.employees[a.empId];
   const site = a.project || (e?e.project:"") || "";
   const plan = caPlan(a);
@@ -15675,9 +15681,10 @@ function printCA(a, opt){
       and a separate person, and the CEO signs last. Running Finance and HR
       together on one line meant one signature stood for two approvals. */
    + pfSign([
-       {who:"Department Head",  name:S.settings.hrHead||"",     role:S.settings.hrTitle||"HR Officer"},
-       leaveCaEvaluators()[0],
-       {who:"Finance",          name:S.settings.financeHead||"", role:S.settings.financeTitle||"Finance Officer"},
+       {who:"Department Head",  name:S.settings.hrHead||"",     role:S.settings.hrTitle||"HR Officer", src:leaveCaSig("dept")},
+       Object.assign({}, leaveCaEvaluators()[0], {src:leaveCaSig("evaluated")}),
+       {who:"Finance",          name:S.settings.financeHead||"", role:S.settings.financeTitle||"Finance Officer",
+        missing:"Finance officer name — Settings"},
        {who:"Approved by",      name:S.settings.signatory||"",   role:S.settings.signatoryTitle||"CEO / President"}])
    + pfFoot("Cash Advance Request Form No.", a.no)
    + pfISO("ca");
@@ -15694,10 +15701,13 @@ function printCA(a, opt){
     /* markPrinted works on the stored record; make sure that is the one just
        previewed rather than an older copy */
     if(S.advances[a.id]) await put("advances", a.id, Object.assign({}, S.advances[a.id], a, {no:S.advances[a.id].no}));
-    await markPrinted("advances",a.id);
+    if(await markPrinted("advances",a.id)===false) return;
     printDoc(a.no||"CA",body);
   };
-  $("#cp-html").onclick=()=>savePDF(a.no||"CA", body);
+  $("#cp-html").onclick=()=>{
+    const blocked=leaveCaPrintBlocked(); if(blocked){ toast(blocked,"err"); return; }
+    savePDF(a.no||"CA", body);
+  };
 }
 
 /* ============ leave ============ */
@@ -16009,6 +16019,7 @@ const PF_LEAVE_MAP = {VL:"Vacation", SL:"Sick", EL:"Emergency", ML:"Paternity /M
 function pfLeaveBox(k){ return k ? (PF_LEAVE_MAP[k] || "Others, pls specify") : ""; }
 
 function printLeave(l, opt){
+  const miss=leaveCaPrintBlocked(); if(miss){ toast(miss,"err"); return; }
   const e=S.employees[l.empId], t=leaveType(l.type);
   const chosen=pfLeaveBox(l.type);
   const site = l.project || (e&&e.project) || "";
@@ -16047,8 +16058,8 @@ function printLeave(l, opt){
    + pfBand(t.k==="SIL"?"SIL APPROVAL":"APPROVAL")
    + pfSign([
        {who:"Immediate Supervisor", name:(e&&e.supervisor)||"", role:"Signature"},
-       leaveCaEvaluators()[0],
-       {who:"HR Department",        name:S.settings.hrHead||"", role:"Signature"},
+       Object.assign({}, leaveCaEvaluators()[0], {src:leaveCaSig("evaluated")}),
+       {who:"HR Department",        name:S.settings.hrHead||"", role:"Signature", src:leaveCaSig("dept")},
        {who:"Final Approval (Management)", name:S.settings.signatory||"", role:"Signature"}])
    + pfFoot("Leave Request Form No.", l.no)
    + pfISO("leave");
@@ -16060,8 +16071,14 @@ function printLeave(l, opt){
           ? '<span class="lbl" style="margin-right:auto">Draft — save the leave to take this number</span>'
           : '<button class="btn pri" id="lp-print">Print</button>')});
   $("#lp-back").onclick=()=>lvEditor(l);
-  const lpp=$("#lp-print"); if(lpp) lpp.onclick=async()=>{ await markPrinted("leaves",l.id); printDoc(l.no||"LEAVE",body); };
-  $("#lp-html").onclick=()=>savePDF(l.no||"LEAVE", body);
+  const lpp=$("#lp-print"); if(lpp) lpp.onclick=async()=>{
+    if(await markPrinted("leaves",l.id)===false) return;
+    printDoc(l.no||"LEAVE",body);
+  };
+  $("#lp-html").onclick=()=>{
+    const blocked=leaveCaPrintBlocked(); if(blocked){ toast(blocked,"err"); return; }
+    savePDF(l.no||"LEAVE", body);
+  };
 }
 
 /* ============ incident reports ============ */
@@ -16421,6 +16438,42 @@ function leaveCaEvaluators(st){
   const role=String((st&&st.payrollTitle)||"Safety Officer").trim();
   return [{who:"Evaluated by", name:name, role:role, key:"payrollBy"}];
 }
+/* Department Head (Domingo / the HR Officer slot) and Evaluated by (Catherine)
+   must already be on the printed Leave and Cash Advance before it can be
+   printed or sent to the approver. Final approval stays blank until Approve. */
+function findHrSig(slot, hints){
+  const direct=hrSigSrc(null, slot);
+  if(direct) return direct;
+  const map=(S.settings&&S.settings.hrSigs)||{};
+  const skip={prepared:1, approved:1, evaluated:1, signatory:1};
+  const keys=Object.keys(map);
+  for(let i=0;i<keys.length;i++){
+    const k=keys[i];
+    if(skip[k]) continue;
+    const p=map[k];
+    if(!p||!(p.data||p.link)) continue;
+    const blob=(k+" "+(p.name||"")+" "+(p.title||"")+" "+(p.slot||"")).toLowerCase().replace(/[_-]+/g," ");
+    if(hints.test(blob)) return p.data||p.link;
+  }
+  return "";
+}
+function leaveCaSig(role){
+  if(role==="dept") return findHrSig("approved", /domingo|\bmonte\b|hr head|hr officer/);
+  if(role==="evaluated") return findHrSig("evaluated", /catherine|\blargo\b|\bevaluated\b|evaluator|\bpayroll\b/);
+  return "";
+}
+function leaveCaMissingSigs(){
+  const st=S.settings||{};
+  const miss=[];
+  if(!leaveCaSig("dept")) miss.push("Department Head — "+(st.hrHead||"Domingo C. Monte Jr.")+" (JPEG named domingo, monte, hr-head, or approved)");
+  if(!leaveCaSig("evaluated")) miss.push("Evaluated by — "+(st.payrollBy||"Catherine A. Largo")+" (JPEG named catherine, largo, evaluated, or payroll)");
+  return miss;
+}
+function leaveCaPrintBlocked(){
+  const miss=leaveCaMissingSigs();
+  if(!miss.length) return "";
+  return "Cannot print or send this for approval. Settings → HR e-signatures is missing: "+miss.join("; ")+".";
+}
 function driveMessage(e){
   const c = e && e.code;
   const raw = String((e&&e.message)||(e&&e.text)||"");
@@ -16469,8 +16522,14 @@ function hrSigSlotDefs(){
       aliases:["prepared","prepared by","hr staff","hrsig","e sig","esig","cassie","cassandra","moran"],
       names:[st.hrStaff||"Maria Trina Cassandra A. Moran"]},
     {k:"approved", label:"Approved by", role:"HR Officer",
-      aliases:["approved","approved by","hr head","hr officer","approver"],
-      names:[st.hrHead||""].filter(Boolean)}
+      aliases:["approved","approved by","hr head","hr officer","approver","domingo","monte"],
+      names:[st.hrHead||""].filter(Boolean)},
+    {k:"evaluated", label:"Evaluated by", role:st.payrollTitle||"Safety Officer",
+      aliases:["evaluated","evaluated by","evaluator","catherine","largo","payroll","payroll by"],
+      names:[st.payrollBy||"Catherine A. Largo"]},
+    {k:"signatory", label:"Final approval", role:st.signatoryTitle||st.presidentTitle||"CEO / President",
+      aliases:["signatory","president","ceo","jeffrey","final approval","management"],
+      names:[st.signatory||"", st.president||"Jeffrey James M. Corro"].filter(Boolean)}
   ];
 }
 function matchHrSigFilename(filename, used){
@@ -16530,11 +16589,12 @@ function hrSigPack(slot, file, data, link, emp){
 function hrSigPills(){
   const st=S.settings||{};
   const map=st.hrSigs||{};
-  const keys=["prepared","approved"].concat(Object.keys(map).filter(k=>k!=="prepared" && k!=="approved"));
+  const known=["prepared","approved","evaluated","signatory"];
+  const keys=known.concat(Object.keys(map).filter(k=>known.indexOf(k)<0));
   const pills=keys.map(k=>{
     const pack=map[k];
     if(!pack || !(pack.data||pack.link||(k==="prepared" && (st.hrSigData||st.hrSigLink)))) return "";
-    const label=k==="prepared"?"Prepared by":k==="approved"?"Approved by":(pack.name||pack.title||k);
+    const label=k==="prepared"?"Prepared by":k==="approved"?"Approved by":k==="evaluated"?"Evaluated by":k==="signatory"?"Final approval":(pack.name||pack.title||k);
     return '<span class="pill ok" title="'+esc(pack.title||label)+'">'+esc(label)+'</span>';
   }).filter(Boolean);
   if(!pills.length && (st.hrSigData||st.hrSigLink))
@@ -16586,7 +16646,9 @@ async function handleHrSigFiles(job, files){
   if(!files.length) return;
   S.settings.hrSigs=S.settings.hrSigs||{};
   const used={};
-  Object.keys(S.settings.hrSigs).forEach(k=>{ if(k==="prepared"||k==="approved") used[k]=true; });
+  Object.keys(S.settings.hrSigs).forEach(k=>{
+    if(k==="prepared"||k==="approved"||k==="evaluated"||k==="signatory") used[k]=true;
+  });
   const attached=[];
   for(let i=0;i<files.length;i++){
     const file=files[i];
@@ -16722,6 +16784,10 @@ function ensurePicker(){
   return el;
 }
 async function handleSignedPick(job, file){
+  if(job && (job.coll==="leaves" || job.coll==="advances")){
+    const miss=leaveCaPrintBlocked();
+    if(miss){ toast(miss,"err"); return; }
+  }
   const r0=recOf(job.coll, job.recId); if(!r0) return;
   const k=SIGNED_KIND[job.coll];
   /* a sheet signed by a whole crew belongs to the company, not to one file */
@@ -16931,6 +16997,10 @@ function recOf(coll,id){
 
 /* Printing is a state change: the form has left the building for signature. */
 async function markPrinted(coll,id){
+  if(coll==="leaves" || coll==="advances"){
+    const miss=leaveCaPrintBlocked();
+    if(miss){ toast(miss,"err"); return false; }
+  }
   const r=clone(recOf(coll,id)); if(!r) return;
   const first = coll==="leaves" ? "Filed" : "Requested";
   if(!r.printedOn) r.printedOn=TODAY;
