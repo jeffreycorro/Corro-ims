@@ -302,7 +302,8 @@ svg text{font-family:var(--font-body)}
 .pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:var(--space-2)}
 .pcell{border:1px solid var(--rule);border-radius:var(--radius);overflow:hidden;background:var(--surface)}
 .pcell img{width:100%;height:104px;object-fit:cover;display:block;cursor:zoom-in;background:var(--grey-200)}
-.pcell .cap{padding:5px 6px;font-size:11px;color:var(--text-muted);line-height:1.3}
+.pcell video,.pcard video{width:100%;max-height:180px;display:block;background:#111}
+.pcell .cap,.pcard .cap{padding:5px 6px;font-size:11px;color:var(--text-muted);line-height:1.3}
 .lightbox{position:fixed;inset:0;background:rgba(10,12,14,.9);z-index:140;display:flex;
   align-items:center;justify-content:center;padding:20px;cursor:zoom-out}
 .lightbox img{max-width:100%;max-height:100%;object-fit:contain}
@@ -376,7 +377,7 @@ var SIGNATORIES = [
 ];
 var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
 /* Shown on the Ask screen, so a screenshot says which version someone is on. */
-var BUILD = "2026-09-23 a";
+var BUILD = "2026-09-23 b";
 var DAY = 86400000, MO = 30.44;
 
 /* Part categories that were entered under two spellings and so split a unit's
@@ -1305,7 +1306,7 @@ var PATHS = {
 };
 
 function lsGet(k,f){ try{ var v=localStorage.getItem("mp_"+k); return v?JSON.parse(v):f; }catch(e){ return f; } }
-function lsSet(k,v){ try{ localStorage.setItem("mp_"+k,JSON.stringify(v)); }catch(e){} }
+function lsSet(k,v){ try{ localStorage.setItem("mp_"+k,JSON.stringify(v)); return true; }catch(e){ return false; } }
 
 async function boot(){
   try{ S.db = await claude.use("db"); }catch(e){ S.db=null; }
@@ -2105,10 +2106,18 @@ async function claimReserveNo(){
    fits comfortably inside one document. Full-resolution originals still belong
    in Drive; a link field is there for that. */
 var PHOTO_MAX_EDGE=1400, PHOTO_MAX_BYTES=150*1024, PHOTO_PER_VRF=24;
+/* A file chosen on the phone or the computer. Photos are resized below.
+   A video is kept whole only while it still fits in one photo record. */
+var VIDEO_MAX_BYTES=3*1024*1024;
+var MEDIA_ACCEPT="image/*,video/*,.heic,.heif,.jpg,.jpeg,.png,.gif,.webp,.bmp,.avif,.mp4,.mov,.m4v,.webm,.3gp,.3gpp,.avi,.mkv,.mpeg,.mpg";
+var IMAGE_EXT=/\.(jpe?g|png|gif|webp|bmp|heic|heif|avif)$/i;
+var VIDEO_EXT=/\.(mp4|mov|m4v|webm|3gp|3gpp|avi|mkv|mpeg|mpg)$/i;
 
 function shrinkImage(file){
   return new Promise(function(resolve,reject){
-    if(!/^image\//.test(file.type)) return reject(new Error("not an image"));
+    var type=String(file&&file.type||"");
+    var name=String(file&&file.name||"");
+    if(!/^image\//.test(type)&&!IMAGE_EXT.test(name)) return reject(new Error("not an image"));
     var fr=new FileReader();
     fr.onerror=function(){ reject(new Error("could not read the file")); };
     fr.onload=function(){
@@ -2141,6 +2150,69 @@ function shrinkImage(file){
     };
     fr.readAsDataURL(file);
   });
+}
+function mediaKindOf(file){
+  var type=String(file&&file.type||"").toLowerCase();
+  var name=String(file&&file.name||"");
+  if(type.indexOf("image/")===0||IMAGE_EXT.test(name)) return "photo";
+  if(type.indexOf("video/")===0||VIDEO_EXT.test(name)) return "video";
+  return "";
+}
+function mediaTooLarge(file){
+  if(mediaKindOf(file)!=="video") return "";
+  var n=(file&&file.size)||0;
+  if(n<=VIDEO_MAX_BYTES) return "";
+  var mb=Math.max(1,Math.round(n/1048576));
+  var cap=Math.round(VIDEO_MAX_BYTES/1048576);
+  return "This video is "+mb+" MB. The portal can keep a clip up to "+cap+" MB — trim it, or paste a link instead.";
+}
+function isVideoAttachment(x){
+  if(!x||x.kind==="link") return false;
+  if(x.kind==="video") return true;
+  if(/^data:video\//i.test(String(x.data||""))) return true;
+  return String(x.mime||"").indexOf("video/")===0;
+}
+function readFileDataURL(file){
+  return new Promise(function(resolve,reject){
+    var fr=new FileReader();
+    fr.onerror=function(){ reject(new Error("could not read the file")); };
+    fr.onload=function(){ resolve(String(fr.result||"")); };
+    fr.readAsDataURL(file);
+  });
+}
+/* Turns a gallery or disk file into the same record a VRF photo uses. */
+function prepareLocalMedia(file){
+  var kind=mediaKindOf(file);
+  if(!kind) return Promise.reject(new Error("Choose a photo or a video."));
+  if(kind==="photo"){
+    return shrinkImage(file).then(function(sh){
+      return {kind:"photo",data:sh.data,w:sh.w,h:sh.h,bytes:sh.bytes,mime:"image/jpeg"};
+    });
+  }
+  var big=mediaTooLarge(file);
+  if(big) return Promise.reject(new Error(big));
+  return readFileDataURL(file).then(function(data){
+    if(!data) throw new Error("could not read the file");
+    return {kind:"video",data:data,w:null,h:null,bytes:(file&&file.size)||0,
+      mime:(file&&file.type)||"video/mp4"};
+  });
+}
+function mediaThumb(x,alt){
+  if(isVideoAttachment(x)){
+    var v=document.createElement("video");
+    v.src=x.data||"";
+    v.controls=true;
+    v.playsInline=true;
+    v.setAttribute("playsinline","");
+    v.preload="metadata";
+    v.setAttribute("aria-label",alt||x.caption||"video");
+    return v;
+  }
+  var im=document.createElement("img");
+  im.src=x.data||"";
+  im.alt=alt||x.caption||"photo";
+  im.addEventListener("click",function(){ lightbox(x.data); });
+  return im;
 }
 function photoKey(vrf,n){ return "vrf-"+String(vrf).replace(/[^A-Za-z0-9_.~:@+-]/g,"_")+"__"+n; }
 /* The same clip is written under RSV-{no} and the VRF number so either
@@ -2222,10 +2294,10 @@ async function bumpPhotoCount(vrf,delta){
   S.photoCounts=c;
   await writeDoc(PATHS.photoIdx,{counts:c});
 }
-/* A phone clip is 10-30 MB — orders of magnitude past what a record can hold,
-   and there is no file store on this account. So video lives where it was
-   filmed (Drive, Photos) and the portal keeps the link, the caption and who put
-   it there. Photos stay stored and printable; links open in a new tab. */
+/* A long phone clip is 10-30 MB — past what one record can hold. Short clips
+   chosen from the gallery are kept in the same photo store as a resized still.
+   Anything larger stays where it was filmed (Drive, Photos) and the portal
+   keeps the link. Photos stay stored and printable; links open in a new tab. */
 var LINK_KINDS={video:"Video",doc:"Document",photo:"Photo (link)",other:"Link"};
 function guessLinkKind(u){
   if(/\.(mp4|mov|m4v|avi|mkv|webm|3gp)(\?|#|$)/i.test(u||"")) return "video";
@@ -2251,16 +2323,19 @@ async function addLink(owner,rec){
 }
 async function addPhoto(vrf,rec){
   var existing=await listPhotos(vrf);
-  if(existing.length>=PHOTO_PER_VRF) throw new Error("This VRF already has "+PHOTO_PER_VRF+" photos.");
+  if(existing.length>=PHOTO_PER_VRF) throw new Error("This record already has "+PHOTO_PER_VRF+" attachments.");
   var idx=existing.reduce(function(a,x){ return Math.max(a,x.idx||0); },0)+1;
   var body={vrf:String(vrf),idx:idx,caption:rec.caption||"",by:rec.by||"",at:iso(),
     data:rec.data,w:rec.w,h:rec.h,bytes:rec.bytes,link:rec.link||"",kind:rec.kind||"photo"};
+  if(rec.mime) body.mime=rec.mime;
   var row=Object.assign({id:photoKey(vrf,idx)},body);
   var loc=lsGet("photos/"+vrf,{items:[]});
   loc.items=mergePhotoLists([loc.items||[],[row]]);
-  lsSet("photos/"+vrf,loc);
+  var saved=lsSet("photos/"+vrf,loc);
   if(S.db){
     await S.db.doc("photos/"+photoKey(vrf,idx)).set(body);
+  }else if(!saved){
+    throw new Error("This device cannot hold a file that large. Paste a link instead.");
   }
   await bumpPhotoCount(String(vrf),1);
   return idx;
@@ -2286,7 +2361,8 @@ async function copyPhotos(from,to){
       if(x.kind==="link"){
         await addLink(to,{url:x.url,linkKind:x.linkKind,caption:x.caption,by:x.by});
       }else if(x.data){
-        await addPhoto(to,{data:x.data,w:x.w,h:x.h,bytes:x.bytes,caption:x.caption,by:x.by});
+        await addPhoto(to,{data:x.data,w:x.w,h:x.h,bytes:x.bytes,caption:x.caption,by:x.by,
+          kind:x.kind,mime:x.mime});
       }else continue;
       n++;
     }catch(e){}
@@ -2961,6 +3037,7 @@ function openTasks(){ return S.tasks.filter(function(t){ return t.status!=="Done
 /* A task carries its own photographs and links, on the same store as VRF and
    unit attachments, under its own owner key. */
 function taskOwner(no){ return "TASK-"+no; }
+function joOwner(no){ return "JO-"+no; }
 function taskBy(no){
   for(var i=0;i<S.tasks.length;i++) if(String(S.tasks[i].no)===String(no)) return S.tasks[i];
   return null;
@@ -2982,11 +3059,17 @@ function joBy(no){
 }
 /* A job order is only "done" when the work is evidenced: every checklist line
    ticked, proof attached, and the resolution written up. These are the gates. */
+/* Links live on the job order. Files picked from a device live in the photo
+   store under JO-{no}, the same place a task keeps its proof. */
+function joProofTotal(j){
+  if(!j) return 0;
+  return ((j.proofs)||[]).length + photoCount(joOwner(j.no));
+}
 function joBlockers(j){
   var out=[];
   var open=(j.checklist||[]).filter(function(c){ return !c.done; });
   if(open.length) out.push(open.length+" checklist item"+(open.length>1?"s":"")+" not ticked");
-  if(!(j.proofs||[]).length) out.push("no proof attached");
+  if(!joProofTotal(j)) out.push("no proof attached");
   if(!(j.resolution||"").trim()) out.push("resolution not written up");
   return out;
 }
@@ -4028,7 +4111,7 @@ function askTools(question){
        open_breakdowns:openBreakdowns().filter(function(b){return b.vehicle===u;}),
        job_orders:mechFor(u).map(function(j){ return {no:j.no, raised:j.raised, work:j.action,
          status:j.status, scope:j.rootCause, resolution:j.resolution,
-         proofs:(j.proofs||[]).length}; }),
+         proofs:joProofTotal(j)}; }),
        jobs_last_done:jobsForUnit(u).slice(0,25).map(function(j){ return {job:j.name,
          last_done:j.last, days_ago:j.ago, interval_months:j.intervalMo, due:j.due,
          source:j.confirmed?"entered":"inferred"}; })};
@@ -4120,7 +4203,7 @@ function askTools(question){
        job_orders:openJOs().slice(0,40).map(function(j){ return {no:j.no, unit:j.vehicle, work:j.action,
          status:j.status, raised:j.raised,
          checklist_done:(j.checklist||[]).filter(function(c){return c.done;}).length,
-         checklist_total:(j.checklist||[]).length, proofs:(j.proofs||[]).length}; }),
+         checklist_total:(j.checklist||[]).length, proofs:joProofTotal(j)}; }),
        tasks:openTasks().slice(0,40).map(function(t){ return {no:t.no, title:t.title,
          unit:t.vehicle, assigned:t.assigned, due:t.due, priority:t.priority, category:t.category}; })};
    }},
@@ -5885,7 +5968,7 @@ function openTask(no){
   var pc=el("div","card"); pc.style.marginTop="var(--space-4)";
   var ph=el("div","hd"); ph.appendChild(el("h3",null,"Proof"));
   ph.appendChild(el("span","note",
-    "A photograph of the thing done, or a link to a video or document. A task cannot be closed without one."));
+    "A photo or video from this phone or computer, or a link. A task cannot be closed without one."));
   pc.appendChild(ph);
   var pb=el("div","bd");
   var gal=el("div","pgrid"); gal.appendChild(el("div","hint","Loading…"));
@@ -5898,7 +5981,7 @@ function openTask(no){
     if(done) return;
     var want=[];
     if(!cby.value.trim()) want.push("who did it");
-    if(!taskProofCount(t.no)) want.push("a photo or a link as proof");
+    if(!taskProofCount(t.no)) want.push("a photo, video, or a link as proof");
     closeBtn.disabled=want.length>0;
     closeWhy.textContent=want.length?("Still needed: "+want.join(" and ")+"."):"";
     closeWhy.style.color=want.length?"var(--danger)":"";
@@ -5912,12 +5995,11 @@ function openTask(no){
       if(!pics.length&&!lnk.length)
         gal.appendChild(el("div","hint","Nothing attached yet."));
       pics.forEach(function(x){
-        var c=el("div","pcard");
-        var im=document.createElement("img"); im.src=x.data; im.alt=x.caption||("T-"+t.no);
-        im.addEventListener("click",function(){ lightbox(x.data); });
-        c.appendChild(im);
+        var c=el("div","pcell");
+        if(isVideoAttachment(x)) c.style.gridColumn="1 / -1";
+        c.appendChild(mediaThumb(x,"T-"+t.no));
         var cp=el("div","cap");
-        cp.appendChild(el("div",null,x.caption||"photo"));
+        cp.appendChild(el("div",null,x.caption||(isVideoAttachment(x)?"video":"photo")));
         cp.appendChild(el("div","hint",(x.by||"—")+" · "+(x.at||"")));
         if(!done){
           var rm=el("button","btn sm","Remove"); rm.style.marginTop="4px";
@@ -5953,31 +6035,42 @@ function openTask(no){
   var aby=el("input"); aby.placeholder="your name";
   if(!done){
     var ar=el("div","f3"); ar.style.marginTop="var(--space-4)";
-    var afi=el("input"); afi.type="file"; afi.accept="image/*";
+    var afi=el("input"); afi.type="file"; afi.multiple=true; afi.accept=MEDIA_ACCEPT;
     var acap=el("input"); acap.placeholder="what it shows";
-    ar.appendChild(f2("Photograph",afi)); ar.appendChild(f2("Caption",acap));
+    ar.appendChild(f2("Photo or video",afi,
+      "From the phone gallery or this computer. Photos are resized here."));
+    ar.appendChild(f2("Caption",acap));
     ar.appendChild(f2("Put up by",aby));
     pb.appendChild(ar);
     var arow=el("div","row"); arow.style.marginTop="var(--space-2)";
-    var apb=el("button","btn","Attach the photo");
+    var apb=el("button","btn","Attach from this device");
     var amsg=el("div","hint");
     apb.addEventListener("click",async function(){
-      if(!afi.files||!afi.files.length){ amsg.textContent="Choose a photo first.";
+      var files=Array.prototype.slice.call(afi.files||[]);
+      if(!files.length){ amsg.textContent="Choose a photo or video first.";
         amsg.style.color="var(--danger)"; return; }
       if(!aby.value.trim()){ amsg.textContent="Put your name to it.";
         amsg.style.color="var(--danger)"; return; }
       apb.disabled=true; apb.textContent="Attaching…";
-      try{
-        var sh=await shrinkImage(afi.files[0]);
-        await addPhoto(owner,{caption:acap.value.trim(),by:aby.value.trim(),
-          data:sh.data,w:sh.w,h:sh.h,bytes:sh.bytes});
-      }catch(e){
-        apb.disabled=false; apb.textContent="Attach the photo";
-        amsg.textContent="Could not attach: "+(e&&e.message||"");
+      var ok=0, failMsg="";
+      for(var fi=0;fi<files.length;fi++){
+        try{
+          var med=await prepareLocalMedia(files[fi]);
+          await addPhoto(owner,{caption:acap.value.trim()||files[fi].name,by:aby.value.trim(),
+            data:med.data,w:med.w,h:med.h,bytes:med.bytes,kind:med.kind,mime:med.mime});
+          ok++;
+        }catch(e){
+          failMsg=(files[fi].name?files[fi].name+": ":"")+(e&&e.message||"could not attach");
+        }
+      }
+      apb.disabled=false; apb.textContent="Attach from this device";
+      if(!ok){
+        amsg.textContent=failMsg||"Could not attach.";
         amsg.style.color="var(--danger)"; return;
       }
-      apb.disabled=false; apb.textContent="Attach the photo";
-      amsg.textContent=""; acap.value=""; afi.value="";
+      amsg.textContent=failMsg;
+      amsg.style.color=failMsg?"var(--danger)":"";
+      acap.value=""; afi.value="";
       if(!cby.value.trim()) cby.value=aby.value;
       paintAtt(); syncClose();
     });
@@ -5990,7 +6083,7 @@ function openTask(no){
     Object.keys(LINK_KINDS).forEach(function(k){ lk.appendChild(new Option(LINK_KINDS[k],k)); });
     lk.value="video";
     var lc=el("input"); lc.placeholder="what it shows";
-    lr.appendChild(f2("Link",lu,"A video is too big to hold here — keep it in Drive and link it."));
+    lr.appendChild(f2("Link",lu,"A long video can stay in Drive — paste the link. Shorter clips attach from this device above."));
     lr.appendChild(f2("Kind",lk)); lr.appendChild(f2("Caption",lc));
     pb.appendChild(lr);
     var lrow=el("div","row"); lrow.style.marginTop="var(--space-2)";
@@ -6018,7 +6111,7 @@ function openTask(no){
   var ch=el("div","hd");
   ch.appendChild(el("h3",null,done?"How it was closed":"Close the task"));
   if(!done) ch.appendChild(el("span","note",
-    "Nobody can close a task on a say-so — there has to be a photo or a link against it first."));
+    "Nobody can close a task on a say-so — there has to be a photo, a video, or a link against it first."));
   cc.appendChild(ch);
   var cbd=el("div","bd");
   var cres=el("textarea"); cres.rows=2;
@@ -8970,7 +9063,7 @@ function downView(){
         tr.appendChild(fi); d.appendChild(tr);
         return d; }},
       {h:"Proof",num:true,get:function(j){
-        var n=(j.proofs||[]).length;
+        var n=joProofTotal(j);
         return el("span","chip "+(n?"ok":"mute"),n?n+" attached":"none"); }},
       {h:"Status",get:joStatusChip},
       {h:"",get:function(j){
@@ -9010,7 +9103,7 @@ function downView(){
           return d; }},
         {h:"Hours",num:true,get:function(j){ return j.hours!=null&&j.hours!==""?String(j.hours):"—"; }},
         {h:"Proof",num:true,get:function(j){
-          var n=(j.proofs||[]).length;
+          var n=joProofTotal(j);
           return el("span","chip "+(n?"ok":"mute"),n?String(n):"none"); }},
         {h:"Signed off by",get:function(j){
           var d=el("div");
@@ -9140,38 +9233,103 @@ function openJO(no){
   /* --- proof --- */
   var pf=el("div","card"); pf.style.marginBottom="var(--space-4)";
   var pfh=el("div","hd"); pfh.appendChild(el("h3",null,"Proof"));
-  pfh.appendChild(el("span","note","Photos, documents or a video — anywhere the checker can open: Drive, Photos, a shared folder."));
+  pfh.appendChild(el("span","note","Pick a photo or video from this phone or computer, or paste a link. A long clip can stay in Drive and be linked."));
   pf.appendChild(pfh);
   var pfb=el("div","bd");
-  (j.proofs||[]).forEach(function(pr,i){
-    var r=el("div","row"); r.style.cssText="padding:6px 0;border-bottom:1px solid var(--rule)";
-    r.appendChild(el("span","chip accent",
-      (pr.linkKind==="video"?"▶ ":"")+(LINK_KINDS[pr.linkKind||guessLinkKind(pr.url)]||"Link")));
-    var a=el("a",null,pr.label||pr.url); a.href=pr.url; a.target="_blank"; a.rel="noopener noreferrer";
-    a.style.cssText="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
-    r.appendChild(a);
-    r.appendChild(el("span","hint",(pr.by||"—")+" · "+(pr.at||"")));
-    if(!closed){
-      var rm=el("button","btn sm","Remove");
-      rm.addEventListener("click",async function(){
-        var next=(j.proofs||[]).filter(function(_,k){return k!==i;});
-        await saveJO(j.no,{proofs:next}); render(); openJO(j.no);
+  var joGal=el("div","pgrid"); joGal.appendChild(el("div","hint","Loading…"));
+  var joLinks=el("div");
+  pfb.appendChild(joGal); pfb.appendChild(joLinks);
+  function paintJoLinks(){
+    joLinks.innerHTML="";
+    (j.proofs||[]).forEach(function(pr,i){
+      var r=el("div","row"); r.style.cssText="padding:6px 0;border-bottom:1px solid var(--rule)";
+      r.appendChild(el("span","chip accent",
+        (pr.linkKind==="video"?"▶ ":"")+(LINK_KINDS[pr.linkKind||guessLinkKind(pr.url)]||"Link")));
+      var a=el("a",null,pr.label||pr.url); a.href=pr.url; a.target="_blank"; a.rel="noopener noreferrer";
+      a.style.cssText="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
+      r.appendChild(a);
+      r.appendChild(el("span","hint",(pr.by||"—")+" · "+(pr.at||"")));
+      if(!closed){
+        var rm=el("button","btn sm","Remove");
+        rm.addEventListener("click",async function(){
+          var next=(j.proofs||[]).filter(function(_,k){return k!==i;});
+          await saveJO(j.no,{proofs:next}); render(); openJO(j.no);
+        });
+        r.appendChild(rm);
+      }
+      joLinks.appendChild(r);
+    });
+  }
+  function paintJoFiles(){
+    listPhotos(joOwner(j.no)).then(function(items){
+      joGal.innerHTML="";
+      var media=(items||[]).filter(function(x){ return x&&x.kind!=="link"&&x.data; });
+      if(!media.length&&!(j.proofs||[]).length)
+        joGal.appendChild(el("div","hint","Nothing attached yet. A job order cannot be signed off without proof."));
+      media.forEach(function(x){
+        var c=el("div","pcell");
+        if(isVideoAttachment(x)) c.style.gridColumn="1 / -1";
+        c.appendChild(mediaThumb(x,"JO-"+j.no));
+        var cp=el("div","cap");
+        cp.appendChild(el("div",null,x.caption||(isVideoAttachment(x)?"video":"photo")));
+        cp.appendChild(el("div","hint",(x.by||"—")+" · "+(x.at||"")));
+        if(!closed){
+          var rmF=el("button","btn sm","Remove"); rmF.style.marginTop="4px";
+          rmF.addEventListener("click",async function(){
+            rmF.disabled=true;
+            await removePhoto(joOwner(j.no),x.id);
+            render(); openJO(j.no);
+          });
+          cp.appendChild(rmF);
+        }
+        c.appendChild(cp); joGal.appendChild(c);
       });
-      r.appendChild(rm);
-    }
-    pfb.appendChild(r);
-  });
-  if(!(j.proofs||[]).length) pfb.appendChild(el("div","hint","Nothing attached yet. A job order cannot be signed off without proof."));
+    });
+  }
+  paintJoLinks(); paintJoFiles();
   if(!closed){
+    function fld2(l,n,h){ var x=el("div","field"); x.appendChild(el("label",null,l));
+      x.appendChild(n); if(h) x.appendChild(el("div","hint",h)); return x; }
+    var fr=el("div","f3"); fr.style.marginTop="var(--space-3)";
+    var ffi=el("input"); ffi.type="file"; ffi.multiple=true; ffi.accept=MEDIA_ACCEPT;
+    var fcap=el("input"); fcap.placeholder="what it shows, e.g. after — new hose fitted";
+    var fpb=el("button","btn","Attach from this device"); fpb.style.alignSelf="end";
+    fr.appendChild(fld2("Photo or video",ffi,"From the phone gallery or this computer."));
+    fr.appendChild(fld2("Caption",fcap));
+    var fpbw=el("div"); fpbw.style.cssText="display:flex;align-items:flex-end"; fpbw.appendChild(fpb);
+    fr.appendChild(fpbw);
+    fpb.addEventListener("click",async function(){
+      var files=Array.prototype.slice.call(ffi.files||[]);
+      if(!files.length){ toast("Choose a photo or video from this device."); return; }
+      if(!who.value.trim()){ toast("Put your name in the checklist box first."); return; }
+      fpb.disabled=true; fpb.textContent="Attaching…";
+      var ok=0, failMsg="";
+      for(var fi=0;fi<files.length;fi++){
+        try{
+          var med=await prepareLocalMedia(files[fi]);
+          await addPhoto(joOwner(j.no),{caption:fcap.value.trim()||files[fi].name,by:who.value.trim(),
+            data:med.data,w:med.w,h:med.h,bytes:med.bytes,kind:med.kind,mime:med.mime});
+          ok++;
+        }catch(e){
+          failMsg=(files[fi].name?files[fi].name+": ":"")+(e&&e.message||"could not attach");
+        }
+      }
+      fpb.disabled=false; fpb.textContent="Attach from this device";
+      if(!ok){ toast(failMsg||"Could not attach."); return; }
+      if(failMsg) toast(failMsg);
+      else toast(ok+" file"+(ok===1?"":"s")+" attached.");
+      render(); openJO(j.no);
+    });
+    pfb.appendChild(fr);
     var pr1=el("div","f3"); pr1.style.marginTop="var(--space-3)";
-    function fld2(l,n){ var x=el("div","field"); x.appendChild(el("label",null,l)); x.appendChild(n); return x; }
     var pu=el("input"); pu.placeholder="https://drive.google.com/…";
     var pk=el("select");
     Object.keys(LINK_KINDS).forEach(function(k){ pk.appendChild(new Option(LINK_KINDS[k],k)); });
     pk.value="photo";
     var pl=el("input"); pl.placeholder="what it shows, e.g. after — new hose fitted";
     var pb=el("button","btn","Attach proof"); pb.style.alignSelf="end";
-    pr1.appendChild(fld2("Link",pu)); pr1.appendChild(fld2("Kind",pk));
+    pr1.appendChild(fld2("Link",pu,"Or paste a link. A video over 3 MB belongs here."));
+    pr1.appendChild(fld2("Kind",pk));
     pr1.appendChild(fld2("Caption",pl));
     var pbw=el("div"); pbw.style.cssText="display:flex;align-items:flex-end"; pbw.appendChild(pb);
     pr1.appendChild(pbw);
@@ -9819,7 +9977,7 @@ function unitView(code){
         {h:"Scope",get:function(r){return r.rootCause||"—";}},
         {h:"Resolution",get:function(r){return r.resolution||"—";}},
         {h:"Proof",num:true,get:function(r){
-          var n=(r.proofs||[]).length;
+          var n=joProofTotal(r);
           return el("span","chip "+(n?"ok":"mute"),n?n+"":"none"); }},
         {h:"Hours",num:true,get:function(r){return r.hours!=null?nnum(r.hours,1):"—";}},
         {h:"VRF",get:function(r){return r.vrf?("VRF "+r.vrf):"—";}},

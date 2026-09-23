@@ -266,17 +266,18 @@ Functions need Netlify (`npx netlify dev --dir .`) plus the env vars above. With
 
 After this folder merges to the branch the **separate** Motorpool Netlify site tracks (usually `main`):
 
-1. Confirm the live Ask / footer BUILD is **2026-09-23 a** (hard refresh if a service worker or tab still shows `2026-09-21 d`).
-2. **New VRF:** the only primary action is **Send for approval**. There is no **Post VRF** button. Staff cannot skip Jeffrey’s office approval.
-3. After deploy, open Office → Approvals. If a pending VRF still shows **58528** beside an already-posted 58528, refresh once — boot remints the pending hold to the next free number and leaves the posted ledger row untouched.
-4. **New VRF → Vehicle code:** type a unit that has an assigned site. Project fills as a default. Change the project to another code — it must stay editable and keep the override. Clearing the project to type a different one must not snap back to the unit site.
-5. **New VRF fuel line:** pick `Fuel — Diesel` and a station/supplier (not FUEL RESERVE). Send for approval — the reserve log chip should read **Fuel Purchase**, not **Fuel Reserve**. FUEL RESERVE is labelled *drum dispense (not a purchase)* and sits after the real suppliers.
-6. **Fuel tab:** two cards — **Fuel Reserve — dispense from the drums** and **Fuel Purchase — record a bulk delivery**.
-7. **VRF log:** newest form at the top (date, then VRF number). Subtitle is **Newest first**. A VRF sent for approval appears immediately as **Requested — FOR APPROVAL**. Opening it shows the attached photos. **Print / save as PDF** (and the log-row Print button) works with that VRF number before Jeffrey approves. The printed form has a diagonal **FOR APPROVAL** watermark on every page until it is approved; after office approval / Open / posted the watermark is **APPROVED**.
-8. **approve-vrf API:** after `APPROVE_VRF_SECRET` is set and the site is redeployed, a wrong secret must `401` and a missing VRF must `404`. Do not put the real secret in the repo.
-9. **Odometer:** on New VRF, type a meter reading and send for approval. Open, print, and the VRF log for that number show the same reading. A second VRF keeps its own reading.
-10. **Liquidate:** an approved VRF that is still open (including an approved hold such as 5795 that never landed in the ledger) shows **Liquidate** on the log row and in the VRF sheet. A Requested / FOR APPROVAL VRF does not. A closed VRF does not gain a new liquidate path.
-11. **Prepared/Purchased By:** on New VRF, attach an e-signature JPEG (filename sophie, batas, prepared, or purchased) and leave **Apply on this VRF** checked. The printed form shows that signature in the Prepared/Purchased By slot only.
+1. Confirm the live Ask / footer BUILD is **2026-09-23 b** (hard refresh if a service worker or tab still shows `2026-09-23 a`).
+2. **Job order and Tasks proof:** open a job order and a task. Each proof section has **Attach from this device** (photo or video from the phone gallery or computer) and the existing link field. A chosen photo shows in the proof strip. A short video plays there. **Attach proof** / **Attach the link** still saves a pasted https URL. A video over 3 MB asks for a link instead of failing silently.
+3. **New VRF:** the only primary action is **Send for approval**. There is no **Post VRF** button. Staff cannot skip Jeffrey’s office approval.
+4. After deploy, open Office → Approvals. If a pending VRF still shows **58528** beside an already-posted 58528, refresh once — boot remints the pending hold to the next free number and leaves the posted ledger row untouched.
+5. **New VRF → Vehicle code:** type a unit that has an assigned site. Project fills as a default. Change the project to another code — it must stay editable and keep the override. Clearing the project to type a different one must not snap back to the unit site.
+6. **New VRF fuel line:** pick `Fuel — Diesel` and a station/supplier (not FUEL RESERVE). Send for approval — the reserve log chip should read **Fuel Purchase**, not **Fuel Reserve**. FUEL RESERVE is labelled *drum dispense (not a purchase)* and sits after the real suppliers.
+7. **Fuel tab:** two cards — **Fuel Reserve — dispense from the drums** and **Fuel Purchase — record a bulk delivery**.
+8. **VRF log:** newest form at the top (date, then VRF number). Subtitle is **Newest first**. A VRF sent for approval appears immediately as **Requested — FOR APPROVAL**. Opening it shows the attached photos. **Print / save as PDF** (and the log-row Print button) works with that VRF number before Jeffrey approves. The printed form has a diagonal **FOR APPROVAL** watermark on every page until it is approved; after office approval / Open / posted the watermark is **APPROVED**.
+9. **approve-vrf API:** after `APPROVE_VRF_SECRET` is set and the site is redeployed, a wrong secret must `401` and a missing VRF must `404`. Do not put the real secret in the repo.
+10. **Odometer:** on New VRF, type a meter reading and send for approval. Open, print, and the VRF log for that number show the same reading. A second VRF keeps its own reading.
+11. **Liquidate:** an approved VRF that is still open (including an approved hold such as 5795 that never landed in the ledger) shows **Liquidate** on the log row and in the VRF sheet. A Requested / FOR APPROVAL VRF does not. A closed VRF does not gain a new liquidate path.
+12. **Prepared/Purchased By:** on New VRF, attach an e-signature JPEG (filename sophie, batas, prepared, or purchased) and leave **Apply on this VRF** checked. The printed form shows that signature in the Prepared/Purchased By slot only.
 
 HR and Materials are out of scope.
 
