@@ -129,7 +129,7 @@ describe("staff concern sheet — live 18a HTML", () => {
     assert.match(html, /prev\.signedLink && !m\.signedLink/);
     assert.match(html, /hrSigSrc\(rec,"prepared"\)/);
     assert.match(html, /Object\.keys\(rec\.rows\|\|\{\}\)\.forEach\(id=>\{ if\(id\) seen\[id\]=true/);
-    assert.match(html, /const BUILD = "2026-09-23a"/);
+    assert.match(html, /const BUILD = "2026-09-23b"/);
     assert.match(html, /Has not yet arrived/);
     assert.match(html, /OT HRS/);
     assert.match(html, /Last name/);
