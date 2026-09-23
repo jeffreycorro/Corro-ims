@@ -329,12 +329,144 @@ describe("Jeffrey signature stamp", () => {
   });
 });
 
+describe("approver password gate", () => {
+  function waitingStore() {
+    return {
+      settings: settings(),
+      ui: { view: "approver", apprFilter: "all" },
+      employees: { e1: { name: "Santos, Ana" } },
+      leaves: {
+        ev: {
+          id: "ev",
+          status: "For approval",
+          no: "LRF9",
+          empId: "e1",
+          evaluatedBy: "Catherine A. Largo",
+          signedLink: "https://drive/lrf9.pdf",
+          from: "2026-09-01",
+          to: "2026-09-02",
+        },
+      },
+      advances: {},
+      docreg: {},
+    };
+  }
+
+  function harness() {
+    const buttons = [];
+    const pass = { id: "hr-appr-pass", value: "", focus() { this.focused = true; } };
+    const err = { id: "hr-appr-pass-err", textContent: "" };
+    const view = { id: "view", innerHTML: "" };
+    const nav = {
+      id: "nav",
+      child: null,
+      querySelector() {
+        return this.child;
+      },
+      appendChild(btn) {
+        this.child = btn;
+      },
+    };
+    const doc = {
+      readyState: "complete",
+      listeners: {},
+      addEventListener(type, fn) {
+        this.listeners[type] = fn;
+      },
+      getElementById(id) {
+        if (id === "view") return view;
+        if (id === "nav") return nav;
+        if (id === "hr-appr-pass") return pass;
+        if (id === "hr-appr-pass-err") return err;
+        return null;
+      },
+      createElement() {
+        return {
+          type: "button",
+          className: "",
+          innerHTML: "",
+          title: "",
+          setAttribute() {},
+        };
+      },
+    };
+    const host = {
+      S: waitingStore(),
+      document: doc,
+      crumb: "",
+      setCrumb(t, s) {
+        host.crumb = t + "|" + (s || "");
+      },
+      render() {},
+      renderNav() {},
+      wire() {},
+    };
+    return { host, doc, view, nav, pass, err, buttons };
+  }
+
+  it("hides the queue until the password is entered, and keeps the unlock in page memory", () => {
+    const src = fs.readFileSync(path.join(__dirname, "../public/hr-approver.js"), "utf8");
+    assert.match(src, /APPROVER_PASSWORD = "032589"/);
+    assert.doesNotMatch(src, /localStorage\.(get|set)Item/);
+    assert.doesNotMatch(src, /sessionStorage\.(get|set)Item/);
+
+    appr.resetApproverLock();
+    assert.equal(appr.isApproverUnlocked(), false);
+    const locked = appr.gateHtml();
+    assert.match(locked, /id="hr-appr-pass"/);
+    assert.match(locked, /Unlock/);
+    assert.doesNotMatch(locked, /LRF9|data-hr-appr-approve/);
+
+    const empty = appr.tryApproverPassword("   ");
+    assert.equal(empty.ok, false);
+    assert.match(empty.message, /Type a password first/);
+    assert.equal(appr.isApproverUnlocked(), false);
+
+    const wrong = appr.tryApproverPassword("000000");
+    assert.equal(wrong.ok, false);
+    assert.match(wrong.message, /does not match/);
+    assert.equal(appr.isApproverUnlocked(), false);
+
+    const { host, doc, view, nav, pass, err } = harness();
+    appr.patchGlobals(host);
+    host.render();
+    assert.match(view.innerHTML, /hr-appr-pass/);
+    assert.doesNotMatch(view.innerHTML, /LRF9/);
+    assert.equal(host.crumb, "Approver|Password required");
+    assert.match(nav.child.className, /locked/);
+
+    pass.value = "000000";
+    doc.listeners.click({
+      target: { closest: (sel) => (sel.indexOf("data-hr-appr-unlock") !== -1 ? {} : null) },
+      preventDefault() {},
+    });
+    assert.equal(err.textContent, "That password does not match. Try again.");
+    assert.match(view.innerHTML, /hr-appr-pass/);
+    assert.equal(pass.value, "000000");
+
+    pass.value = "032589";
+    doc.listeners.keydown({
+      key: "Enter",
+      target: { id: "hr-appr-pass" },
+      preventDefault() {},
+    });
+    assert.equal(appr.isApproverUnlocked(), true);
+    assert.match(view.innerHTML, /LRF9/);
+    assert.match(view.innerHTML, /data-hr-appr-approve="leave"/);
+    assert.doesNotMatch(view.innerHTML, /hr-appr-pass/);
+    assert.doesNotMatch(nav.child.className, /locked/);
+
+    appr.resetApproverLock();
+    assert.equal(appr.isApproverUnlocked(), false);
+  });
+});
+
 describe("approver tab wiring", () => {
-  it("is loaded by the shim and the HR build is 2026-09-22b", () => {
+  it("is loaded by the shim and the HR build is 2026-09-23a", () => {
     const shim = fs.readFileSync(path.join(__dirname, "../public/claude-shim.js"), "utf8");
     const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
     assert.match(shim, /hr-approver\.js/);
-    assert.match(html, /const BUILD = "2026-09-22b"/);
+    assert.match(html, /const BUILD = "2026-09-23a"/);
     const view = appr.approverHtml(
       {},
       {

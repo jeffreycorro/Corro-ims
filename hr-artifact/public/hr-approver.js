@@ -26,6 +26,68 @@
   var FOR_APPROVAL = "For approval";
   var LABEL_WAITING = "Evaluated — for approval";
   var SIGNATORY_KEYS = ["signatory", "president", "ceo", "final", "management"];
+  /* Fixed password for this tab. Motorpool's office gate compares a stored
+     hash and keeps the unlock on the page object (S.office). A reload clears
+     it. Motorpool has no separate lock-again control. */
+  var APPROVER_PASSWORD = "032589";
+  var unlocked = false;
+
+  function isApproverUnlocked() {
+    return unlocked;
+  }
+
+  function resetApproverLock() {
+    unlocked = false;
+  }
+
+  function tryApproverPassword(value) {
+    var val = str(value).trim();
+    if (!val) return { ok: false, message: "Type a password first." };
+    if (val !== APPROVER_PASSWORD) return { ok: false, message: "That password does not match. Try again." };
+    unlocked = true;
+    return { ok: true, message: "" };
+  }
+
+  function gateHtml() {
+    return (
+      '<div class="hr-appr-gate" style="max-width:440px;margin:28px auto">' +
+      '<div class="card"><div class="card-b">' +
+      '<h2 style="font-size:18px;margin:0 0 8px">Approver</h2>' +
+      '<p style="color:var(--ink2);margin:0">Final approval sits behind this password so the rest of the HR screens stay open.</p>' +
+      '<div class="f" style="margin-top:14px">' +
+      '<label for="hr-appr-pass">Password</label>' +
+      '<input id="hr-appr-pass" type="password" autocomplete="off" enterkeyhint="go">' +
+      "</div>" +
+      '<div id="hr-appr-pass-err" class="hint" style="color:var(--crit);margin-top:6px;min-height:1.2em"></div>' +
+      '<button type="button" class="btn pri" id="hr-appr-unlock" data-hr-appr-unlock="1" style="margin-top:14px">Unlock</button>' +
+      '<p class="hint" style="margin-top:16px">This keeps final approval off the other HR screens. It is not a security boundary — anyone you share the artifact link with can open the page, so share the link itself deliberately.</p>' +
+      "</div></div></div>"
+    );
+  }
+
+  function focusPass(host) {
+    setTimeout(function () {
+      try {
+        var input = host.document && host.document.getElementById && host.document.getElementById("hr-appr-pass");
+        if (input && input.focus) input.focus();
+      } catch (e) {}
+    }, 30);
+  }
+
+  function showPassError(host, message) {
+    var err = host.document && host.document.getElementById && host.document.getElementById("hr-appr-pass-err");
+    if (err) err.textContent = message || "";
+  }
+
+  function applyUnlock(host) {
+    var input = host.document && host.document.getElementById && host.document.getElementById("hr-appr-pass");
+    var result = tryApproverPassword(input ? input.value : "");
+    if (!result.ok) {
+      showPassError(host, result.message);
+      return;
+    }
+    if (typeof host.render === "function") host.render();
+  }
 
   function str(v) {
     return v == null ? "" : String(v);
@@ -771,19 +833,23 @@
     var doc = host.document;
     if (!doc || !doc.getElementById) return;
     var nav = doc.getElementById("nav");
-    if (!nav || nav.querySelector('[data-nav="approver"]')) return;
+    if (!nav || !nav.querySelector) return;
     var S = bindStore(host);
+    var btn = nav.querySelector('[data-nav="approver"]');
+    if (!btn) {
+      btn = doc.createElement("button");
+      btn.type = "button";
+      btn.setAttribute("data-nav", "approver");
+      var cash = nav.querySelector('[data-nav="cashadv"]');
+      if (cash && cash.parentNode) cash.parentNode.insertBefore(btn, cash);
+      else if (nav.appendChild) nav.appendChild(btn);
+    }
     var n = queueItems(S).length;
-    var btn = doc.createElement("button");
-    btn.type = "button";
-    btn.className = "nav-i" + (S.ui && S.ui.view === "approver" ? " on" : "");
-    btn.setAttribute("data-nav", "approver");
+    btn.className = "nav-i" + (S.ui && S.ui.view === "approver" ? " on" : "") + (unlocked ? "" : " locked");
+    if (btn.title !== undefined) btn.title = unlocked ? "" : "Password required";
     btn.innerHTML =
       '<svg><use href="#i-check"/></svg><span>Approver</span>' +
       (n ? '<span class="cnt alert">' + n + "</span>" : "");
-    var cash = nav.querySelector('[data-nav="cashadv"]');
-    if (cash && cash.parentNode) cash.parentNode.insertBefore(btn, cash);
-    else nav.appendChild(btn);
   }
 
   function bindClicks(host) {
@@ -791,9 +857,20 @@
     host.__hrApproverClicks = true;
     var doc = host.document;
     if (!doc || !doc.addEventListener) return;
+    doc.addEventListener("keydown", function (ev) {
+      if (!ev.target || ev.target.id !== "hr-appr-pass" || ev.key !== "Enter") return;
+      if (ev.preventDefault) ev.preventDefault();
+      applyUnlock(host);
+    });
     doc.addEventListener("click", function (ev) {
+      var unlockBtn = ev.target && ev.target.closest ? ev.target.closest("[data-hr-appr-unlock]") : null;
+      if (unlockBtn) {
+        if (ev.preventDefault) ev.preventDefault();
+        applyUnlock(host);
+        return;
+      }
       var t = ev.target && ev.target.closest ? ev.target.closest("[data-hr-appr-filter],[data-hr-appr-approve],[data-hr-appr-reject],[data-hr-appr-preview]") : null;
-      if (!t) return;
+      if (!t || !unlocked) return;
       var S = bindStore(host);
       if (t.hasAttribute("data-hr-appr-filter")) {
         S.ui = S.ui || {};
@@ -995,7 +1072,13 @@
         if (S.ui && S.ui.view === "approver") {
           if (typeof host.renderNav === "function") host.renderNav();
           var view = host.document && host.document.getElementById("view");
-          if (view) view.innerHTML = approverHtml(host, S);
+          if (!unlocked) {
+            if (typeof host.setCrumb === "function") host.setCrumb("Approver", "Password required");
+            if (view) view.innerHTML = gateHtml();
+            focusPass(host);
+          } else if (view) {
+            view.innerHTML = approverHtml(host, S);
+          }
           if (typeof host.wire === "function") host.wire();
           bindClicks(host);
           return;
@@ -1032,6 +1115,10 @@
     stampColumnIndex: stampColumnIndex,
     isEmploymentContract: isEmploymentContract,
     approverHtml: approverHtml,
+    gateHtml: gateHtml,
+    isApproverUnlocked: isApproverUnlocked,
+    tryApproverPassword: tryApproverPassword,
+    resetApproverLock: resetApproverLock,
     FOR_APPROVAL: FOR_APPROVAL,
     LABEL_WAITING: LABEL_WAITING,
     leaveStampTest: leaveStampTest,

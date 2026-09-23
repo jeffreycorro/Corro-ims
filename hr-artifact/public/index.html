@@ -69,6 +69,7 @@ a{color:var(--accent);text-underline-offset:2px}
 .nav-i:hover{background:var(--surface2);color:var(--ink)}
 .nav-i.on{background:var(--accent-soft);color:var(--accent-ink);border-left-color:var(--brass);font-weight:600}
 .nav-i svg{width:15px;height:15px;flex:0 0 15px;opacity:.85}
+.nav-i.locked svg{opacity:.45}
 .nav-i .cnt{margin-left:auto;font-family:var(--f-mono);font-size:10px;background:var(--surface3);color:var(--ink2);padding:1px 5px;border-radius:9px;font-weight:500}
 .nav-i .cnt.alert{background:var(--crit-soft);color:var(--crit)}
 .rail-foot{margin-top:auto;padding:12px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:7px}
@@ -1191,7 +1192,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-09-22b";
+const BUILD = "2026-09-23a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
