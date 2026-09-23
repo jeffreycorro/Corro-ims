@@ -175,7 +175,7 @@ describe("motorpool host companion", () => {
     assert.match(html, /function isFuelBypass/);
     assert.match(html, /function bypassAttribution/);
     assert.match(html, /function logBypassFuelVrf/);
-    assert.match(html, /var BUILD = "2026-09-23 a"/);
+    assert.match(html, /var BUILD = "2026-09-23 b"/);
     assert.match(html, /Approved VRFs waiting to be liquidated/);
     assert.match(html, /Reserves is a log, not a maker/);
     assert.match(html, /Raise the VRF here/);

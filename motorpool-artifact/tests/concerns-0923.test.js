@@ -113,7 +113,7 @@ describe("artifact HTML — 9/23 concern fixes", () => {
     assert.match(html, /Prepared\/Purchased By e-signature/);
     assert.match(html, /Apply on this VRF/);
     assert.match(html, /config\/esigs/);
-    assert.match(html, /var BUILD = "2026-09-23 a"/);
+    assert.match(html, /var BUILD = "2026-09-23 b"/);
     assert.doesNotMatch(html, /if\(entry\.held\|\|entry\.status==="Requested"\)/);
   });
 });
