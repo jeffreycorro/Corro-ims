@@ -134,6 +134,7 @@ describe("approve-from-hold (Office approve path)", () => {
     assert.equal(month.rows[0].vrf, "5812");
     assert.equal(month.rows[0].vstatus, "Open");
     assert.equal(month.rows[0].reserve, "12");
+    assert.equal(month.rows[0].odo, 45210);
     assert.equal(month.rows[0].name, "Hilux");
     assert.equal(month.rows[0].total, 12500);
   });
