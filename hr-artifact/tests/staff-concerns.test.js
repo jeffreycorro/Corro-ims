@@ -127,13 +127,14 @@ describe("staff concern sheet — live 18a HTML", () => {
     assert.match(html, /separated-roster\.json/);
     assert.match(html, /pill ok[^>]*>signed/);
     assert.match(html, /prev\.signedLink && !m\.signedLink/);
-    assert.match(html, /hrSigSrc\(rec,"prepared"\)/);
+    assert.match(html, /cassieSig\(rec\)/);
+    assert.match(html, /hrSigSrc\(rec\|\|null, "prepared"\)/);
     assert.match(html, /Object\.keys\(rec\.rows\|\|\{\}\)\.forEach\(id=>\{ if\(id\) seen\[id\]=true/);
-    assert.match(html, /const BUILD = "2026-09-23b"/);
+    assert.match(html, /const BUILD = "2026-09-24a"/);
     assert.match(html, /Has not yet arrived/);
     assert.match(html, /OT HRS/);
     assert.match(html, /Last name/);
-    assert.match(html, /el\.multiple=true/);
+    assert.match(html, /el\.multiple=!forced/);
   });
 
   it("keeps a new hire and their site after save and on the next blank day", () => {
@@ -273,9 +274,9 @@ describe("staff concern sheet — live 18a HTML", () => {
     const nf = ctx.nameLastFirst("Armenio, Toribio D.");
     assert.equal(nf.last, "Armenio");
     assert.equal(nf.first, "Toribio D.");
-    assert.equal(ctx.matchHrSigFilename("cassie.jpg").slot, "prepared");
+    assert.equal(ctx.matchHrSigFilename("cassie.jpg").slot, "cassie");
     assert.equal(ctx.matchHrSigFilename("prepared-by.jpeg").slot, "prepared");
-    assert.equal(ctx.matchHrSigFilename("Moran.JPG").slot, "prepared");
+    assert.equal(ctx.matchHrSigFilename("Moran.JPG").slot, "cassie");
     assert.equal(ctx.matchHrSigFilename("approved.jpg").slot, "approved");
     assert.equal(ctx.matchHrSigFilename("hr-head.jpg").slot, "approved");
     assert.equal(ctx.matchHrSigFilename("Corro.jpg").slot, "approved");

@@ -463,11 +463,11 @@ describe("approver password gate", () => {
 });
 
 describe("approver tab wiring", () => {
-  it("is loaded by the shim and the HR build is 2026-09-23b", () => {
+  it("is loaded by the shim and the HR build is 2026-09-24a", () => {
     const shim = fs.readFileSync(path.join(__dirname, "../public/claude-shim.js"), "utf8");
     const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
     assert.match(shim, /hr-approver\.js/);
-    assert.match(html, /const BUILD = "2026-09-23b"/);
+    assert.match(html, /const BUILD = "2026-09-24a"/);
     const view = appr.approverHtml(
       {},
       {
@@ -624,7 +624,7 @@ describe("Leave and Cash Advance e-signatures", () => {
     assert.match(approverSrc, /function approveRecord/);
     assert.match(approverSrc, /pdfIncludesSignature = true/);
     assert.match(approverSrc, /signatureStamp = sig/);
-    assert.match(html, /const BUILD = "2026-09-23b"/);
+    assert.match(html, /const BUILD = "2026-09-24a"/);
     assert.match(html, /function leaveCaPrintBlocked/);
     assert.match(html, /leaveCaSig\("dept"\)/);
     assert.match(html, /leaveCaSig\("evaluated"\)/);
@@ -733,7 +733,8 @@ describe("Leave and Cash Advance e-signatures", () => {
 
     ctx.S.settings.hrHead = "Jeffrey James Corro";
     assert.equal(ctx.matchHrSigFilename("Corro.jpg").slot, "approved");
-    assert.equal(ctx.matchHrSigFilename("cassie.jpg").slot, "prepared");
+    assert.equal(ctx.matchHrSigFilename("cassie.jpg").slot, "cassie");
+    assert.equal(ctx.matchHrSigFilename("prepared.jpg").slot, "prepared");
   });
 
   it("keeps Domingo and Catherine when Approve stamps the last column", () => {
