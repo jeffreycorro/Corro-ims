@@ -284,7 +284,8 @@ svg text{font-family:var(--font-body)}
 .vrfdoc .vtot{display:flex;justify-content:flex-end;gap:14px;align-items:baseline;margin-top:8px;
   font-family:var(--font-mono);font-size:14px;font-weight:600}
 .vrfdoc .vsig{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:26px}
-.vrfdoc .vsig .line{border-bottom:1px solid #111;height:30px}
+.vrfdoc .vsig .line{border-bottom:1px solid #111;min-height:36px;display:flex;align-items:flex-end;justify-content:center}
+.vrfdoc .vsig img.sig{display:block;max-height:34px;max-width:150px;object-fit:contain}
 .vrfdoc .vsig .nm{font-size:10.5px;font-weight:700;margin-top:3px}
 .vrfdoc .vsig .rl{font-size:9px;color:#555}
 .vrfdoc .vsig .cap{font-size:8.5px;letter-spacing:.1em;text-transform:uppercase;color:#666}
@@ -375,7 +376,7 @@ var SIGNATORIES = [
 ];
 var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
 /* Shown on the Ask screen, so a screenshot says which version someone is on. */
-var BUILD = "2026-09-21 d";
+var BUILD = "2026-09-23 a";
 var DAY = 86400000, MO = 30.44;
 
 /* Part categories that were entered under two spellings and so split a unit's
@@ -405,7 +406,7 @@ var S = {
   cfg:{nextVrf:5793, pass:null, varianceTol:0.10, nextReserve:1}, sample:null, chat:[], askFiles:[], askPhase:"", asking:false, voiceOut:true, voiceLang:"en-PH", hearing:false, speaking:false, micBlocked:false, ttsReady:false,
   voiceName:"", voices:[], photoCounts:{}, reserves:[], rsvYears:[], lens:"job", selUnit:"", selCat:"", selWork:"", regWork:"", regUnit:"", regSrc:"", regStatus:"", logQ:"",
   view:"yard", office:false, db:null, ready:false, sel:null, draft:null, stale:false,
-  hist:[], showArchivedProjects:false, logProject:""
+  hist:[], showArchivedProjects:false, logProject:"", esigs:{}
 };
 var SID = "s"+Math.random().toString(36).slice(2,9);
 
@@ -875,8 +876,9 @@ function buildIndex(){
       if(!reserve&&r.reserve) reserve=String(r.reserve);
       if(!who&&r.requestedBy) who=String(r.requestedBy);
     });
+    var canon=canonicalVrfStatus(st, reserve?reserveBy(reserve):null, liq, k);
     return {vrf:k, date:rows[0].date, month:rows[0].month, rows:rows,
-      status: st||"Legacy", legacy:!st, liq:liq, reserve:reserve,
+      status: canon.status, legacy:canon.legacy, liq:liq, reserve:reserve,
       units:Object.keys(units), veh:rows[0].veh,
       works:works, scopes:scopes, multi:works.length>1,
       confirmed:nConf===rows.length, partial:nConf>0&&nConf<rows.length,
@@ -985,13 +987,14 @@ function addHeldReserveVrfs(){
     var no=String((r&&r.vrfNo)||"").trim();
     if(!no||have[no]) return;
     var lines=(r.draftLines||[]).filter(function(l){ return l&&l.cat; });
+    var meter=reserveMeter(r);
     var rows=lines.map(function(l){
       var qty=moneyNum(l.qty), price=moneyNum(l.price);
       return {date:r.date, month:monthKey(r.date), vrf:no, veh:r.veh,
         cat:l.cat, item:l.item, supplier:l.supplier, qty:qty, price:price,
         total:qty*price, work:l.work||r.work||"", project:r.project||"",
         notes:r.draftPurpose||r.scope||"", requestedBy:r.requestedBy||"",
-        reserve:String(r.no),
+        odo:meter, reserve:String(r.no),
         vstatus:(r.status==="Closed"||r.status==="Rejected")?"Closed":"Open",
         src:"reserve-hold"};
     });
@@ -1000,7 +1003,7 @@ function addHeldReserveVrfs(){
         item:(r.scope||"").slice(0,80), qty:0, price:0,
         total:moneyNum(r.approvedBudget!=null?r.approvedBudget:r.budget),
         work:r.work||"", project:r.project||"", notes:r.scope||"",
-        requestedBy:r.requestedBy||"", reserve:String(r.no),
+        requestedBy:r.requestedBy||"", odo:meter, reserve:String(r.no),
         vstatus:(r.status==="Closed"||r.status==="Rejected")?"Closed":"Open",
         src:"reserve-hold"}];
     }
@@ -1017,13 +1020,15 @@ function addHeldReserveVrfs(){
     });
     var st=rows[0].vstatus;
     if(r.status==="Requested") st="Requested";
+    else if(r.status==="Closed"||r.status==="Rejected"||r.status==="Flagged"||r.liquidatedAt) st="Closed";
     _vrfs.push({vrf:no, date:r.date, month:rows[0].month, rows:rows,
-      status:st, legacy:false, liq:null, reserve:String(r.no),
+      status:st, legacy:false, liq:r.liquidatedAt?{at:r.liquidatedAt}:null, reserve:String(r.no),
       units:r.veh?[r.veh]:[], veh:r.veh, works:works, scopes:scopes,
       multi:works.length>1, confirmed:true, partial:false,
       confidence:"confirmed", why:"",
       total:rows.reduce(function(a,x){ return a+lineMoney(x); },0),
       project:r.project, notes:r.draftPurpose||r.scope||"",
+      odo:meter, preparedSig:r.preparedSig||"", preparedSigName:r.preparedSigName||"",
       src:"reserve-hold", requestedBy:r.requestedBy||"", held:true});
     have[no]=1;
   });
@@ -1105,7 +1110,8 @@ async function liquidateVrf(entry,edits,added,by,note){
    yes, with the requested lines already on it, so the yard does the work and
    liquidates — there is no second approval to wait for. */
 async function postReserveVrf(r){
-  if((r.vrfs||[]).length) return String(r.vrfs[0]);
+  var already=String((r.vrfs||[])[0]||"");
+  if(already && vrfPostedInLedger(already)) return already;
   var lines=(r.draftLines||[]).filter(function(l){ return l.cat; });
   if(!lines.length) return null;
   var prevNo=String(r.vrfNo||"").trim();
@@ -1135,7 +1141,7 @@ async function postReserveVrf(r){
       work:l.work||r.work||"", item:l.item||"", qty:qty, price:price, total:qty*price,
       supplier:l.supplier||"", unit:l.unit||"pc", project:r.project||"",
       liters:parseFloat(l.liters)||null,
-      odo:parseFloat(String(r.draftOdo||"").replace(/,/g,""))||null,
+      odo:reserveMeter(r),
       reserve:String(r.no), vstatus:"Open",
       requestedBy:r.requestedBy||"",
       override:(r.bypass||r.fuelOverride)?(r.fuelOverride||null):null,
@@ -1146,6 +1152,73 @@ async function postReserveVrf(r){
   try{ if(prevNo&&prevNo!==String(no)) await copyPhotos(prevNo, String(no)); }catch(e){}
   try{ await copyPhotos(rsvOwner(r.no), String(no)); }catch(e){}
   return String(no);
+}
+function vrfPostedInLedger(no){
+  no=String(no||"").trim();
+  if(!no) return false;
+  var k,i;
+  for(k in S.ledger){
+    if(!S.ledger.hasOwnProperty(k)) continue;
+    var arr=S.ledger[k]||[];
+    for(i=0;i<arr.length;i++){
+      if(arr[i]&&String(arr[i].vrf)===no&&arr[i].src!=="reserve-hold") return true;
+    }
+  }
+  return false;
+}
+function vrfRowsInLedger(entry){
+  if(!entry||!entry.rows) return false;
+  return entry.rows.some(function(r){
+    if(!r) return false;
+    var arr=S.ledger[r.month];
+    return !!(arr&&arr.indexOf(r)>=0);
+  });
+}
+/* An approved hold can sit on the log with no ledger lines (post missed, or the
+   month was not indexed). Liquidate needs those lines in the ledger first. */
+async function materializeApprovedVrf(entry){
+  if(vrfRowsInLedger(entry)) return entry;
+  var no=String(entry&&entry.vrf||"");
+  if(no&&vrfPostedInLedger(no)){ _vrfs=null; return vrfByNo(no)||entry; }
+  var r=reserveForVrf(entry);
+  if(!r||String(r.status)!=="Approved") return entry;
+  var made=await postReserveVrf(r);
+  if(made&&(r.vrfs||[]).indexOf(String(made))<0){
+    r.vrfs=(r.vrfs||[]).concat([String(made)]);
+  }
+  if(made) await saveReserves();
+  _vrfs=null;
+  return vrfByNo(String(made||no))||entry;
+}
+async function saveEsigs(){
+  await writeDoc("config/esigs", S.esigs||{});
+}
+async function saveVrfOdo(entry, n){
+  var no=String(entry&&entry.vrf||"").trim();
+  if(!no) return;
+  var touched={}, k, i, changed;
+  for(k in S.ledger){
+    if(!S.ledger.hasOwnProperty(k)) continue;
+    var arr=S.ledger[k]||[];
+    changed=false;
+    for(i=0;i<arr.length;i++){
+      if(!arr[i]||String(arr[i].vrf)!==no||arr[i].src==="reserve-hold") continue;
+      arr[i]=Object.assign({},arr[i],{odo:n});
+      changed=true;
+    }
+    if(changed){ S.ledger[k]=arr; touched[k]=1; }
+  }
+  for(k in touched){
+    if(!touched.hasOwnProperty(k)) continue;
+    await writeDoc("ledger/"+k,{month:k,rows:S.ledger[k]});
+  }
+  var r=reserveForVrf(entry);
+  if(r&&reserveOwnsVrfNo(r, no)){
+    r.draftOdo=n==null?"":String(n);
+    r.odoAtRequest=n;
+    await saveReserves();
+  }
+  _vrfs=null;
 }
 
 /* When every VRF against a reserve is closed, the reserve settles itself. */
@@ -1342,6 +1415,8 @@ async function loadAll(){
   if(cfg) S.cfg = {nextVrf: cfg.nextVrf||5793, pass: cfg.pass||null, fuel: cfg.fuel||null,
     varianceTol: (typeof cfg.varianceTol==="number")?cfg.varianceTol:VARIANCE_TOL_DEFAULT,
     nextReserve: cfg.nextReserve||1, driveFolder: cfg.driveFolder||""};
+  var esigDoc=await readDoc("config/esigs");
+  S.esigs=(esigDoc&&typeof esigDoc==="object")?esigDoc:{};
   /* ledger months live in their own documents so no single doc grows unbounded.
      Trust the index, but also list the collection and months named on reserves
      so an approved VRF cannot vanish because its month was never indexed. */
@@ -2111,8 +2186,8 @@ function photoOwnersForOpenVrf(entry){
      the reserve copy is the fallback until copyPhotos finishes. Posted
      sibling VRFs are still isolated — only Requested holds use this. */
   var vrfNo=owners[0];
-  if(entry&&(entry.held||entry.status==="Requested")&&entry.reserve&&!photoCount(vrfNo)){
-    var r=typeof reserveBy==="function"?reserveBy(entry.reserve):null;
+  var r=entry&&entry.reserve&&typeof reserveBy==="function"?reserveBy(entry.reserve):null;
+  if(entry&&vrfAwaitingApproval(entry,r)&&entry.reserve&&!photoCount(vrfNo)){
     if(r) owners=owners.concat(photoOwnersForReserve(r));
   }
   return owners.filter(function(x,i,a){ return x&&a.indexOf(x)===i; });
@@ -2974,12 +3049,140 @@ function vrfChip(v){
    are APPROVED. */
 function vrfPrintWatermark(entry){
   if(!entry) return "FOR APPROVAL";
-  if(entry.held||entry.src==="reserve-hold") return "FOR APPROVAL";
   var st=String(entry.status||"").trim();
   if(!st||st==="Requested"||/^for approval$/i.test(st)||/^sent for approval$/i.test(st))
     return "FOR APPROVAL";
-  if(st==="Rejected") return "FOR APPROVAL";
+  if(/^rejected$/i.test(st)||/^disapproved$/i.test(st)) return "FOR APPROVAL";
+  /* held means the number is not in the ledger yet. Approved Open holds print APPROVED. */
+  if((entry.held||entry.src==="reserve-hold") && st!=="Open" && st!=="Closed" && st!=="Legacy" &&
+     !/^approved$/i.test(st) && !/^posted$/i.test(st))
+    return "FOR APPROVAL";
   return "APPROVED";
+}
+function parseOdo(v){
+  if(v==null||String(v).trim()==="") return null;
+  var n=parseFloat(String(v).replace(/,/g,"").trim());
+  return isFinite(n)?n:null;
+}
+function reserveMeter(reserve){
+  if(!reserve) return null;
+  var n=parseOdo(reserve.draftOdo);
+  if(n==null) n=parseOdo(reserve.odoAtRequest);
+  if(n==null) n=parseOdo(reserve.odo);
+  return n;
+}
+function reserveOwnsVrfNo(reserve, no){
+  no=String(no==null?"":no).trim();
+  if(!reserve||!no) return false;
+  if(String(reserve.vrfNo||"").trim()===no) return true;
+  return (reserve.vrfs||[]).some(function(x){ return String(x)===no; });
+}
+function reserveForVrf(entry){
+  if(!entry) return null;
+  var no=String(entry.vrf||"").trim();
+  if(entry.reserve){
+    var direct=reserveBy(entry.reserve);
+    if(direct && (!no || reserveOwnsVrfNo(direct, no) || !String(direct.vrfNo||"").trim())) return direct;
+  }
+  if(!no) return null;
+  var hits=(S.reserves||[]).filter(function(r){ return reserveOwnsVrfNo(r, no); });
+  return hits.length===1?hits[0]:null;
+}
+function vrfMeter(entry, reserve){
+  if(!entry) return null;
+  var rows=entry.rows||[];
+  var i;
+  for(i=0;i<rows.length;i++){
+    var n=parseOdo(rows[i]&&rows[i].odo);
+    if(n!=null) return n;
+  }
+  var top=parseOdo(entry.odo);
+  if(top!=null) return top;
+  if(!reserve) return null;
+  var no=String(entry.vrf||"").trim();
+  if(no && !reserveOwnsVrfNo(reserve, no)) return null;
+  if(entry.reserve && String(reserve.no)!==String(entry.reserve) && !reserveOwnsVrfNo(reserve, no)) return null;
+  return reserveMeter(reserve);
+}
+function vrfOdo(entry){
+  return vrfMeter(entry, reserveForVrf(entry));
+}
+function canonicalVrfStatus(st, reserve, liq, vrfNo){
+  if(liq) return {status:"Closed", legacy:false};
+  var raw=String(st||"").trim();
+  if(/^closed$/i.test(raw)||/^liquidated$/i.test(raw)) return {status:"Closed", legacy:false};
+  if(/^rejected$/i.test(raw)||/^disapproved$/i.test(raw)) return {status:"Rejected", legacy:false};
+  if(/^requested$/i.test(raw)||/^for approval$/i.test(raw)||/^sent for approval$/i.test(raw))
+    return {status:"Requested", legacy:false};
+  if(/^open\b/i.test(raw)||/^approved$/i.test(raw)||/^posted$/i.test(raw)||/awaiting liquidation/i.test(raw))
+    return {status:"Open", legacy:false};
+  if((!raw||/^legacy$/i.test(raw)) && reserve && String(reserve.status||"")==="Approved" &&
+     !reserve.liquidatedAt && reserveOwnsVrfNo(reserve, vrfNo))
+    return {status:"Open", legacy:false};
+  return {status:"Legacy", legacy:true};
+}
+function vrfAwaitingApproval(entry, reserve){
+  if(!entry) return true;
+  if(arguments.length<2) reserve=reserveForVrf(entry);
+  var st=String(entry.status||"").trim();
+  if(st==="Requested"||/^for approval$/i.test(st)||/^sent for approval$/i.test(st)) return true;
+  if(st==="Open"||st==="Closed"||st==="Rejected"||/^approved$/i.test(st)||/^posted$/i.test(st)||
+     /awaiting liquidation/i.test(st)) return false;
+  var rs=reserve?String(reserve.status||""):"";
+  if(rs==="Approved"||rs==="Closed"||rs==="Flagged") return false;
+  if(rs==="Requested") return true;
+  if((entry.held||entry.src==="reserve-hold") && st!=="Legacy") return true;
+  return false;
+}
+function vrfCanLiquidate(entry, reserve){
+  if(!entry) return false;
+  if(arguments.length<2) reserve=reserveForVrf(entry);
+  if(vrfAwaitingApproval(entry, reserve)) return false;
+  var st=String(entry.status||"").trim();
+  if(st==="Closed"||st==="Rejected"||/^liquidated$/i.test(st)||/^disapproved$/i.test(st)) return false;
+  if(entry.liq) return false;
+  if(st==="Open"||/^approved$/i.test(st)||/^posted$/i.test(st)||/awaiting liquidation/i.test(st)) return true;
+  return canonicalVrfStatus(st, reserve, entry.liq, entry.vrf).status==="Open";
+}
+function foldSigName(s){
+  return String(s||"").toLowerCase().replace(/\.[a-z0-9]{1,5}$/i,"").replace(/[_-]+/g," ")
+    .replace(/[^a-z0-9\s]/g," ").replace(/\s+/g," ").trim();
+}
+function classifyPreparedSigFilename(filename){
+  var key=foldSigName(filename);
+  if(!key) return "prepared";
+  var prepared=["prepared","purchased","sophie","batas","motor vehicle"];
+  var other=["jeffrey","approved by","cristine","belocura","checked","released","finance","ceo"];
+  var i;
+  for(i=0;i<prepared.length;i++) if(key===prepared[i]||key.indexOf(prepared[i])>=0) return "prepared";
+  for(i=0;i<other.length;i++) if(key===other[i]||key.indexOf(other[i])>=0) return "other";
+  if(/\bcorro\b/.test(key) && key.indexOf("sophie")<0 && key.indexOf("batas")<0) return "other";
+  return "prepared";
+}
+function preparedSignatoryName(){
+  var s=SIGNATORIES.filter(function(x){ return x.cap==="Prepared/Purchased By"; })[0];
+  return s?s.name:"";
+}
+function libraryPreparedSig(){
+  var pack=S.esigs&&S.esigs.prepared;
+  return pack&&pack.data?pack:null;
+}
+function draftPreparedSig(d){
+  if(!d||d.applyPreparedSig===false) return {data:"",name:""};
+  if(d.preparedSig) return {data:d.preparedSig, name:d.preparedSigName||preparedSignatoryName()};
+  var pack=libraryPreparedSig();
+  if(pack) return {data:pack.data, name:pack.name||preparedSignatoryName()};
+  return {data:"",name:""};
+}
+function vrfPreparedSig(entry){
+  if(!entry) return "";
+  if(entry.preparedSig) return String(entry.preparedSig);
+  var rows=entry.rows||[];
+  var i;
+  for(i=0;i<rows.length;i++) if(rows[i]&&rows[i].preparedSig) return String(rows[i].preparedSig);
+  var r=reserveForVrf(entry);
+  if(r&&r.preparedSig) return String(r.preparedSig);
+  return "";
 }
 function vrfMarkNode(label){
   var mk=el("div","vmark");
@@ -4840,13 +5043,20 @@ function openReserve(no,asApprover){
   sc.appendChild(el("div","hint",rsvKind(r)==="job"?"Scope of work":"What the fuel is for"));
   sc.appendChild(el("div",null,r.scope||"—"));
   b.appendChild(sc);
+  var meterAll=reserveMeter(r);
+  if(rsvKind(r)==="job"){
+    var meterNote=el("div"); meterNote.style.margin="0 0 var(--space-3)";
+    meterNote.appendChild(el("span","hint","Odometer  "));
+    meterNote.appendChild(el("b",null,meterAll!=null?nnum(meterAll):"—"));
+    b.appendChild(meterNote);
+  }
 
   if(rsvKind(r)!=="job"){
     var fd=el("div"); fd.style.cssText="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:var(--space-3);margin-bottom:var(--space-4)";
     [["Litres asked",r.litres!=null?nnum(r.litres,2)+" L":"—"],
      ["Est. price / litre",r.pricePerL!=null?peso(r.pricePerL):"—"],
      ["Supplier",r.supplier||"—"],
-     ["Meter at request",r.odoAtRequest!=null?nnum(r.odoAtRequest):"—"],
+     ["Meter at request",meterAll!=null?nnum(meterAll):"—"],
      [rsvKind(r)==="fuel-bulk"?"Drum level at request":"Gauge at request",
       r.gauge?gaugeLabel(r.gauge)+(r.gaugePct!=null?"  ("+r.gaugePct+"%)":""):"— not read"],
      ["Litres left in tank",r.tankLeft!=null?nnum(r.tankLeft,0)+" L":"—"]
@@ -4856,7 +5066,7 @@ function openReserve(no,asApprover){
     });
     b.appendChild(fd);
     if(rsvKind(r)==="fuel-issue"&&r.veh){
-      var chk=fuelCheck(r.veh,r.odoAtRequest,r.litres);
+      var chk=fuelCheck(r.veh,meterAll,r.litres);
       if(chk.gates&&chk.gates.length){
         var cw=el("div"); cw.style.marginBottom="var(--space-3)";
         cw.appendChild(el("div","hint","What the consumption record says about this request"));
@@ -5004,8 +5214,9 @@ function openReserve(no,asApprover){
         return el("span","chip "+(n?"ok":"mute"),n?"📎 "+n:"none"); }},
       {h:"Status",get:vrfChip},
       {h:"",get:function(x){
-        var bt=el("button","btn sm",x.status==="Open"?"Liquidate":"Open");
-        bt.addEventListener("click",function(){ m.remove(); openVrf(x,x.status==="Open"?"liq":"lines"); });
+        var can=vrfCanLiquidate(x);
+        var bt=el("button","btn sm",can?"Liquidate":"Open");
+        bt.addEventListener("click",function(){ m.remove(); openVrf(x,can?"liq":"lines"); });
         return bt; }}
     ],la.vrfs,{empty:"No VRF attached yet."})));
 
@@ -5034,7 +5245,7 @@ function openReserve(no,asApprover){
     });
     row1.appendChild(atb);
     ab.appendChild(row1);
-    var openOnes=la.vrfs.filter(function(x){ return x.status==="Open"; });
+    var openOnes=la.vrfs.filter(function(x){ return vrfCanLiquidate(x); });
     var prog=el("div","banner "+(la.vrfs.length&&!openOnes.length?"info":"warn"));
     prog.style.marginTop="var(--space-3)";
     prog.innerHTML = !la.vrfs.length
@@ -5046,7 +5257,11 @@ function openReserve(no,asApprover){
         : "<b>All "+la.vrfs.length+" VRFs liquidated at "+esc(peso(la.total))+".</b> Close the reserve to settle it.");
     ab.appendChild(prog);
     var liveOne=(r.vrfs||[]).map(vrfByNo).filter(Boolean)
-      .filter(function(x){ return x.status==="Open"; })[0];
+      .filter(function(x){ return vrfCanLiquidate(x); })[0];
+    if(!liveOne){
+      var heldLive=heldVrfEntry(r);
+      if(heldLive&&vrfCanLiquidate(heldLive)) liveOne=heldLive;
+    }
     /* Approved, but no VRF behind it — an approval made before the VRF was
        minted at approval time, or one whose creation failed. Offer it now
        rather than leaving the reserve stranded. */
@@ -6253,6 +6468,8 @@ function vrfLogView(){
       {h:"VRF",get:function(v){ var x=el("span","mono",v.vrf); x.style.fontWeight="600"; return x; }},
       {h:"Date",get:function(v){return v.date;}},
       {h:"Unit",get:function(v){ return el("span","mono",v.units.join(", ")||"—"); }},
+      {h:"Odometer",num:true,get:function(v){
+        var n=vrfOdo(v); return n!=null?nnum(n):"—"; }},
       {h:"Jobs",get:function(v){
         var d=el("div"); d.style.cssText="display:flex;flex-wrap:wrap;gap:3px";
         v.scopes.forEach(function(sc){
@@ -6279,6 +6496,11 @@ function vrfLogView(){
         var eb=el("button","btn sm",link?"Edit link":"+ Link");
         eb.addEventListener("click",function(ev){ ev.stopPropagation(); askDriveLink(v,draw); });
         row.appendChild(eb);
+        if(vrfCanLiquidate(v)){
+          var lqb=el("button","btn sm","Liquidate");
+          lqb.addEventListener("click",function(ev){ ev.stopPropagation(); openVrf(v,"liq"); });
+          row.appendChild(lqb);
+        }
         var ob=el("button","btn sm","Open");
         ob.addEventListener("click",function(ev){ ev.stopPropagation(); openVrf(v); });
         row.appendChild(ob);
@@ -6683,7 +6905,7 @@ function buildVrfDoc(entry,photos){
 
   var meta=el("div","vmeta");
   [["Date",entry.date],["Vehicle",entry.veh||"—"],["Plate",v.plate||"—"],
-   ["Odometer",entry.rows[0]&&entry.rows[0].odo?nnum(entry.rows[0].odo):"—"],
+   ["Odometer",(function(){ var n=vrfOdo(entry); return n!=null?nnum(n):"—"; })()],
    ["Vehicle name",v.desc||entry.rows[0]&&entry.rows[0].name||"—"],
    ["Project",entry.project||"—"],
    ["Jobs on this form",entry.scopes.map(function(x){return x.name;}).join(" · ")],
@@ -6735,10 +6957,17 @@ function buildVrfDoc(entry,photos){
   d.appendChild(tot);
 
   var sig=el("div","vsig");
+  var preparedSrc=vrfPreparedSig(entry);
   SIGNATORIES.forEach(function(x){
     var c=el("div");
     c.appendChild(el("div","cap",x.cap));
-    c.appendChild(el("div","line"));
+    var line=el("div","line");
+    if(x.cap==="Prepared/Purchased By"&&preparedSrc){
+      var im=document.createElement("img");
+      im.className="sig"; im.alt=x.cap; im.src=preparedSrc;
+      line.appendChild(im);
+    }
+    c.appendChild(line);
     c.appendChild(el("div","nm",x.name));
     c.appendChild(el("div","rl",x.role));
     sig.appendChild(c);
@@ -6807,7 +7036,8 @@ var VRFDOC_CSS = [
 ".scoperow td{background:#f7f7f7;font-family:'Archivo Narrow',sans-serif;font-weight:700;font-size:9px;letter-spacing:.08em;text-transform:uppercase}",
 ".vtot{display:flex;justify-content:flex-end;gap:14px;align-items:baseline;margin-top:8px;font-family:'IBM Plex Mono',monospace;font-size:14px;font-weight:600}",
 ".vsig{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:26px}",
-".vsig .line{border-bottom:1px solid #111;height:30px}",
+".vsig .line{border-bottom:1px solid #111;min-height:36px;display:flex;align-items:flex-end;justify-content:center}",
+".vsig img.sig{display:block;max-height:34px;max-width:150px;object-fit:contain}",
 ".vsig .nm{font-size:10.5px;font-weight:700;margin-top:3px}",
 ".vsig .rl{font-size:9px;color:#555}",
 ".vsig .cap{font-size:8.5px;letter-spacing:.1em;text-transform:uppercase;color:#666}",
@@ -7012,7 +7242,27 @@ function openVrf(entry,tab){
   hd.appendChild(rgt);
   b.appendChild(hd);
 
-  var waiting=!!(entry.held||entry.status==="Requested");
+  var odoRow=el("div","row"); odoRow.style.marginTop="var(--space-3)";
+  odoRow.appendChild(el("span","hint","Odometer"));
+  var odoEd=el("input"); odoEd.className="mono"; odoEd.inputMode="numeric";
+  odoEd.style.maxWidth="160px";
+  var odoShown=vrfOdo(entry);
+  odoEd.value=odoShown!=null?String(odoShown):"";
+  odoEd.placeholder="meter reading";
+  var odoSave=el("button","btn sm","Save meter");
+  odoSave.addEventListener("click",async function(){
+    odoSave.disabled=true;
+    var n=parseOdo(odoEd.value);
+    try{ await saveVrfOdo(entry, n); }
+    catch(err){ odoSave.disabled=false; toast("Could not save the odometer."); return; }
+    toast(n==null?"Odometer cleared on VRF "+entry.vrf+".":"Odometer "+nnum(n)+" saved on VRF "+entry.vrf+".");
+    var fresh=vrfByNo(entry.vrf)||entry;
+    openVrf(fresh, tab);
+  });
+  odoRow.appendChild(odoEd); odoRow.appendChild(odoSave);
+  b.appendChild(odoRow);
+
+  var waiting=vrfAwaitingApproval(entry);
   if(waiting){
     var wait=el("div","banner warn"); wait.style.marginTop="var(--space-3)";
     wait.innerHTML="<b>Sent for approval — VRF "+esc(String(entry.vrf))+" is held.</b> "+
@@ -7025,7 +7275,7 @@ function openVrf(entry,tab){
   var tabDefs=[["lines","Lines & jobs"],
    ["photos","Attachments"+(photoCountMany(photoOwnersForOpenVrf(entry))?" ("+photoCountMany(photoOwnersForOpenVrf(entry))+")":"")],
    ["jo","Job order"+(joForVrf(entry.vrf).length?" ("+joForVrf(entry.vrf).length+")":"")]];
-  if(!waiting) tabDefs.push(["liq","Liquidate"+(entry.status==="Open"?" ●":"")]);
+  if(!waiting) tabDefs.push(["liq","Liquidate"+(vrfCanLiquidate(entry)?" ●":"")]);
   tabDefs.forEach(function(o){
       var bt=el("button","btn"+(tab===o[0]?" pri":""),o[1]);
       bt.addEventListener("click",function(){ openVrf(entry,o[0]); });
@@ -7165,7 +7415,7 @@ function openVrf(entry,tab){
     ab3.appendChild(mk2);
     att2.appendChild(ab3); body.appendChild(att2);
   }else if(tab==="liq"){
-    if(entry.legacy){
+    if(entry.legacy&&!vrfCanLiquidate(entry)){
       var lg=el("div","banner info");
       lg.innerHTML="<b>This VRF came in from the old workbooks.</b> It is history — already spent, already settled — so there is nothing to liquidate here.";
       body.appendChild(lg);
@@ -7410,9 +7660,18 @@ function openVrf(entry,tab){
         var bad=added.filter(function(a2){ return a2.cat&&!(parseFloat(a2.qty)>0); });
         if(bad.length){ closeBtn.disabled=false; closeBtn.textContent="Liquidate and close";
           toast("Every added line needs a quantity."); return; }
-        await liquidateVrf(entry,edits,added,lby.value.trim(),lnt.value.trim());
-        var rr2=entry.reserve?reserveBy(entry.reserve):null;
-        toast("VRF "+entry.vrf+" liquidated and closed."+
+        var target=entry;
+        try{ target=await materializeApprovedVrf(entry); }
+        catch(err){ closeBtn.disabled=false; closeBtn.textContent="Liquidate and close";
+          toast("Could not post the lines for VRF "+entry.vrf+"."); return; }
+        if(!vrfRowsInLedger(target)){
+          closeBtn.disabled=false; closeBtn.textContent="Liquidate and close";
+          toast("VRF "+entry.vrf+" is not on the ledger yet, so it cannot be liquidated.");
+          return;
+        }
+        await liquidateVrf(target,edits,added,lby.value.trim(),lnt.value.trim());
+        var rr2=(target.reserve||entry.reserve)?reserveBy(target.reserve||entry.reserve):null;
+        toast("VRF "+(target.vrf||entry.vrf)+" liquidated and closed."+
           (rr2&&rr2.status==="Flagged"?"  RSV-"+rr2.no+" is over budget and now needs a justification.":""));
         m.remove(); render();
       });
@@ -7765,6 +8024,81 @@ function vrfView(){
   pu.addEventListener("input",function(){ d.purpose=pu.value; });
   g0.appendChild(fld("Purpose",pu));
 
+  /* Prepared/Purchased By only — the other two signatories stay blank lines. */
+  var sigBox=el("div"); sigBox.style.marginTop="var(--space-3)";
+  var sigHead=el("div","hint","Prepared/Purchased By e-signature");
+  sigBox.appendChild(sigHead);
+  var sigRow=el("div","row"); sigRow.style.marginTop="var(--space-2)";
+  var sigPrev=el("div");
+  var sigCheck=el("input"); sigCheck.type="checkbox";
+  var sigLabel=el("label","checkline");
+  sigLabel.appendChild(sigCheck);
+  sigLabel.appendChild(document.createTextNode(" Apply on this VRF"));
+  var sigFile=el("input"); sigFile.type="file"; sigFile.accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp";
+  var sigNote=el("div","hint");
+  function paintPreparedSig(){
+    sigPrev.innerHTML="";
+    var pack=libraryPreparedSig();
+    var using=d.preparedSig||(pack&&pack.data)||"";
+    var onFile=!!using;
+    if(d.applyPreparedSig==null) d.applyPreparedSig=onFile;
+    sigCheck.checked=!!d.applyPreparedSig && onFile;
+    sigCheck.disabled=!onFile;
+    if(using){
+      var im=document.createElement("img");
+      im.src=using; im.alt="Prepared/Purchased By";
+      im.style.cssText="max-height:48px;max-width:180px;display:block;background:#fff;border:1px solid var(--rule)";
+      sigPrev.appendChild(im);
+      sigNote.textContent=(pack&&pack.title?pack.title+" · ":"")+preparedSignatoryName()+
+        (sigCheck.checked?" — prints on this VRF.":" — on file, not applied to this VRF.");
+    }else{
+      sigNote.textContent="Attach a JPEG named sophie, batas, prepared, or purchased. It is stored for this slot and can be applied on the VRF you are making.";
+    }
+  }
+  sigCheck.addEventListener("change",function(){
+    d.applyPreparedSig=sigCheck.checked;
+    if(!sigCheck.checked){ d.preparedSig=""; d.preparedSigName=""; }
+    else if(!d.preparedSig){
+      var pack=libraryPreparedSig();
+      if(pack){ d.preparedSig=pack.data; d.preparedSigName=pack.name||preparedSignatoryName(); }
+    }
+    paintPreparedSig();
+  });
+  sigFile.addEventListener("change",async function(){
+    var file=sigFile.files&&sigFile.files[0];
+    sigFile.value="";
+    if(!file) return;
+    var kind=classifyPreparedSigFilename(file.name);
+    if(kind==="other"){
+      toast("That file looks like another signatory. This slot is only Prepared/Purchased By — name it sophie, batas, prepared, or purchased.");
+      return;
+    }
+    try{
+      var sh=await shrinkImage(file);
+      var pack={data:sh.data, title:file.name, name:preparedSignatoryName(), at:iso()};
+      S.esigs=S.esigs||{};
+      S.esigs.prepared=pack;
+      await saveEsigs();
+      d.preparedSig=pack.data;
+      d.preparedSigName=pack.name;
+      d.applyPreparedSig=true;
+      paintPreparedSig();
+      toast("Prepared/Purchased By e-signature saved and applied to this VRF.");
+    }catch(e){
+      toast("Could not read that image.");
+    }
+  });
+  sigRow.appendChild(sigLabel);
+  var sigFileWrap=el("div","field"); sigFileWrap.style.flex="1";
+  sigFileWrap.appendChild(el("label",null,"Attach e-signature"));
+  sigFileWrap.appendChild(sigFile);
+  sigRow.appendChild(sigFileWrap);
+  sigBox.appendChild(sigRow);
+  sigBox.appendChild(sigPrev);
+  sigBox.appendChild(sigNote);
+  paintPreparedSig();
+  g0.appendChild(sigBox);
+
   /* Fuel check / gauge walls do not gate this form. Office still has the
      consumption record under Fuel economics. */
   function refreshGate(){ }
@@ -7912,25 +8246,29 @@ function vrfView(){
   var sp=el("div"); sp.style.flex="1"; foot.appendChild(sp);
   var pv=el("button","btn","Print preview");
   pv.addEventListener("click",function(){
+    d.odo=oIn.value;
     var rows=d.lines.filter(function(l){ return l.cat; }).map(function(l){
       var q=parseFloat(l.qty)||0, pz=parseFloat(l.price)||0;
       return {date:d.date,veh:d.veh,cat:l.cat,item:l.item,supplier:l.supplier,
         qty:q||null,unit:l.unit,price:pz||null,total:(q*pz)||null,
-        odo:parseFloat(String(d.odo).replace(/,/g,""))||null,work:l.work||d.work};
+        odo:parseOdo(d.odo),work:l.work||d.work};
     });
     var byW={};
     rows.forEach(function(r){ (byW[r.work]=byW[r.work]||[]).push(r); });
     var scopes=Object.keys(byW).map(function(k){
       return {code:k,name:workName(k),rows:byW[k],
         total:byW[k].reduce(function(a,r){return a+(r.total||0);},0)}; });
+    var psigPrev=draftPreparedSig(d);
     printVrf({vrf:"— not yet posted —",date:d.date,veh:d.veh,units:[d.veh],
       rows:rows,scopes:scopes,multi:scopes.length>1,project:d.project,notes:d.purpose,
-      requestedBy:d.requestedBy,
+      requestedBy:d.requestedBy, preparedSig:psigPrev.data, preparedSigName:psigPrev.name,
+      odo:parseOdo(d.odo),
       total:rows.reduce(function(a,r){return a+lineMoney(r);},0)}, d.photos||[]);
   });
   foot.appendChild(pv);
   var send=el("button","btn pri","Send for approval");
   send.addEventListener("click",function(){
+    d.odo=oIn.value;
     var who=(d.requestedBy||"").trim();
     if(!who||who==="MOTORPOOL DEPT."){
       toast("Put your name in “Requested by” at the top — the request has to carry one.");
@@ -8047,7 +8385,9 @@ async function sendForApproval(d,btn){
       vrfs:[],jo:"",actual:null,liquidatedAt:"",
       draftLines:rows.map(function(l){ return {cat:l.cat,item:l.item,supplier:l.supplier,
         qty:l.qty,unit:l.unit,price:l.price,liters:l.liters,work:l.work||d.work}; }),
-      draftOdo:d.odo||"", draftPurpose:d.purpose||"",
+      draftOdo:d.odo||"", odoAtRequest:parseOdo(d.odo), draftPurpose:d.purpose||"",
+      preparedSig:(function(){ var s=draftPreparedSig(d); return s.data||""; })(),
+      preparedSigName:(function(){ var s=draftPreparedSig(d); return s.data?s.name:""; })(),
       justification:"",justifiedBy:"",varianceBy:"",varianceAt:"",varianceNote:""});
     await saveReserves();
     if(d.photos&&d.photos.length){

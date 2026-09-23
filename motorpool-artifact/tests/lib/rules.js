@@ -760,20 +760,163 @@
 
   function vrfPrintWatermark(entry) {
     if (!entry) return "FOR APPROVAL";
-    if (entry.held || entry.src === "reserve-hold") return "FOR APPROVAL";
     var st = String(entry.status || "").trim();
     if (!st || st === "Requested" || /^for approval$/i.test(st) || /^sent for approval$/i.test(st)) {
       return "FOR APPROVAL";
     }
-    if (st === "Rejected") return "FOR APPROVAL";
+    if (/^rejected$/i.test(st) || /^disapproved$/i.test(st)) return "FOR APPROVAL";
+    /* held / reserve-hold means "not in the ledger yet", not "still waiting".
+       An approved Open hold prints APPROVED. Only a real hold stays FOR APPROVAL. */
+    if (
+      (entry.held || entry.src === "reserve-hold") &&
+      st !== "Open" &&
+      st !== "Closed" &&
+      st !== "Legacy" &&
+      !/^approved$/i.test(st) &&
+      !/^posted$/i.test(st)
+    ) {
+      return "FOR APPROVAL";
+    }
     return "APPROVED";
+  }
+
+  function parseOdo(v) {
+    if (v == null || String(v).trim() === "") return null;
+    var n = parseFloat(String(v).replace(/,/g, "").trim());
+    return isFinite(n) ? n : null;
+  }
+
+  function reserveMeter(reserve) {
+    if (!reserve) return null;
+    var n = parseOdo(reserve.draftOdo);
+    if (n == null) n = parseOdo(reserve.odoAtRequest);
+    if (n == null) n = parseOdo(reserve.odo);
+    return n;
+  }
+
+  function reserveOwnsVrfNo(reserve, no) {
+    no = String(no == null ? "" : no).trim();
+    if (!reserve || !no) return false;
+    if (String(reserve.vrfNo || "").trim() === no) return true;
+    return (reserve.vrfs || []).some(function (x) {
+      return String(x) === no;
+    });
+  }
+
+  /** Reading stored on this VRF. A reserve is used only when it owns this number. */
+  function vrfMeter(entry, reserve) {
+    if (!entry) return null;
+    var rows = entry.rows || [];
+    var i;
+    for (i = 0; i < rows.length; i++) {
+      var n = parseOdo(rows[i] && rows[i].odo);
+      if (n != null) return n;
+    }
+    var top = parseOdo(entry.odo);
+    if (top != null) return top;
+    if (!reserve) return null;
+    var no = String(entry.vrf || "").trim();
+    if (no && !reserveOwnsVrfNo(reserve, no)) return null;
+    if (entry.reserve && String(reserve.no) !== String(entry.reserve) && !reserveOwnsVrfNo(reserve, no)) {
+      return null;
+    }
+    return reserveMeter(reserve);
+  }
+
+  function canonicalVrfStatus(st, reserve, liq, vrfNo) {
+    if (liq) return { status: "Closed", legacy: false };
+    var raw = String(st || "").trim();
+    if (/^closed$/i.test(raw) || /^liquidated$/i.test(raw)) return { status: "Closed", legacy: false };
+    if (/^rejected$/i.test(raw) || /^disapproved$/i.test(raw)) return { status: "Rejected", legacy: false };
+    if (/^requested$/i.test(raw) || /^for approval$/i.test(raw) || /^sent for approval$/i.test(raw)) {
+      return { status: "Requested", legacy: false };
+    }
+    if (
+      /^open\b/i.test(raw) ||
+      /^approved$/i.test(raw) ||
+      /^posted$/i.test(raw) ||
+      /awaiting liquidation/i.test(raw)
+    ) {
+      return { status: "Open", legacy: false };
+    }
+    if (
+      (!raw || /^legacy$/i.test(raw)) &&
+      reserve &&
+      String(reserve.status || "") === "Approved" &&
+      !reserve.liquidatedAt &&
+      reserveOwnsVrfNo(reserve, vrfNo)
+    ) {
+      return { status: "Open", legacy: false };
+    }
+    return { status: "Legacy", legacy: true };
+  }
+
+  function vrfAwaitingApproval(entry, reserve) {
+    if (!entry) return true;
+    var st = String(entry.status || "").trim();
+    if (st === "Requested" || /^for approval$/i.test(st) || /^sent for approval$/i.test(st)) return true;
+    if (
+      st === "Open" ||
+      st === "Closed" ||
+      st === "Rejected" ||
+      /^approved$/i.test(st) ||
+      /^posted$/i.test(st) ||
+      /awaiting liquidation/i.test(st)
+    ) {
+      return false;
+    }
+    var rs = reserve ? String(reserve.status || "") : "";
+    if (rs === "Approved" || rs === "Closed" || rs === "Flagged") return false;
+    if (rs === "Requested") return true;
+    if ((entry.held || entry.src === "reserve-hold") && st !== "Legacy") return true;
+    return false;
+  }
+
+  function vrfCanLiquidate(entry, reserve) {
+    if (!entry || vrfAwaitingApproval(entry, reserve)) return false;
+    var st = String(entry.status || "").trim();
+    if (st === "Closed" || st === "Rejected" || /^liquidated$/i.test(st) || /^disapproved$/i.test(st)) {
+      return false;
+    }
+    if (entry.liq) return false;
+    if (st === "Open" || /^approved$/i.test(st) || /^posted$/i.test(st) || /awaiting liquidation/i.test(st)) {
+      return true;
+    }
+    return canonicalVrfStatus(st, reserve, entry.liq, entry.vrf).status === "Open";
+  }
+
+  function foldSigName(s) {
+    return String(s || "")
+      .toLowerCase()
+      .replace(/\.[a-z0-9]{1,5}$/i, "")
+      .replace(/[_-]+/g, " ")
+      .replace(/[^a-z0-9\s]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  /** prepared = this slot; other = a different signatory; unmatched files still fit this slot. */
+  function classifyPreparedSigFilename(filename) {
+    var key = foldSigName(filename);
+    if (!key) return "prepared";
+    var prepared = ["prepared", "purchased", "sophie", "batas", "motor vehicle"];
+    var other = ["jeffrey", "approved by", "cristine", "belocura", "checked", "released", "finance", "ceo"];
+    var i;
+    for (i = 0; i < prepared.length; i++) {
+      if (key === prepared[i] || key.indexOf(prepared[i]) >= 0) return "prepared";
+    }
+    for (i = 0; i < other.length; i++) {
+      if (key === other[i] || key.indexOf(other[i]) >= 0) return "other";
+    }
+    if (/\bcorro\b/.test(key) && key.indexOf("sophie") < 0 && key.indexOf("batas") < 0) return "other";
+    return "prepared";
   }
 
   function photoOwnersForOpenVrf(entry, reserve, counts) {
     var owners = photoOwnersForVrf(entry).slice();
     var vrfNo = owners[0];
     var have = counts && vrfNo ? Number(counts[vrfNo] || 0) : 0;
-    if (entry && (entry.held || entry.status === "Requested") && reserve && !have) {
+    if (entry && vrfAwaitingApproval(entry, reserve) && reserve && !have) {
       owners = owners.concat(photoOwnersForReserve(reserve));
     }
     return owners.filter(function (x, i, a) {
@@ -1379,6 +1522,14 @@
     photoOwnersForVrf: photoOwnersForVrf,
     photoOwnersForOpenVrf: photoOwnersForOpenVrf,
     vrfPrintWatermark: vrfPrintWatermark,
+    parseOdo: parseOdo,
+    reserveMeter: reserveMeter,
+    reserveOwnsVrfNo: reserveOwnsVrfNo,
+    vrfMeter: vrfMeter,
+    canonicalVrfStatus: canonicalVrfStatus,
+    vrfAwaitingApproval: vrfAwaitingApproval,
+    vrfCanLiquidate: vrfCanLiquidate,
+    classifyPreparedSigFilename: classifyPreparedSigFilename,
     moneyNum: moneyNum,
     lineMoney: lineMoney,
     vrfRequestedBy: vrfRequestedBy,

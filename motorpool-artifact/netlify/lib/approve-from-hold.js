@@ -30,6 +30,19 @@ function moneyNum(v) {
   return isFinite(n) ? n : 0;
 }
 
+function parseOdo(v) {
+  if (v == null || String(v).trim() === "") return null;
+  const n = parseFloat(String(v).replace(/,/g, "").trim());
+  return Number.isFinite(n) ? n : null;
+}
+
+/** draftOdo is what New VRF saves. odoAtRequest is the older meter field. */
+function holdOdo(hold) {
+  const fromDraft = parseOdo(hold && hold.draftOdo);
+  if (fromDraft != null) return fromDraft;
+  return parseOdo(hold && hold.odoAtRequest);
+}
+
 function isFuel(text) {
   return /^\s*fuel\s*[—–-]/i.test(text == null ? "" : text);
 }
@@ -297,7 +310,7 @@ function buildLedgerRows(hold, vrfNo, snapshot, today) {
       unit: l.unit || "pc",
       project: hold.project || "",
       liters: parseFloat(l.liters) || null,
-      odo: parseFloat(String(hold.draftOdo || "").replace(/,/g, "")) || null,
+      odo: holdOdo(hold),
       reserve: String(hold.no),
       vstatus: "Open",
       requestedBy: hold.requestedBy || "",
@@ -570,6 +583,8 @@ function createMemoryStore(initial) {
 module.exports = {
   applyApproveFromHold,
   approveError,
+  holdOdo,
+  parseOdo,
   approvePendingVrf,
   createMemoryStore,
   createSupabaseStore,
