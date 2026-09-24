@@ -67,7 +67,7 @@ Local `netlify dev` can still use `GOOGLE_SERVICE_ACCOUNT_JSON` or `GOOGLE_SERVI
 | `ELEVENLABS_API_KEY` | Functions | `tts` |
 | `ELEVENLABS_VOICE_ID` / `ELEVENLABS_MODEL_ID` | Functions, optional | Small |
 | `ANTHROPIC_MODEL*` / `OPENAI_TRANSCRIBE_*` | Functions, optional | Small; unset if unused |
-| `GOOGLE_DRIVE_DELEGATED_USER` | Functions, optional | Email only (~40 B) |
+| `GOOGLE_DRIVE_DELEGATED_USER` | **All contexts**, Functions | `jeffreycorro@corroconstruction.com` (~40 B). Canonical impersonation name. Aliases `GOOGLE_DRIVE_IMPERSONATE` and `GOOGLE_IMPERSONATE_USER` are read if the canonical name is unset. |
 | `GOOGLE_DRIVE_OCR` | Functions, optional | `true` / unset |
 | `GOOGLE_SERVICE_ACCOUNT_BLOB` | Functions, optional | Tiny flag (`1`) if you want an explicit Blobs hint |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | **Builds only**, or **unset** after Blobs upload | Never Functions |
@@ -108,19 +108,22 @@ Gzip + base64 of the SA JSON still lands around 2KB and remains fragile. Splitti
 3. Drive search from the artifact works (folders still shared with the service-account email).
 4. Applicants ingest still accepts `X-HR-Ingest-Key`.
 
-## Leave / CA file-upload quota (2026-09-19)
+## Leave / CA file-upload quota (2026-09-19, delegation 2026-09-24d)
 
-Staff were blocked with “file upload quota has been reached” when attaching a signed Leave or Cash Advance scan.
+Staff were blocked with “file upload quota has been reached” when attaching a signed Leave or Cash Advance scan. The portal cap is not the cause.
 
-What the code now does:
+Upload path: Leave/CA `uploadSigned` → `mcp.callTool("create_file")` → `claude-shim.js` → `POST /.netlify/functions/drive` → `createFile` / `createFileInit` in `netlify/lib/google-drive.js`. Every one of those calls uses the same service-account access token.
+
+What the code does:
 
 - Client cap is **80 MB** (`MAX_UPLOAD_MB` in `public/index.html`). It was 15 MB. Netlify Functions still oneshot at **3.5 MB**; `claude-shim.js` already chunks anything larger. Do not invent a second storage backend.
-- Drive HTTP `storageQuotaExceeded` / `quotaExceeded` is mapped to `quota_exceeded` with an operator-facing sentence. The artifact toast tells staff the portal is no longer the 15 MB wall.
+- The service-account JWT includes `sub` when `GOOGLE_DRIVE_DELEGATED_USER` is set (or alias `GOOGLE_DRIVE_IMPERSONATE` / `GOOGLE_IMPERSONATE_USER`). That makes Drive create the file as that Workspace user, so quota comes from the user, not the service account. Uploads send `supportsAllDrives=true` for Shared Drives and delegated My Drive folders.
+- Drive HTTP `storageQuotaExceeded` / `uploadQuotaExceeded` / `quotaExceeded` is mapped to `quota_exceeded`. The message says the service account's My Drive is full and names `GOOGLE_DRIVE_DELEGATED_USER`. Sharing a folder with the service account does not move quota off the service account.
 
-Code cannot create Drive space. If a scan still fails after this deploy, Jeffrey must do one of these on **corcondev-hr**:
+Code cannot create Drive space. The JWT includes `sub` only when `GOOGLE_DRIVE_DELEGATED_USER` (or an alias) is set. If it is unset, the service account owns the new file and its My Drive quota applies — sharing the folder does not change that. On **corcondev-hr**, Jeffrey must:
 
-1. **Preferred.** Set Functions env `GOOGLE_DRIVE_DELEGATED_USER` to a Workspace mailbox that owns (or has space in) the HR 201 / inbox folders. Service accounts have little or no My Drive quota of their own.
-2. Move the HR 201 / inbox / memo folders onto a **Shared Drive** and share that drive with the service-account email as Content manager. Uploads then count against the Shared Drive, not the SA.
-3. Free space on the Drive account that currently receives uploads, and confirm the 201 / `_INBOX` folders are still shared with the service-account email.
+1. **Preferred.** Workspace Admin → Security → Access and data control → API controls → Domain-wide delegation. Add the service account's **numeric client_id** with scope `https://www.googleapis.com/auth/drive`. Then set `GOOGLE_DRIVE_DELEGATED_USER` on site **corcondev-hr** for **all contexts** (Production, Deploy Previews, Branch deploys, and Local — not Production only) and include **Functions** so the Drive function can read it. The value is `jeffreycorro@corroconstruction.com`. Redeploy after saving. That mailbox must own or have space in the Leave / Cash Advance / 201 folders.
+2. **Alternative.** Move those folders onto a **Shared Drive** and add the service-account email as Content manager. Not required if step 1 is done.
+3. Free space on the mailbox that currently receives uploads.
 
 No new Netlify Blob store is required for Leave/CA attachments. Blobs stay for the Google service-account JSON only.

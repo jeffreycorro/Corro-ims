@@ -43,6 +43,9 @@ describe("netlify functions", () => {
     delete process.env.OPENAI_TRANSCRIBE_MODEL;
     delete process.env.ELEVENLABS_API_KEY;
     delete process.env.ELEVENLABS_VOICE_ID;
+    delete process.env.GOOGLE_DRIVE_DELEGATED_USER;
+    delete process.env.GOOGLE_DRIVE_IMPERSONATE;
+    delete process.env.GOOGLE_IMPERSONATE_USER;
     setTestBlobLoader(async () => "");
     resetServiceAccountCache();
     resetTokenCache();
@@ -484,6 +487,108 @@ describe("netlify functions", () => {
       const body = JSON.parse(res.body);
       assert.equal(body.payload.id, "folder1");
       assert.equal(body.payload.viewUrl, "https://drive.google.com/drive/folders/folder1");
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it("Leave/CA create_file impersonates GOOGLE_DRIVE_DELEGATED_USER and sends supportsAllDrives", async () => {
+    process.env.GOOGLE_SERVICE_ACCOUNT_JSON = testServiceAccountJson();
+    process.env.GOOGLE_DRIVE_DELEGATED_USER = "leave-ca@example.com";
+    const token = signSession({ sub: "gate", method: "password" }, SECRET);
+    const originalFetch = global.fetch;
+    let assertion = "";
+    let uploadUrl = "";
+    global.fetch = async (url, opts) => {
+      const href = String(url);
+      if (href.includes("oauth2.googleapis.com/token")) {
+        assertion = new URLSearchParams(opts.body).get("assertion");
+        return { ok: true, json: async () => ({ access_token: "ya29.delegated", expires_in: 3600 }) };
+      }
+      if (href.includes("/upload/drive/v3/files")) {
+        uploadUrl = href;
+        const created = {
+          id: "signed1",
+          name: "1001-LEAVE SIGNED.pdf",
+          mimeType: "application/pdf",
+          webViewLink: "https://drive.google.com/file/d/signed1/view",
+          parents: ["inbox"],
+        };
+        return { ok: true, json: async () => created };
+      }
+      throw new Error("unexpected fetch " + href);
+    };
+    try {
+      const res = await driveHandler({
+        httpMethod: "POST",
+        headers: { cookie: `${COOKIE_NAME}=${encodeURIComponent(token)}` },
+        body: JSON.stringify({
+          tool: "create_file",
+          server: "Google Drive",
+          args: {
+            title: "1001-LEAVE SIGNED.pdf",
+            parentId: "inbox",
+            base64Content: Buffer.from("%PDF-leave").toString("base64"),
+            contentMimeType: "application/pdf",
+          },
+        }),
+      });
+      assert.equal(res.statusCode, 200);
+      const body = JSON.parse(res.body);
+      assert.equal(body.payload.viewUrl, "https://drive.google.com/file/d/signed1/view");
+      const claims = JSON.parse(Buffer.from(assertion.split(".")[1], "base64url").toString("utf8"));
+      assert.equal(claims.sub, "leave-ca@example.com");
+      assert.equal(claims.scope, "https://www.googleapis.com/auth/drive");
+      assert.match(uploadUrl, /supportsAllDrives=true/);
+      assert.match(uploadUrl, /uploadType=multipart/);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it("returns an operator quota error when Leave/CA upload hits storageQuotaExceeded", async () => {
+    process.env.GOOGLE_SERVICE_ACCOUNT_JSON = testServiceAccountJson();
+    const token = signSession({ sub: "gate", method: "password" }, SECRET);
+    const originalFetch = global.fetch;
+    global.fetch = async (url) => {
+      const href = String(url);
+      if (href.includes("oauth2.googleapis.com/token")) {
+        return { ok: true, json: async () => ({ access_token: "ya29.sa", expires_in: 3600 }) };
+      }
+      if (href.includes("/upload/drive/v3/files")) {
+        return {
+          ok: false,
+          status: 403,
+          json: async () => ({
+            error: {
+              message: "The user's Drive storage quota has been exceeded.",
+              errors: [{ reason: "storageQuotaExceeded" }],
+            },
+          }),
+        };
+      }
+      throw new Error("unexpected fetch " + href);
+    };
+    try {
+      const res = await driveHandler({
+        httpMethod: "POST",
+        headers: { cookie: `${COOKIE_NAME}=${encodeURIComponent(token)}` },
+        body: JSON.stringify({
+          tool: "create_file",
+          args: {
+            title: "1002-CASH ADVANCE SIGNED.pdf",
+            parentId: "inbox",
+            base64Content: Buffer.from("%PDF-ca").toString("base64"),
+            contentMimeType: "application/pdf",
+          },
+        }),
+      });
+      assert.equal(res.statusCode, 403);
+      const body = JSON.parse(res.body);
+      assert.equal(body.code, "quota_exceeded");
+      assert.match(body.error, /service account's My Drive is full/);
+      assert.match(body.error, /GOOGLE_DRIVE_DELEGATED_USER/);
+      assert.doesNotMatch(body.error, /upload failed/i);
     } finally {
       global.fetch = originalFetch;
     }

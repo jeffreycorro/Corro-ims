@@ -19,7 +19,7 @@ describe("placeholder and privacy", () => {
     const shimIndex = html.indexOf("/claude-shim.js");
     const pwaIndex = html.indexOf("/pwa.js");
     assert.ok(shimIndex > -1 && pwaIndex > shimIndex, "pwa.js must load after the shim");
-    assert.match(html, /const BUILD = "2026-09-24c"/);
+    assert.match(html, /const BUILD = "2026-09-24d"/);
     assert.doesNotMatch(html, /hr-dictation\.js/);
     assert.doesNotMatch(html, /hr-memo\.js/);
     assert.doesNotMatch(html, /<script[^>]+hr-attendance\.js/);
@@ -73,6 +73,22 @@ describe("placeholder and privacy", () => {
     assert.match(readme, /Builds only/);
     assert.match(readme, /HR_SESSION_SECRET/);
     assert.match(readme, /GOOGLE_DRIVE_DELEGATED_USER/);
+    assert.match(readme, /https:\/\/www\.googleapis\.com\/auth\/drive/);
+    assert.match(readme, /numeric\*\* `client_id`/);
+    assert.match(readme, /GOOGLE_DRIVE_IMPERSONATE/);
+    const example = fs.readFileSync(path.join(__dirname, "../.env.example"), "utf8");
+    assert.match(example, /GOOGLE_DRIVE_DELEGATED_USER/);
+    assert.match(example, /https:\/\/www\.googleapis\.com\/auth\/drive/);
+    assert.match(example, /client_id/);
+    assert.match(example, /GOOGLE_IMPERSONATE_USER/);
+    assert.match(readme, /all contexts/i);
+    assert.match(readme, /@corroconstruction/);
+    assert.match(readme, /jeffreycorro@corroconstruction\.com/);
+    assert.match(example, /Contexts: All/);
+    assert.match(example, /corcondev-hr/);
+    assert.match(example, /@corroconstruction/);
+    assert.match(example, /jeffreycorro@corroconstruction\.com/);
+    assert.match(example, /client_id/);
     assert.match(readme, /Add to Home Screen/);
     assert.match(readme, /<script src="\/pwa\.js"><\/script>/);
     assert.match(readme, /OPENAI_API_KEY/);
@@ -113,6 +129,11 @@ describe("placeholder and privacy", () => {
     assert.match(envDoc, /HR_APPLICANTS_INGEST_KEY/);
     assert.match(envDoc, /Functions-scoped vs Builds-only/);
     assert.match(envDoc, /HR_GATE_SECRET/);
+    assert.match(envDoc, /all contexts/i);
+    assert.match(envDoc, /@corroconstruction/);
+    assert.match(envDoc, /numeric client_id/);
+    assert.match(envDoc, /https:\/\/www\.googleapis\.com\/auth\/drive/);
+    assert.match(envDoc, /jeffreycorro@corroconstruction\.com/);
   });
 
   it("netlify.toml publishes public with privacy headers", () => {

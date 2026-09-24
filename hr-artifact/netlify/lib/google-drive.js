@@ -18,8 +18,31 @@ const MAX_READ_BYTES = 12 * 1024 * 1024;
 
 let tokenCache = null;
 
+/* Canonical Netlify Functions name. The other two are aliases so a value
+   already stored under an impersonation name is not ignored. */
+const DELEGATED_USER_ENVS = [
+  "GOOGLE_DRIVE_DELEGATED_USER",
+  "GOOGLE_DRIVE_IMPERSONATE",
+  "GOOGLE_IMPERSONATE_USER",
+];
+
+function envEmail(name) {
+  let value = String(process.env[name] || "").trim();
+  if (
+    value.length >= 2 &&
+    ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))
+  ) {
+    value = value.slice(1, -1).trim();
+  }
+  return value;
+}
+
 function delegatedUser() {
-  return String(process.env.GOOGLE_DRIVE_DELEGATED_USER || "").trim();
+  for (const name of DELEGATED_USER_ENVS) {
+    const value = envEmail(name);
+    if (value) return value;
+  }
+  return "";
 }
 
 function ocrEnabled() {
@@ -41,6 +64,9 @@ function signServiceJwt(account) {
     iat: now,
     exp: now + 3600,
   };
+  /* Without sub, Drive creates the file as the service account. A My Drive
+     folder shared with the service account still bills the service account,
+     which has no usable quota. sub impersonates a Workspace user. */
   const subject = delegatedUser();
   if (subject) payload.sub = subject;
   const unsigned = `${b64url(header)}.${b64url(payload)}`;
@@ -50,8 +76,28 @@ function signServiceJwt(account) {
   return `${unsigned}.${sig}`;
 }
 
+function mapTokenHttpError(status, json) {
+  const msg = String((json && (json.error_description || json.error)) || `token ${status}`);
+  const subject = delegatedUser();
+  const hay = `${msg} ${JSON.stringify(json || {})}`;
+  if (
+    subject &&
+    /unauthorized_client|invalid_grant|access_denied|not authorized|Invalid email or User ID/i.test(hay)
+  ) {
+    return codedError(
+      "tool_error",
+      `Google refused domain-wide delegation for GOOGLE_DRIVE_DELEGATED_USER (${subject}). ` +
+        "In Workspace Admin, authorize this service account's numeric client_id for scope https://www.googleapis.com/auth/drive. " +
+        "The mailbox must own or have space in the Leave and Cash Advance folders."
+    );
+  }
+  if (status === 401 || status === 403) return codedError("needs_reauth", msg);
+  return codedError("server_not_connected", msg);
+}
+
 async function getAccessToken({ force = false } = {}) {
-  if (!force && tokenCache && tokenCache.expiresAt > Date.now() + 60_000) {
+  const subject = delegatedUser();
+  if (!force && tokenCache && tokenCache.subject === subject && tokenCache.expiresAt > Date.now() + 60_000) {
     return tokenCache.token;
   }
   const account = await loadServiceAccount();
@@ -74,16 +120,13 @@ async function getAccessToken({ force = false } = {}) {
   }
   const json = await res.json().catch(() => ({}));
   if (!res.ok || !json.access_token) {
-    const msg = json.error_description || json.error || `token ${res.status}`;
-    if (res.status === 401 || res.status === 403) {
-      throw codedError("needs_reauth", String(msg));
-    }
-    throw codedError("server_not_connected", String(msg));
+    throw mapTokenHttpError(res.status, json);
   }
   const expiresIn = Number(json.expires_in) || 3600;
   tokenCache = {
     token: json.access_token,
     expiresAt: Date.now() + expiresIn * 1000,
+    subject,
   };
   return tokenCache.token;
 }
@@ -227,8 +270,27 @@ function driveQuotaReason(json, msg) {
   const errors = (json && json.error && json.error.errors) || [];
   const reasons = errors.map((e) => String((e && e.reason) || "")).join(" ");
   const hay = `${reasons} ${msg || ""} ${JSON.stringify(json || {})}`;
-  return /storageQuotaExceeded|quotaExceeded|uploadQuotaExceeded|storage quota|upload quota|quota has been reached/i.test(
+  return /storageQuotaExceeded|quotaExceeded|uploadQuotaExceeded|storage quota|upload quota|quota has been reached|do not have storage quota/i.test(
     hay
+  );
+}
+
+function quotaExceededMessage() {
+  const subject = delegatedUser();
+  if (subject) {
+    return (
+      `Google Drive storage is full for GOOGLE_DRIVE_DELEGATED_USER (${subject}). ` +
+      "That Workspace mailbox must have free space for the Leave and Cash Advance folders. " +
+      "A Shared Drive is an alternative."
+    );
+  }
+  return (
+    "The service account's My Drive is full, so Leave and Cash Advance uploads cannot create files. " +
+    "Sharing those folders with the service account does not use the owner's quota — the service account still owns the new file. " +
+    "On Netlify site corcondev-hr, set GOOGLE_DRIVE_DELEGATED_USER for all contexts (not Production only) and include Functions. " +
+    "The value is jeffreycorro@corroconstruction.com. " +
+    "Workspace Admin must grant this service account domain-wide delegation (numeric client_id, scope https://www.googleapis.com/auth/drive). " +
+    "A Shared Drive is an alternative."
   );
 }
 
@@ -238,10 +300,7 @@ function mapDriveHttpError(status, json) {
     (json && json.error_description) ||
     `Google Drive ${status}`;
   if (driveQuotaReason(json, msg)) {
-    return codedError(
-      "quota_exceeded",
-      "Google Drive storage quota is full for the uploader. Set GOOGLE_DRIVE_DELEGATED_USER to a Workspace mailbox with free space, or upload into a Shared Drive the service account can write to."
-    );
+    return codedError("quota_exceeded", quotaExceededMessage());
   }
   if (status === 401) return codedError("needs_reauth", String(msg));
   if (status === 403) return codedError("tool_error", String(msg));
@@ -686,6 +745,7 @@ async function createFile(args = {}) {
 }
 
 module.exports = {
+  DELEGATED_USER_ENVS,
   FOLDER_MIME,
   MAX_READ_BYTES,
   base64DecodedLength,
@@ -699,12 +759,14 @@ module.exports = {
   getAccessToken,
   mapFile,
   mapDriveHttpError,
+  mapTokenHttpError,
   driveQuotaReason,
   ocrEnabled,
   parseServiceAccount,
   readFileContent,
   resetTokenCache,
   searchFiles,
+  signServiceJwt,
   translateDriveQuery,
   viewUrlFor,
 };

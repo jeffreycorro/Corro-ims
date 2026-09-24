@@ -1216,7 +1216,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-09-24c";
+const BUILD = "2026-09-24d";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -16757,10 +16757,13 @@ function leaveCaPrintBlocked(){
 function driveMessage(e){
   const c = e && e.code;
   const raw = String((e&&e.message)||(e&&e.text)||"");
-  if(c==="quota_exceeded" || /quota|storage.?full/i.test(raw))
-    return "Google Drive has no space left for this upload. The portal accepts Leave/CA scans up to "
-      + MAX_UPLOAD_MB + " MB. If it still fails, Jeffrey must set GOOGLE_DRIVE_DELEGATED_USER to a Workspace "
-      + "mailbox with free space (or share a Shared Drive folder with the service account).";
+  if(c==="quota_exceeded" || /quota|storage.?full/i.test(raw)){
+    if(/GOOGLE_DRIVE_DELEGATED_USER|service account's My Drive/i.test(raw)) return raw;
+    return "The service account's My Drive is full, so this file was not uploaded. The portal accepts Leave and Cash Advance scans up to "
+      + MAX_UPLOAD_MB + " MB. Sharing the folder with the service account does not use the owner's quota. "
+      + "On Netlify site corcondev-hr, set GOOGLE_DRIVE_DELEGATED_USER for all contexts (include Functions) to jeffreycorro@corroconstruction.com. "
+      + "Workspace Admin must allow domain-wide delegation for the service account client_id with https://www.googleapis.com/auth/drive. A Shared Drive is an alternative.";
+  }
   if(c==="server_not_connected") return "Google Drive is not connected to your Claude account. Add the Google Drive connector, then try again.";
   if(c==="needs_reauth")         return "Your Google Drive connection needs signing in again. Reconnect it in Claude, then try again.";
   if(c==="blocked_by_policy")    return "Your organisation's policy blocks this upload.";
