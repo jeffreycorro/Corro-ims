@@ -407,6 +407,46 @@ describe("netlify functions", () => {
     }
   });
 
+  it("downloads a Drive file as base64 for the approver stamp", async () => {
+    process.env.GOOGLE_SERVICE_ACCOUNT_JSON = testServiceAccountJson();
+    const token = signSession({ sub: "gate", method: "password" }, SECRET);
+    const originalFetch = global.fetch;
+    const pdf = Buffer.from("%PDF-1.1 stamped-source");
+    global.fetch = async (url) => {
+      const href = String(url);
+      if (href.includes("oauth2.googleapis.com/token")) {
+        return { ok: true, json: async () => ({ access_token: "ya29.test", expires_in: 3600 }) };
+      }
+      if (href.includes("/files/scan1") && href.includes("alt=media")) {
+        return { ok: true, arrayBuffer: async () => pdf };
+      }
+      if (href.includes("/files/scan1")) {
+        const meta = {
+          id: "scan1",
+          name: "LRF signed.pdf",
+          mimeType: "application/pdf",
+          webViewLink: "https://drive.google.com/file/d/scan1/view",
+        };
+        return { ok: true, text: async () => JSON.stringify(meta), json: async () => meta };
+      }
+      throw new Error("unexpected fetch " + href);
+    };
+    try {
+      const res = await driveHandler({
+        httpMethod: "POST",
+        headers: { cookie: `${COOKIE_NAME}=${encodeURIComponent(token)}` },
+        body: JSON.stringify({ tool: "download_file", args: { fileId: "scan1" } }),
+      });
+      assert.equal(res.statusCode, 200);
+      const body = JSON.parse(res.body);
+      assert.equal(body.payload.mimeType, "application/pdf");
+      assert.equal(body.payload.title, "LRF signed.pdf");
+      assert.equal(Buffer.from(body.payload.base64Content, "base64").toString("utf8"), pdf.toString("utf8"));
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
   it("creates a Drive folder and returns id + viewUrl", async () => {
     process.env.GOOGLE_SERVICE_ACCOUNT_JSON = testServiceAccountJson();
     const token = signSession({ sub: "gate", method: "password" }, SECRET);

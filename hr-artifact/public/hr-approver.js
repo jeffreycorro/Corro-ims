@@ -4,7 +4,8 @@
  * (Catherine A. Largo / payrollBy on Leave and Cash Advance, HR issue on
  * employment contracts). After that step, the item is Evaluated — for
  * approval. Approve stamps the existing HR e-signature store (signatory /
- * president / Jeffrey) onto the printed form.
+ * president / Jeffrey) onto the employee-signed upload when one is on file,
+ * and onto the portal form only when there is no upload.
  */
 (function (root, factory) {
   var api = factory();
@@ -211,6 +212,12 @@
   function applyEvaluatorGate(coll, obj, prev, S) {
     if (!obj || typeof obj !== "object") return obj;
     var next = Object.assign({}, obj);
+    if (prev) {
+      if (!next.originalSignedLink && prev.originalSignedLink) next.originalSignedLink = prev.originalSignedLink;
+      if (!next.approvedPdfLink && prev.approvedPdfLink) next.approvedPdfLink = prev.approvedPdfLink;
+      if (!next.officialPrint && prev.officialPrint) next.officialPrint = prev.officialPrint;
+      if (!next.originalLink && prev.originalLink) next.originalLink = prev.originalLink;
+    }
     if (next._fromApprover) {
       delete next._fromApprover;
       return next;
@@ -382,6 +389,399 @@
     );
   }
 
+  /**
+   * Where Jeffrey's e-signature sits on a scanned CCD form.
+   * PDF origin is the bottom-left. Fractions are of that page.
+   *
+   * Leave and Cash Advance scans match the portal forms: a portrait page
+   * whose approval band is four columns along the bottom.
+   *   Leave: Immediate Supervisor | Evaluated by | HR Department | Final Approval
+   *   Cash advance: Department Head | Evaluated by | Finance | Approved by
+   * The approver is the rightmost column. The image is centered in that
+   * column, about 15.5% up the page, above the printed name and clear of
+   * the form-number footer. Side margins are 7%; the four columns share
+   * the middle 86%. The employee signature (left, above the approval band)
+   * is never drawn on.
+   *
+   * A contract scan, when one is attached, uses a two-party sign-off.
+   * The company / president block is the right half, about 20% up the page.
+   * Multi-page files are stamped on the last page only.
+   */
+  function stampBox(kind, pageWidth, pageHeight) {
+    var w = Number(pageWidth) || 595;
+    var h = Number(pageHeight) || 842;
+    var contract = kind === "contract";
+    var marginX = w * 0.07;
+    var cols = contract ? 2 : 4;
+    var colW = (w - marginX * 2) / cols;
+    var col = cols - 1;
+    var sigW = Math.min(colW * 0.72, w * 0.22);
+    var sigH = Math.min(h * 0.055, 48);
+    var x = marginX + col * colW + (colW - sigW) / 2;
+    var y = h * (contract ? 0.2 : 0.155);
+    return { x: x, y: y, width: sigW, height: sigH };
+  }
+
+  function fitBox(img, box) {
+    var iw = img.width || box.width;
+    var ih = img.height || box.height;
+    var scale = Math.min(box.width / iw, box.height / ih);
+    if (!isFinite(scale) || scale <= 0) scale = 1;
+    var dw = iw * scale;
+    var dh = ih * scale;
+    return {
+      x: box.x + (box.width - dw) / 2,
+      y: box.y + (box.height - dh) / 2,
+      width: dw,
+      height: dh,
+    };
+  }
+
+  function globalFn(name) {
+    var g = typeof globalThis !== "undefined" ? globalThis : null;
+    if (g && typeof g[name] === "function") return g[name];
+    return null;
+  }
+
+  function bytesToBase64(bytes) {
+    var arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+    if (typeof Buffer !== "undefined" && Buffer.from) return Buffer.from(arr).toString("base64");
+    var bin = "";
+    var step = 0x8000;
+    for (var i = 0; i < arr.length; i += step) {
+      bin += String.fromCharCode.apply(null, arr.subarray(i, i + step));
+    }
+    return btoa(bin);
+  }
+
+  function base64ToBytes(b64) {
+    var clean = String(b64 || "").replace(/\s/g, "");
+    if (typeof Buffer !== "undefined" && Buffer.from) return new Uint8Array(Buffer.from(clean, "base64"));
+    var bin = atob(clean);
+    var out = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i) & 255;
+    return out;
+  }
+
+  function parseDataUrl(url) {
+    var s = str(url).trim();
+    var comma = s.indexOf(",");
+    if (s.slice(0, 5).toLowerCase() !== "data:" || comma < 0) return null;
+    var meta = s.slice(5, comma);
+    var body = s.slice(comma + 1);
+    if (!/;base64/i.test(meta)) return null;
+    var mime = (meta.split(";")[0] || "").trim();
+    return { bytes: base64ToBytes(body), mime: mime };
+  }
+
+  function isPdfBytes(bytes, mime) {
+    if (bytes && bytes.length > 4 && bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46) return true;
+    return /pdf/i.test(mime || "");
+  }
+
+  function isPngBytes(bytes, mime) {
+    if (bytes && bytes.length > 4 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return true;
+    return /^image\/png/i.test(mime || "");
+  }
+
+  function isJpegBytes(bytes, mime) {
+    if (bytes && bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8) return true;
+    return /^image\/jpe?g/i.test(mime || "");
+  }
+
+  function looksLikeUpload(url) {
+    url = str(url).trim();
+    if (!url) return false;
+    if (/^data:(application\/pdf|image\/(png|jpeg|jpg|webp))/i.test(url)) return true;
+    if (/^blob:/i.test(url)) return true;
+    if (/drive\.google\.com\/file\/d\//i.test(url)) return true;
+    if (/^https?:\/\//i.test(url) && /\.(pdf|png|jpe?g)(\?|#|$)/i.test(url)) return true;
+    return false;
+  }
+
+  function employeeUploadUrl(rec, kind) {
+    rec = rec || {};
+    if (rec.officialPrint === "stamped-upload") return "";
+    var signed = str(rec.signedLink).trim();
+    if (kind === "leave" || kind === "ca") return signed;
+    var link = str(rec.link).trim();
+    if (looksLikeUpload(signed)) return signed;
+    if (looksLikeUpload(link)) return link;
+    if (signed) return signed;
+    return "";
+  }
+
+  function driveFileId(url) {
+    var s = str(url);
+    if (!/drive\.google\.com/i.test(s)) return "";
+    var m = s.match(/\/file\/d\/([^/?#]+)/i) || s.match(/[?&]id=([^&#]+)/i);
+    if (!m) return "";
+    try {
+      return decodeURIComponent(m[1]);
+    } catch (e) {
+      return m[1];
+    }
+  }
+
+  function loadPdfLib() {
+    var g = typeof globalThis !== "undefined" ? globalThis : {};
+    if (g.PDFLib && g.PDFLib.PDFDocument) return Promise.resolve(g.PDFLib);
+    var nodeRequire = null;
+    try {
+      nodeRequire = typeof require === "function" ? require : null;
+    } catch (e) {
+      nodeRequire = null;
+    }
+    if (nodeRequire) {
+      try {
+        var lib = nodeRequire("pdf-lib");
+        if (lib && lib.PDFDocument) return Promise.resolve(lib);
+      } catch (e2) {}
+    }
+    return new Promise(function (resolve, reject) {
+      var doc = g.document;
+      if (!doc || !doc.createElement) {
+        reject(new Error("PDF tools are not loaded in this browser."));
+        return;
+      }
+      function done() {
+        if (g.PDFLib && g.PDFLib.PDFDocument) resolve(g.PDFLib);
+        else reject(new Error("PDF tools did not start."));
+      }
+      var existing = doc.querySelector && doc.querySelector("script[data-pdf-lib='1']");
+      if (existing) {
+        if (g.PDFLib && g.PDFLib.PDFDocument) done();
+        else if (existing.addEventListener) existing.addEventListener("load", done);
+        else reject(new Error("PDF tools did not start."));
+        return;
+      }
+      var s = doc.createElement("script");
+      s.src = "/pdf-lib.min.js";
+      s.async = true;
+      if (s.setAttribute) s.setAttribute("data-pdf-lib", "1");
+      s.onload = done;
+      s.onerror = function () {
+        reject(new Error("Could not load the PDF stamp tool."));
+      };
+      (doc.head || doc.documentElement).appendChild(s);
+    });
+  }
+
+  async function embedRaster(pdf, bytes, mime) {
+    if (isPngBytes(bytes, mime)) return pdf.embedPng(bytes);
+    if (isJpegBytes(bytes, mime)) return pdf.embedJpg(bytes);
+    throw new Error("That image has to be a PNG or JPEG.");
+  }
+
+  async function drawApproverStamp(file, opts) {
+    var lib = await loadPdfLib();
+    var bytes = file && file.bytes;
+    var mime = (file && file.mime) || "";
+    var sig = parseDataUrl(opts.signature);
+    if (!sig || !sig.bytes || !sig.bytes.length) {
+      throw new Error("Jeffrey's e-signature image could not be read. Check Settings → HR e-signatures.");
+    }
+    var pdf;
+    if (isPdfBytes(bytes, mime)) {
+      pdf = await lib.PDFDocument.load(bytes, { ignoreEncryption: true });
+    } else if (isPngBytes(bytes, mime) || isJpegBytes(bytes, mime)) {
+      pdf = await lib.PDFDocument.create();
+      var scan = await embedRaster(pdf, bytes, mime);
+      var page0 = pdf.addPage([scan.width, scan.height]);
+      page0.drawImage(scan, { x: 0, y: 0, width: scan.width, height: scan.height });
+    } else {
+      throw new Error("The uploaded file is not a PDF or JPEG/PNG image, so it cannot be stamped.");
+    }
+    var pages = pdf.getPages();
+    if (!pages.length) throw new Error("The uploaded PDF has no pages.");
+    var page = pages[pages.length - 1];
+    var size = page.getSize();
+    var box = stampBox(opts.kind, size.width, size.height);
+    var sigImg;
+    try {
+      sigImg = await embedRaster(pdf, sig.bytes, sig.mime);
+    } catch (e) {
+      throw new Error("Jeffrey's e-signature has to be a PNG or JPEG. Check Settings → HR e-signatures.");
+    }
+    var placed = fitBox(sigImg, box);
+    page.drawImage(sigImg, placed);
+    if (opts.dateText && lib.StandardFonts) {
+      try {
+        var font = await pdf.embedFont(lib.StandardFonts.Helvetica);
+        var dateY = placed.y - 11;
+        if (dateY < 8) dateY = placed.y + placed.height + 2;
+        page.drawText(String(opts.dateText), { x: placed.x, y: dateY, size: 8, font: font });
+      } catch (e2) {}
+    }
+    return pdf.save();
+  }
+
+  async function downloadDriveFile(host, fileId) {
+    var getMcpFn = host && typeof host.getMcp === "function" ? host.getMcp : globalFn("getMcp");
+    var mcp = null;
+    if (getMcpFn) {
+      try {
+        mcp = await getMcpFn();
+      } catch (e) {
+        mcp = null;
+      }
+    }
+    if (!mcp || typeof mcp.callTool !== "function") {
+      throw new Error("The signed file is on Google Drive. The portal could not read it, so approval was not saved.");
+    }
+    var g = typeof globalThis !== "undefined" ? globalThis : null;
+    var server = (g && typeof g.DRIVE_SERVER === "string" && g.DRIVE_SERVER) || "Google Drive";
+    var out;
+    try {
+      out = await mcp.callTool(server, "download_file", { fileId: fileId });
+    } catch (e2) {
+      throw new Error((e2 && e2.message) || "Could not download the signed file from Drive.");
+    }
+    var payload = (out && out.payload) || out || {};
+    var b64 = payload.base64Content || payload.base64 || "";
+    if (!b64) throw new Error("Drive did not return the signed file.");
+    return { bytes: base64ToBytes(b64), mime: payload.mimeType || "" };
+  }
+
+  async function fetchUploadBytes(host, url) {
+    if (host && typeof host.fetchUploadBytes === "function") return host.fetchUploadBytes(url);
+    var data = parseDataUrl(url);
+    if (data) {
+      if (!data.bytes || !data.bytes.length) throw new Error("The uploaded file is empty.");
+      return data;
+    }
+    var id = driveFileId(url);
+    if (id) return downloadDriveFile(host, id);
+    if (typeof fetch !== "function") throw new Error("Could not download the signed file.");
+    var res;
+    try {
+      res = await fetch(url);
+    } catch (e) {
+      throw new Error("Could not download the signed file.");
+    }
+    if (!res || !res.ok) {
+      throw new Error("Could not download the signed file" + (res && res.status ? " (" + res.status + ")." : "."));
+    }
+    var buf = await res.arrayBuffer();
+    var mime = "";
+    try {
+      mime = (res.headers && res.headers.get && res.headers.get("content-type")) || "";
+    } catch (e2) {
+      mime = "";
+    }
+    return { bytes: new Uint8Array(buf), mime: String(mime).split(";")[0].trim() };
+  }
+
+  async function uploadStamped(host, rec, title, b64) {
+    var getMcpFn = host && typeof host.getMcp === "function" ? host.getMcp : globalFn("getMcp");
+    if (!getMcpFn) return null;
+    var mcp = null;
+    try {
+      mcp = await getMcpFn();
+    } catch (e) {
+      return null;
+    }
+    if (!mcp || typeof mcp.callTool !== "function") return null;
+    var S = bindStore(host);
+    var emp = S.employees && rec && rec.empId ? S.employees[rec.empId] : null;
+    var resolve = host && typeof host.resolveFolder === "function" ? host.resolveFolder : globalFn("resolveFolder");
+    var parentId = "";
+    if (emp && resolve) {
+      try {
+        parentId = (await resolve(emp)) || "";
+      } catch (e2) {
+        parentId = "";
+      }
+    }
+    if (!parentId && S.settings) parentId = S.settings.hr201Inbox || "";
+    var g = typeof globalThis !== "undefined" ? globalThis : null;
+    var server = (g && typeof g.DRIVE_SERVER === "string" && g.DRIVE_SERVER) || "Google Drive";
+    var args = {
+      title: title,
+      base64Content: b64,
+      contentMimeType: "application/pdf",
+      disableConversionToGoogleType: true,
+    };
+    if (parentId) args.parentId = parentId;
+    var result = await mcp.callTool(server, "create_file", args);
+    var payload = (result && result.payload) || {};
+    if (!payload.viewUrl) return null;
+    return { url: payload.viewUrl, title: payload.title || title, id: payload.id || "" };
+  }
+
+  async function persistStamped(host, rec, title, bytes) {
+    var b64 = bytesToBase64(bytes);
+    var uploaded = null;
+    try {
+      uploaded = await uploadStamped(host, rec, title, b64);
+    } catch (e) {
+      uploaded = null;
+    }
+    if (uploaded && uploaded.url) return uploaded;
+    return { url: "data:application/pdf;base64," + b64, title: title, inline: true };
+  }
+
+  async function stampEmployeeUpload(host, opts) {
+    opts = opts || {};
+    var fetched = await fetchUploadBytes(host, opts.url);
+    var bytes = await drawApproverStamp(fetched, opts);
+    var title = opts.title || ((opts.rec && opts.rec.no) || "FORM") + " APPROVED.pdf";
+    return persistStamped(host, opts.rec, title, bytes);
+  }
+
+  function applyOfficialFile(rec, stamped, sourceUrl, kind) {
+    var next = Object.assign({}, rec || {});
+    var src = str(sourceUrl || next.signedLink || next.link || "");
+    var url = str(stamped && stamped.url);
+    if (!url) return next;
+    if (!next.originalSignedLink && src && src !== url) next.originalSignedLink = src;
+    if (kind === "contract") {
+      var link = str(next.link);
+      if (link && link !== url && !next.originalLink && (link === src || !str(rec && rec.signedLink))) {
+        next.originalLink = link;
+      }
+      if (link && (link === src || next.originalLink)) next.link = url;
+    }
+    next.signedLink = url;
+    next.approvedPdfLink = url;
+    if (stamped.title) next.signedTitle = stamped.title;
+    next.officialPrint = "stamped-upload";
+    return next;
+  }
+
+  function officialUrl(rec) {
+    if (!rec || rec.officialPrint !== "stamped-upload" || !rec.pdfIncludesSignature) return "";
+    return str(rec.approvedPdfLink || rec.signedLink || "");
+  }
+
+  function openOfficial(host, rec) {
+    var url = officialUrl(rec);
+    if (!url) return false;
+    var doc = host && host.document;
+    var title = (rec && (rec.signedTitle || rec.no)) || "approved.pdf";
+    try {
+      if (doc && doc.createElement) {
+        var a = doc.createElement("a");
+        if (!a) return false;
+        a.href = url;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        if (url.indexOf("data:") === 0) a.download = /\.pdf$/i.test(title) ? title : title + ".pdf";
+        if (doc.body && doc.body.appendChild) doc.body.appendChild(a);
+        if (typeof a.click === "function") {
+          a.click();
+          if (a.parentNode && a.parentNode.removeChild) a.parentNode.removeChild(a);
+          return true;
+        }
+      }
+    } catch (e) {}
+    if (host && typeof host.open === "function" && url.indexOf("data:") !== 0) {
+      host.open(url, "_blank", "noopener");
+      return true;
+    }
+    return false;
+  }
+
   function approveRecord(rec, opts) {
     opts = opts || {};
     var sig = str(opts.signature);
@@ -465,7 +865,7 @@
           .filter(Boolean)
           .join(" · "),
         evaluator: l.evaluatedBy || evaluatorName(S, "leaves"),
-        pdf: l.signedLink || "",
+        pdf: l.approvedPdfLink || l.signedLink || "",
         when: l.evaluatedAt || l.filedOn || l.from || "",
       });
     });
@@ -480,7 +880,7 @@
           .filter(Boolean)
           .join(" · "),
         evaluator: a.evaluatedBy || evaluatorName(S, "advances"),
-        pdf: a.signedLink || "",
+        pdf: a.approvedPdfLink || a.signedLink || "",
         when: a.evaluatedAt || a.date || "",
       });
     });
@@ -493,7 +893,7 @@
         employee: personName(S, d.empId, ""),
         detail: d.title || "Employment contract",
         evaluator: d.evaluatedBy || evaluatorName(S, "docreg"),
-        pdf: d.link || d.signedLink || "",
+        pdf: d.approvedPdfLink || d.signedLink || d.link || "",
         when: d.evaluatedAt || d.date || "",
       });
     });
@@ -554,7 +954,9 @@
       "). That is <b>Evaluated — for approval</b>, not Approved. " +
       "<b>Approve</b> stamps " +
       esc(signatoryName(S)) +
-      "'s e-signature on the form and moves it to <b>Approved</b>. Reject sends it back as Disapproved so it does not sit here.</div>";
+      "'s e-signature on the uploaded signed form when one is on file, so the employee ink and that signature share one sheet. " +
+      "With no upload, it stamps the portal form instead. Either way the item moves to <b>Approved</b>. " +
+      "Reject sends it back as Disapproved so it does not sit here.</div>";
     if (!sig) {
       h +=
         '<div class="note" style="border-left-color:var(--crit)"><b>No approver e-signature is on file.</b> ' +
@@ -707,6 +1109,12 @@
     var S = bindStore(host);
     var found = lookup(S, kind, id);
     if (!found.rec) return;
+    if (officialUrl(found.rec)) {
+      if (!openOfficial(host, found.rec)) {
+        toast(host, "The approved file is on the record. Use Open the approved form.", "err");
+      }
+      return;
+    }
     if (kind === "leave" && typeof host.printLeave === "function") {
       withStamp(host, "leave", found.rec, function () {
         host.printLeave(found.rec);
@@ -751,8 +1159,39 @@
       toast(host, result.error, "err");
       return;
     }
+    var src = employeeUploadUrl(found.rec, kind);
+    if (src) {
+      toast(host, "Stamping the signed upload…", "");
+      try {
+        var stamped = await stampEmployeeUpload(host, {
+          url: src,
+          kind: kind,
+          signature: sig,
+          dateText: result.record.approvedOn || "",
+          title: (found.rec.no || kindLabel(kind) || "FORM") + " APPROVED.pdf",
+          rec: found.rec,
+        });
+        if (!stamped || !stamped.url) throw new Error("The stamped file was not saved.");
+        result.record = applyOfficialFile(result.record, stamped, src, kind);
+      } catch (err) {
+        toast(
+          host,
+          (err && err.message) || "Could not stamp the uploaded form. It is still waiting for approval.",
+          "err"
+        );
+        return;
+      }
+    }
     await commit(host, found.coll, id, result.record);
-    toast(host, "Approved. " + signatoryName(S) + "'s signature is on the form — Save as PDF to download it.", "ok");
+    if (src) {
+      toast(
+        host,
+        "Approved. " + signatoryName(S) + "'s e-signature is on the uploaded form. Open PDF to print that copy.",
+        "ok"
+      );
+    } else {
+      toast(host, "Approved. " + signatoryName(S) + "'s signature is on the form — Save as PDF to download it.", "ok");
+    }
     if (typeof host.render === "function") host.render();
     previewItem(host, kind, id);
   }
@@ -974,6 +1413,10 @@
     if (typeof host.printLeave === "function" && !host.printLeave._hrApprover) {
       var origLeave = host.printLeave;
       host.printLeave = function (l, opt) {
+        if (officialUrl(l)) {
+          if (!openOfficial(host, l)) toast(host, "The approved file is on the record. Use Open the approved form.", "err");
+          return;
+        }
         var args = arguments;
         return withStamp(host, "leave", l, function () {
           return origLeave.apply(host, args);
@@ -985,6 +1428,10 @@
     if (typeof host.printCA === "function" && !host.printCA._hrApprover) {
       var origCA = host.printCA;
       host.printCA = function (a, opt) {
+        if (officialUrl(a)) {
+          if (!openOfficial(host, a)) toast(host, "The approved file is on the record. Use Open the approved form.", "err");
+          return;
+        }
         var args = arguments;
         return withStamp(host, "ca", a, function () {
           return origCA.apply(host, args);
@@ -1113,6 +1560,12 @@
     signatureSrc: signatureSrc,
     stampSignHtml: stampSignHtml,
     stampColumnIndex: stampColumnIndex,
+    stampBox: stampBox,
+    employeeUploadUrl: employeeUploadUrl,
+    applyOfficialFile: applyOfficialFile,
+    stampEmployeeUpload: stampEmployeeUpload,
+    approveItem: approveItem,
+    officialUrl: officialUrl,
     isEmploymentContract: isEmploymentContract,
     approverHtml: approverHtml,
     gateHtml: gateHtml,

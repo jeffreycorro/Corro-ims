@@ -11,6 +11,7 @@ const {
   createFile,
   createFileChunk,
   createFileInit,
+  downloadFile,
   readFileContent,
   searchFiles,
 } = require("../lib/google-drive");
@@ -87,6 +88,10 @@ exports.handler = async (event) => {
 
     if (tool === "read_file_content") {
       return json(200, await envelope(event, await readFileContent(args)));
+    }
+
+    if (tool === "download_file") {
+      return json(200, await envelope(event, await downloadFile(args)));
     }
 
     if (tool === "create_file") {
