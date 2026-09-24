@@ -422,6 +422,34 @@ async function ocrWithAnthropic(buffer, mimeType) {
   return String(result.text || "").trim();
 }
 
+const DOWNLOAD_MAX_BYTES = 4 * 1024 * 1024;
+
+async function downloadFile(args = {}) {
+  const fileId = String(args.fileId || args.id || "").trim();
+  if (!fileId) throw codedError("bad_request", "fileId is required");
+  const meta = await driveFetch(`/files/${encodeURIComponent(fileId)}`, {
+    query: new URLSearchParams({
+      fields: FILE_FIELDS,
+      supportsAllDrives: "true",
+    }).toString(),
+  });
+  if (meta.mimeType === FOLDER_MIME) {
+    throw codedError("bad_request", "That id is a folder, not a file.");
+  }
+  const buf = await downloadMedia(fileId);
+  if (buf.length > DOWNLOAD_MAX_BYTES) {
+    throw codedError("bad_request", "The signed file is too large to stamp in the browser.");
+  }
+  return {
+    payload: {
+      id: meta.id || fileId,
+      title: meta.name || "",
+      mimeType: meta.mimeType || "application/octet-stream",
+      base64Content: buf.toString("base64"),
+    },
+  };
+}
+
 async function readFileContent(args = {}) {
   const fileId = String(args.fileId || args.id || "").trim();
   if (!fileId) throw codedError("bad_request", "fileId is required");
@@ -661,9 +689,11 @@ module.exports = {
   FOLDER_MIME,
   MAX_READ_BYTES,
   base64DecodedLength,
+  DOWNLOAD_MAX_BYTES,
   createFile,
   createFileChunk,
   createFileInit,
+  downloadFile,
   delegatedUser,
   extractPdfText,
   getAccessToken,

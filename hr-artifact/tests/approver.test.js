@@ -5,7 +5,11 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("path");
 const vm = require("node:vm");
+const { PDFDocument } = require("pdf-lib");
 const appr = require("../public/hr-approver");
+
+const PNG =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
 const SIG = "data:image/png;base64,QQQ";
 
@@ -463,11 +467,11 @@ describe("approver password gate", () => {
 });
 
 describe("approver tab wiring", () => {
-  it("is loaded by the shim and the HR build is 2026-09-24b", () => {
+  it("is loaded by the shim and the HR build is 2026-09-24c", () => {
     const shim = fs.readFileSync(path.join(__dirname, "../public/claude-shim.js"), "utf8");
     const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
     assert.match(shim, /hr-approver\.js/);
-    assert.match(html, /const BUILD = "2026-09-24b"/);
+    assert.match(html, /const BUILD = "2026-09-24c"/);
     const view = appr.approverHtml(
       {},
       {
@@ -624,7 +628,7 @@ describe("Leave and Cash Advance e-signatures", () => {
     assert.match(approverSrc, /function approveRecord/);
     assert.match(approverSrc, /pdfIncludesSignature = true/);
     assert.match(approverSrc, /signatureStamp = sig/);
-    assert.match(html, /const BUILD = "2026-09-24b"/);
+    assert.match(html, /const BUILD = "2026-09-24c"/);
     assert.match(html, /function leaveCaPrintBlocked/);
     assert.match(html, /leaveCaSig\("dept"\)/);
     assert.match(html, /leaveCaSig\("evaluated"\)/);
@@ -766,5 +770,201 @@ describe("Leave and Cash Advance e-signatures", () => {
     assert.ok(leaveStamped.indexOf("base64,DOMINGO") < leaveStamped.indexOf("base64,QQQ"));
     const supervisorInk = leaveStamped.slice(leaveStamped.indexOf('class="ink"'), leaveStamped.indexOf("base64,CATHERINE"));
     assert.match(supervisorInk, /&nbsp;/);
+  });
+});
+
+describe("Approve stamps the uploaded signed file", () => {
+  function sigSettings() {
+    const st = settings();
+    st.hrSigs.signatory = {
+      data: PNG,
+      name: "Jeffrey James M. Corro",
+      title: "jeffrey.jpg",
+      slot: "signatory",
+    };
+    return st;
+  }
+
+  async function blankPdfUrl() {
+    const pdf = await PDFDocument.create();
+    pdf.addPage([595, 842]);
+    const bytes = await pdf.save();
+    return "data:application/pdf;base64," + Buffer.from(bytes).toString("base64");
+  }
+
+  function hostFor(coll, rec) {
+    const S = {
+      settings: sigSettings(),
+      employees: {},
+      leaves: {},
+      advances: {},
+      docreg: {},
+      ui: {},
+    };
+    S[coll][rec.id] = rec;
+    const prints = [];
+    const opened = [];
+    const toasts = [];
+    const host = {
+      S,
+      TODAY: "2026-09-24",
+      prints,
+      opened,
+      toasts,
+      document: {
+        createElement() {
+          const a = { click() { opened.push(a.href); } };
+          return a;
+        },
+      },
+      toast(msg, kind) {
+        toasts.push({ msg, kind });
+      },
+      render() {},
+      printLeave(l) {
+        prints.push({ kind: "leave", id: l && l.id, no: l && l.no });
+      },
+      printCA(a) {
+        prints.push({ kind: "ca", id: a && a.id, no: a && a.no });
+      },
+      async put(c, id, obj) {
+        S[c][id] = obj;
+      },
+    };
+    appr.patchGlobals(host);
+    return host;
+  }
+
+  it("places Final Approval / Approved by on the rightmost column and leaves the employee line alone", () => {
+    const leave = appr.stampBox("leave", 595, 842);
+    const ca = appr.stampBox("ca", 612, 792);
+    const contract = appr.stampBox("contract", 595, 842);
+    assert.ok(leave.x > 595 * 0.7, "leave stamp is in the rightmost approval column");
+    assert.ok(leave.y > 842 * 0.12 && leave.y < 842 * 0.22);
+    assert.ok(ca.x > 612 * 0.7, "cash advance stamp is in the Approved by column");
+    assert.ok(contract.x > 595 * 0.45 && contract.x < 595 * 0.72);
+    assert.ok(leave.x + leave.width < 595);
+    assert.ok(leave.x > 595 * 0.5, "employee signature on the left is not the stamp target");
+  });
+
+  it("Approve with an upload saves the stamped copy and keeps the original", async () => {
+    const original = await blankPdfUrl();
+    const rec = {
+      id: "l1",
+      status: "For approval",
+      no: "LRF9",
+      empId: "e1",
+      evaluatedBy: "Catherine A. Largo",
+      signedLink: original,
+      signedTitle: "LRF9 scan.pdf",
+    };
+    const host = hostFor("leaves", rec);
+    await appr.approveItem(host, "leave", "l1");
+    const saved = host.S.leaves.l1;
+    assert.equal(saved.status, "Approved");
+    assert.equal(saved.pdfIncludesSignature, true);
+    assert.equal(saved.officialPrint, "stamped-upload");
+    assert.equal(saved.originalSignedLink, original);
+    assert.equal(saved.approvedPdfLink, saved.signedLink);
+    assert.notEqual(saved.signedLink, original);
+    assert.match(saved.signedLink, /^data:application\/pdf;base64,/);
+    const stamped = Buffer.from(saved.signedLink.split(",")[1], "base64");
+    assert.match(stamped.subarray(0, 5).toString("utf8"), /%PDF/);
+    assert.match(stamped.toString("latin1"), /\/Image/);
+    assert.notEqual(stamped.toString("base64"), original.split(",")[1]);
+    assert.equal(host.opened[0], saved.signedLink);
+    assert.equal(host.prints.length, 0);
+    assert.doesNotMatch(JSON.stringify(saved), /employeeSig/);
+
+    const later = appr.applyEvaluatorGate(
+      "leaves",
+      { id: "l1", status: "Approved", empId: "e1", no: "LRF9" },
+      saved,
+      host.S
+    );
+    assert.equal(later.originalSignedLink, original);
+    assert.equal(later.approvedPdfLink, saved.approvedPdfLink);
+    assert.equal(later.officialPrint, "stamped-upload");
+  });
+
+  it("Approve without an upload still stamps the portal form", async () => {
+    const rec = {
+      id: "c1",
+      status: "For approval",
+      no: "CAF2",
+      empId: "e1",
+      evaluatedBy: "Catherine A. Largo",
+      amount: 500,
+      purpose: "Travel",
+    };
+    const host = hostFor("advances", rec);
+    await appr.approveItem(host, "ca", "c1");
+    const saved = host.S.advances.c1;
+    assert.equal(saved.status, "Approved");
+    assert.equal(saved.pdfIncludesSignature, true);
+    assert.equal(saved.signatureStamp, PNG);
+    assert.equal(saved.approvedPdfLink, undefined);
+    assert.equal(saved.originalSignedLink, undefined);
+    assert.equal(saved.officialPrint, undefined);
+    assert.equal(saved.signedLink, undefined);
+    assert.deepEqual(host.prints, [{ kind: "ca", id: "c1", no: "CAF2" }]);
+    assert.equal(host.opened.length, 0);
+    assert.match(host.toasts.map((t) => t.msg).join(" "), /Save as PDF/);
+  });
+
+  it("stamps a contract upload from link and does not invent an employee signature", async () => {
+    const original = await blankPdfUrl();
+    const rec = {
+      id: "d1",
+      seriesKey: "CON",
+      kind: "contract",
+      status: "Issued",
+      approverStatus: "For approval",
+      title: "Employment Contract",
+      no: "CON2026-04",
+      link: original,
+    };
+    const host = hostFor("docreg", rec);
+    assert.equal(appr.employeeUploadUrl(rec, "contract"), original);
+    await appr.approveItem(host, "contract", "d1");
+    const saved = host.S.docreg.d1;
+    assert.equal(saved.status, "Issued");
+    assert.equal(saved.approverStatus, "Approved");
+    assert.equal(saved.originalSignedLink, original);
+    assert.equal(saved.originalLink, original);
+    assert.equal(saved.link, saved.approvedPdfLink);
+    assert.notEqual(saved.link, original);
+    assert.match(saved.approvedPdfLink, /^data:application\/pdf;base64,/);
+    assert.equal(host.opened[0], saved.approvedPdfLink);
+    assert.equal(host.prints.length, 0);
+  });
+
+  it("turns an uploaded JPEG or PNG scan into the official PDF and refuses a file that is not an image", async () => {
+    const rec = {
+      id: "l2",
+      status: "For approval",
+      no: "LRF10",
+      empId: "e1",
+      signedLink: PNG,
+      signedTitle: "scan.png",
+    };
+    const host = hostFor("leaves", rec);
+    await appr.approveItem(host, "leave", "l2");
+    const saved = host.S.leaves.l2;
+    assert.equal(saved.originalSignedLink, PNG);
+    assert.match(saved.approvedPdfLink, /^data:application\/pdf;base64,/);
+    assert.equal(saved.status, "Approved");
+
+    const bad = {
+      id: "l3",
+      status: "For approval",
+      no: "LRF11",
+      signedLink: "data:text/plain;base64,SGk=",
+    };
+    const host2 = hostFor("leaves", bad);
+    await appr.approveItem(host2, "leave", "l3");
+    assert.equal(host2.S.leaves.l3.status, "For approval");
+    assert.equal(host2.S.leaves.l3.approvedPdfLink, undefined);
+    assert.match(host2.toasts.map((t) => t.msg).join(" "), /not a PDF or JPEG\/PNG/);
   });
 });

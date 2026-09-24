@@ -1216,7 +1216,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-09-24b";
+const BUILD = "2026-09-24c";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -17384,7 +17384,10 @@ function signedBlock(coll, r){
   if(has){
     h+='<div class="row">'
       + '<span class="pill ok">On file</span>'
-      + '<a class="btn sm" href="'+esc(r.signedLink)+'" target="_blank" rel="noopener noreferrer"><svg><use href="#i-link"/></svg> Open the signed form</a>'
+      + '<a class="btn sm" href="'+esc(r.approvedPdfLink||r.signedLink)+'" target="_blank" rel="noopener noreferrer"><svg><use href="#i-link"/></svg> '+(r.officialPrint==="stamped-upload"?"Open the approved form":"Open the signed form")+'</a>'
+      + (r.originalSignedLink && r.originalSignedLink!==(r.approvedPdfLink||r.signedLink)
+          ? ' <a class="btn sm" href="'+esc(r.originalSignedLink)+'" target="_blank" rel="noopener noreferrer">Original scan</a>'
+          : "")
       + '<button class="btn sm" data-signed="'+esc(coll)+'" data-signedid="'+esc(r.id)+'">Replace</button>'
       + '<span class="hint">Uploaded '+esc(r.signedOn||"—")+'</span></div>';
   }else{
