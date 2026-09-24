@@ -63,7 +63,7 @@
     { id: "weld", familyId: "fab", name: "Welding / fabrication" },
     { id: "undercarriage", familyId: "fab", name: "Undercarriage" },
     { id: "misc", familyId: "fab", name: "Miscellaneous" },
-    { id: "lto-ren", familyId: "fab", name: "LTO registration renewal" },
+    { id: "lto-ren", familyId: "fab", name: "LTO Registration/Renewal/Name Change" },
   ];
 
   var CHECKLISTS = {

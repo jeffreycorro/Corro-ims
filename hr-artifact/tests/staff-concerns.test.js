@@ -69,6 +69,8 @@ function loadRosterFns() {
     "knownSepRec",
     "empStatusIsLive",
     "empStatusIsSeparated",
+    "separatedSnapIsStale",
+    "employeeLiveBeatsSeparatedSnap",
     "sepRosterWouldApply",
     "dayIsOpen",
     "openDayKeepsLeaver",
@@ -130,7 +132,7 @@ describe("staff concern sheet — live 18a HTML", () => {
     assert.match(html, /cassieSig\(rec\)/);
     assert.match(html, /hrSigSrc\(rec\|\|null, "prepared"\)/);
     assert.match(html, /Object\.keys\(rec\.rows\|\|\{\}\)\.forEach\(id=>\{ if\(id\) seen\[id\]=true/);
-    assert.match(html, /const BUILD = "2026-09-24a"/);
+    assert.match(html, /const BUILD = "2026-09-24b"/);
     assert.match(html, /Has not yet arrived/);
     assert.match(html, /OT HRS/);
     assert.match(html, /Last name/);
@@ -440,6 +442,65 @@ describe("staff concern sheet — live 18a HTML", () => {
     const next = ctx.mergeIncomingDoc("employees", incoming, local);
     assert.equal(next.status, "Project-based");
 
+    const flipped = ctx.mergeIncomingDoc(
+      "employees",
+      {
+        id: "e1351",
+        empNo: "1351",
+        name: "Pasion, Ben",
+        status: "Separated",
+        separatedOn: "2026-09-02",
+        separationReason: "Duplicate record",
+        statusBasis: "Applied from the 2026-09-16 separated roster",
+      },
+      {
+        id: "e1351",
+        empNo: "1351",
+        name: "Pasion, Ben",
+        status: "Project-based",
+        project: "Balaga",
+        statusBasis: "Set on the 201 file",
+      }
+    );
+    assert.equal(flipped.status, "Project-based");
+    assert.equal(flipped.statusBasis, "Set on the 201 file");
+
+    const definite = {
+      id: "e1351",
+      empNo: "1351",
+      name: "Pasion, Ben",
+      status: "Project-based with a definite period",
+      project: "Balaga",
+    };
+    assert.equal(ctx.empStatusIsLive(definite), true);
+    assert.equal(ctx.sepRosterWouldApply(definite), false);
+    assert.equal(ctx.empSeparatedAsOf(definite, "2026-09-24"), false);
+    assert.equal(
+      ctx.employeeLiveBeatsSeparatedSnap(definite, {
+        status: "Separated",
+        statusBasis: "Applied from the 2026-09-16 separated roster",
+      }),
+      true
+    );
+    assert.equal(
+      ctx.employeeLiveBeatsSeparatedSnap(ben, {
+        status: "Separated",
+        statusBasis: "Marked separated on the Daily Manpower screen",
+      }),
+      false
+    );
+    const marked = ctx.mergeIncomingDoc(
+      "employees",
+      {
+        id: "e1351",
+        status: "Separated",
+        separatedOn: "2026-09-24",
+        statusBasis: "Marked separated on the Daily Manpower screen",
+      },
+      ben
+    );
+    assert.equal(marked.status, "Separated");
+
     ctx.S.employees = {
       e1351: ben,
       e1243: { id: "e1243", empNo: "1243", name: "Adolfo", status: "Separated" },
@@ -447,6 +508,12 @@ describe("staff concern sheet — live 18a HTML", () => {
     };
     const list = ctx.dailyPeople({ date: "2026-09-18", rows: {}, extra: [], omit: [] });
     assert.ok(list.some((e) => e.id === "e1351"), "project-based Ben stays on Daily Manpower");
+    ctx.S.employees.e1351 = definite;
+    const definiteDay = ctx.dailyPeople({ date: "2026-09-24", rows: {}, extra: [], omit: [] });
+    assert.ok(
+      definiteDay.some((e) => e.id === "e1351"),
+      "project-based with a definite period stays on Daily Manpower"
+    );
     assert.ok(!list.some((e) => e.id === "e1243"), "true Separated stay off the list");
     assert.ok(list.some((e) => e.id === "e1250"));
   });

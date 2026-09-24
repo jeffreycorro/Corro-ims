@@ -7,9 +7,11 @@ const {
   enrichLtoWorktype,
   findLtoWorktype,
   isLtoRenewalLine,
+  LTO_JOB_LABEL,
   ltoDetailsStale,
   ltoProposalFromLine,
   ltoWorkCode,
+  renameLtoJobLabel,
   vrfIndexStale,
   vrfSearchHits,
 } = require("./lib/rules");
@@ -45,6 +47,7 @@ describe("LTO renewal line matching (workbook wording)", () => {
 
   it("accepts synonym wording: job name, processing category, registration sub", () => {
     assert.equal(isLtoRenewalLine({ item: "LTO registration renewal" }), true);
+    assert.equal(isLtoRenewalLine({ item: "LTO Registration/Renewal/Name Change" }), true);
     assert.equal(isLtoRenewalLine({ cat: "LTO Processing", item: "Plate / sticker" }), true);
     assert.equal(isLtoRenewalLine({ cat: "Documents", sub: "Registration", item: "LTO" }), true);
   });
@@ -65,6 +68,13 @@ describe("LTO renewal line matching (workbook wording)", () => {
       },
     ];
     assert.equal(ltoWorkCode(artifactShape), "LTO-REN");
+    assert.equal(renameLtoJobLabel(artifactShape), true);
+    assert.equal(artifactShape[0].name, LTO_JOB_LABEL);
+    assert.equal(artifactShape[0].code, "LTO-REN");
+    assert.equal(renameLtoJobLabel(artifactShape), false);
+    const custom = [{ code: "LTO-REN", name: "LTO processing", family: "Registration" }];
+    assert.equal(renameLtoJobLabel(custom), false);
+    assert.equal(custom[0].name, "LTO processing");
     const enriched = enrichLtoWorktype(artifactShape);
     assert.ok(enriched.words.some((w) => w.toLowerCase() === "lto renewal"));
     assert.ok(enriched.key.some((k) => /LTO Processing/i.test(k)));

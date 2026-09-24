@@ -266,7 +266,7 @@ Functions need Netlify (`npx netlify dev --dir .`) plus the env vars above. With
 
 After this folder merges to the branch the **separate** Motorpool Netlify site tracks (usually `main`):
 
-1. Confirm the live Ask / footer BUILD is **2026-09-23 b** (hard refresh if a service worker or tab still shows `2026-09-23 a`).
+1. Confirm the live Ask / footer BUILD is **2026-09-24 b** (hard refresh if a service worker or tab still shows `2026-09-23 b`).
 2. **Job order and Tasks proof:** open a job order and a task. Each proof section has **Attach from this device** (photo or video from the phone gallery or computer) and the existing link field. A chosen photo shows in the proof strip. A short video plays there. **Attach proof** / **Attach the link** still saves a pasted https URL. A video over 3 MB asks for a link instead of failing silently.
 3. **New VRF:** the only primary action is **Send for approval**. There is no **Post VRF** button. Staff cannot skip Jeffrey’s office approval.
 4. After deploy, open Office → Approvals. If a pending VRF still shows **58528** beside an already-posted 58528, refresh once — boot remints the pending hold to the next free number and leaves the posted ledger row untouched.

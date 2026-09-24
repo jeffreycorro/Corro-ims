@@ -14,6 +14,9 @@ const {
   vrfPrintWatermark,
   classifyPreparedSigFilename,
   photoOwnersForOpenVrf,
+  cropSignaturePixels,
+  VRF_SIG_PRINT_H,
+  VRF_SIG_PRINT_W,
 } = require("./lib/rules");
 const { holdOdo } = require("../netlify/lib/approve-from-hold");
 
@@ -97,6 +100,51 @@ describe("9/23 — Prepared/Purchased By e-signature filename", () => {
   });
 });
 
+describe("VRF prepared e-sig print — size and transparency", () => {
+  function px(w, h, paint) {
+    const data = new Uint8ClampedArray(w * h * 4);
+    for (let i = 0; i < data.length; i += 4) {
+      data[i] = 255;
+      data[i + 1] = 255;
+      data[i + 2] = 255;
+      data[i + 3] = 255;
+    }
+    paint(data, w, h);
+    return data;
+  }
+  function set(data, w, x, y, r, g, b, a) {
+    const i = (y * w + x) * 4;
+    data[i] = r;
+    data[i + 1] = g;
+    data[i + 2] = b;
+    data[i + 3] = a;
+  }
+
+  it("knocks paper-white out to alpha and crops to the ink", () => {
+    const w = 40;
+    const h = 20;
+    const data = px(w, h, (buf) => {
+      set(buf, w, 0, 0, 0, 0, 0, 0);
+      set(buf, w, 30, 8, 20, 20, 20, 255);
+      set(buf, w, 32, 10, 20, 20, 20, 255);
+    });
+    const cropped = cropSignaturePixels(data, w, h, 6);
+    assert.ok(cropped.width < w, "wide white margin is cropped");
+    assert.ok(cropped.height < h);
+    assert.equal(data[(8 * w + 30) * 4 + 3], 255);
+    let opaque = 0;
+    let clear = 0;
+    for (let i = 3; i < cropped.data.length; i += 4) {
+      if (cropped.data[i] === 0) clear++;
+      else opaque++;
+    }
+    assert.equal(opaque, 2);
+    assert.ok(clear > 0, "padding around the ink stays transparent");
+    assert.equal(VRF_SIG_PRINT_H, 56);
+    assert.equal(VRF_SIG_PRINT_W, 180);
+  });
+});
+
 describe("artifact HTML — 9/23 concern fixes", () => {
   const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
 
@@ -113,7 +161,18 @@ describe("artifact HTML — 9/23 concern fixes", () => {
     assert.match(html, /Prepared\/Purchased By e-signature/);
     assert.match(html, /Apply on this VRF/);
     assert.match(html, /config\/esigs/);
-    assert.match(html, /var BUILD = "2026-09-23 b"/);
+    assert.match(html, /function shrinkSignature/);
+    assert.match(html, /function trimSignatureDataUrl/);
+    assert.match(html, /function signatureToPng/);
+    assert.match(html, /function knockOutSignaturePixels/);
+    assert.match(html, /function cropSignaturePixels/);
+    assert.match(html, /mix-blend-mode:multiply/);
+    assert.match(html, /height:56px;max-height:56px;max-width:180px/);
+    assert.doesNotMatch(html, /img\.sig\{display:block;max-height:34px/);
+    assert.match(html, /shrinkSignature\(file\)/);
+    assert.match(html, /LTO Registration\/Renewal\/Name Change/);
+    assert.match(html, /function renameLtoJobLabel/);
+    assert.match(html, /var BUILD = "2026-09-24 b"/);
     assert.doesNotMatch(html, /if\(entry\.held\|\|entry\.status==="Requested"\)/);
   });
 });

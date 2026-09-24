@@ -219,8 +219,9 @@
    * They land as item "LTO Renewal" under part category "LTO Processing / Delivery F"
    * and sub "Registration". Phrase-in-name matching therefore misses them.
    */
+  var LTO_JOB_LABEL = "LTO Registration/Renewal/Name Change";
   var LTO_RENEW_RE =
-    /lto\s*(registration\s*)?renew|registration\s*renew|lto\s*processing|lto\s*reg(?:istration)?\b/i;
+    /lto\s*(registration\s*[/]?\s*)?renew|registration\s*[/]?\s*renew|lto\s*registration\s*[/]\s*renewal(?:\s*[/]\s*name\s*change)?|lto\s*processing|lto\s*reg(?:istration)?\b/i;
 
   function lineHaystack(line) {
     if (!line) return "";
@@ -251,9 +252,9 @@
       var code = String(w.code || w.id || "").toLowerCase();
       var blob = name + " " + code + " " + String(w.family || w.familyId || "").toLowerCase();
       var score = 0;
-      if (/lto/.test(blob) && /renew|regist/.test(blob)) score += 3;
-      if (/registration renew/.test(name)) score += 2;
-      if (name === "lto registration renewal") score += 2;
+      if (/lto/.test(blob) && /renew|regist|name change/.test(blob)) score += 3;
+      if (/registration\s*[/]?\s*renew/.test(name)) score += 2;
+      if (name === "lto registration renewal" || name === "lto registration/renewal/name change") score += 4;
       if (score > bestScore) {
         bestScore = score;
         best = w;
@@ -365,6 +366,8 @@
     "registration renewal",
     "lto processing",
     "lto renew",
+    "lto registration/renewal/name change",
+    "name change",
   ];
 
   function enrichLtoWorktype(worktypes) {
@@ -385,6 +388,87 @@
     w.cats = merge(w.cats, LTO_EXTRA_KEYS);
     w.words = merge(w.words, LTO_EXTRA_WORDS);
     return w;
+  }
+
+  function legacyLtoJobName(name) {
+    var n = String(name || "")
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, " ");
+    return n === "lto registration renewal" || n === "lto registration/renewal";
+  }
+
+  /** Display label only. code / id stay so existing job orders keep resolving. */
+  function renameLtoJobLabel(worktypes) {
+    var w = findLtoWorktype(worktypes);
+    if (!w) return false;
+    if (String(w.name || "").trim() === LTO_JOB_LABEL) return false;
+    if (!legacyLtoJobName(w.name)) return false;
+    w.name = LTO_JOB_LABEL;
+    return true;
+  }
+
+  /* Same ink rules as the VRF print path in public/index.html. */
+  var VRF_SIG_PRINT_H = 56;
+  var VRF_SIG_PRINT_W = 180;
+
+  function signatureInkBounds(data, width, height) {
+    var minX = width;
+    var minY = height;
+    var maxX = -1;
+    var maxY = -1;
+    var y, x, i, a, r, g, b;
+    for (y = 0; y < height; y++) {
+      for (x = 0; x < width; x++) {
+        i = (y * width + x) * 4;
+        a = data[i + 3];
+        r = data[i];
+        g = data[i + 1];
+        b = data[i + 2];
+        if (a < 16) continue;
+        if (r > 240 && g > 240 && b > 240) continue;
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+    if (maxX < minX || maxY < minY) return null;
+    return { minX: minX, minY: minY, maxX: maxX, maxY: maxY };
+  }
+
+  function knockOutSignaturePixels(px) {
+    var i;
+    for (i = 0; i < px.length; i += 4) {
+      if (px[i + 3] < 16 || (px[i] > 240 && px[i + 1] > 240 && px[i + 2] > 240)) px[i + 3] = 0;
+    }
+    return px;
+  }
+
+  function cropSignaturePixels(data, width, height, pad) {
+    knockOutSignaturePixels(data);
+    var box = signatureInkBounds(data, width, height);
+    var p = pad == null ? 6 : pad;
+    if (!box) return { data: data, width: width, height: height, x: 0, y: 0 };
+    var x0 = Math.max(0, box.minX - p);
+    var y0 = Math.max(0, box.minY - p);
+    var x1 = Math.min(width - 1, box.maxX + p);
+    var y1 = Math.min(height - 1, box.maxY + p);
+    var tw = Math.max(1, x1 - x0 + 1);
+    var th = Math.max(1, y1 - y0 + 1);
+    var out = new Uint8ClampedArray(tw * th * 4);
+    var y, x, si, di;
+    for (y = 0; y < th; y++) {
+      for (x = 0; x < tw; x++) {
+        si = ((y0 + y) * width + (x0 + x)) * 4;
+        di = (y * tw + x) * 4;
+        out[di] = data[si];
+        out[di + 1] = data[si + 1];
+        out[di + 2] = data[si + 2];
+        out[di + 3] = data[si + 3];
+      }
+    }
+    return { data: out, width: tw, height: th, x: x0, y: y0 };
   }
 
   /**
@@ -1484,6 +1568,14 @@
     addCalendarYear: addCalendarYear,
     enrichLtoWorktype: enrichLtoWorktype,
     findLtoWorktype: findLtoWorktype,
+    LTO_JOB_LABEL: LTO_JOB_LABEL,
+    legacyLtoJobName: legacyLtoJobName,
+    renameLtoJobLabel: renameLtoJobLabel,
+    VRF_SIG_PRINT_H: VRF_SIG_PRINT_H,
+    VRF_SIG_PRINT_W: VRF_SIG_PRINT_W,
+    signatureInkBounds: signatureInkBounds,
+    knockOutSignaturePixels: knockOutSignaturePixels,
+    cropSignaturePixels: cropSignaturePixels,
     inferJob: inferJob,
     isEquipmentNName: isEquipmentNName,
     isFuel: isFuel,
