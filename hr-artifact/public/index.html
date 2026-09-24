@@ -16761,8 +16761,8 @@ function driveMessage(e){
     if(/GOOGLE_DRIVE_DELEGATED_USER|service account's My Drive/i.test(raw)) return raw;
     return "The service account's My Drive is full, so this file was not uploaded. The portal accepts Leave and Cash Advance scans up to "
       + MAX_UPLOAD_MB + " MB. Sharing the folder with the service account does not use the owner's quota. "
-      + "Jeffrey must set Netlify Functions env GOOGLE_DRIVE_DELEGATED_USER to a Workspace mailbox that owns those folders and has free space. "
-      + "Workspace Admin must allow domain-wide delegation for https://www.googleapis.com/auth/drive. A Shared Drive is an alternative.";
+      + "On Netlify site corcondev-hr, set GOOGLE_DRIVE_DELEGATED_USER for all contexts (include Functions) to Jeffrey's @corroconstruction work mailbox — the same address as his portal login. "
+      + "Workspace Admin must allow domain-wide delegation for the service account client_id with https://www.googleapis.com/auth/drive. A Shared Drive is an alternative.";
   }
   if(c==="server_not_connected") return "Google Drive is not connected to your Claude account. Add the Google Drive connector, then try again.";
   if(c==="needs_reauth")         return "Your Google Drive connection needs signing in again. Reconnect it in Claude, then try again.";

@@ -68,7 +68,7 @@ Site settings → Environment variables:
 | `ANTHROPIC_MODEL` | Functions, optional | Override the default model (`claude-sonnet-4-5`). |
 | `ANTHROPIC_MODEL_COMPLEX` | Functions, optional | Model for `modelTier: "complex"` (role defs, long drafts). Defaults to `ANTHROPIC_MODEL`. |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | **Builds only**, or **unset** | Must **not** be Functions-scoped. A full GCP JSON is ~3KB and blows the AWS 4KB Functions env limit. Prefer Netlify Blobs (below). |
-| `GOOGLE_DRIVE_DELEGATED_USER` | Functions, optional | Workspace mailbox to impersonate so Leave/CA uploads use that user's Drive quota. Aliases: `GOOGLE_DRIVE_IMPERSONATE`, `GOOGLE_IMPERSONATE_USER`. |
+| `GOOGLE_DRIVE_DELEGATED_USER` | **All contexts**, Functions | Jeffrey's `@corroconstruction` work mailbox. Leave/CA uploads impersonate this address so files use his Drive quota. Confirm the exact address from his portal login before saving (check `jeffrey@corroconstruction.com`). Do not commit it. Aliases: `GOOGLE_DRIVE_IMPERSONATE`, `GOOGLE_IMPERSONATE_USER`. |
 | `GOOGLE_DRIVE_OCR` | Functions, optional | Set `true` to OCR image/PDF files that have no text layer (uses the Anthropic key; slow on bulk reads). |
 | `OPENAI_API_KEY` | Functions **only** | Enables hold-to-talk dictation (`transcribe`) for memo drafting and Ask the records. Never put this in the shim or `index.html`. |
 | `OPENAI_TRANSCRIBE_MODEL` | Functions, optional | Override the transcription model. Default tries `gpt-transcribe`, then `gpt-4o-transcribe`, then `whisper-1`. |
@@ -116,12 +116,12 @@ Extractor contract (URL, headers, field map, seed roles `ro01`–`ro10`, soft-de
 5. Share every HR folder the artifact uses (201 ACTIVE / SEPARATED, inbox, memos, attendance, training manuals) with the service account email (`client_email` in the JSON). Viewer is enough to search and read; Content Manager (or Editor) is required to upload or create folders.
 6. Leave and Cash Advance uploads create the file as the Drive token's identity. Sharing a My Drive folder with the service account (Editor) does **not** spend that user's quota — the service account owns the new file, and this service account's My Drive is full (`storageQuotaExceeded` / `uploadQuotaExceeded`).
 
-   **Preferred:** impersonate a Workspace mailbox that owns or has free space in the Leave / Cash Advance / 201 folders.
+   **Preferred:** impersonate Jeffrey's `@corroconstruction` work mailbox (the address he uses on the company portal). That mailbox must own or have free space in the Leave / Cash Advance / 201 folders.
 
    1. Google Workspace Admin (super admin) → Security → Access and data control → API controls → Domain-wide delegation → Add new.
    2. Client ID: the service account's **numeric** `client_id` (Service accounts page, or the JSON key). Not the `client_email`.
    3. OAuth scope (exactly): `https://www.googleapis.com/auth/drive`
-   4. On Netlify site `corcondev-hr`, set Functions env `GOOGLE_DRIVE_DELEGATED_USER` to that mailbox. Scope **Functions**, then redeploy.
+   4. On Netlify site `corcondev-hr`, set `GOOGLE_DRIVE_DELEGATED_USER` to that mailbox. **Contexts: All** (Production, Deploy Previews, Branch deploys, and Local — not Production only). Include **Functions** so the Drive function can read it. Confirm the address from his portal login before saving; the address to check is `jeffrey@corroconstruction.com`. Do not commit the value. Redeploy after saving.
    5. `GOOGLE_DRIVE_IMPERSONATE` and `GOOGLE_IMPERSONATE_USER` are accepted aliases. Set only the canonical name.
 
    **Alternative:** move the folders onto a Shared Drive and add the service account as Content manager. A Shared Drive is not required when the delegated mailbox is set.

@@ -81,6 +81,14 @@ describe("placeholder and privacy", () => {
     assert.match(example, /https:\/\/www\.googleapis\.com\/auth\/drive/);
     assert.match(example, /client_id/);
     assert.match(example, /GOOGLE_IMPERSONATE_USER/);
+    assert.match(readme, /all contexts/i);
+    assert.match(readme, /@corroconstruction/);
+    assert.match(readme, /jeffrey@corroconstruction\.com/);
+    assert.match(example, /Contexts: All/);
+    assert.match(example, /corcondev-hr/);
+    assert.match(example, /@corroconstruction/);
+    assert.match(example, /jeffrey@corroconstruction\.com/);
+    assert.match(example, /client_id/);
     assert.match(readme, /Add to Home Screen/);
     assert.match(readme, /<script src="\/pwa\.js"><\/script>/);
     assert.match(readme, /OPENAI_API_KEY/);
@@ -121,6 +129,11 @@ describe("placeholder and privacy", () => {
     assert.match(envDoc, /HR_APPLICANTS_INGEST_KEY/);
     assert.match(envDoc, /Functions-scoped vs Builds-only/);
     assert.match(envDoc, /HR_GATE_SECRET/);
+    assert.match(envDoc, /all contexts/i);
+    assert.match(envDoc, /@corroconstruction/);
+    assert.match(envDoc, /numeric client_id/);
+    assert.match(envDoc, /https:\/\/www\.googleapis\.com\/auth\/drive/);
+    assert.match(envDoc, /jeffrey@corroconstruction\.com/);
   });
 
   it("netlify.toml publishes public with privacy headers", () => {

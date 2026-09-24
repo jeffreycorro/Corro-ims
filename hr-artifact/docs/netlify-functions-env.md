@@ -67,7 +67,7 @@ Local `netlify dev` can still use `GOOGLE_SERVICE_ACCOUNT_JSON` or `GOOGLE_SERVI
 | `ELEVENLABS_API_KEY` | Functions | `tts` |
 | `ELEVENLABS_VOICE_ID` / `ELEVENLABS_MODEL_ID` | Functions, optional | Small |
 | `ANTHROPIC_MODEL*` / `OPENAI_TRANSCRIBE_*` | Functions, optional | Small; unset if unused |
-| `GOOGLE_DRIVE_DELEGATED_USER` | Functions, optional | Email only (~40 B). Canonical impersonation name. Aliases `GOOGLE_DRIVE_IMPERSONATE` and `GOOGLE_IMPERSONATE_USER` are read if the canonical name is unset. |
+| `GOOGLE_DRIVE_DELEGATED_USER` | **All contexts**, Functions | Email only (~40 B). Jeffrey's `@corroconstruction` work mailbox. Canonical impersonation name. Aliases `GOOGLE_DRIVE_IMPERSONATE` and `GOOGLE_IMPERSONATE_USER` are read if the canonical name is unset. |
 | `GOOGLE_DRIVE_OCR` | Functions, optional | `true` / unset |
 | `GOOGLE_SERVICE_ACCOUNT_BLOB` | Functions, optional | Tiny flag (`1`) if you want an explicit Blobs hint |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | **Builds only**, or **unset** after Blobs upload | Never Functions |
@@ -122,7 +122,7 @@ What the code does:
 
 Code cannot create Drive space. The JWT includes `sub` only when `GOOGLE_DRIVE_DELEGATED_USER` (or an alias) is set. If it is unset, the service account owns the new file and its My Drive quota applies — sharing the folder does not change that. On **corcondev-hr**, Jeffrey must:
 
-1. **Preferred.** Workspace Admin → Security → Access and data control → API controls → Domain-wide delegation. Add the service account's **numeric client_id** with scope `https://www.googleapis.com/auth/drive`. Then set Functions env `GOOGLE_DRIVE_DELEGATED_USER` to a Workspace mailbox that owns (or has space in) the Leave / Cash Advance / 201 folders, and redeploy.
+1. **Preferred.** Workspace Admin → Security → Access and data control → API controls → Domain-wide delegation. Add the service account's **numeric client_id** with scope `https://www.googleapis.com/auth/drive`. Then set `GOOGLE_DRIVE_DELEGATED_USER` on site **corcondev-hr** for **all contexts** (Production, Deploy Previews, Branch deploys, and Local — not Production only) and include **Functions** so the Drive function can read it. The value is Jeffrey's `@corroconstruction` work mailbox, the same address as his company-portal login. Confirm it from portal logins before saving; the address to check is `jeffrey@corroconstruction.com`. Do not commit the address. Redeploy after saving. That mailbox must own or have space in the Leave / Cash Advance / 201 folders.
 2. **Alternative.** Move those folders onto a **Shared Drive** and add the service-account email as Content manager. Not required if step 1 is done.
 3. Free space on the mailbox that currently receives uploads.
 
