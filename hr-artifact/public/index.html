@@ -988,7 +988,15 @@ async function connect(){
   try{
     const snaps = await Promise.all(COLLS.map(c=>db.collection(c).get()));
     let any=false;
-    snaps.forEach((snap,i)=>{ const c=COLLS[i]; snap.docs.forEach(d=>{ S[c][d.id]=clone(d.data()); any=true; }); });
+    snaps.forEach((snap,i)=>{ const c=COLLS[i]; snap.docs.forEach(d=>{
+      const incoming=clone(d.data());
+      const local=S[c]&&S[c][d.id];
+      const merged=local?mergeIncomingDoc(c, incoming, local):incoming;
+      S[c][d.id]=merged;
+      if(c==="employees" && employeeLiveBeatsSeparatedSnap(local, incoming))
+        put("employees", d.id, merged);
+      any=true;
+    }); });
     const st = await db.doc("meta/settings").get();
     if(st.exists){
       const incoming=clone(st.data());
@@ -1003,15 +1011,21 @@ async function connect(){
   }catch(e){}
   COLLS.forEach(c=>{
     S.subs.push(db.collection(c).onSnapshot(snap=>{
-      const next={}; snap.docs.forEach(d=>next[d.id]=clone(d.data()));
+      const next={};
+      const repair=[];
+      snap.docs.forEach(d=>{
+        const incoming=clone(d.data());
+        const local=S[c]&&S[c][d.id];
+        next[d.id]=local?mergeIncomingDoc(c, incoming, local):incoming;
+        if(c==="employees" && employeeLiveBeatsSeparatedSnap(local, incoming))
+          repair.push([d.id, next[d.id]]);
+      });
       /* A just-saved Daily Manpower or signed memo can lose fields when a
-         stale collection snapshot replaces the whole map. Merge, don't swap. */
-      if(S[c]){
-        Object.keys(S[c]).forEach(id=>{
-          if(next[id]) next[id]=mergeIncomingDoc(c, next[id], S[c][id]);
-        });
-      }
+         stale collection snapshot replaces the whole map. Merge, don't swap.
+         A live 201 status that beat a stale Separated row is written back so
+         the shared store stops serving the roster snap. */
       S[c]=next; lsSave(); if(S.ready) render();
+      repair.forEach(([id,obj])=>{ put("employees", id, obj); });
     }, ()=>{}));
   });
 }
@@ -1064,8 +1078,10 @@ function mergeIncomingDoc(coll, incoming, local){
     /* A live 201 classification is the source of truth. The 2026-09-16
        separated-roster backfill must not pin Separated over Project-based
        (or Regular / Probationary / …) after HR writes it — that is why
-       Ben Pasion kept flipping back. A stale Regular snapshot still must
-       not un-separate someone HR just marked on Daily Manpower. */
+       Ben Pasion kept flipping back, including when the stale Separated
+       row arrived after the 201 file already said Project-based. A stale
+       Regular snapshot still must not un-separate someone HR just marked
+       on Daily Manpower. */
     const incomingLive=empStatusIsLive(incoming);
     const localSep=empStatusIsSeparated(local);
     const hrMarked=/marked separated/i.test(String((local&&local.statusBasis)||""));
@@ -1075,6 +1091,12 @@ function mergeIncomingDoc(coll, incoming, local){
         separatedOn:local.separatedOn||incoming.separatedOn||"",
         separationReason:local.separationReason||incoming.separationReason||"",
         statusBasis:local.statusBasis
+      });
+    }
+    if(employeeLiveBeatsSeparatedSnap(local, incoming)){
+      return Object.assign({}, incoming, {
+        status:local.status,
+        statusBasis:local.statusBasis||incoming.statusBasis||""
       });
     }
     if(incomingLive) return incoming;
@@ -1194,7 +1216,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-09-24a";
+const BUILD = "2026-09-24b";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -1666,7 +1688,24 @@ function knownSepRec(e){
 }
 function empStatusIsLive(e){
   const s=String((e&&e.status)||"").trim();
-  return s==="Probationary"||s==="Regular"||s==="Project-based"||s==="Fixed-term"||s==="Consultant";
+  if(/^(probationary|regular|fixed-term|fixed term|consultant)$/i.test(s)) return true;
+  /* "Project-based", "project-based", and "Project-based with a definite period"
+     are active engagements. A separated-roster row must not treat them as leavers. */
+  if(/project[-\s]?based/i.test(s)) return true;
+  return false;
+}
+/* A Separated snapshot is the 2026-09-16 roster (or an older row with no
+   fresh HR decision) when it is not a status HR just set on the 201 file
+   or on Daily Manpower. Those are the snaps that put Ben Pasion back. */
+function separatedSnapIsStale(e){
+  if(!empStatusIsSeparated(e)) return false;
+  const basis=String((e&&e.statusBasis)||"");
+  if(/marked separated/i.test(basis)) return false;
+  if(/set on the 201 file/i.test(basis)) return false;
+  return true;
+}
+function employeeLiveBeatsSeparatedSnap(local, incoming){
+  return empStatusIsLive(local) && separatedSnapIsStale(incoming);
 }
 function empStatusIsSeparated(e){
   const s=String((e&&e.status)||"").trim();
@@ -8768,7 +8807,7 @@ function dailyAddPerson(){
       + 'A separated callback stays on this day only.</div>'
       + '<div class="f"><label>Employee</label><select id="da-emp">'
       + rest.map(e=>'<option value="'+esc(e.id)+'">'+esc((e.empNo||"no number")+" · "+flipName(e.name))
-          + (e.status==="Separated"?" (separated)":"")+'</option>').join("")+'</select></div>'
+          + (empStatusIsSeparated(e)?" (separated)":"")+'</option>').join("")+'</select></div>'
       + '<div class="f"><label>Area for the day</label><select id="da-site">'
       + dailySites().map(x=>'<option>'+esc(x)+'</option>').join("")+'</select></div></div>',
     foot:'<button class="btn" id="da-cancel">Cancel</button>'
@@ -9336,7 +9375,10 @@ const SEPARATION_DOCS = [
   ["clearance", "an employee clearance form is filed"]
 ];
 function leaverEvidence(e){
-  if(!e || e.status==="Separated") return "";
+  if(!e || empStatusIsSeparated(e)) return "";
+  /* Project-based (including a definite-period engagement) is an active
+     status. A leftover separatedOn from the roster is not paperwork. */
+  if(/project[-\s]?based/i.test(String(e.status||""))) return "";
   if(e.separatedOn)      return "a separation date of "+e.separatedOn+" is on the record";
   if(e.separationReason) return "a separation reason is on the record";
   const d=e.docs||{};

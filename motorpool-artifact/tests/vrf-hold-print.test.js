@@ -144,7 +144,7 @@ describe("artifact HTML — hold print / photos / log after Send for approval", 
     assert.match(html, /Photos and print work now/);
     assert.match(html, /if\(!waiting\) tabDefs\.push\(\["liq"/);
     assert.match(html, /listPhotosMany\(photoOwnersForOpenVrf\(entry\)\)/);
-    assert.match(html, /var BUILD = "2026-09-23 b"/);
+    assert.match(html, /var BUILD = "2026-09-24 b"/);
     assert.match(html, /function vrfPrintWatermark/);
     assert.match(html, /function vrfMarkNode/);
     assert.match(html, /d\.appendChild\(vrfMarkNode\(mark\)\)/);
