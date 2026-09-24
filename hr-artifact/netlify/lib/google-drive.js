@@ -288,7 +288,7 @@ function quotaExceededMessage() {
     "The service account's My Drive is full, so Leave and Cash Advance uploads cannot create files. " +
     "Sharing those folders with the service account does not use the owner's quota — the service account still owns the new file. " +
     "On Netlify site corcondev-hr, set GOOGLE_DRIVE_DELEGATED_USER for all contexts (not Production only) and include Functions. " +
-    "The value is Jeffrey's @corroconstruction work mailbox — the same address as his company-portal login. Confirm it before saving. " +
+    "The value is jeffreycorro@corroconstruction.com. " +
     "Workspace Admin must grant this service account domain-wide delegation (numeric client_id, scope https://www.googleapis.com/auth/drive). " +
     "A Shared Drive is an alternative."
   );

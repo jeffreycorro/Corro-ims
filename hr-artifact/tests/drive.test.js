@@ -244,7 +244,7 @@ describe("drive delegation and quota", () => {
     assert.match(storage.message, /https:\/\/www\.googleapis\.com\/auth\/drive/);
     assert.match(storage.message, /corcondev-hr/);
     assert.match(storage.message, /all contexts/i);
-    assert.match(storage.message, /@corroconstruction/);
+    assert.match(storage.message, /jeffreycorro@corroconstruction\.com/);
 
     const upload = mapDriveHttpError(403, {
       error: {
