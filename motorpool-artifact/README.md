@@ -266,7 +266,7 @@ Functions need Netlify (`npx netlify dev --dir .`) plus the env vars above. With
 
 After this folder merges to the branch the **separate** Motorpool Netlify site tracks (usually `main`):
 
-1. Confirm the live Ask / footer BUILD is **2026-09-24 b** (hard refresh if a service worker or tab still shows `2026-09-23 b`).
+1. Confirm the live Ask / footer BUILD is **2026-09-25 a** (hard refresh if a service worker or tab still shows `2026-09-24 b`).
 2. **Job order and Tasks proof:** open a job order and a task. Each proof section has **Attach from this device** (photo or video from the phone gallery or computer) and the existing link field. A chosen photo shows in the proof strip. A short video plays there. **Attach proof** / **Attach the link** still saves a pasted https URL. A video over 3 MB asks for a link instead of failing silently.
 3. **New VRF:** the only primary action is **Send for approval**. There is no **Post VRF** button. Staff cannot skip Jeffrey’s office approval.
 4. After deploy, open Office → Approvals. If a pending VRF still shows **58528** beside an already-posted 58528, refresh once — boot remints the pending hold to the next free number and leaves the posted ledger row untouched.
@@ -277,7 +277,8 @@ After this folder merges to the branch the **separate** Motorpool Netlify site t
 9. **approve-vrf API:** after `APPROVE_VRF_SECRET` is set and the site is redeployed, a wrong secret must `401` and a missing VRF must `404`. Do not put the real secret in the repo.
 10. **Odometer:** on New VRF, type a meter reading and send for approval. Open, print, and the VRF log for that number show the same reading. A second VRF keeps its own reading.
 11. **Liquidate:** an approved VRF that is still open (including an approved hold such as 5795 that never landed in the ledger) shows **Liquidate** on the log row and in the VRF sheet. A Requested / FOR APPROVAL VRF does not. A closed VRF does not gain a new liquidate path.
-12. **Prepared/Purchased By:** on New VRF, attach an e-signature JPEG (filename sophie, batas, prepared, or purchased) and leave **Apply on this VRF** checked. The printed form shows that signature in the Prepared/Purchased By slot only.
+12. **Not bought / cancel after approval:** on an approved open VRF (for example 5830 at ₱5,070), open Liquidate, mark every line **Not bought**, and **Close as not bought**. The log total becomes ₱0.00 and the status is **Not bought**. Or use **Cancel VRF** / **Cancel — purchase did not go through** without editing lines: the total becomes ₱0.00 and the status is **Cancelled**. A partial **Not bought** still liquidates the lines that were bought. Print shows ₱0.00 on the lines that were not bought. Hard-refresh `corcondev-motorpool` so BUILD reads **2026-09-25 a** before checking.
+13. **Prepared/Purchased By:** on New VRF, attach an e-signature JPEG (filename sophie, batas, prepared, or purchased) and leave **Apply on this VRF** checked. The printed form shows that signature in the Prepared/Purchased By slot only.
 
 HR and Materials are out of scope.
 

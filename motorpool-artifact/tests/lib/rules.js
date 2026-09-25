@@ -842,12 +842,109 @@
     return no ? [no] : [];
   }
 
+  function spendEndStatus(raw) {
+    raw = String(raw || "").trim();
+    if (/^not[- ]bought$/i.test(raw)) return "Not bought";
+    if (/^cancel(?:led|ed)$/i.test(raw)) return "Cancelled";
+    return "";
+  }
+
+  function reserveSpendClosed(reserve) {
+    if (!reserve) return false;
+    if (String(reserve.status || "") === "Cancelled" || reserve.cancelledAt) return true;
+    var outcome = String(reserve.cancelOutcome || "");
+    return outcome === "cancelled" || outcome === "not-bought";
+  }
+
+  /** A cancelled or not-bought hold must not come back at the approved budget. */
+  function heldLineAmount(reserve, line) {
+    if (reserveSpendClosed(reserve)) return 0;
+    if (line) return lineMoney(line);
+    return moneyNum(reserve && (reserve.approvedBudget != null ? reserve.approvedBudget : reserve.budget));
+  }
+
+  function heldVrfStatus(reserve, fallback) {
+    if (!reserve) return fallback || "Open";
+    if (reserve.status === "Requested") return "Requested";
+    if (reserveSpendClosed(reserve)) {
+      return String(reserve.cancelOutcome) === "not-bought" ? "Not bought" : "Cancelled";
+    }
+    if (
+      reserve.status === "Closed" ||
+      reserve.status === "Rejected" ||
+      reserve.status === "Flagged" ||
+      reserve.liquidatedAt
+    ) {
+      return "Closed";
+    }
+    return fallback || "Open";
+  }
+
+  function liquidationOutcome(rows, edits, added) {
+    var list = rows || [];
+    if (!list.length) return "bought";
+    var allOff = list.every(function (row, i) {
+      return edits && edits[i] && edits[i].remove;
+    });
+    var addedSpend = (added || []).some(function (a) {
+      return a && a.cat && (parseFloat(a.qty) || 0) * (parseFloat(a.price) || 0) > 0;
+    });
+    if (allOff && !addedSpend) return "not-bought";
+    return "bought";
+  }
+
+  function vrfStatusForOutcome(outcome) {
+    if (outcome === "not-bought") return "Not bought";
+    if (outcome === "cancelled") return "Cancelled";
+    return "Closed";
+  }
+
+  function lineWasNotPurchased(row) {
+    if (!row) return false;
+    if (row.notBought) return true;
+    return !!spendEndStatus(row.vstatus);
+  }
+
+  /** Not bought / cancelled keeps the line and zeroes it. Bought keeps the receipt amounts. */
+  function applyLiquidationLine(row, edit, stamp, outcome) {
+    var e = edit || {};
+    var drop = outcome === "cancelled" || outcome === "not-bought" || !!e.remove;
+    if (drop) {
+      var st = outcome === "cancelled" ? "Cancelled" : outcome === "not-bought" ? "Not bought" : "Closed";
+      return Object.assign({}, row || {}, {
+        qty: 0,
+        price: 0,
+        total: 0,
+        liters: null,
+        notBought: true,
+        vstatus: st,
+        liq: stamp || null,
+      });
+    }
+    var qty = e.qty != null ? e.qty : row && row.qty;
+    var price = e.price != null ? e.price : row && row.price;
+    var total = qty != null && price != null ? qty * price : row && row.total;
+    var next = Object.assign({}, row || {}, {
+      qty: qty,
+      price: price,
+      total: total,
+      notBought: false,
+      vstatus: "Closed",
+      liq: stamp || null,
+    });
+    if (e.supplier != null) next.supplier = e.supplier;
+    return next;
+  }
+
   function vrfPrintWatermark(entry) {
     if (!entry) return "FOR APPROVAL";
     var st = String(entry.status || "").trim();
     if (!st || st === "Requested" || /^for approval$/i.test(st) || /^sent for approval$/i.test(st)) {
       return "FOR APPROVAL";
     }
+    var ended = spendEndStatus(st);
+    if (ended === "Not bought") return "NOT BOUGHT";
+    if (ended === "Cancelled") return "CANCELLED";
     if (/^rejected$/i.test(st) || /^disapproved$/i.test(st)) return "FOR APPROVAL";
     /* held / reserve-hold means "not in the ledger yet", not "still waiting".
        An approved Open hold prints APPROVED. Only a real hold stays FOR APPROVAL. */
@@ -908,6 +1005,8 @@
   }
 
   function canonicalVrfStatus(st, reserve, liq, vrfNo) {
+    var ended = spendEndStatus(st) || spendEndStatus(liq && (liq.outcome || liq.status));
+    if (ended) return { status: ended, legacy: false };
     if (liq) return { status: "Closed", legacy: false };
     var raw = String(st || "").trim();
     if (/^closed$/i.test(raw) || /^liquidated$/i.test(raw)) return { status: "Closed", legacy: false };
@@ -943,9 +1042,12 @@
       st === "Open" ||
       st === "Closed" ||
       st === "Rejected" ||
+      st === "Not bought" ||
+      st === "Cancelled" ||
       /^approved$/i.test(st) ||
       /^posted$/i.test(st) ||
-      /awaiting liquidation/i.test(st)
+      /awaiting liquidation/i.test(st) ||
+      spendEndStatus(st)
     ) {
       return false;
     }
@@ -959,7 +1061,15 @@
   function vrfCanLiquidate(entry, reserve) {
     if (!entry || vrfAwaitingApproval(entry, reserve)) return false;
     var st = String(entry.status || "").trim();
-    if (st === "Closed" || st === "Rejected" || /^liquidated$/i.test(st) || /^disapproved$/i.test(st)) {
+    if (
+      st === "Closed" ||
+      st === "Rejected" ||
+      st === "Not bought" ||
+      st === "Cancelled" ||
+      /^liquidated$/i.test(st) ||
+      /^disapproved$/i.test(st) ||
+      spendEndStatus(st)
+    ) {
       return false;
     }
     if (entry.liq) return false;
@@ -1613,6 +1723,14 @@
     photoOwnersForReserve: photoOwnersForReserve,
     photoOwnersForVrf: photoOwnersForVrf,
     photoOwnersForOpenVrf: photoOwnersForOpenVrf,
+    spendEndStatus: spendEndStatus,
+    reserveSpendClosed: reserveSpendClosed,
+    heldLineAmount: heldLineAmount,
+    heldVrfStatus: heldVrfStatus,
+    liquidationOutcome: liquidationOutcome,
+    vrfStatusForOutcome: vrfStatusForOutcome,
+    lineWasNotPurchased: lineWasNotPurchased,
+    applyLiquidationLine: applyLiquidationLine,
     vrfPrintWatermark: vrfPrintWatermark,
     parseOdo: parseOdo,
     reserveMeter: reserveMeter,
