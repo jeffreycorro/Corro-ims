@@ -1065,6 +1065,10 @@ function mergeIncomingDoc(coll, incoming, local){
     if(local.hrSigLink && !next.hrSigLink) next.hrSigLink=local.hrSigLink;
     if(local.hrSigData && !next.hrSigData) next.hrSigData=local.hrSigData;
     next.hrSigs=Object.assign({}, local.hrSigs||{}, incoming.hrSigs||{});
+    /* A failed or not-yet-uploaded OT edit stays dirty across a stale snapshot
+       so the next flush writes it. Dropping the flag made a refresh look saved
+       on this browser and blank on the shared copy. */
+    if(local._dmDirty) next._dmDirty=true;
     if((local.log||[]).length>(next.log||[]).length) next.log=local.log;
     /* A stale snapshot must not put resigned / separated names back on
        today's open sheet. Past dates keep every saved row. */
@@ -19095,7 +19099,18 @@ function captureDailyForm(){
 }
 function enqueueDailySave(why){
   const job=DM_SAVE_CHAIN.then(async()=>{
-    if(typeof document==="undefined" || !document.querySelector || !document.querySelector("#view [data-dms]")) return true;
+    const formOpen=typeof document!=="undefined" && document.querySelector && document.querySelector("#view [data-dms]");
+    if(!formOpen){
+      const ids=Object.keys(S.daily||{}).filter(id=>S.daily[id] && S.daily[id]._dmDirty);
+      if(!ids.length) return true;
+      noteDailySave("Saving…");
+      for(let i=0;i<ids.length;i++){
+        const pending=S.daily[ids[i]];
+        if(pending && pending._dmDirty) await dailySave(pending, why||"");
+      }
+      noteDailySave("Saved");
+      return true;
+    }
     const rec=dailyCollect();
     const before=dailyGet(rec.date);
     const dirty=!!(rec._dmDirty || (before && before._dmDirty));
@@ -19131,7 +19146,15 @@ function queueDailyShrink(){
       slimDailyRecord(rec);
       delete rec._dmDirty;
       const ok=await put("daily", rec.id||ids[i], rec);
-      if(ok===false) rec._dmShed=1;
+      if(ok===false){
+        rec._dmShed=1;
+        rec._dmDirty=true;
+      }
+    }
+    const dirty=Object.keys(S.daily||{}).filter(id=>S.daily[id] && S.daily[id]._dmDirty);
+    for(let i=0;i<dirty.length;i++){
+      const rec=S.daily[dirty[i]];
+      if(rec && rec._dmDirty) await dailySave(rec, "");
     }
   }).catch(()=>{});
 }
@@ -19165,7 +19188,11 @@ async function dailySave(rec, why){
   }
   const ok=await put("daily", rec.id, rec);
   if(ok===false){
-    if(shed && S.daily[rec.id]) S.daily[rec.id]._dmShed=1;
+    const kept=S.daily[rec.id];
+    if(kept){
+      kept._dmDirty=true;
+      if(shed) kept._dmShed=1;
+    }
     const err=new Error("This day’s report did not reach shared storage. Your OT is still in the boxes — press Save again.");
     err.code="daily_save_failed";
     throw err;
@@ -19994,6 +20021,8 @@ function render(){
     settings:viewSettings}[v] || viewDash;
   $("#view").innerHTML = (S.bootError ? bootErrorCard() : "") + fn();
   wire();
+  /* Leaving the sheet must still upload hours captured from the boxes. */
+  if(!S.ui || S.ui.view!=="daily") enqueueDailySave("");
 }
 function bootErrorCard(){
   return '<div class="card" style="border-color:var(--crit);margin-bottom:16px"><div class="card-b">'

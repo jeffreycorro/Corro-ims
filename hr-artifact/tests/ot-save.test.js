@@ -85,6 +85,8 @@ describe("Daily Manpower OT save", () => {
     const saveBlock = html.slice(saveAt, saveEnd);
     assert.match(saveBlock, /enqueueDailySave/);
     assert.doesNotMatch(saveBlock, /render\(\)/);
+    assert.match(html, /kept\._dmDirty=true/);
+    assert.match(html, /if\(local\._dmDirty\) next\._dmDirty=true/);
     assert.match(attendance, /otRaw === "" \? null/);
   });
 
