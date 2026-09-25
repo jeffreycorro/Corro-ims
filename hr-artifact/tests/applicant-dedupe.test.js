@@ -149,6 +149,18 @@ describe("applicant merge", () => {
     assert.equal(furthestStage(["Applied", "Interview", "Hired"]), "Hired");
     assert.equal(furthestStage(["Rejected", "Applied"]), "Rejected");
   });
+
+  it("keeps On Hold and Shortlisted behind a later interview stage", () => {
+    const { STAGES, STAGE_RANK } = require("../public/hr-applicant-dedupe");
+    assert.ok(STAGES.includes("On Hold"));
+    assert.ok(STAGES.includes("Shortlisted"));
+    assert.ok(STAGE_RANK["On Hold"] > STAGE_RANK.Screening);
+    assert.ok(STAGE_RANK.Shortlisted > STAGE_RANK["On Hold"]);
+    assert.ok(STAGE_RANK["Written Exam"] > STAGE_RANK.Shortlisted);
+    assert.equal(furthestStage(["On Hold", "Shortlisted", "Interview"]), "Interview");
+    assert.equal(furthestStage(["Applied", "On Hold"]), "On Hold");
+    assert.equal(furthestStage(["Shortlisted", "Screening"]), "Shortlisted");
+  });
 });
 
 describe("ingest match", () => {

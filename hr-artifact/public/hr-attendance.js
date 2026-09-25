@@ -2098,7 +2098,11 @@
           rec.rows[id].hol = hol.type === "checkbox" ? (hol.checked ? 1 : 0) : Number(hol.value) || 0;
         }
         var ot = document.querySelector('[data-dmot="' + id + '"]');
-        if (ot) rec.rows[id].ot = ot.value === "" ? 0 : Number(ot.value) || 0;
+        if (ot) {
+          var otRaw = String(ot.value == null ? "" : ot.value).trim();
+          var otNum = otRaw === "" ? null : Number(otRaw);
+          rec.rows[id].ot = typeof otNum === "number" && !isNaN(otNum) ? otNum : null;
+        }
         var tin = document.querySelector('[data-dmin="' + id + '"]');
         var tout = document.querySelector('[data-dmout="' + id + '"]');
         if (tin) rec.rows[id].in = tin.value;

@@ -16,6 +16,8 @@
   var STAGES = [
     "Applied",
     "Screening",
+    "Shortlisted",
+    "On Hold",
     "Written Exam",
     "Interview",
     "Final Interview",
@@ -27,6 +29,8 @@
   var STAGE_RANK = {
     Applied: 1,
     Screening: 2,
+    "On Hold": 2.25,
+    Shortlisted: 2.5,
     "Written Exam": 3,
     Interview: 4,
     "Final Interview": 5,

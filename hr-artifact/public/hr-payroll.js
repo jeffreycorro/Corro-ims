@@ -2761,7 +2761,11 @@
       else if (old.in != null) rec.rows[id].in = old.in;
       if (tout) rec.rows[id].out = tout.value;
       else if (old.out != null) rec.rows[id].out = old.out;
-      if (ot) rec.rows[id].ot = ot.value === "" ? 0 : Number(ot.value) || 0;
+      if (ot) {
+        var otRaw = String(ot.value == null ? "" : ot.value).trim();
+        var otNum = otRaw === "" ? null : Number(otRaw);
+        rec.rows[id].ot = typeof otNum === "number" && !isNaN(otNum) ? otNum : null;
+      }
       else if (old.ot != null) rec.rows[id].ot = old.ot;
     });
     return rec;

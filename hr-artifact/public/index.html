@@ -909,6 +909,9 @@ const COLLS = ["employees","nte","writeups","tasks","templates","periods",
    300-record seed into 300 full serialisations of a growing megabyte. */
 let LS_T=null;
 function lsSaveSoon(){ if(LS_T) return; LS_T=setTimeout(()=>{ LS_T=null; lsSave(); },800); }
+if(typeof window!=="undefined" && window.addEventListener){
+  window.addEventListener("pagehide", ()=>{ try{ captureDailyForm(); lsSave(); }catch(e){} });
+}
 
 async function put(coll,id,obj){
   /* A hire added after start-up belongs on People & Pay straight away rather
@@ -917,12 +920,20 @@ async function put(coll,id,obj){
     obj.rosterConfirmed=TODAY;
   if(coll==="employees" && obj && typeof hr201Checklist!=="undefined" && hr201Checklist.applyEmployee)
     hr201Checklist.applyEmployee(obj, DOCS, TODAY);
+  if(coll==="daily" && obj){
+    delete obj._dmDirty;
+    delete obj._dmShed;
+    slimDailyRecord(obj);
+  }
   S[coll][id]=obj; lsSaveSoon();
-  if(!S.db) return;
-  try{ await S.db.doc(coll+"/"+id).set(obj); }
+  if(!S.db) return true;
+  try{ await S.db.doc(coll+"/"+id).set(obj); return true; }
   catch(e){
-    if(e && e.code==="quota_exceeded") toast("Storage is full — delete old records before adding more.","err");
-    else if(e && e.code!=="revoked") toast("Could not save to shared storage. Change kept on this device.","err");
+    if(coll!=="daily"){
+      if(e && e.code==="quota_exceeded") toast("Storage is full — delete old records before adding more.","err");
+      else if(e && e.code!=="revoked") toast("Could not save to shared storage. Change kept on this device.","err");
+    }
+    return false;
   }
 }
 /* Seeding writes hundreds of documents. Run them a few at a time rather than
@@ -992,6 +1003,7 @@ async function connect(){
       const incoming=clone(d.data());
       const local=S[c]&&S[c][d.id];
       const merged=local?mergeIncomingDoc(c, incoming, local):incoming;
+      if(c==="daily" && slimDailyRecord(merged)) merged._dmShed=1;
       S[c][d.id]=merged;
       if(c==="employees" && employeeLiveBeatsSeparatedSnap(local, incoming))
         put("employees", d.id, merged);
@@ -1007,7 +1019,11 @@ async function connect(){
         incoming.hrSigs=Object.assign({}, S.settings.hrSigs, incoming.hrSigs);
       S.settings=Object.assign(S.settings,incoming);
     }
+    Object.keys(S.daily||{}).forEach(id=>{
+      if(S.daily[id] && slimDailyRecord(S.daily[id])) S.daily[id]._dmShed=1;
+    });
     if(any) lsSave();
+    queueDailyShrink();
   }catch(e){}
   COLLS.forEach(c=>{
     S.subs.push(db.collection(c).onSnapshot(snap=>{
@@ -1017,6 +1033,7 @@ async function connect(){
         const incoming=clone(d.data());
         const local=S[c]&&S[c][d.id];
         next[d.id]=local?mergeIncomingDoc(c, incoming, local):incoming;
+        if(c==="daily" && slimDailyRecord(next[d.id])) next[d.id]._dmShed=1;
         if(c==="employees" && employeeLiveBeatsSeparatedSnap(local, incoming))
           repair.push([d.id, next[d.id]]);
       });
@@ -1024,7 +1041,7 @@ async function connect(){
          stale collection snapshot replaces the whole map. Merge, don't swap.
          A live 201 status that beat a stale Separated row is written back so
          the shared store stops serving the roster snap. */
-      S[c]=next; lsSave(); if(S.ready) render();
+      S[c]=next; lsSave(); if(c==="daily") queueDailyShrink(); if(S.ready) render();
       repair.forEach(([id,obj])=>{ put("employees", id, obj); });
     }, ()=>{}));
   });
@@ -1048,6 +1065,10 @@ function mergeIncomingDoc(coll, incoming, local){
     if(local.hrSigLink && !next.hrSigLink) next.hrSigLink=local.hrSigLink;
     if(local.hrSigData && !next.hrSigData) next.hrSigData=local.hrSigData;
     next.hrSigs=Object.assign({}, local.hrSigs||{}, incoming.hrSigs||{});
+    /* A failed or not-yet-uploaded OT edit stays dirty across a stale snapshot
+       so the next flush writes it. Dropping the flag made a refresh look saved
+       on this browser and blank on the shared copy. */
+    if(local._dmDirty) next._dmDirty=true;
     if((local.log||[]).length>(next.log||[]).length) next.log=local.log;
     /* A stale snapshot must not put resigned / separated names back on
        today's open sheet. Past dates keep every saved row. */
@@ -1216,7 +1237,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-09-24d";
+const BUILD = "2026-09-25a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -8160,12 +8181,15 @@ function dailyBlank(d){
    day. The employee record still holds where they normally work; the daily
    row can put them somewhere else without rewriting their file. HR can also
    add somebody who is not on the standing list, or drop somebody who is. */
+let DAILY_SITES_CACHE=null;
 function dailySites(){
+  if(DAILY_SITES_CACHE) return DAILY_SITES_CACHE;
   const set=new Set(projectList().map(p=>p.name));
   atWork().forEach(e=>{ if(e.project) set.add(e.project); });
   Object.values(S.daily).forEach(r=>Object.values(r.rows||{}).forEach(x=>{ if(x.site) set.add(x.site); }));
   set.add("ADMINS");
-  return [...set].sort((a,b)=>a==="ADMINS"?1:b==="ADMINS"?-1:a.localeCompare(b));
+  DAILY_SITES_CACHE=[...set].sort((a,b)=>a==="ADMINS"?1:b==="ADMINS"?-1:a.localeCompare(b));
+  return DAILY_SITES_CACHE;
 }
 function dailyPeople(rec){
   /* A day read from a filed scan already names everyone who was on it. Its
@@ -8322,15 +8346,9 @@ function nameLastFirst(n){
   return {last:parts[parts.length-1], first:parts.slice(0,-1).join(" ")};
 }
 function applyHrSigsToRec(rec){
-  if(!rec) return rec;
-  rec.hrSigs=Object.assign({}, (S.settings||{}).hrSigs||{}, rec.hrSigs||{});
-  if(!rec.hrSigData && !rec.hrSigLink){
-    const src=hrSigSrc(rec, "prepared");
-    if(src){
-      if(/^data:/i.test(src)) rec.hrSigData=src;
-      else rec.hrSigLink=src;
-    }
-  }
+  /* Print already reads company e-signatures from settings (hrSigSrc).
+     Copying those image blobs onto the day made every OT save a multi-megabyte
+     write. The shared store rejected it, then a redraw wiped the boxes. */
   return rec;
 }
 /* Write the people and sites currently on the day onto extra/rows so a later
@@ -8510,8 +8528,13 @@ function commitLeaverStrip(before, rec){
 }
 commitLeaverStrip.busy={};
 function viewDaily(){
+  DAILY_SITES_CACHE=null;
   const d=S.ui.dailyDate||TODAY;
   const savedRec=dailyGet(d);
+  if(savedRec && slimDailyRecord(savedRec)){
+    savedRec._dmShed=1;
+    queueDailyShrink();
+  }
   if(savedRec){
     const beforeStrip=clone(savedRec);
     if(stripOpenDayLeavers(savedRec)) commitLeaverStrip(beforeStrip, clone(savedRec));
@@ -8534,6 +8557,7 @@ function viewDaily(){
    + (hrSigSrc()||hrSigSrc(null,"cassie")||hrSigSrc(null,"approved")||hrSigSrc(null,"evaluated")||hrSigSrc(null,"signatory")?'Replace HR e-sigs':'Attach HR e-sigs')+'</button>'
    + hrSigPills()
    + '<button class="btn pri" id="dm-save">Save</button>'
+   + '<span class="lbl" id="dm-savestate" style="text-transform:none;letter-spacing:0"></span>'
    + '<button class="btn" id="dm-add">Add someone</button>'
    + '<button class="btn" id="dm-apply" title="Copy today\'s areas onto the 201 records">Make areas permanent</button>'
    + '<button class="btn" data-goto="salaries">Edit positions</button>'
@@ -8581,7 +8605,8 @@ function viewDaily(){
      + '</div></div>';
   }
 
-  h+='<div class="note" style="margin:14px 0">Everyone starts as <b>Present</b> — mark <b>Has not yet arrived</b> for anyone still on the way, then change the other exceptions. '
+  h+='<div class="note" style="margin:14px 0"><b>OT hours save on their own</b> a moment after you type them — a slow page does not mean the number was lost. '
+   + 'Everyone starts as <b>Present</b> — mark <b>Has not yet arrived</b> for anyone still on the way, then change the other exceptions. '
    + 'then Save. <b>Drag a name</b> onto another area, or use the Area column, when someone works somewhere '
    + 'else for the day; that changes this report only. <b>Make areas permanent</b> copies the day’s areas onto '
    + 'the 201 records when a move is a real transfer.</div>';
@@ -8756,7 +8781,9 @@ function viewDaily(){
 
 function dailyCollect(){
   const d=S.ui.dailyDate||TODAY;
-  const rec=clone(dailyGet(d)||dailyBlank(d));
+  const live=dailyGet(d);
+  if(live) slimDailyRecord(live);
+  const rec=clone(live||dailyBlank(d));
   rec.rows=rec.rows||{};
   $$("[data-dms]").forEach(sel=>{
     const id=sel.dataset.dms;
@@ -8778,7 +8805,7 @@ function dailyCollect(){
     }
     rec.rows[id]={ s:sel.value||"Present", r:reason, site,
       in:g("data-dmin"), out:g("data-dmout"),
-      ot:num(g("data-dmot")), day:num(g("data-dmday")),
+      ot:parseOtHours(g("data-dmot")), day:num(g("data-dmday")),
       hol:(function(){ const el=document.querySelector('[data-dmhol="'+id+'"]');
         if(el) return Number(el.value)||0;
         return prevRow.hol!=null ? holCode(prevRow) : null; })(),
@@ -13182,7 +13209,7 @@ function viewCOE(){
 }
 
 /* ============ recruitment ============ */
-const STAGES=["Applied","Screening","Written Exam","Interview","Final Interview","Offer","Hired","Rejected"];
+const STAGES=["Applied","Screening","Shortlisted","On Hold","Written Exam","Interview","Final Interview","Offer","Hired","Rejected"];
 const SEED_EXAMS=[
  {id:"x001",kind:"exam",title:"IQ and General Aptitude Test",dept:"All",maxScore:50,passing:30,notes:"Logical reasoning, pattern recognition, numeracy and reading comprehension. Given to every applicant before the interview."},
  {id:"x010",kind:"exam",title:"Situational Judgement Test",dept:"All",maxScore:30,passing:18,notes:"Site and office scenarios — what the applicant would actually do."},
@@ -16988,9 +17015,6 @@ async function handleHrSigFiles(job, files){
   await putSettings();
   const d=S.ui.dailyDate||TODAY;
   const rec=clone(dailyGet(d)||dailyBlank(d));
-  rec.hrSigs=Object.assign({}, rec.hrSigs||{}, S.settings.hrSigs);
-  rec.hrSigData=S.settings.hrSigData||rec.hrSigData;
-  rec.hrSigLink=S.settings.hrSigLink||rec.hrSigLink;
   await dailySave(rec, attached.length>1 ? attached.length+" HR e-signatures attached" : "HR e-signature attached");
   const names=attached.map(p=>p.title||p.name||p.slot).join(", ");
   toast(attached.length+" e-sig"+(attached.length===1?"":"s")+" attached — "+names,"ok");
@@ -19003,19 +19027,176 @@ function dailyDiff(before, after){
   return out;
 }
 const DAILY_LOG_MAX = 60;      /* enough to answer a question, not enough to bloat */
+/* Blank stays blank. 0 is a real zero. An empty cell must not become 0, or
+   every person on the sheet looks edited and the save rewrites the day. */
+function parseOtHours(v){
+  if(v==null) return null;
+  const s=String(v).trim();
+  if(!s) return null;
+  const n=Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+function dailySigWeight(rec){
+  if(!rec) return 0;
+  let n=0;
+  if(rec.hrSigData) n+=String(rec.hrSigData).length;
+  const map=rec.hrSigs||{};
+  Object.keys(map).forEach(k=>{
+    const p=map[k];
+    if(p && p.data) n+=String(p.data).length;
+  });
+  return n;
+}
+function sigBlobSame(a,b){
+  if(!a || !b) return false;
+  return String(a.data||"")===String(b.data||"") && String(a.link||"")===String(b.link||"");
+}
+/* Drop e-signature image bytes that already live on settings, and drop a
+   data-URL when a Drive link is enough. Returns true when the record shrank. */
+function slimDailyRecord(rec){
+  if(!rec) return false;
+  const st=S.settings||{};
+  let changed=false;
+  if(rec.hrSigData && st.hrSigData && rec.hrSigData===st.hrSigData){ delete rec.hrSigData; changed=true; }
+  if(rec.hrSigLink && st.hrSigLink && rec.hrSigLink===st.hrSigLink){ delete rec.hrSigLink; changed=true; }
+  if(rec.hrSigData && rec.hrSigLink && /^data:/i.test(String(rec.hrSigData))){ delete rec.hrSigData; changed=true; }
+  if(rec.hrSigs && typeof rec.hrSigs==="object"){
+    const keep={};
+    let drop=false;
+    Object.keys(rec.hrSigs).forEach(k=>{
+      const p=rec.hrSigs[k];
+      if(!p || typeof p!=="object"){ drop=true; return; }
+      if(sigBlobSame(p, (st.hrSigs||{})[k])){ drop=true; return; }
+      const n=Object.assign({}, p);
+      if(n.data && n.link && /^data:/i.test(String(n.data))){ delete n.data; changed=true; }
+      if(n.data || n.link) keep[k]=n;
+      else drop=true;
+    });
+    if(drop) changed=true;
+    if(changed){
+      if(Object.keys(keep).length) rec.hrSigs=keep;
+      else delete rec.hrSigs;
+    }
+  }
+  return changed;
+}
+let DM_AUTOSAVE_T=null;
+let DM_SAVE_CHAIN=Promise.resolve();
+function noteDailySave(text){
+  const el=typeof document!=="undefined" && document.getElementById && document.getElementById("dm-savestate");
+  if(el) el.textContent=text||"";
+}
+function captureDailyForm(){
+  if(typeof document==="undefined" || !document.querySelector) return;
+  if(!document.querySelector("#view [data-dms]")) return;
+  let rec;
+  try{ rec=dailyCollect(); }catch(e){ return; }
+  if(!rec || !rec.id) return;
+  const prev=S.daily[rec.id];
+  if(prev && !dailyDiff(prev, rec).length) return;
+  rec._dmDirty=true;
+  S.daily[rec.id]=rec;
+}
+function enqueueDailySave(why){
+  const job=DM_SAVE_CHAIN.then(async()=>{
+    const formOpen=typeof document!=="undefined" && document.querySelector && document.querySelector("#view [data-dms]");
+    if(!formOpen){
+      const ids=Object.keys(S.daily||{}).filter(id=>S.daily[id] && S.daily[id]._dmDirty);
+      if(!ids.length) return true;
+      noteDailySave("Saving…");
+      for(let i=0;i<ids.length;i++){
+        const pending=S.daily[ids[i]];
+        if(pending && pending._dmDirty) await dailySave(pending, why||"");
+      }
+      noteDailySave("Saved");
+      return true;
+    }
+    const rec=dailyCollect();
+    const before=dailyGet(rec.date);
+    const dirty=!!(rec._dmDirty || (before && before._dmDirty));
+    if(before && !dailyDiff(before, rec).length && !why && !dirty){
+      noteDailySave("Saved");
+      return true;
+    }
+    noteDailySave("Saving…");
+    await dailySave(rec, why||"");
+    noteDailySave("Saved");
+    return true;
+  }).catch(err=>{
+    noteDailySave("Not saved");
+    const msg=(err && err.message) || "Overtime did not save. The figures are still in the boxes — press Save again.";
+    if(typeof toast==="function") toast(msg, "err");
+    return false;
+  });
+  DM_SAVE_CHAIN=job.then(()=>{});
+  return job;
+}
+function queueDailyAutosave(){
+  noteDailySave("Editing…");
+  if(DM_AUTOSAVE_T) clearTimeout(DM_AUTOSAVE_T);
+  DM_AUTOSAVE_T=setTimeout(()=>{ DM_AUTOSAVE_T=null; enqueueDailySave(""); }, 450);
+}
+function queueDailyShrink(){
+  DM_SAVE_CHAIN=DM_SAVE_CHAIN.then(async()=>{
+    const ids=Object.keys(S.daily||{}).filter(id=>S.daily[id] && S.daily[id]._dmShed);
+    for(let i=0;i<ids.length;i++){
+      const rec=S.daily[ids[i]];
+      if(!rec || !rec._dmShed) continue;
+      delete rec._dmShed;
+      slimDailyRecord(rec);
+      delete rec._dmDirty;
+      const ok=await put("daily", rec.id||ids[i], rec);
+      if(ok===false){
+        rec._dmShed=1;
+        rec._dmDirty=true;
+      }
+    }
+    const dirty=Object.keys(S.daily||{}).filter(id=>S.daily[id] && S.daily[id]._dmDirty);
+    for(let i=0;i<dirty.length;i++){
+      const rec=S.daily[dirty[i]];
+      if(rec && rec._dmDirty) await dailySave(rec, "");
+    }
+  }).catch(()=>{});
+}
 /* The only way a day should ever be written. */
 async function dailySave(rec, why){
-  FIRST_ADDED=null; LAST_SITE_IX=null;
+  if(!rec) return rec;
+  FIRST_ADDED=null; LAST_SITE_IX=null; DAILY_SITES_CACHE=null;
+  delete rec._dmDirty;
   persistRosterOnDay(rec);
-  const before=clone(dailyGet(rec.date)||null);
+  const stored=dailyGet(rec.date);
+  const dirty=!!(stored && stored._dmDirty);
+  if(stored) delete stored._dmDirty;
+  const storedWeight=dailySigWeight(stored);
+  const recWeight=dailySigWeight(rec);
+  if(stored && stored!==rec) slimDailyRecord(stored);
+  slimDailyRecord(rec);
+  const shed=(storedWeight>dailySigWeight(stored)) || (recWeight>dailySigWeight(rec));
+  const before=stored ? clone(stored) : null;
   const ch=before ? dailyDiff(before, rec) : [];
-  if(before && !ch.length && !why) return rec;          /* nothing actually moved */
-  rec.log=((before&&before.log)||[]).slice();
-  rec.log.unshift({ at:nowStamp(), by:whoEdits(), why:why||"", n:before?ch.length:0,
-                    ch:ch.slice(0,40), first:!before });
-  if(rec.log.length>DAILY_LOG_MAX) rec.log.length=DAILY_LOG_MAX;
-  rec.editedOn=rec.log[0].at; rec.editedBy=rec.log[0].by;
-  await put("daily", rec.id, rec);
+  if(before && !ch.length && !why && !dirty && !shed) return rec;
+  if(before && !ch.length && !why){
+    rec.log=((before&&before.log)||[]).slice();
+    if(before.editedOn) rec.editedOn=before.editedOn;
+    if(before.editedBy) rec.editedBy=before.editedBy;
+  }else{
+    rec.log=((before&&before.log)||[]).slice();
+    rec.log.unshift({ at:nowStamp(), by:whoEdits(), why:why||"", n:before?ch.length:0,
+                      ch:ch.slice(0,40), first:!before });
+    if(rec.log.length>DAILY_LOG_MAX) rec.log.length=DAILY_LOG_MAX;
+    rec.editedOn=rec.log[0].at; rec.editedBy=rec.log[0].by;
+  }
+  const ok=await put("daily", rec.id, rec);
+  if(ok===false){
+    const kept=S.daily[rec.id];
+    if(kept){
+      kept._dmDirty=true;
+      if(shed) kept._dmShed=1;
+    }
+    const err=new Error("This day’s report did not reach shared storage. Your OT is still in the boxes — press Save again.");
+    err.code="daily_save_failed";
+    throw err;
+  }
   return rec;
 }
 /* One change, in words. */
@@ -19822,6 +20003,12 @@ function newFromScan(coll){
 
 /* ============ router ============ */
 function render(){
+  try{ captureDailyForm(); }catch(e){}
+  /* A snapshot or any other redraw used to rebuild this sheet while OT was
+     half typed, which threw the numbers away. Keep the boxes until focus leaves. */
+  const typing=typeof document!=="undefined" && document.activeElement && document.activeElement.closest
+    && document.activeElement.closest("#view [data-dmot], #view [data-dmday], #view [data-dmin], #view [data-dmout], #view [data-dmr], #view [data-dms]");
+  if(typing && S.ui && S.ui.view==="daily") return;
   renderNav();
   const v=S.ui.view;
   const fn = {dash:viewDash, employees:viewEmployees, contracts:viewContracts, memos:viewMemos,
@@ -19834,6 +20021,8 @@ function render(){
     settings:viewSettings}[v] || viewDash;
   $("#view").innerHTML = (S.bootError ? bootErrorCard() : "") + fn();
   wire();
+  /* Leaving the sheet must still upload hours captured from the boxes. */
+  if(!S.ui || S.ui.view!=="daily") enqueueDailySave("");
 }
 function bootErrorCard(){
   return '<div class="card" style="border-color:var(--crit);margin-bottom:16px"><div class="card-b">'
@@ -20448,16 +20637,27 @@ function wire(){
   on("[data-dmexpick]","change",e=>syncReasonRow(e.currentTarget.dataset.dmexpick));
   on("[data-dmin]","input",e=>syncReasonRow(e.currentTarget.dataset.dmin));
   on("[data-dmout]","input",e=>syncReasonRow(e.currentTarget.dataset.dmout));
+  on("[data-dmot]","input", queueDailyAutosave);
+  on("[data-dmot]","change", queueDailyAutosave);
+  on("[data-dmday]","input", queueDailyAutosave);
   const dhs=$("#dm-hrsig",v); if(dhs) dhs.onclick=pickHrSig;
   const dms=$("#dm-save",v); if(dms) dms.onclick=async()=>{
+    if(DM_AUTOSAVE_T){ clearTimeout(DM_AUTOSAVE_T); DM_AUTOSAVE_T=null; }
     const rec=dailyCollect();
     const bad=dailyTimeProblems(rec);
-    if(bad.length){ bad.forEach(b=>syncReasonRow(b.id));
-      toast(bad[0].text+(bad.length>1?" — and "+(bad.length-1)+" more":""),"err"); return; }
-    const n=(dailyDiff(dailyGet(rec.date), rec)||[]).length;
-    await dailySave(rec);
+    const before=dailyGet(rec.date);
+    const n=before ? dailyDiff(before, rec).length : 0;
+    dms.disabled=true;
+    let ok=false;
+    try{ ok=await enqueueDailySave(""); }
+    finally{ dms.disabled=false; }
+    if(!ok) return;
+    if(bad.length){
+      bad.forEach(b=>syncReasonRow(b.id));
+      toast(bad[0].text+(bad.length>1?" — and "+(bad.length-1)+" more":"")+" — the day was saved anyway. Add the time before you print.","err");
+      return;
+    }
     toast(n ? "Saved — "+n+" change"+(n===1?"":"s")+" logged" : "Saved "+longDate(rec.date), "ok");
-    render();
   };
   const dmp=$("#dm-print",v); if(dmp) dmp.onclick=async()=>{
     const rec=dailyCollect();

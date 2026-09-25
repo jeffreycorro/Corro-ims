@@ -21,6 +21,8 @@ const APPLIED_ON_RE = /^\d{4}-\d{2}-\d{2}$/;
 const STAGES = Object.freeze([
   "Applied",
   "Screening",
+  "Shortlisted",
+  "On Hold",
   "Written Exam",
   "Interview",
   "Final Interview",

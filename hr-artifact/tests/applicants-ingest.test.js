@@ -7,6 +7,7 @@ const path = require("node:path");
 const { COOKIE_NAME, signSession } = require("../netlify/lib/session");
 const {
   MAX_BATCH,
+  STAGES,
   authorizeIngest,
   blankApplicant,
   ingestApplicants,
@@ -92,6 +93,26 @@ describe("applicants ingest validation", () => {
   it("rejects batches larger than the documented max", () => {
     const applicants = Array.from({ length: MAX_BATCH + 1 }, (_, i) => ({ name: `N${i}` }));
     assert.throws(() => parseIngestBody(JSON.stringify({ applicants })), /At most/);
+  });
+
+  it("accepts On Hold and Shortlisted without resetting them to Applied", () => {
+    assert.ok(STAGES.includes("On Hold"));
+    assert.ok(STAGES.includes("Shortlisted"));
+    const hold = normalizeItem(
+      { name: "Moran, Cassie", stage: "On Hold", appliedOn: "2026-09-24" },
+      0,
+      { today: "2026-09-25" }
+    );
+    const short = normalizeItem(
+      { name: "Cruz, Ana", stage: "Shortlisted" },
+      1,
+      { today: "2026-09-25" }
+    );
+    assert.equal(hold.ok, true);
+    assert.equal(hold.stage, "On Hold");
+    assert.equal(hold.warnings && hold.warnings.length, 0);
+    assert.equal(short.ok, true);
+    assert.equal(short.stage, "Shortlisted");
   });
 
   it("requires a non-empty name and defaults stage, source, and appliedOn", () => {
