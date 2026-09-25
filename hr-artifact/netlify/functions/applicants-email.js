@@ -37,10 +37,11 @@ function createHandler(deps = {}) {
       }
 
       if (!imapConfigured() && !deps.fetchMailboxEmails) {
+        const status = statusPayload();
         return json(503, {
           ok: false,
-          code: "imap_unconfigured",
-          ...statusPayload(),
+          error: status.reason || "Inbox not connected yet — ask Jeffrey",
+          ...status,
         });
       }
 
