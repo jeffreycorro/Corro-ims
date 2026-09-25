@@ -192,10 +192,10 @@ Pipeline was not picking up applications from that inbox because the visible imp
 1. Sign in at [https://corcondev-hr.netlify.app](https://corcondev-hr.netlify.app).
 2. Open **Recruitment → Pipeline**.
 3. Click **Import from email**.
-4. Click **Pull from hrcorcondev@gmail.com**.
+4. Click **Pull from hrcorcondev@gmail.com**. If that button is grey, the line beside it says why. **Inbox not connected yet — ask Jeffrey** means the function cannot see the IMAP settings below. A sign-in or status error is written in that same spot and does not leave the button grey for a different reason.
 5. New applicants appear at **Applied**. The same person (name or email) updates the existing row — it does not create a second copy.
 
-If Pull says the inbox is not connected, Jeffrey must set these on site **corcondev-hr** (Functions + Production) and **redeploy**:
+Pull stays off until Jeffrey sets these on site **corcondev-hr** (**Functions**, Production) and **redeploys**. The browser never stores the password.
 
 | Variable | Value |
 | --- | --- |

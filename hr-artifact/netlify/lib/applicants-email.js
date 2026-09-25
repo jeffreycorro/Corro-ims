@@ -12,10 +12,15 @@ function mailboxAddress() {
   return String(process.env.HR_APPLICANTS_IMAP_USER || DEFAULT_MAILBOX).trim();
 }
 
+function missingImapEnv() {
+  const missing = [];
+  if (!String(process.env.HR_APPLICANTS_IMAP_USER || "").trim()) missing.push("HR_APPLICANTS_IMAP_USER");
+  if (!String(process.env.HR_APPLICANTS_IMAP_PASS || "").trim()) missing.push("HR_APPLICANTS_IMAP_PASS");
+  return missing;
+}
+
 function imapConfigured() {
-  const user = String(process.env.HR_APPLICANTS_IMAP_USER || "").trim();
-  const pass = String(process.env.HR_APPLICANTS_IMAP_PASS || "").trim();
-  return Boolean(user && pass);
+  return missingImapEnv().length === 0;
 }
 
 function decodeMimeWord(raw) {
@@ -237,13 +242,22 @@ function fetchMailboxEmails(opts) {
 }
 
 function statusPayload() {
+  const configured = imapConfigured();
+  const missing = missingImapEnv();
+  const reason = configured ? "" : "Inbox not connected yet — ask Jeffrey";
   return {
-    configured: imapConfigured(),
+    configured,
     mailbox: mailboxAddress(),
     host: process.env.HR_APPLICANTS_IMAP_HOST || DEFAULT_HOST,
-    hint: imapConfigured()
+    missing,
+    reason,
+    code: configured ? "" : "imap_unconfigured",
+    hint: configured
       ? "Signed-in HR can pull recent application emails from this inbox into Pipeline."
-      : "Jeffrey sets HR_APPLICANTS_IMAP_USER and HR_APPLICANTS_IMAP_PASS (Gmail app password) on corcondev-hr Functions, then redeploys. Until then, paste JSON or use Import from the mailbox.",
+      : reason +
+        ". Set " +
+        (missing.join(" and ") || "HR_APPLICANTS_IMAP_USER and HR_APPLICANTS_IMAP_PASS") +
+        " (Gmail app password, not the account password) on site corcondev-hr, Functions scope, then redeploy. Optional: HR_APPLICANTS_IMAP_HOST (imap.gmail.com), HR_APPLICANTS_IMAP_PORT (993), HR_APPLICANTS_IMAP_MAILBOX (INBOX). Until then, paste JSON or use Import from the mailbox.",
   };
 }
 
@@ -251,6 +265,7 @@ module.exports = {
   DEFAULT_MAILBOX,
   mailboxAddress,
   imapConfigured,
+  missingImapEnv,
   decodeMimeWord,
   parseFrom,
   guessPosition,

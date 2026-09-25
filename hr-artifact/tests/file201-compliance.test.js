@@ -68,17 +68,22 @@ describe("hr-201-checklist companion wiring", () => {
 });
 
 describe("201 categories Cassie asked for", () => {
-  it("appends COE (CCD), COE (from employee), requirement checklist, KASABUTAN, and NBI", () => {
-    const docs = checklist.ensureCatalog(BASE_DOCS.slice());
+  it("appends COE (CCD), COE (from employee), requirement checklist, and NBI, and keeps one refusal row", () => {
+    const docs = checklist.ensureCatalog(
+      BASE_DOCS.concat([
+        { k: "kasabutan", n: "KASABUTAN sa dili pagperma sa Government Mandated Benefits", g: "Statutory" },
+      ]).slice()
+    );
     const keys = docs.map((d) => d.k);
     assert.ok(keys.includes("coeccd"));
     assert.ok(keys.includes("coeemp"));
     assert.ok(keys.includes("reqcheck"));
-    assert.ok(keys.includes("kasabutan"));
     assert.ok(keys.includes("nbi"));
+    assert.equal(keys.filter((k) => k === "govrefuse" || k === "kasabutan").length, 1);
     assert.equal(docs.find((d) => d.k === "coeccd").n, "COE (CCD)");
     assert.equal(docs.find((d) => d.k === "coeemp").n, "COE (from employee)");
-    assert.match(docs.find((d) => d.k === "kasabutan").n, /KASABUTAN sa dili pagperma/);
+    assert.equal(docs.find((d) => d.k === "govrefuse").n, "Refusal of Government-mandated Deductions (Kasabutan)");
+    assert.equal(docs.find((d) => d.k === "govrefuse").opt, undefined);
     assert.equal(docs.find((d) => d.k === "nbi").g, "Clearances");
     assert.equal(docs.find((d) => d.k === "nbi").n, "NBI Clearance");
   });
@@ -99,8 +104,9 @@ describe("201 categories Cassie asked for", () => {
     assert.match(html, /COE \(from employee\)/);
     assert.match(html, /k:"reqcheck"/);
     assert.match(html, /Employee requirement checklist/);
-    assert.match(html, /k:"kasabutan"/);
-    assert.match(html, /KASABUTAN sa dili pagperma sa Government Mandated Benefits/);
+    assert.match(html, /k:"govrefuse"/);
+    assert.match(html, /Refusal of Government-mandated Deductions \(Kasabutan\)/);
+    assert.doesNotMatch(html, /k:"kasabutan"/);
     assert.match(html, /k:"nbi"/);
     assert.match(html, /NBI Clearance/);
     assert.match(html, /on\("nbi"\)/);
@@ -223,10 +229,91 @@ describe("refusal attachment completes statutory rows", () => {
         tin: { s: "exp" },
       },
     });
-    checklist.applyRefusalToStatutory(e);
+    checklist.applyRefusalToStatutory(e, "2026-09-18");
     assert.equal(e.docs.sss.s, "on");
     assert.equal(e.docs.tin.s, "on");
-    assert.ok(checklist.hasAttachment(e.docs.kasabutan));
+    assert.equal(e.docs.kasabutan, undefined);
+    assert.ok(checklist.hasAttachment(e.docs.govrefuse));
+    assert.equal(e.docs.govrefuse.s, "on");
+    assert.equal(e.docs.govrefuse.filed, "2026-09-18");
+  });
+
+  it("keeps both links and the fuller status when both old rows have data", () => {
+    const e = emp({
+      docs: {
+        govrefuse: {
+          s: "on",
+          link: "https://drive.example/gov.pdf",
+          links: [{ url: "https://drive.example/gov.pdf", title: "Refusal" }],
+          filed: "2026-08-01",
+        },
+        kasabutan: {
+          s: "miss",
+          link: "https://drive.example/kasa.jpg",
+          links: [{ url: "https://drive.example/kasa.jpg", title: "Kasabutan" }],
+          filed: "2026-09-02",
+        },
+      },
+    });
+    checklist.mergeGovRefusal(e);
+    assert.equal(e.docs.kasabutan, undefined);
+    assert.equal(e.docs.govrefuse.s, "on");
+    assert.equal(e.docs.govrefuse.filed, "2026-08-01");
+    assert.equal(e.docs.govrefuse.link, "https://drive.example/gov.pdf");
+    assert.deepEqual(
+      e.docs.govrefuse.links.map((x) => x.url).sort(),
+      ["https://drive.example/gov.pdf", "https://drive.example/kasa.jpg"].sort()
+    );
+  });
+
+  it("moves a date and file that exist only on KASABUTAN onto the merged row", () => {
+    const e = emp({
+      docs: {
+        govrefuse: { s: "miss", link: "", links: [] },
+        kasabutan: {
+          s: "na",
+          link: "https://drive.example/only-kasa.pdf",
+          links: [{ url: "https://drive.example/only-kasa.pdf" }],
+          filed: "2026-09-03",
+        },
+      },
+    });
+    checklist.mergeGovRefusal(e);
+    assert.equal(e.docs.kasabutan, undefined);
+    assert.equal(e.docs.govrefuse.s, "na");
+    assert.equal(e.docs.govrefuse.filed, "2026-09-03");
+    assert.equal(e.docs.govrefuse.link, "https://drive.example/only-kasa.pdf");
+  });
+
+  it("counts the refusal once even when the catalog still lists both old rows", () => {
+    const docs = [
+      { k: "resume", n: "Resume / Biodata", g: "Recruitment" },
+      { k: "govrefuse", n: "Refusal of Government-mandated Deductions", g: "Statutory", opt: 1 },
+      { k: "kasabutan", n: "KASABUTAN sa dili pagperma sa Government Mandated Benefits", g: "Statutory" },
+    ];
+    const empty = emp({ docs: { resume: { s: "on" } } });
+    const missing = checklist.complianceOf(empty, docs);
+    const refusal = missing.missing.filter((d) => d.k === "govrefuse" || d.k === "kasabutan");
+    assert.equal(refusal.length, 1);
+    assert.equal(refusal[0].k, "govrefuse");
+    assert.equal(refusal[0].n, "Refusal of Government-mandated Deductions (Kasabutan)");
+    assert.equal(missing.need, 2);
+
+    const filed = emp({
+      docs: {
+        resume: { s: "on" },
+        kasabutan: {
+          s: "miss",
+          link: "https://drive.example/kasa.pdf",
+          links: [{ url: "https://drive.example/kasa.pdf" }],
+          filed: "2026-09-01",
+        },
+      },
+    });
+    const done = checklist.complianceOf(filed, docs);
+    assert.equal(done.missing.filter((d) => d.k === "govrefuse" || d.k === "kasabutan").length, 0);
+    assert.equal(filed.docs.kasabutan.link, "https://drive.example/kasa.pdf");
+    assert.equal(done.pct, 100);
   });
 
   it("does not mutate the live employee when only computing the percentage", () => {
@@ -283,7 +370,8 @@ describe("Drive filename guesses for the new rows", () => {
     }
     assert.equal(hit("1401-NBI-Clearance.pdf"), "nbi");
     assert.equal(hit("1401 barangay clearance.pdf"), "brgy");
-    assert.equal(hit("KASABUTAN sa dili pagperma.pdf"), "kasabutan");
+    assert.equal(hit("KASABUTAN sa dili pagperma.pdf"), "govrefuse");
+    assert.equal(hit("Refusal of Government-mandated Deductions.pdf"), "govrefuse");
     assert.equal(hit("COE from employee - previous.pdf"), "coeemp");
     assert.equal(hit("COE CCD Pedrano.pdf"), "coeccd");
     assert.equal(hit("Employee Requirement Checklist R39.pdf"), "reqcheck");

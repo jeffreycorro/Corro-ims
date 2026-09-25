@@ -529,13 +529,14 @@ const DOCS = [
   {k:"qclast",    n:"Quitclaim — Last Salary",                    g:"Quitclaim", opt:1},
   {k:"qc13pr",    n:"Quitclaim — Pro-rated 13th Month",           g:"Quitclaim", opt:1},
   {k:"qc13",      n:"Quitclaim — 13th Month Pay",                 g:"Quitclaim", opt:1},
-  {k:"govrefuse", n:"Refusal of Government-mandated Deductions",  g:"Statutory", opt:1},
+  /* One row. The old "KASABUTAN sa dili pagperma…" line was the same paper.
+     Counted once. A file, date, or status on either old key is kept here. */
+  {k:"govrefuse", n:"Refusal of Government-mandated Deductions (Kasabutan)", g:"Statutory"},
   /* Concerns log 2026-09-18 — Cassie / Maria. Appended so the masterlist
      bit string still maps to the first 33 columns. */
   {k:"coeccd",   n:"COE (CCD)",                                              g:"Employment"},
   {k:"coeemp",   n:"COE (from employee)",                                    g:"Recruitment"},
   {k:"reqcheck", n:"Employee requirement checklist",                         g:"Recruitment"},
-  {k:"kasabutan",n:"KASABUTAN sa dili pagperma sa Government Mandated Benefits", g:"Statutory"},
   {k:"nbi",      n:"NBI Clearance",                                          g:"Clearances", exp:1}
 ];
 const DOCG = ["Recruitment","Identification","Clearances","Statutory","Employment","Records on file","Separation","Quitclaim"];
@@ -1237,7 +1238,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-09-25a";
+const BUILD = "2026-09-25b";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -1864,6 +1865,7 @@ function compliance(e){
   const naRe=/^(n\/?a|n\.a\.?|not\s*applicable|na)$/i;
   const sep=/separated/i.test(String(e&&e.status||""));
   DOCS.forEach(x=>{
+    if(x.k==="kasabutan") return;
     if(x.opt && x.g!=="Separation") return;
     const v=d[x.k]||{s:"miss"};
     const s=String(v.s||"miss");
@@ -4475,7 +4477,7 @@ function printChecklist(e, no, opt){
        ["Barangay / Police Clearance", on("brgy"), "NBI Clearance", on("nbi")],
        ["Government Valid ID", on("govid"), "SSS "+((e&&e.sssNo)||""), on("sss")||!!(e&&e.sssNo)],
        ["Pag-IBIG "+((e&&e.pagibigNo)||""), on("hdmf")||!!(e&&e.pagibigNo), "PhilHealth "+((e&&e.philhealthNo)||""), on("phic")||!!(e&&e.philhealthNo)],
-       ["Decline in Government Mandated Benefits", on("benefack")||on("kasabutan")||on("govrefuse"), "Vaccine Card", on("vax")],
+       ["Decline in Government Mandated Benefits", on("benefack")||on("govrefuse")||on("kasabutan"), "Vaccine Card", on("vax")],
        ["Medical Certificate", on("med"), "COE (CCD)", on("coeccd")],
        ["COE (from employee)", on("coeemp"), "Drug Tests", on("drug")],
        ["Training Certificates, pls specify", on("certs"), null, false]])
@@ -17576,7 +17578,7 @@ const GUESS = [
   [/\btin\b|\bbir\b|\b2316\b|\b1902\b/i,"tin"],
   /* employment */
   [/probationary\s*contract|contract.*probation/i,"contractprob"],
-  [/kasabutan|dili\s*pagperma|refusal.*(?:gov|benefit|deduct)|gov(?:ernment)?[\s-]*man(?:dated)?/i,"kasabutan"],
+  [/kasabutan|dili\s*pagperma|refusal.*(?:gov|benefit|deduct)|gov(?:ernment)?[\s-]*man(?:dated)?/i,"govrefuse"],
   [/contract|employment\s*agreement/i,"contract"],
   [/job\s*desc|\bjd\b/i,                   "jd"],
   [/training\s*record|\btraining\b|\btesda\b|\bnc\s*ii\b|first\s*aid/i,"training"],

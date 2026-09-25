@@ -91,7 +91,26 @@ describe("applicants-email function", () => {
     assert.equal(res.statusCode, 200);
     const body = JSON.parse(res.body);
     assert.equal(body.configured, false);
+    assert.equal(body.reason, "Inbox not connected yet — ask Jeffrey");
+    assert.deepEqual(body.missing, ["HR_APPLICANTS_IMAP_USER", "HR_APPLICANTS_IMAP_PASS"]);
     assert.match(body.mailbox, /hrcorcondev@gmail.com/);
+    assert.doesNotMatch(JSON.stringify(body), /xxxx-xxxx|app-password-value/i);
+  });
+
+  it("names only the IMAP variable that is still unset", async () => {
+    process.env.HR_APPLICANTS_IMAP_USER = "hrcorcondev@gmail.com";
+    const handler = createHandler();
+    const res = await handler({
+      httpMethod: "GET",
+      headers: { cookie: cookieHeader() },
+    });
+    assert.equal(res.statusCode, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.configured, false);
+    assert.deepEqual(body.missing, ["HR_APPLICANTS_IMAP_PASS"]);
+    assert.equal(body.reason, "Inbox not connected yet — ask Jeffrey");
+    assert.doesNotMatch(JSON.stringify(body), /hrcorcondev@gmail.com is not a password/i);
+    assert.doesNotMatch(body.hint + body.reason, /gmail-app-secret/);
   });
 
   it("POST without IMAP env returns 503 and does not invent secrets", async () => {
@@ -161,6 +180,9 @@ describe("applicants-email function", () => {
     assert.match(ui, /1sfAgcO2aXeGsAsn1CsIDg7_36bVp_3AI/);
     assert.match(ui, /1Mpguswqx_anA5sxmJ1VvyzI0kCy3805L/);
     assert.match(ui, /builder-latest-applicants-export/);
+    assert.match(ui, /Inbox not connected yet — ask Jeffrey/);
+    assert.match(ui, /hr-email-pull-reason/);
+    assert.match(ui, /info\.configured === false/);
     assert.match(docs, /Cassie: Import from email/);
     assert.match(docs, /updateOnly/);
     assert.match(docs, /Overwrite from extractor/);

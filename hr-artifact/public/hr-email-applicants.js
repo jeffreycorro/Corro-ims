@@ -60,7 +60,9 @@
       json = {};
     }
     if (!res.ok) {
-      var err = new Error(json.error || "Could not check the applications inbox (" + res.status + ")");
+      var msg = json.error || "Could not check the applications inbox (" + res.status + ")";
+      if (res.status === 401) msg = "Sign in first, then Pull can check the inbox.";
+      var err = new Error(msg);
       err.status = res.status;
       err.body = json;
       throw err;
@@ -111,7 +113,7 @@
       DRIVE_FOLDER +
       '" target="_blank" rel="noopener">Drive folder</a> or <span class="mono">/workspace/hr-applications/</span> on the extractor box). ' +
       "Shortlist 14 all have a CV link; 43 were backfill-patched (some Drive PDFs may still be stub size).</li>" +
-      "<li>If Pull says the inbox is not connected, tell Jeffrey — he sets <span class=\"mono\">HR_APPLICANTS_IMAP_USER</span> / <span class=\"mono\">HR_APPLICANTS_IMAP_PASS</span> on site <b>corcondev-hr</b> (Gmail app password, Functions scope) and redeploys. Do not put the password in chat or git.</li>" +
+      "<li>If the line beside Pull says <b>Inbox not connected yet — ask Jeffrey</b>, the server is missing <span class=\"mono\">HR_APPLICANTS_IMAP_USER</span> and/or <span class=\"mono\">HR_APPLICANTS_IMAP_PASS</span> on site <b>corcondev-hr</b> (Functions scope, Gmail app password). He sets those and redeploys. Do not put the password in chat or git.</li>" +
       "<li>Until IMAP is on: use <b>Import from the mailbox</b> (Mac <span class=\"mono\">applications.json</span>) or <b>Bulk import JSON</span> — both write through the same Pipeline ingest.</li>" +
       "</ol></div>"
     );
@@ -131,29 +133,60 @@
         MAILBOX +
         "</b> should appear on Pipeline. This pull uses your signed-in HR session and the existing applicants ingest — it does not store a mailbox password in the browser.</div>" +
         cassieSteps(null) +
-        '<div class="lbl" id="hr-email-status">Checking inbox connection…</div>' +
+        '<div id="hr-email-status" style="font-size:13px;line-height:1.45">Checking inbox connection…</div>' +
         "</div>",
       foot:
         '<button class="btn" id="hr-email-mailbox" type="button">Import from the mailbox (JSON file)</button>' +
         '<button class="btn" id="hr-email-json" type="button">Bulk import JSON</button>' +
         '<button class="btn" id="hr-email-overwrite" type="button">Overwrite from extractor (by id)</button>' +
+        '<span id="hr-email-pull-reason" style="align-self:center;max-width:280px;font-size:12.5px;line-height:1.35;text-align:right;color:var(--crit)"></span>' +
         '<button class="btn pri" id="hr-email-pull" type="button">Pull from ' +
         MAILBOX +
         "</button>",
     });
     var st = $("hr-email-status");
     var pullBtn = $("hr-email-pull");
+    var reasonEl = $("hr-email-pull-reason");
+    function showPullState(info, err) {
+      if (err) {
+        var msg = err.message || "Could not check the inbox.";
+        if (st) st.textContent = msg;
+        if (reasonEl) reasonEl.textContent = msg;
+        if (pullBtn) {
+          pullBtn.disabled = false;
+          pullBtn.title = msg;
+        }
+        return;
+      }
+      if (!info || (info.configured !== true && info.configured !== false)) {
+        var bad = "Inbox check did not return a connection status. You can still try Pull.";
+        if (st) st.textContent = bad;
+        if (reasonEl) reasonEl.textContent = bad;
+        if (pullBtn) {
+          pullBtn.disabled = false;
+          pullBtn.title = bad;
+        }
+        return;
+      }
+      var off = info.configured === false;
+      var why = off ? info.reason || "Inbox not connected yet — ask Jeffrey" : "";
+      if (st) {
+        st.textContent = off
+          ? info.hint || why
+          : "Inbox connected (" + (info.mailbox || MAILBOX) + "). Pull recent application emails.";
+      }
+      if (reasonEl) reasonEl.textContent = why;
+      if (pullBtn) {
+        pullBtn.disabled = off;
+        pullBtn.title = off ? info.hint || why : "Pull recent application emails";
+      }
+    }
     getStatus()
       .then(function (info) {
-        if (st) {
-          st.textContent = info.configured
-            ? "Inbox connected (" + (info.mailbox || MAILBOX) + "). Pull recent application emails."
-            : info.hint || "Inbox is not connected on the server yet. Use JSON import until Jeffrey sets the IMAP env vars.";
-        }
-        if (pullBtn) pullBtn.disabled = !info.configured;
+        showPullState(info, null);
       })
       .catch(function (e) {
-        if (st) st.textContent = e.message || String(e);
+        showPullState(null, e);
         if (e.status === 401) toast("Sign in first, then pull the inbox.", "err");
       });
     if (pullBtn) {
@@ -173,9 +206,14 @@
           if (typeof root.closeModal === "function") root.closeModal();
           if (typeof root.render === "function") root.render();
         } catch (e) {
-          if (st) st.textContent = e.message || String(e);
-          toast(e.message || String(e), "err");
-          pullBtn.disabled = false;
+          var body = e.body || {};
+          var imapOff = body.configured === false || body.code === "imap_unconfigured";
+          if (imapOff) showPullState(body.configured === false ? body : { configured: false, reason: body.reason, hint: body.hint }, null);
+          else {
+            showPullState(null, e);
+            pullBtn.disabled = false;
+          }
+          toast((imapOff && (body.reason || body.error)) || e.message || String(e), "err");
         }
       };
     }
