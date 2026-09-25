@@ -30,7 +30,7 @@ describe("job order and task media upload", () => {
   const api = loadMediaHelpers();
 
   it("bumps the portal build and keeps device upload next to links", () => {
-    assert.match(html, /var BUILD = "2026-09-24 b"/);
+    assert.match(html, /var BUILD = "2026-09-25 a"/);
     assert.match(html, /function joOwner/);
     assert.match(html, /function joProofTotal/);
     assert.match(html, /function prepareLocalMedia/);
