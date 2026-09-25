@@ -491,6 +491,18 @@ describe("acceptance helpers", () => {
     assert.equal(out.rows.e1.ot, 3.5);
   });
 
+  it("leaves a blank OT cell blank instead of writing 0 for every row", () => {
+    const rec = { rows: { e1: { s: "Present", ot: null }, e2: { s: "Present", ot: 2 } } };
+    const q = function (sel) {
+      if (sel.indexOf("data-dmot") >= 0 && sel.indexOf("e1") >= 0) return { value: "" };
+      if (sel.indexOf("data-dmot") >= 0 && sel.indexOf("e2") >= 0) return { value: "2" };
+      return null;
+    };
+    const out = P.applyHolOtFromUi(rec, { rows: { e1: { ot: null }, e2: { ot: 2 } } }, q);
+    assert.equal(out.rows.e1.ot, null);
+    assert.equal(out.rows.e2.ot, 2);
+  });
+
   it("Payroll Maker HTML locks days/OT and names a missing weekday", () => {
     const html = P.viewPayMaker();
     assert.doesNotMatch(html, /data-pay-k="days"/);
