@@ -194,6 +194,42 @@ describe("verified paper regressions (to the centavo)", () => {
 });
 
 describe("attendance is the only source of days / OT / premium", () => {
+  it("does not pay a default row from before the hire date, and keeps typed OT", () => {
+    const ctx = {
+      employees: {
+        e1: { id: "e1", name: "Nuevo, Bea", dateHired: "2026-09-15", status: "Probationary" },
+      },
+      daily: {
+        d20260912: {
+          id: "d20260912",
+          date: "2026-09-12",
+          rows: { e1: { s: "Present", ot: null } },
+        },
+        d20260914: {
+          id: "d20260914",
+          date: "2026-09-14",
+          rows: { e1: { s: "Present", ot: 6 } },
+        },
+        d20260915: {
+          id: "d20260915",
+          date: "2026-09-15",
+          rows: { e1: { s: "Present", ot: 2 } },
+        },
+      },
+      holidays: [],
+    };
+    const t = P.tallyPersonPeriod("e1", "2026-09-12", "2026-09-15", ctx);
+    assert.equal(t.ot, 8, "Sept 14 OT is kept because it was typed; Sept 12 default is not");
+    assert.equal(t.days, 2);
+    assert.deepEqual([].concat(t.otDates), ["2026-09-14", "2026-09-15"]);
+    const noHire = P.tallyPersonPeriod("e1", "2026-09-12", "2026-09-12", {
+      employees: { e1: { id: "e1", status: "Regular" } },
+      daily: ctx.daily,
+      holidays: [],
+    });
+    assert.equal(noHire.days, 1, "no hire date still counts the saved row");
+  });
+
   it("ignores a stored DayRow.day override when tallying pay", () => {
     const ctx = {
       daily: {

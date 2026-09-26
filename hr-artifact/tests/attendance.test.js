@@ -486,7 +486,7 @@ describe("manpower attendance core", () => {
       Object.assign(ctxFrom(S), { standing })
     );
     assert.ok(tueStill.some((e) => e.id === "e1400"), "still on the day before separatedOn");
-    assert.ok(lastDay.some((e) => e.id === "e1400"), "separatedOn is the last day they still appear");
+    assert.ok(!lastDay.some((e) => e.id === "e1400"), "removed on the separation day itself");
     assert.ok(!thuGone.some((e) => e.id === "e1400"));
   });
 
@@ -593,6 +593,67 @@ describe("manpower attendance core", () => {
     assert.equal(filed.length, 1);
     assert.equal(filed[0].id, "e1250");
     assert.ok(!filed.some((e) => e.id === "e1400"));
+  });
+
+  it("lists someone from their hire date, and keeps a pre-hire row only when it has real entries", () => {
+    S.employees.e1404 = Object.assign(emp("e1404", "1404", "Nuevo, Bea"), {
+      status: "Probationary",
+      dateHired: "2026-09-15",
+    });
+    S.employees.e1405 = Object.assign(emp("e1405", "1405", "Old, No Date"), {
+      status: "Regular",
+    });
+    S.daily.d20260912 = {
+      id: "d20260912",
+      date: "2026-09-12",
+      rows: {
+        e1404: { s: "Present", ot: null },
+        e1250: { s: "Present", ot: 2 },
+      },
+    };
+    const standing = [S.employees.e1250, S.employees.e1404, S.employees.e1405];
+    const before = hr.rosterPeopleForDay(
+      S.daily.d20260912,
+      Object.assign(ctxFrom(S), { standing })
+    );
+    assert.ok(!before.some((e) => e.id === "e1404"), "not on a day before date hired");
+    assert.ok(before.some((e) => e.id === "e1405"), "no hire date keeps the current list");
+    assert.ok(before.some((e) => e.id === "e1250"));
+
+    const started = hr.rosterPeopleForDay(
+      { date: "2026-09-15", rows: {} },
+      Object.assign(ctxFrom(S), { standing })
+    );
+    assert.ok(started.some((e) => e.id === "e1404"), "on the list the day they start");
+
+    S.daily.d20260912.rows.e1404 = { s: "Present", ot: 4 };
+    const keptOt = hr.rosterPeopleForDay(
+      S.daily.d20260912,
+      Object.assign(ctxFrom(S), { standing })
+    );
+    assert.ok(keptOt.some((e) => e.id === "e1404"), "typed OT on a pre-hire row stays visible");
+
+    S.daily.d20260912.rows.e1404 = { s: "Absent", r: "AWOL", ot: null };
+    const keptStatus = hr.rosterPeopleForDay(
+      S.daily.d20260912,
+      Object.assign(ctxFrom(S), { standing })
+    );
+    assert.ok(keptStatus.some((e) => e.id === "e1404"), "a non-default status stays visible");
+
+    const people = hr.personSummaries(["2026-09"], ctxFrom(S));
+    const bea = people.find((p) => p.empId === "e1404");
+    assert.equal(bea.absent, 1);
+    assert.equal(bea.otHours, 0);
+    S.daily.d20260912.rows.e1404 = { s: "Present", ot: null };
+    S.daily.d20260915 = {
+      id: "d20260915",
+      date: "2026-09-15",
+      rows: { e1404: { s: "Present", ot: 1.5 } },
+    };
+    const after = hr.personSummaries(["2026-09"], ctxFrom(S));
+    const beaAfter = after.find((p) => p.empId === "e1404");
+    assert.equal(beaAfter.otHours, 1.5, "the blank pre-hire day is not in the OT total");
+    assert.equal(beaAfter.present, 1);
   });
 
   it("omit hides a person that day only; they still roll forward afterwards", () => {

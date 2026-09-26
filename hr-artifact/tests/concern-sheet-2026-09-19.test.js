@@ -188,7 +188,7 @@ describe("2026-09-19 concern sheet — Leave/CA Catherine + upload quota", () =>
   it("raises the Leave/CA scan cap to 80 MB and maps Drive storage quota", () => {
     assert.match(html, /const MAX_UPLOAD_MB = 80/);
     assert.doesNotMatch(html, /const MAX_UPLOAD_MB = 15/);
-    assert.match(html, /const BUILD = "2026-09-26a"/);
+    assert.match(html, /const BUILD = "2026-09-26b"/);
 
     const quota = mapDriveHttpError(403, {
       error: {
