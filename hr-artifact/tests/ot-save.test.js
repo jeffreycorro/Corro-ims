@@ -90,6 +90,83 @@ describe("Daily Manpower OT save", () => {
     assert.match(attendance, /otRaw === "" \? null/);
   });
 
+  it("restores blank OT from the latest history number and leaves zeros and clears alone", () => {
+    const names = ["logStampKey", "otAmountFromHistory", "dailyOtEvents", "recoverableDailyOt"];
+    const src = names.map((name) => extractFunction(html, name)).join("\n");
+    const ctx = {};
+    vm.runInNewContext(src, ctx);
+
+    const lost = {
+      date: "2026-09-20",
+      rows: { e1: { s: "Present", ot: null }, e2: { s: "Present", ot: "" }, e3: { s: "Present", ot: 0 } },
+      log: [
+        {
+          at: "2026-09-20 09:50",
+          by: "Cassie",
+          ch: [
+            { id: "e1", f: "ot", from: "", to: "2.5" },
+            { id: "e2", f: "ot", from: "", to: "3" },
+            { id: "e3", f: "ot", from: "", to: "4" },
+            { id: "e1", f: "s", from: "Present", to: "Present/Late" },
+          ],
+        },
+      ],
+    };
+    const hits = JSON.parse(JSON.stringify(ctx.recoverableDailyOt(lost)));
+    assert.deepEqual(
+      hits.map((h) => h.id + ":" + h.ot),
+      ["e1:2.5", "e2:3"]
+    );
+
+    const cleared = {
+      rows: { e1: { ot: null } },
+      log: [
+        { at: "2026-09-21 10:00", ch: [{ id: "e1", f: "ot", from: "2", to: "" }] },
+        { at: "2026-09-21 09:00", ch: [{ id: "e1", f: "ot", from: "", to: "2" }] },
+      ],
+    };
+    assert.equal(JSON.parse(JSON.stringify(ctx.recoverableDailyOt(cleared))).length, 0);
+
+    const payroll = {
+      rows: { e1: { ot: null }, e2: { ot: null } },
+      log: [
+        {
+          at: "2026-09-22T08:00:00+08:00",
+          changes: [{ empId: "e1", field: "ot", from: 0, to: 1.5, text: "Ana: overtime hours 0 → 1.5" }],
+        },
+        {
+          at: "2026-09-22T09:00:00+08:00",
+          changes: [{ empId: "e2", field: "ot", from: 2, to: 0, text: "Ben: overtime hours 2 → 0" }],
+        },
+        {
+          at: "2026-09-22T08:30:00+08:00",
+          ch: [{ id: "e2", f: "ot", from: "", to: "2" }],
+        },
+      ],
+    };
+    const payHits = JSON.parse(JSON.stringify(ctx.recoverableDailyOt(payroll)));
+    assert.deepEqual(payHits.map((h) => h.id), ["e1"]);
+    assert.equal(payHits[0].ot, 1.5);
+
+    const activityOnly = {
+      date: "2026-09-23",
+      rows: { e1: { s: "Absent", ot: null } },
+      log: [{ at: "2026-09-23 11:00", n: 1, ch: [{ id: "e1", f: "s", from: "Present", to: "Absent" }] }],
+    };
+    assert.equal(JSON.parse(JSON.stringify(ctx.recoverableDailyOt(activityOnly))).length, 0);
+    assert.equal(ctx.dailyOtEvents(activityOnly).length, 0);
+  });
+
+  it("shows overtime history and a restore control on Daily Manpower", () => {
+    assert.match(html, /function recoverableDailyOt\(/);
+    assert.match(html, /function dailyOtHistoryPanel\(/);
+    assert.match(html, /data-dm-ot-restore/);
+    assert.match(html, /No overtime amount is stored in this change history/);
+    assert.match(html, /Overtime in this history/);
+    assert.match(html, /L\.changes/);
+    assert.match(html, /const BUILD = "2026-09-26a"/);
+  });
+
   it("offers On Hold and Shortlisted on the applicant stage list", () => {
     assert.match(
       html,

@@ -158,7 +158,7 @@ describe("HR e-signatures on printable forms", () => {
     assert.equal(ctx.blockCompanyPrint(["cassie"]), true);
     assert.match(html, /function printDaily[\s\S]{0,400}blockCompanyPrint\(\["cassie"\]\)/);
     assert.match(html, /data-hrsig-slot/);
-    assert.match(html, /const BUILD = "2026-09-25b"/);
+    assert.match(html, /const BUILD = "2026-09-26a"/);
   });
 
   it("stamps company lines and leaves the employee, supervisor, finance image, and final approval blank", () => {
