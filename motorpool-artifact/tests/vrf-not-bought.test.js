@@ -120,6 +120,6 @@ describe("artifact HTML — not bought and cancel", () => {
     assert.match(html, /Close as not bought/);
     assert.match(html, /outcome==="cancelled"\|\|outcome==="not-bought"/);
     assert.doesNotMatch(html, /if\(e\.remove\)\{ arr\.splice\(idx,1\)/);
-    assert.match(html, /var BUILD = "2026-09-25 a"/);
+    assert.match(html, /var BUILD = "2026-09-26 a"/);
   });
 });

@@ -146,6 +146,6 @@ describe("artifact HTML carries the 9/19 afternoon concern fixes", () => {
     assert.match(html, /FUEL RESERVE — drum dispense \(not a purchase\)/);
     assert.match(html, /Fuel Purchase — record a bulk delivery/);
     assert.match(html, /Fuel Reserve — dispense from the drums/);
-    assert.match(html, /var BUILD = "2026-09-25 a"/);
+    assert.match(html, /var BUILD = "2026-09-26 a"/);
   });
 });

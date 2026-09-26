@@ -377,7 +377,7 @@ var SIGNATORIES = [
 ];
 var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
 /* Shown on the Ask screen, so a screenshot says which version someone is on. */
-var BUILD = "2026-09-25 a";
+var BUILD = "2026-09-26 a";
 var DAY = 86400000, MO = 30.44;
 
 /* Part categories that were entered under two spellings and so split a unit's
@@ -540,6 +540,179 @@ function masterList(doc, key){
   if(Array.isArray(doc.types)) return doc.types;
   return [];
 }
+/* --- supplier-master:start --- */
+/* Staff can add a supplier from any Supplier dropdown. The name is trimmed,
+   checked against the list and the built-in MOTORPOOL INVENTORY / FUEL RESERVE
+   labels, then written back under the same key the document already uses.
+   Renames and removals change this list only — posted VRF lines keep the
+   supplier string they were saved with. */
+var RESERVED_SUPPLIER_NAMES=["MOTORPOOL INVENTORY","FUEL RESERVE"];
+function normSupplierName(raw){
+  return String(raw==null?"":raw).replace(/\s+/g," ").trim();
+}
+function supplierMatchKey(raw){
+  var s=normSupplierName(raw).toLowerCase();
+  var out="", i, c, spaced=false;
+  for(i=0;i<s.length;i++){
+    c=s.charAt(i);
+    if((c>="0"&&c<="9")||(c.toLowerCase()!==c.toUpperCase())){
+      out+=c; spaced=false;
+    }else if(!spaced && out){
+      out+=" "; spaced=true;
+    }
+  }
+  return out.trim();
+}
+function reservedSupplierName(raw){
+  var key=supplierMatchKey(raw);
+  if(!key) return "";
+  for(var i=0;i<RESERVED_SUPPLIER_NAMES.length;i++){
+    if(supplierMatchKey(RESERVED_SUPPLIER_NAMES[i])===key) return RESERVED_SUPPLIER_NAMES[i];
+  }
+  return "";
+}
+function supplierNameOf(row){
+  if(row==null) return "";
+  if(typeof row==="string") return normSupplierName(row);
+  return normSupplierName(row.name!=null?row.name:(row.supplier!=null?row.supplier:""));
+}
+function withSupplierName(row, name){
+  if(typeof row==="string") return name;
+  var copy={};
+  if(row && typeof row==="object"){
+    Object.keys(row).forEach(function(k){ copy[k]=row[k]; });
+  }
+  copy.name=name;
+  return copy;
+}
+function mergeSupplierRows(lists){
+  var out=[], seen={};
+  (lists||[]).forEach(function(list){
+    (list||[]).forEach(function(row){
+      var name=supplierNameOf(row);
+      var key=supplierMatchKey(name);
+      if(!key || seen[key]) return;
+      seen[key]=1;
+      if(typeof row==="string") out.push(name);
+      else {
+        var copy={};
+        Object.keys(row).forEach(function(k){ copy[k]=row[k]; });
+        copy.name=name;
+        out.push(copy);
+      }
+    });
+  });
+  out.sort(function(a,b){
+    return supplierNameOf(a).localeCompare(supplierNameOf(b), undefined, {sensitivity:"base", numeric:true});
+  });
+  return out;
+}
+function sameSupplierList(a,b){
+  function stamp(list){
+    return mergeSupplierRows([list]).map(function(r){ return supplierNameOf(r); }).join("\n");
+  }
+  return stamp(a)===stamp(b);
+}
+function foldSupplierBase(remote, local, change){
+  var remoteRows=mergeSupplierRows([remote]);
+  var keys={};
+  remoteRows.forEach(function(r){ keys[supplierMatchKey(supplierNameOf(r))]=1; });
+  var skip={};
+  change=change||{};
+  if(change.op==="remove") skip[supplierMatchKey(change.name)]=1;
+  if(change.op==="rename"){
+    skip[supplierMatchKey(change.from)]=1;
+    skip[supplierMatchKey(change.to)]=1;
+  }
+  var extras=[];
+  (local||[]).forEach(function(r){
+    var k=supplierMatchKey(supplierNameOf(r));
+    if(!k || keys[k] || skip[k]) return;
+    extras.push(r);
+  });
+  return mergeSupplierRows([remoteRows, extras]);
+}
+function planSupplierAdd(list, raw, meta){
+  var display=normSupplierName(raw);
+  var key=supplierMatchKey(display);
+  var suppliers=mergeSupplierRows([list]);
+  if(!display || !key) return {ok:false, reason:"blank", suppliers:suppliers};
+  var reserved=reservedSupplierName(display);
+  if(reserved) return {ok:true, existing:true, reserved:true, name:reserved, suppliers:suppliers};
+  for(var i=0;i<suppliers.length;i++){
+    if(supplierMatchKey(supplierNameOf(suppliers[i]))===key)
+      return {ok:true, existing:true, reserved:false, name:supplierNameOf(suppliers[i]), suppliers:suppliers};
+  }
+  meta=meta||{};
+  var row={name:display, addedAt:meta.addedAt||new Date().toISOString()};
+  if(meta.addedBy) row.addedBy=String(meta.addedBy);
+  return {ok:true, existing:false, reserved:false, name:display, suppliers:mergeSupplierRows([suppliers, [row]])};
+}
+function planSupplierRename(list, from, to){
+  var nextName=normSupplierName(to);
+  var toKey=supplierMatchKey(nextName);
+  var fromKey=supplierMatchKey(from);
+  var suppliers=mergeSupplierRows([list]);
+  if(!nextName || !toKey) return {ok:false, reason:"blank", suppliers:suppliers};
+  if(reservedSupplierName(from)) return {ok:false, reason:"reserved", name:reservedSupplierName(from), suppliers:suppliers};
+  if(reservedSupplierName(nextName)) return {ok:false, reason:"reserved", name:reservedSupplierName(nextName), suppliers:suppliers};
+  var fromIdx=-1, toIdx=-1, i;
+  for(i=0;i<suppliers.length;i++){
+    var k=supplierMatchKey(supplierNameOf(suppliers[i]));
+    if(k===fromKey) fromIdx=i;
+    if(k===toKey) toIdx=i;
+  }
+  if(fromIdx<0 && toIdx>=0)
+    return {ok:true, unchanged:true, name:supplierNameOf(suppliers[toIdx]), suppliers:suppliers};
+  if(fromIdx<0) return {ok:false, reason:"missing", suppliers:suppliers};
+  if(toIdx>=0 && toIdx!==fromIdx)
+    return {ok:false, reason:"duplicate", name:supplierNameOf(suppliers[toIdx]), suppliers:suppliers};
+  if(supplierNameOf(suppliers[fromIdx])===nextName)
+    return {ok:true, unchanged:true, name:nextName, suppliers:suppliers};
+  var out=suppliers.map(function(row, idx){
+    return idx===fromIdx ? withSupplierName(row, nextName) : row;
+  });
+  return {ok:true, unchanged:false, name:nextName, suppliers:mergeSupplierRows([out])};
+}
+function planSupplierRemove(list, raw){
+  var suppliers=mergeSupplierRows([list]);
+  var key=supplierMatchKey(raw);
+  if(!key) return {ok:false, reason:"blank", suppliers:suppliers};
+  if(reservedSupplierName(raw))
+    return {ok:false, reason:"reserved", name:reservedSupplierName(raw), suppliers:suppliers};
+  var out=[], removed=false;
+  suppliers.forEach(function(row){
+    if(supplierMatchKey(supplierNameOf(row))===key){ removed=true; return; }
+    out.push(row);
+  });
+  if(!removed) return {ok:true, unchanged:true, name:normSupplierName(raw), suppliers:suppliers};
+  return {ok:true, unchanged:false, name:normSupplierName(raw), suppliers:out};
+}
+function applySupplierChange(remote, local, change){
+  change=change||{};
+  var base=foldSupplierBase(remote, local, change);
+  var planned;
+  if(change.op==="add") planned=planSupplierAdd(base, change.name, change.meta||{});
+  else if(change.op==="rename") planned=planSupplierRename(base, change.from, change.to);
+  else if(change.op==="remove") planned=planSupplierRemove(base, change.name);
+  else return {ok:false, reason:"op", suppliers:base, write:false};
+  if(!planned.ok){ planned.write=false; return planned; }
+  if(planned.existing) planned.suppliers=mergeSupplierRows([base]);
+  planned.write=!sameSupplierList(planned.suppliers, remote);
+  return planned;
+}
+function supplierDocBody(doc, list){
+  var body={};
+  var src=(doc && typeof doc==="object" && !Array.isArray(doc)) ? doc : null;
+  var next=(list||[]).slice();
+  if(src) Object.keys(src).forEach(function(k){ body[k]=src[k]; });
+  var hasRows=!!(src && Array.isArray(src.rows));
+  var hasSuppliers=!!(src && Array.isArray(src.suppliers));
+  if(hasRows) body.rows=next;
+  if(hasSuppliers || !hasRows) body.suppliers=next;
+  return body;
+}
+/* --- supplier-master:end --- */
 function projectStatusOf(p){
   if(p==null||typeof p==="string") return "Active";
   if(p.archived===true||p.active===false) return "Archived";
@@ -1544,11 +1717,15 @@ async function readDoc(path){
   try{ var s = await S.db.doc(path).get(); return s.exists ? thaw(s.data()) : null; }
   catch(e){ return lsGet(path,null); }
 }
-async function writeDoc(path,body){
+async function writeDoc(path,body,opts){
+  opts=opts||{};
   lsSet(path,body);
-  if(!S.db) return;
-  try{ await S.db.doc(path).set(body); }
-  catch(e){ toast("Could not save to the shared workbook — kept on this device."); }
+  if(!S.db) return {ok:false, local:true};
+  try{ await S.db.doc(path).set(body); return {ok:true, shared:true}; }
+  catch(e){
+    if(!opts.quiet) toast("Could not save to the shared workbook — kept on this device.");
+    return {ok:false, local:true};
+  }
 }
 
 async function loadAll(){
@@ -2005,6 +2182,285 @@ function openProjectsManager(opts){
   foot.appendChild(close);
   b.appendChild(foot);
   m.addEventListener("click",function(ev){ if(ev.target===m) close.click(); });
+  sheet.appendChild(b); m.appendChild(sheet); document.body.appendChild(m);
+}
+
+/* ============================ suppliers ============================ */
+var ADD_SUPPLIER_VALUE="\u0000add-supplier";
+function optionHas(sel, value){
+  var v=value==null?"":String(value);
+  for(var i=0;i<sel.options.length;i++) if(sel.options[i].value===v) return true;
+  return false;
+}
+function appendMasterSuppliers(sel){
+  (S.suppliers||[]).forEach(function(s){
+    var name=supplierNameOf(s);
+    if(name) sel.appendChild(new Option(name, name));
+  });
+}
+function fillSupplierSelect(sel, kind, value, allowOrphan){
+  var want=value==null?"":String(value);
+  if(want===ADD_SUPPLIER_VALUE) want="";
+  sel.innerHTML="";
+  if(kind==="liq"){
+    sel.appendChild(new Option("— supplier —",""));
+    sel.appendChild(new Option("MOTORPOOL INVENTORY","MOTORPOOL INVENTORY"));
+    sel.appendChild(new Option("FUEL RESERVE","FUEL RESERVE"));
+    appendMasterSuppliers(sel);
+  }else if(kind==="bulk"){
+    sel.appendChild(new Option("— supplier —",""));
+    appendMasterSuppliers(sel);
+  }else{
+    sel.appendChild(new Option("—",""));
+    sel.appendChild(new Option("MOTORPOOL INVENTORY","MOTORPOOL INVENTORY"));
+    appendMasterSuppliers(sel);
+    sel.appendChild(new Option("FUEL RESERVE — drum dispense (not a purchase)","FUEL RESERVE"));
+  }
+  if(allowOrphan && want && !optionHas(sel, want)) sel.appendChild(new Option(want, want));
+  sel.appendChild(new Option("+ Add new supplier…", ADD_SUPPLIER_VALUE));
+  sel.value=optionHas(sel, want)?want:"";
+}
+function refreshSupplierSelects(){
+  var nodes=document.querySelectorAll("select[data-supplier-pick]");
+  for(var i=0;i<nodes.length;i++){
+    var sel=nodes[i];
+    var meta=sel._mpSupplier;
+    if(!meta) continue;
+    var keep=sel._mpPrev!=null?sel._mpPrev:sel.value;
+    if(keep===ADD_SUPPLIER_VALUE) keep="";
+    fillSupplierSelect(sel, meta.kind, keep, true);
+  }
+}
+function chooseSupplierOption(sel, kind, name, fallback){
+  fillSupplierSelect(sel, kind, fallback, true);
+  var key=supplierMatchKey(name);
+  for(var i=0;i<sel.options.length;i++){
+    var v=sel.options[i].value;
+    if(!v || v===ADD_SUPPLIER_VALUE) continue;
+    if(v===name || supplierMatchKey(v)===key){
+      sel.value=v;
+      return v;
+    }
+  }
+  sel.value=optionHas(sel, fallback)?fallback:"";
+  return "";
+}
+async function commitSupplierChange(change){
+  var lastPlan=null, lastWrite=null;
+  for(var attempt=0; attempt<3; attempt++){
+    var doc=await readDoc(PATHS.suppliers);
+    var remote=masterList(doc, "suppliers");
+    lastPlan=applySupplierChange(remote, S.suppliers, change);
+    if(!lastPlan || !lastPlan.ok) return lastPlan || {ok:false, shared:false, localOnly:false};
+    if(!lastPlan.write){
+      return Object.assign({shared:true, localOnly:false}, lastPlan);
+    }
+    var body=supplierDocBody(doc, lastPlan.suppliers);
+    lastWrite=await writeDoc(PATHS.suppliers, body, {quiet:true});
+    S.suppliers=lastPlan.suppliers;
+    if(!S.db || !lastWrite || !lastWrite.ok) break;
+    var check=await readDoc(PATHS.suppliers);
+    if(sameSupplierList(masterList(check, "suppliers"), lastPlan.suppliers)) break;
+  }
+  var shared=!!(lastWrite && lastWrite.ok);
+  return Object.assign({shared:shared, localOnly:!shared}, lastPlan||{ok:false});
+}
+function supplierSaveToast(res, verb){
+  if(!res) return;
+  if(res.localOnly){
+    toast((res.name||"That supplier")+" is saved on this device only. The shared workbook did not take it, so other people will not see it yet.");
+    return;
+  }
+  if(res.existing){ toast(res.name+" is already on the list."); return; }
+  if(verb) toast(verb);
+}
+function openAddSupplierPrompt(onDone){
+  var ex=document.getElementById("supAddSheet"); if(ex) ex.remove();
+  var m=el("div","modal"); m.id="supAddSheet";
+  var sheet=el("div","sheet"); sheet.style.maxWidth="440px";
+  var b=el("div"); b.style.padding="var(--space-5) var(--space-6)";
+  b.appendChild(el("h3",null,"Add a supplier"));
+  b.appendChild(el("div","hint","The name is added to the shared list and shows up on every Supplier dropdown."));
+  var field=el("div","field"); field.style.marginTop="var(--space-3)";
+  field.appendChild(el("label",null,"Supplier name"));
+  var input=el("input"); input.placeholder="Station or store name";
+  field.appendChild(input);
+  var hint=el("div","hint"); hint.style.marginTop="6px";
+  b.appendChild(field); b.appendChild(hint);
+  var row=el("div","row"); row.style.marginTop="var(--space-4)";
+  var add=el("button","btn pri","Add supplier");
+  var cancel=el("button","btn","Cancel");
+  row.appendChild(add); row.appendChild(cancel);
+  b.appendChild(row);
+  var finished=false, saving=false;
+  function close(res){
+    if(finished) return;
+    finished=true;
+    m.remove();
+    if(onDone) onDone(res||null);
+  }
+  cancel.addEventListener("click", function(){ close(null); });
+  m.addEventListener("click", function(ev){ if(ev.target===m) close(null); });
+  add.addEventListener("click", async function(){
+    if(saving) return;
+    var display=normSupplierName(input.value);
+    if(!display || !supplierMatchKey(display)){
+      hint.textContent="Type a supplier name.";
+      try{ input.focus(); }catch(e){}
+      return;
+    }
+    saving=true;
+    add.disabled=true;
+    var who=signedInName();
+    var res;
+    try{
+      res=await commitSupplierChange({op:"add", name:display, meta:{
+        addedBy:who, addedAt:new Date().toISOString()
+      }});
+    }catch(e){ res=null; }
+    if(!res || !res.ok){
+      saving=false;
+      add.disabled=false;
+      hint.textContent="Could not add that supplier.";
+      return;
+    }
+    close(res);
+  });
+  input.addEventListener("keydown", function(e){
+    if(e.key==="Enter"){ e.preventDefault(); add.click(); }
+    if(e.key==="Escape"){ e.preventDefault(); close(null); }
+  });
+  sheet.appendChild(b); m.appendChild(sheet); document.body.appendChild(m);
+  try{ input.focus(); }catch(e){}
+}
+function bindSupplierSelect(sel, kind, value, onChange){
+  sel.setAttribute("data-supplier-pick","1");
+  sel._mpSupplier={kind:kind, onChange:onChange};
+  fillSupplierSelect(sel, kind, value||"", true);
+  sel._mpPrev=sel.value===ADD_SUPPLIER_VALUE?"":sel.value;
+  sel.addEventListener("change", function(){
+    if(sel.value!==ADD_SUPPLIER_VALUE){
+      sel._mpPrev=sel.value;
+      if(onChange) onChange(sel.value);
+      return;
+    }
+    var back=sel._mpPrev||"";
+    sel.value=optionHas(sel, back)?back:"";
+    openAddSupplierPrompt(function(res){
+      if(!res || !res.ok || !res.name){
+        sel.value=optionHas(sel, back)?back:"";
+        sel._mpPrev=sel.value;
+        return;
+      }
+      var chosen=chooseSupplierOption(sel, kind, res.name, back);
+      if(!chosen){
+        toast(res.name+" is already on the list.");
+        sel.value=optionHas(sel, back)?back:"";
+        sel._mpPrev=sel.value;
+        return;
+      }
+      sel._mpPrev=chosen;
+      if(res.localOnly) supplierSaveToast(res);
+      else if(res.existing) toast(res.name+" is already on the list.");
+      else supplierSaveToast(res, res.name+" added.");
+      if(onChange) onChange(chosen);
+      refreshSupplierSelects();
+    });
+  });
+  return sel;
+}
+function openSuppliersManager(opts){
+  opts=opts||{};
+  var ex=document.getElementById("supSheet"); if(ex) ex.remove();
+  var m=el("div","modal"); m.id="supSheet";
+  var sheet=el("div","sheet"); sheet.style.maxWidth="720px";
+  var b=el("div"); b.style.padding="var(--space-5) var(--space-6)";
+  b.appendChild(el("h3",null,"Suppliers"));
+  b.appendChild(el("div","hint","Rename or remove a name that was typed wrong. VRF lines already saved keep the supplier they were written with."));
+  var host=el("div"); host.style.marginTop="var(--space-4)";
+  b.appendChild(host);
+  var editing="";
+  function draw(){
+    host.innerHTML="";
+    var rows=mergeSupplierRows([S.suppliers]);
+    host.appendChild(table([
+      {h:"Name", get:function(r){
+        var name=supplierNameOf(r);
+        if(editing && supplierMatchKey(editing)===supplierMatchKey(name)){
+          var inp=el("input"); inp.value=name; inp.id="supRenameInput";
+          return inp;
+        }
+        return name;
+      }},
+      {h:"Added", get:function(r){
+        var name=supplierNameOf(r);
+        if(reservedSupplierName(name)) return "Built-in";
+        var by=r&&r.addedBy?String(r.addedBy):"";
+        var at=r&&r.addedAt?String(r.addedAt).slice(0,10):"";
+        if(by && at) return by+" · "+at;
+        return by||at||"—";
+      }},
+      {h:"", get:function(r){
+        var name=supplierNameOf(r);
+        if(reservedSupplierName(name)) return el("span","hint","Stays on the form");
+        var actions=el("div","row");
+        if(editing && supplierMatchKey(editing)===supplierMatchKey(name)){
+          var save=el("button","btn sm pri","Save");
+          var cancelEdit=el("button","btn sm","Cancel");
+          save.addEventListener("click", async function(){
+            var inp=document.getElementById("supRenameInput");
+            var next=inp?inp.value:"";
+            save.disabled=true;
+            var res=await commitSupplierChange({op:"rename", from:name, to:next});
+            save.disabled=false;
+            if(!res || !res.ok){
+              toast(res&&res.reason==="blank"?"Type a supplier name.":
+                res&&res.reason==="duplicate"?(res.name+" is already on the list."):
+                res&&res.reason==="reserved"?"That name is reserved.":
+                "Could not rename that supplier.");
+              return;
+            }
+            editing="";
+            if(res.localOnly) toast((res.name||name)+" was renamed on this device only. The shared workbook did not take it, so other people still see the old name.");
+            else if(!res.unchanged && res.write!==false) toast("Renamed to "+res.name+".");
+            refreshSupplierSelects();
+            draw();
+          });
+          cancelEdit.addEventListener("click", function(){ editing=""; draw(); });
+          actions.appendChild(save); actions.appendChild(cancelEdit);
+          return actions;
+        }
+        var ed=el("button","btn sm","Rename");
+        var rm=el("button","btn sm","Remove");
+        ed.addEventListener("click", function(){
+          editing=name; draw();
+          try{ var i=document.getElementById("supRenameInput"); if(i){ i.focus(); i.select(); } }catch(e){}
+        });
+        rm.addEventListener("click", async function(){
+          if(!r._confirmRemove){ r._confirmRemove=true; rm.textContent="Remove from list"; return; }
+          rm.disabled=true;
+          var res=await commitSupplierChange({op:"remove", name:name});
+          if(!res || !res.ok){ rm.disabled=false; toast("Could not remove that supplier."); return; }
+          if(res.localOnly) toast(name+" was removed on this device only. The shared workbook did not take it, so other people still see this supplier.");
+          else if(!res.unchanged) toast(name+" removed from the list. Old VRFs still show it.");
+          refreshSupplierSelects();
+          draw();
+        });
+        actions.appendChild(ed); actions.appendChild(rm);
+        return actions;
+      }}
+    ], rows, {empty:"No suppliers on file yet. Add one from a Supplier dropdown."}));
+  }
+  draw();
+  var foot=el("div","row"); foot.style.marginTop="var(--space-5)";
+  var close=el("button","btn","Close");
+  close.addEventListener("click", function(){
+    m.remove();
+    if(opts.onClose) opts.onClose();
+  });
+  foot.appendChild(close);
+  b.appendChild(foot);
+  m.addEventListener("click", function(ev){ if(ev.target===m) close.click(); });
   sheet.appendChild(b); m.appendChild(sheet); document.body.appendChild(m);
 }
 
@@ -8013,15 +8469,9 @@ function openVrf(entry,tab){
         }
         if(closeBtn) syncLiq();
       }
-      function supplierSelect(val){
+      function supplierSelect(val, onChange){
         var sel=el("select");
-        sel.appendChild(new Option("— supplier —",""));
-        ["MOTORPOOL INVENTORY","FUEL RESERVE"].forEach(function(x){ sel.appendChild(new Option(x,x)); });
-        S.suppliers.forEach(function(x){ sel.appendChild(new Option(x.name,x.name)); });
-        if(val&&!S.suppliers.some(function(x){return x.name===val;})&&
-           ["MOTORPOOL INVENTORY","FUEL RESERVE"].indexOf(val)<0)
-          sel.appendChild(new Option(val,val));
-        sel.value=val||"";
+        bindSupplierSelect(sel, "liq", val||"", onChange);
         return sel;
       }
       function catSelect(val){
@@ -8060,9 +8510,8 @@ function openVrf(entry,tab){
           tr.appendChild(el("td",null,normCat(r.cat)||"—"));
           tr.appendChild(el("td",null,r.item||"—"));
           var stc=el("td");
-          var ssel=supplierSelect(e.supplier!=null?e.supplier:r.supplier);
+          var ssel=supplierSelect(e.supplier!=null?e.supplier:r.supplier, function(name){ e.supplier=name; });
           ssel.disabled=!!e.remove;
-          ssel.addEventListener("change",function(){ e.supplier=ssel.value; });
           stc.appendChild(ssel); tr.appendChild(stc);
           tr.appendChild(el("td","hint",workName(lineWork(r))));
           var qtd=el("td","num");
@@ -8093,8 +8542,7 @@ function openVrf(entry,tab){
           ii.addEventListener("input",function(){ a2.item=ii.value; });
           itd.appendChild(ii); tr.appendChild(itd);
           var std=el("td");
-          var ss2=supplierSelect(a2.supplier);
-          ss2.addEventListener("change",function(){ a2.supplier=ss2.value; });
+          var ss2=supplierSelect(a2.supplier, function(name){ a2.supplier=name; });
           std.appendChild(ss2); tr.appendChild(std);
           var jtd=el("td");
           var js2=workSelect(a2.work||"","— same job —");
@@ -8733,17 +9181,13 @@ function vrfView(){
       });
       tr.appendChild(itd);
       /* supplier */
-      var ss=el("select"); ss.appendChild(new Option("—",""));
-      ss.appendChild(new Option("MOTORPOOL INVENTORY","MOTORPOOL INVENTORY"));
-      S.suppliers.forEach(function(s){ ss.appendChild(new Option(s.name,s.name)); });
-      ss.appendChild(new Option("FUEL RESERVE — drum dispense (not a purchase)","FUEL RESERVE"));
-      ss.value=l.supplier;
-      ss.addEventListener("change",function(){
-        l.supplier=ss.value;
-        if(isFuelReserveSupplier(ss.value)){
+      var ss=el("select");
+      bindSupplierSelect(ss, "vrf", l.supplier, function(name){
+        l.supplier=name;
+        if(isFuelReserveSupplier(name)){
           toast("Fuel Reserve — litres come off the yard drums. For a Fuel Purchase pick the station or supplier instead.");
         }
-        if(String(ss.value).toUpperCase()==="MOTORPOOL INVENTORY"){
+        if(String(name).toUpperCase()==="MOTORPOOL INVENTORY"){
           var e2=onHandOf(l.cat,l.item);
           if(e2&&e2.avgCost!=null&&!l.price){ l.price=String(e2.avgCost); recalc(); drawLines(); return; }
         }
@@ -9207,8 +9651,8 @@ function fuelView(){
   bbd.appendChild(brw);
   var b1=el("div","f3");
   var bdt=el("input"); bdt.type="date"; bdt.value=iso();
-  var bsup=el("select"); bsup.appendChild(new Option("— supplier —",""));
-  S.suppliers.forEach(function(x){ bsup.appendChild(new Option(x.name,x.name)); });
+  var bsup=el("select");
+  bindSupplierSelect(bsup, "bulk", "", null);
   var bcn=el("input"); bcn.type="number"; bcn.min="1"; bcn.step="1"; bcn.className="mono";
   b1.appendChild(bfld("Date",bdt)); b1.appendChild(bfld("Supplier",bsup));
   b1.appendChild(bfld("Containers",bcn));
@@ -10941,6 +11385,24 @@ function healthView(){
   projB.appendChild(plist);
   projCard.appendChild(projB);
   g.appendChild(projCard);
+
+  var supCard=el("div","card");
+  var supH=el("div","hd");
+  supH.appendChild(el("h3",null,"Suppliers"));
+  supH.appendChild(el("span","note",(S.suppliers||[]).length+" on file"));
+  supCard.appendChild(supH);
+  var supB=el("div","bd");
+  var supBtn=el("button","btn pri","Manage suppliers");
+  supBtn.addEventListener("click", function(){
+    openSuppliersManager({onClose:function(){ render(); }});
+  });
+  supB.appendChild(supBtn);
+  supB.appendChild(el("div","hint","Add a supplier from any Supplier dropdown (+ Add new supplier…). Rename or remove a typo here. Old VRF lines keep the name they were saved with."));
+  var slist=el("div","hint"); slist.style.marginTop="var(--space-3)";
+  slist.textContent=mergeSupplierRows([S.suppliers]).map(supplierNameOf).join(" · ")||"None yet.";
+  supB.appendChild(slist);
+  supCard.appendChild(supB);
+  g.appendChild(supCard);
 
   g.appendChild(card("Open issues",issues.length+" found",
     table([
