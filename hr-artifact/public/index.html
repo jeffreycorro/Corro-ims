@@ -1238,7 +1238,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-09-25b";
+const BUILD = "2026-09-26a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -8612,6 +8612,7 @@ function viewDaily(){
    + 'then Save. <b>Drag a name</b> onto another area, or use the Area column, when someone works somewhere '
    + 'else for the day; that changes this report only. <b>Make areas permanent</b> copies the day’s areas onto '
    + 'the 201 records when a move is a real transfer.</div>';
+  h+=dailyOtRestoreBanner(rec);
 
   /* The history was pushing the day's actual work off the screen — sixty rows
      of reports that are already done, above the form HR came here to fill in.
@@ -19083,6 +19084,7 @@ function slimDailyRecord(rec){
   return changed;
 }
 let DM_AUTOSAVE_T=null;
+let DM_OT_RESTORE=false;
 let DM_SAVE_CHAIN=Promise.resolve();
 function noteDailySave(text){
   const el=typeof document!=="undefined" && document.getElementById && document.getElementById("dm-savestate");
@@ -19224,6 +19226,195 @@ function dailyEdits(o){
   });
   return out.sort((a,b)=>String(b.at||"").localeCompare(String(a.at||"")));
 }
+/* Change history is log[] on the same day document as rows[empId].ot.
+   A failed put writes neither, so a blank cell can be restored only when a
+   log line still holds a number and nothing later cleared it. 0 on the sheet
+   is a real zero and is never replaced. Payroll's changes[] store a blank as
+   0, so those zeros are not treated as typed hours. */
+function logStampKey(at){
+  const s=String(at||"").trim();
+  const m=s.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/);
+  if(!m) return "";
+  return m[1]+" "+m[2]+":"+m[3]+":"+(m[4]||"00");
+}
+function otAmountFromHistory(raw, source, text){
+  if(source==="changes"){
+    const t=String(text||"");
+    if(/cleared/i.test(t)) return {blank:true};
+    if(raw==null || raw==="") return {blank:true};
+    const n=Number(raw);
+    if(!Number.isFinite(n)) return null;
+    if(n===0){
+      if(/set to 0\b|→\s*0(?:\.0+)?\b/.test(t)) return {n:0};
+      return null;
+    }
+    return {n:n};
+  }
+  if(raw==null) return {blank:true};
+  const s=String(raw).trim();
+  if(!s) return {blank:true};
+  const n=Number(s);
+  if(!Number.isFinite(n)) return null;
+  return {n:n};
+}
+function dailyOtEvents(rec){
+  const log=(rec&&rec.log)||[];
+  const out=[];
+  log.forEach((L, index)=>{
+    const key=logStampKey(L&&L.at);
+    ((L&&L.ch)||[]).forEach(c=>{
+      if(!c || c.f!=="ot" || !c.id) return;
+      const amt=otAmountFromHistory(c.to, "ch", "");
+      if(!amt) return;
+      out.push({id:c.id, at:L.at||"", key, index, source:"ch", amt, by:L.by||""});
+    });
+    ((L&&L.changes)||[]).forEach(c=>{
+      if(!c || (c.field||c.f)!=="ot") return;
+      const id=c.empId||c.id;
+      if(!id) return;
+      const amt=otAmountFromHistory(c.to, "changes", c.text);
+      if(!amt) return;
+      out.push({id, at:L.at||"", key, index, source:"changes", amt, by:L.by||"", text:c.text||""});
+    });
+  });
+  out.sort((a,b)=>{
+    if(a.key!==b.key){
+      if(!a.key) return -1;
+      if(!b.key) return 1;
+      return a.key<b.key?-1:1;
+    }
+    if(a.source!==b.source) return a.source==="ch"?1:-1;
+    if(a.source==="ch") return b.index-a.index;
+    return a.index-b.index;
+  });
+  return out;
+}
+function recoverableDailyOt(rec){
+  const latest={};
+  dailyOtEvents(rec).forEach(ev=>{ latest[ev.id]=ev; });
+  const rows=(rec&&rec.rows)||{};
+  const out=[];
+  Object.keys(latest).forEach(id=>{
+    const ev=latest[id];
+    if(!ev || ev.amt.blank || !(ev.amt.n>0)) return;
+    const row=rows[id];
+    const live=row?row.ot:null;
+    if(live!=null && live!=="") return;
+    out.push({id, ot:ev.amt.n, at:ev.at, by:ev.by});
+  });
+  out.sort((a,b)=>String(a.id).localeCompare(String(b.id)));
+  return out;
+}
+function dailyLogEntryLines(L){
+  const lines=[];
+  ((L&&L.ch)||[]).forEach(c=>{ if(c) lines.push(dailyChangeText(c)); });
+  ((L&&L.changes)||[]).forEach(c=>{
+    if(!c) return;
+    if(c.text){ lines.push(String(c.text)); return; }
+    lines.push(dailyChangeText({id:c.empId||c.id, f:c.field||c.f, from:c.from, to:c.to}));
+  });
+  return lines;
+}
+function dailyOtPersonLabel(id){
+  const e=S.employees&&S.employees[id];
+  return e ? flipName(e.name) : (id||"someone");
+}
+function dailyOtRestoreBanner(rec){
+  const hits=recoverableDailyOt(rec);
+  if(!hits.length) return "";
+  let h='<div class="note" id="dm-ot-recover" style="border-left-color:var(--warn);margin:14px 0">'
+    + '<b>'+hits.length+' overtime figure'+(hits.length===1?' is':'s are')
+    + ' in Change History but the cell is blank.</b> Restore writes only those blank cells. '
+    + 'A number already on the sheet, including zero, stays. A cell whose last history line cleared the hours stays blank.'
+    + '<ul style="margin:8px 0 0;padding-left:18px">';
+  hits.forEach(hit=>{
+    h+='<li>'+esc(dailyOtPersonLabel(hit.id))+' — <b>'+esc(String(hit.ot))+'</b>'
+      + (hit.at?' <span class="lbl">'+esc(hit.at)+(hit.by?' · '+esc(hit.by):'')+'</span>':'')+'</li>';
+  });
+  h+='</ul><div style="margin-top:8px"><button type="button" class="btn pri" data-dm-ot-restore="1">'
+    + 'Restore these overtime hours</button></div></div>';
+  return h;
+}
+function dailyOtHistoryPanel(rec){
+  const events=dailyOtEvents(rec);
+  if(!events.length){
+    return '<div class="note" style="margin:0 0 10px"><b>No overtime amount is stored in this change history.</b> '
+      + 'Blank OT cells on this day cannot be restored from the log — type the hours back into the OT column. '
+      + 'The lines below are the other edits. New hours save on their own once this page is on the current build.</div>';
+  }
+  const latest={};
+  events.forEach(ev=>{ latest[ev.id]=ev; });
+  const recoverable={};
+  recoverableDailyOt(rec).forEach(hit=>{ recoverable[hit.id]=hit; });
+  let h='<div class="note" style="margin:0 0 10px"><b>Overtime in this history</b> — the last figure for each person. '
+    + 'Where Restore is not offered, type that figure back into the OT column.</div>'
+    + '<div class="tw" style="margin-bottom:10px"><table><thead><tr>'
+    + '<th>Name</th><th style="width:130px">Last in history</th><th style="width:120px">On the sheet</th><th>When</th>'
+    + '</tr></thead><tbody>';
+  Object.keys(latest).sort((a,b)=>dailyOtPersonLabel(a).localeCompare(dailyOtPersonLabel(b))).forEach(id=>{
+    const ev=latest[id];
+    const row=(rec.rows||{})[id];
+    const live=row?row.ot:null;
+    const liveBlank=live==null || live==="";
+    const last=ev.amt.blank ? "cleared" : String(ev.amt.n);
+    h+='<tr><td>'+esc(dailyOtPersonLabel(id))+'</td>'
+      + '<td class="mono">'+(recoverable[id]?'<b>'+esc(last)+'</b>':esc(last))+'</td>'
+      + '<td class="mono">'+(liveBlank?'blank':esc(String(live)))+'</td>'
+      + '<td class="mono" style="font-size:11.5px">'+esc(ev.at||"")+(ev.by?' · '+esc(ev.by):'')+'</td></tr>';
+  });
+  h+='</tbody></table></div>';
+  const n=Object.keys(recoverable).length;
+  if(n){
+    h+='<div style="margin-bottom:10px"><button type="button" class="btn pri" data-dm-ot-restore="1">Restore '
+      + n+' blank overtime '+(n===1?'cell':'cells')+' from history</button></div>';
+  }
+  return h;
+}
+async function restoreDailyOtFromHistory(){
+  if(DM_OT_RESTORE) return;
+  const d=S.ui.dailyDate||TODAY;
+  const stored=dailyGet(d);
+  const hits=recoverableDailyOt(stored||{rows:{}, log:[]});
+  if(!hits.length){
+    toast("No blank overtime cell has a number left in the change history.","err");
+    return;
+  }
+  const ok=await askConfirm(
+    hits.length+" overtime figure"+(hits.length===1?"":"s")+" will be written into blank cells on "+longDate(d)+".\n\nA cell that already has a number, including zero, is left alone. A cell whose last history line cleared the hours is left blank.",
+    {title:"Restore overtime from history", yes:"Restore", danger:false}
+  );
+  if(!ok) return;
+  DM_OT_RESTORE=true;
+  if(DM_AUTOSAVE_T){ clearTimeout(DM_AUTOSAVE_T); DM_AUTOSAVE_T=null; }
+  try{
+    hits.forEach(hit=>{
+      const el=document.querySelector('[data-dmot="'+hit.id+'"]');
+      if(el && String(el.value||"").trim()==="") el.value=String(hit.ot);
+    });
+    const rec=dailyCollect();
+    let applied=0;
+    hits.forEach(hit=>{
+      const row=rec.rows&&rec.rows[hit.id];
+      if(!row) return;
+      const live=row.ot;
+      if(live!=null && live!=="" && Number(live)===Number(hit.ot)){ applied++; return; }
+      if(live==null || live===""){ row.ot=hit.ot; applied++; }
+    });
+    if(!applied){
+      toast("Nothing was restored. Those cells already have a number, or they are not on this sheet.","err");
+      return;
+    }
+    await dailySave(rec, "restored overtime hours from change history");
+    noteDailySave("Saved");
+    toast("Restored "+applied+" overtime figure"+(applied===1?"":"s")+".","ok");
+    render();
+  }catch(err){
+    noteDailySave("Not saved");
+    toast((err&&err.message)||"Overtime was not restored.","err");
+  }finally{
+    DM_OT_RESTORE=false;
+  }
+}
 /* The history panel under a day. */
 function dailyLogCard(rec){
   const log=(rec.log||[]);
@@ -19235,16 +19426,18 @@ function dailyLogCard(rec){
      + 'Every save from here on is recorded with the time and the name above.</div></div></div>';
     return h;
   }
+  h+='<div class="card-b" style="padding-bottom:0">'+dailyOtHistoryPanel(rec)+'</div>';
   h+='<div class="tw" style="max-height:34vh;overflow:auto"><table><thead><tr>'
    + '<th style="width:130px">When</th><th style="width:150px">Who</th><th>What changed</th>'
    + '</tr></thead><tbody>';
   log.forEach(L=>{
+    const lines=dailyLogEntryLines(L);
     h+='<tr><td class="mono" style="font-size:11.5px">'+esc(L.at||"")+'</td>'
      + '<td>'+esc(L.by||"")+'</td><td style="font-size:12px">'
      + (L.first
         ? '<span class="pill mut">filed</span> the report was read in as it stands'
-        : (L.ch||[]).length
-          ? (L.ch||[]).map(c=>esc(dailyChangeText(c))).join('<br>')
+        : lines.length
+          ? lines.map(t=>esc(t)).join('<br>')
             + (L.n>(L.ch||[]).length ? '<br><span class="lbl">and '+(L.n-(L.ch||[]).length)+' more</span>' : "")
           : '<span class="lbl">saved with no change to any figure</span>')
      + (L.why?'<div class="lbl" style="margin-top:2px">'+esc(L.why)+'</div>':"")
@@ -20641,6 +20834,7 @@ function wire(){
   on("[data-dmout]","input",e=>syncReasonRow(e.currentTarget.dataset.dmout));
   on("[data-dmot]","input", queueDailyAutosave);
   on("[data-dmot]","change", queueDailyAutosave);
+  on("[data-dm-ot-restore]","click", ()=>{ restoreDailyOtFromHistory(); });
   on("[data-dmday]","input", queueDailyAutosave);
   const dhs=$("#dm-hrsig",v); if(dhs) dhs.onclick=pickHrSig;
   const dms=$("#dm-save",v); if(dms) dms.onclick=async()=>{
