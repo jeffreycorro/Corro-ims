@@ -90,7 +90,7 @@ function sheetContext() {
 
 describe("OT stays on the day it was typed", () => {
   it("stamps the build and wires the sheet date ahead of the picker", () => {
-    assert.match(html, /const BUILD = "2026-09-26c"/);
+    assert.match(html, /const BUILD = "2026-09-27a"/);
     assert.match(html, /id="dm-sheet" data-dmdate="/);
     assert.match(extractFunction(html, "dailyCollect"), /const d=dailySheetDate\(\)/);
     const open = extractFunction(html, "openDailyDate");

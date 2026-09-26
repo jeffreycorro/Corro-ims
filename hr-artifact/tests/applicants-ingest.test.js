@@ -12,6 +12,7 @@ const {
   blankApplicant,
   ingestApplicants,
   ingestKey,
+  mergeApplicantsInto,
   normalizeItem,
   parseIngestBody,
   presentedIngestKey,
@@ -44,6 +45,10 @@ function memoryStore(seed = {}) {
         if (row.collection === collection) out.push(row);
       }
       return out;
+    },
+    async deleteDoc(collection, id) {
+      docs.delete(`${collection}/${id}`);
+      return { ok: true };
     },
   };
 }
@@ -431,6 +436,359 @@ describe("applicants ingest persist", () => {
     const rows = [...store.docs.values()].filter((r) => r.collection === "applicants");
     assert.equal(rows.length, 2);
   });
+
+  it("merges notes on overwrite and does not blank or rewind HR fields", async () => {
+    const store = memoryStore({
+      applicants: {
+        a_keep: {
+          id: "a_keep",
+          name: "Original",
+          stage: "Interview",
+          source: "Walk-in",
+          appliedOn: "2026-08-01",
+          email: "ada@example.com",
+          resumeLink: "https://drive.example/old",
+          notes: "Called  19 Sep\nKeep this",
+          exams: [{ examId: "x1", score: 10 }],
+          interviews: [{ date: "2026-09-01", overall: "4" }],
+          hrNotes: "Strong site engineer",
+          hrVerdict: "Hire",
+          history: [],
+        },
+      },
+    });
+    const result = await ingestApplicants(
+      [
+        {
+          id: "a_keep",
+          name: "Original",
+          overwrite: true,
+          stage: "Applied",
+          notes: "Called 19 Sep\nShortlist v2",
+          resumeLink: "",
+          email: "",
+          source: "",
+          hrNotes: "bot tried to clear",
+        },
+      ],
+      { ...store, today: "2026-09-27" }
+    );
+    assert.equal(result.ok, true);
+    assert.equal(result.updated[0].matchedBy, "id");
+    assert.equal(result.updated[0].id, "a_keep");
+    const saved = store.docs.get("applicants/a_keep").data;
+    assert.equal(saved.notes, "Called  19 Sep\nKeep this\nShortlist v2");
+    assert.equal(saved.stage, "Interview");
+    assert.equal(saved.resumeLink, "https://drive.example/old");
+    assert.equal(saved.email, "ada@example.com");
+    assert.equal(saved.source, "Walk-in");
+    assert.equal(saved.appliedOn, "2026-08-01");
+    assert.equal(saved.hrNotes, "Strong site engineer");
+    assert.equal(saved.hrVerdict, "Hire");
+    assert.equal(saved.exams[0].examId, "x1");
+    assert.equal(saved.interviews[0].date, "2026-09-01");
+  });
+
+  it("replaceHrFields may move stage forward and still not backward", async () => {
+    const store = memoryStore({
+      applicants: {
+        a_keep: { id: "a_keep", name: "Ada", stage: "Interview", notes: "HR note", history: [] },
+      },
+    });
+    const back = await ingestApplicants(
+      [{ id: "a_keep", name: "Ada", overwrite: true, replaceHrFields: true, stage: "Applied" }],
+      { ...store, today: "2026-09-27" }
+    );
+    assert.equal(back.updated[0].matchedBy, "id");
+    assert.equal(store.docs.get("applicants/a_keep").data.stage, "Interview");
+    assert.match(store.docs.get("applicants/a_keep").data.notes, /HR note/);
+
+    const forward = await ingestApplicants(
+      [{ id: "a_keep", name: "Ada", overwrite: true, replaceHrFields: true, stage: "Final Interview", hrNotes: "Panel yes" }],
+      { ...store, today: "2026-09-27" }
+    );
+    const saved = store.docs.get("applicants/a_keep").data;
+    assert.equal(forward.ok, true);
+    assert.equal(saved.stage, "Final Interview");
+    assert.equal(saved.hrNotes, "Panel yes");
+    assert.match(saved.notes, /HR note/);
+  });
+
+  it("refreshes resumeLink and keeps the previous URL on docs.resume", async () => {
+    const store = memoryStore({
+      applicants: {
+        a_keep: {
+          id: "a_keep",
+          name: "Ada",
+          stage: "Screening",
+          resumeLink: "https://drive.example/old",
+          notes: "On file",
+          history: [],
+        },
+      },
+    });
+    await ingestApplicants(
+      [{ id: "a_keep", name: "Ada", overwrite: true, resumeLink: "https://drive.example/new" }],
+      { ...store, today: "2026-09-27" }
+    );
+    const saved = store.docs.get("applicants/a_keep").data;
+    assert.equal(saved.resumeLink, "https://drive.example/new");
+    assert.equal(saved.docs.resume.link, "https://drive.example/new");
+    assert.ok(saved.docs.resume.links.some((item) => item.url === "https://drive.example/old"));
+    assert.equal(saved.stage, "Screening");
+    assert.match(saved.notes, /On file/);
+  });
+
+  it("matches a stale id by email, then phone, then normalized name", async () => {
+    const store = memoryStore({
+      applicants: {
+        a_mail: {
+          id: "a_mail",
+          name: "Obedencia, Jake Darrel",
+          email: "jake@example.com",
+          mobile: "",
+          stage: "Shortlisted",
+          notes: "HR shortlist note",
+          history: [],
+        },
+        a_phone: {
+          id: "a_phone",
+          name: "Someone Else",
+          email: "",
+          mobile: "0917 555 1212",
+          stage: "Applied",
+          notes: "Phone row",
+          history: [],
+        },
+        a_057e4139cydo: {
+          id: "a_057e4139cydo",
+          name: "Frederick S. Mulle",
+          email: "",
+          mobile: "",
+          stage: "Interview",
+          notes: "HR edited after 18 Sep",
+          resumeLink: "https://drive.example/mulle-old",
+          history: [],
+        },
+      },
+    });
+    const result = await ingestApplicants(
+      [
+        {
+          id: "a_stale_mail",
+          name: "Jake Darrel Obedencia",
+          email: "Jake@example.com",
+          overwrite: true,
+          notes: "batch 7",
+          stage: "Applied",
+        },
+        {
+          id: "a_stale_phone",
+          name: "Different Name",
+          mobile: "+63 917 555 1212",
+          overwrite: true,
+          notes: "called",
+        },
+        {
+          id: "a_6249de79dv1x",
+          name: "Mulle, Frederick S.",
+          overwrite: true,
+          notes: "re-applied 19 Sep",
+          resumeLink: "https://drive.example/mulle-new",
+          stage: "Applied",
+        },
+      ],
+      { ...store, today: "2026-09-27" }
+    );
+    assert.equal(result.created.length, 0);
+    assert.equal(result.updated.length, 3);
+    assert.equal(result.errors.length, 0);
+    const byRequested = Object.fromEntries(result.updated.map((row) => [row.requestedId, row]));
+    assert.equal(byRequested.a_stale_mail.id, "a_mail");
+    assert.equal(byRequested.a_stale_mail.matchedBy, "email");
+    assert.equal(byRequested.a_stale_phone.id, "a_phone");
+    assert.equal(byRequested.a_stale_phone.matchedBy, "phone");
+    assert.equal(byRequested.a_6249de79dv1x.id, "a_057e4139cydo");
+    assert.equal(byRequested.a_6249de79dv1x.matchedBy, "name");
+    assert.equal(store.docs.has("applicants/a_6249de79dv1x"), false);
+    assert.equal(store.docs.has("applicants/a_stale_mail"), false);
+    const mulle = store.docs.get("applicants/a_057e4139cydo").data;
+    assert.equal(mulle.stage, "Interview");
+    assert.match(mulle.notes, /HR edited after 18 Sep/);
+    assert.match(mulle.notes, /re-applied 19 Sep/);
+    assert.equal(mulle.resumeLink, "https://drive.example/mulle-new");
+    const mail = store.docs.get("applicants/a_mail").data;
+    assert.equal(mail.stage, "Shortlisted");
+    assert.match(mail.notes, /HR shortlist note/);
+    assert.match(mail.notes, /batch 7/);
+  });
+
+  it("assigns a fresh id when a stale id matches nobody", async () => {
+    const store = memoryStore();
+    const result = await ingestApplicants(
+      [{ id: "a_gone", name: "New Person", overwrite: true, notes: "first" }],
+      { ...store, today: "2026-09-27" }
+    );
+    assert.equal(result.created.length, 1);
+    assert.equal(result.created[0].matchedBy, "new");
+    assert.equal(result.created[0].requestedId, "a_gone");
+    assert.notEqual(result.created[0].id, "a_gone");
+    assert.equal(store.docs.has("applicants/a_gone"), false);
+    assert.equal(store.docs.get(`applicants/${result.created[0].id}`).data.notes, "first");
+  });
+
+  it("updateOnly follows a stale id onto the email match and still skips a total miss", async () => {
+    const store = memoryStore({
+      applicants: {
+        a_keep: {
+          id: "a_keep",
+          name: "Culpa, Cyrel",
+          email: "cyrel@example.com",
+          stage: "Screening",
+          notes: "kept",
+          history: [],
+        },
+      },
+    });
+    const result = await ingestApplicants(
+      [
+        { id: "a_stale", name: "Cyrel Culpa", email: "cyrel@example.com", notes: "again", updateOnly: true },
+        { id: "a_missing", name: "Nobody", email: "nobody@example.com", updateOnly: true },
+      ],
+      { ...store, today: "2026-09-27", batchUpdateOnly: true, batchOverwrite: true }
+    );
+    assert.equal(result.created.length, 0);
+    assert.equal(result.updated.length, 1);
+    assert.equal(result.updated[0].id, "a_keep");
+    assert.equal(result.updated[0].matchedBy, "email");
+    assert.equal(result.updated[0].requestedId, "a_stale");
+    assert.match(result.errors[0].error, /not on Pipeline/);
+    assert.match(store.docs.get("applicants/a_keep").data.notes, /kept/);
+    assert.match(store.docs.get("applicants/a_keep").data.notes, /again/);
+    assert.equal(store.docs.get("applicants/a_keep").data.stage, "Screening");
+  });
+
+  it("stores docs.resume as the resume link and keeps other doc slots", async () => {
+    const store = memoryStore({
+      roles: { ro02: { id: "ro02", title: "Project Manager", dept: "Technical" } },
+    });
+    const created = await ingestApplicants(
+      [
+        {
+          name: "Santos, Maria",
+          docs: {
+            resume: "https://drive.example/maria-cv",
+            tor: { link: "https://drive.example/maria-tor", s: "on" },
+          },
+        },
+      ],
+      { ...store, today: "2026-09-27" }
+    );
+    assert.equal(created.created[0].matchedBy, "new");
+    const row = store.docs.get(`applicants/${created.created[0].id}`).data;
+    assert.equal(row.resumeLink, "https://drive.example/maria-cv");
+    assert.equal(row.docs.resume.link, "https://drive.example/maria-cv");
+    assert.equal(row.docs.tor.link, "https://drive.example/maria-tor");
+
+    const existing = memoryStore({
+      applicants: {
+        a_keep: {
+          id: "a_keep",
+          name: "Santos, Maria",
+          stage: "Applied",
+          resumeLink: "",
+          notes: "already here",
+          docs: { certs: { s: "on", link: "https://drive.example/cert", links: [], filed: "", expiry: "" } },
+          history: [],
+        },
+      },
+    });
+    const updated = await ingestApplicants(
+      [
+        {
+          id: "a_stale",
+          name: "Maria Santos",
+          overwrite: true,
+          docs: { resume: { link: "https://drive.example/new-cv" } },
+        },
+      ],
+      { ...existing, today: "2026-09-27" }
+    );
+    assert.equal(updated.updated[0].id, "a_keep");
+    assert.equal(updated.updated[0].matchedBy, "name");
+    const saved = existing.docs.get("applicants/a_keep").data;
+    assert.equal(saved.resumeLink, "https://drive.example/new-cv");
+    assert.equal(saved.docs.resume.link, "https://drive.example/new-cv");
+    assert.equal(saved.docs.certs.link, "https://drive.example/cert");
+    assert.match(saved.notes, /already here/);
+  });
+});
+
+describe("applicants mergeInto", () => {
+  it("folds stray notes and resumeLink into the keeper and deletes the stray", async () => {
+    const store = memoryStore({
+      applicants: {
+        a_057e4139cydo: {
+          id: "a_057e4139cydo",
+          name: "Mulle, Frederick S.",
+          stage: "Interview",
+          notes: "HR edited after 18 Sep",
+          resumeLink: "https://drive.example/keep",
+          hrNotes: "Keep this evaluation",
+          history: [],
+        },
+        a_6249de79dv1x: {
+          id: "a_6249de79dv1x",
+          name: "Mulle, Frederick S.",
+          stage: "Applied",
+          notes: "HR edited after 18 Sep\nre-applied 19 Sep with new CV",
+          resumeLink: "https://drive.example/stray",
+          history: [],
+        },
+      },
+    });
+    const result = await mergeApplicantsInto(
+      [{ strayId: "a_6249de79dv1x", keepId: "a_057e4139cydo" }],
+      { ...store, today: "2026-09-27" }
+    );
+    assert.equal(result.ok, true);
+    assert.equal(result.merged[0].id, "a_057e4139cydo");
+    assert.equal(result.merged[0].deleted, "a_6249de79dv1x");
+    assert.equal(store.docs.has("applicants/a_6249de79dv1x"), false);
+    const saved = store.docs.get("applicants/a_057e4139cydo").data;
+    assert.match(saved.notes, /HR edited after 18 Sep/);
+    assert.match(saved.notes, /re-applied 19 Sep/);
+    assert.equal(saved.notes.match(/HR edited after 18 Sep/g).length, 1);
+    assert.match(saved.notes, /Merged duplicate record a_6249de79dv1x/);
+    assert.equal(saved.resumeLink, "https://drive.example/keep");
+    assert.equal(saved.stage, "Interview");
+    assert.equal(saved.hrNotes, "Keep this evaluation");
+    assert.ok(saved.docs.resume.links.some((item) => item.url === "https://drive.example/stray"));
+  });
+
+  it("refuses a stray that has left Applied or was edited in the portal", async () => {
+    const store = memoryStore({
+      applicants: {
+        a_keep: { id: "a_keep", name: "Ada", stage: "Applied", notes: "keep", history: [] },
+        a_screen: { id: "a_screen", name: "Ada", stage: "Screening", notes: "moved", history: [] },
+        a_hr: { id: "a_hr", name: "Bea", stage: "Applied", notes: "bot", hrNotes: "Cassie wrote this", history: [] },
+      },
+    });
+    const result = await mergeApplicantsInto(
+      [
+        { strayId: "a_screen", keepId: "a_keep" },
+        { strayId: "a_hr", keepId: "a_keep" },
+      ],
+      { ...store, today: "2026-09-27" }
+    );
+    assert.equal(result.ok, false);
+    assert.equal(result.merged.length, 0);
+    assert.match(result.errors[0].error, /past Applied/);
+    assert.match(result.errors[1].error, /HR evaluation/);
+    assert.equal(store.docs.has("applicants/a_screen"), true);
+    assert.equal(store.docs.has("applicants/a_hr"), true);
+    assert.equal(store.docs.get("applicants/a_keep").data.notes, "keep");
+  });
 });
 
 describe("applicants ingest auth", () => {
@@ -540,6 +898,40 @@ describe("applicants ingest function", () => {
     assert.equal(res.statusCode, 401);
   });
 
+  it("mergeInto requires the ingest key and does not run without it", async () => {
+    process.env.HR_APPLICANTS_INGEST_KEY = INGEST_KEY;
+    const store = memoryStore({
+      applicants: {
+        a_keep: { id: "a_keep", name: "Ada", stage: "Applied", notes: "keep", history: [] },
+        a_stray: { id: "a_stray", name: "Ada", stage: "Applied", notes: "stray line", history: [] },
+      },
+    });
+    const handler = createHandler(store);
+    const denied = await handler({
+      httpMethod: "POST",
+      headers: {},
+      body: JSON.stringify({ op: "mergeInto", strayId: "a_stray", keepId: "a_keep" }),
+    });
+    assert.equal(denied.statusCode, 401);
+    assert.equal(store.docs.has("applicants/a_stray"), true);
+
+    const allowed = await handler({
+      httpMethod: "POST",
+      headers: { "X-HR-Ingest-Key": INGEST_KEY },
+      body: JSON.stringify({
+        op: "mergeInto",
+        merges: [{ strayId: "a_stray", keepId: "a_keep" }],
+      }),
+    });
+    assert.equal(allowed.statusCode, 200);
+    const body = JSON.parse(allowed.body);
+    assert.equal(body.ok, true);
+    assert.equal(body.op, "mergeInto");
+    assert.equal(body.merged[0].id, "a_keep");
+    assert.equal(store.docs.has("applicants/a_stray"), false);
+    assert.match(store.docs.get("applicants/a_keep").data.notes, /stray line/);
+  });
+
   it("creates applicants when the ingest key is presented", async () => {
     process.env.HR_APPLICANTS_INGEST_KEY = INGEST_KEY;
     const store = memoryStore();
@@ -616,6 +1008,13 @@ describe("applicants ingest docs and secrets", () => {
     assert.match(doc, /1Mpguswqx_anA5sxmJ1VvyzI0kCy3805L/);
     assert.match(doc, /Consolidate duplicates/);
     assert.match(doc, /soft-dedupe|Soft-dedupe/);
+    assert.match(doc, /mergeInto/);
+    assert.match(doc, /a_6249de79dv1x/);
+    assert.match(doc, /a_057e4139cydo/);
+    assert.match(doc, /a_7328aadddmxl/);
+    assert.match(doc, /a_4b50d6c9cr7r/);
+    assert.match(doc, /docs\.resume/);
+    assert.match(doc, /replaceHrFields/);
     assert.doesNotMatch(doc, /sk-|service_role|eyJhbGci/);
     const envExample = fs.readFileSync(path.join(__dirname, "../.env.example"), "utf8");
     assert.match(envExample, /HR_APPLICANTS_INGEST_KEY=/);

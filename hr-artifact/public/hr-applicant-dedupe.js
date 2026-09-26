@@ -139,6 +139,17 @@
     return s;
   }
 
+  /**
+   * Digits only. Numbers with at least 10 digits compare on the last 10,
+   * so 0917… and +63 917… are the same mobile. Shorter values need 7 digits.
+   */
+  function phoneKey(value) {
+    var digits = asString(value).replace(/\D/g, "");
+    if (digits.length >= 10) return digits.slice(-10);
+    if (digits.length >= 7) return digits;
+    return "";
+  }
+
   function stageRank(stage) {
     var n = STAGE_RANK[asString(stage)];
     return n || 0;
@@ -367,18 +378,49 @@
     return out;
   }
 
-  function mergeNotes(parts) {
-    var seen = Object.create(null);
-    var out = [];
-    (parts || []).forEach(function (p) {
-      var v = asString(p);
-      if (!v) return;
-      var k = v.replace(/\s+/g, " ").trim();
-      if (seen[k]) return;
-      seen[k] = true;
-      out.push(v);
+  function noteUnits(text) {
+    return String(text == null ? "" : text)
+      .split(/\r?\n/)
+      .map(function (line) {
+        return line.trim();
+      })
+      .filter(Boolean);
+  }
+
+  function noteNorm(line) {
+    return asString(line).replace(/\s+/g, " ").trim();
+  }
+
+  /**
+   * Keep existing notes verbatim. Append incoming lines/paragraphs whose
+   * whitespace-normalized text is not already present.
+   */
+  function mergeNoteText(existing, incoming) {
+    var existingText = existing == null ? "" : String(existing);
+    var have = Object.create(null);
+    noteUnits(existingText).forEach(function (line) {
+      var k = noteNorm(line);
+      if (k) have[k] = true;
     });
-    return out.join("\n\n");
+    var extra = [];
+    noteUnits(incoming).forEach(function (line) {
+      var k = noteNorm(line);
+      if (!k || have[k]) return;
+      have[k] = true;
+      extra.push(line.trim());
+    });
+    if (!extra.length) return existingText.replace(/\s+$/, "");
+    var base = existingText.replace(/\s+$/, "");
+    if (!base.trim()) return extra.join("\n");
+    return base + "\n" + extra.join("\n");
+  }
+
+  function mergeNotes(parts) {
+    var base = "";
+    (parts || []).forEach(function (p) {
+      base = mergeNoteText(base, p);
+    });
+    return base;
   }
 
   function mergeArrays(lists) {
@@ -542,36 +584,80 @@
     };
   }
 
-  /**
-   * Soft-dedupe for ingest. Same email wins; else same name with compatible
-   * emails. Conflicting emails on the same name are treated as different people
-   * (ingest has no confirm step). Prefer an Applied row, then earliest appliedOn.
-   */
-  function findIngestMatch(incoming, existing, opts) {
-    opts = opts || {};
-    if (opts.forceNew === true) return null;
-    var wantName = nameKey(incoming && incoming.name);
-    var wantEmail = emailKey(incoming && incoming.email);
-    if (!wantName && !wantEmail) return null;
-    var hits = (existing || []).filter(function (row) {
-      if (!row) return false;
-      var haveName = nameKey(row.name);
-      var haveEmail = emailKey(row.email);
-      if (wantEmail && haveEmail && wantEmail === haveEmail) return true;
-      if (wantName && haveName && wantName === haveName) {
-        if (!wantEmail || !haveEmail || wantEmail === haveEmail) return true;
-      }
-      return false;
-    });
-    if (!hits.length) return null;
-    hits.sort(function (a, b) {
+  function preferIngestHit(hits) {
+    if (!hits || !hits.length) return null;
+    var copy = hits.slice();
+    copy.sort(function (a, b) {
       var aApplied = asString(a.stage) === "Applied" ? 0 : 1;
       var bApplied = asString(b.stage) === "Applied" ? 0 : 1;
       if (aApplied !== bApplied) return aApplied - bApplied;
       return asString(a.appliedOn).localeCompare(asString(b.appliedOn)) ||
         asString(a.id).localeCompare(asString(b.id));
     });
-    return hits[0];
+    return copy[0];
+  }
+
+  /**
+   * Why `row` matched `incoming`: email, then phone, then name.
+   * Empty string when it did not match.
+   */
+  function ingestMatchedBy(incoming, row) {
+    if (!incoming || !row) return "";
+    var wantEmail = emailKey(incoming.email);
+    var haveEmail = emailKey(row.email);
+    if (wantEmail && haveEmail && wantEmail === haveEmail) return "email";
+    var wantPhone = phoneKey(incoming.mobile || incoming.phone);
+    var havePhone = phoneKey(row.mobile || row.phone);
+    if (wantPhone && havePhone && wantPhone === havePhone) {
+      if (!wantEmail || !haveEmail || wantEmail === haveEmail) return "phone";
+    }
+    var wantName = nameKey(incoming.name);
+    var haveName = nameKey(row.name);
+    if (wantName && haveName && wantName === haveName) {
+      if (wantEmail && haveEmail && wantEmail !== haveEmail) return "";
+      if (wantPhone && havePhone && wantPhone !== havePhone) return "";
+      return "name";
+    }
+    return "";
+  }
+
+  /**
+   * Soft-dedupe for ingest. Email wins, then phone (digits only), then
+   * normalized name. Conflicting emails or phones on the same name are
+   * different people (ingest has no confirm step). Prefer an Applied row,
+   * then earliest appliedOn.
+   */
+  function findIngestMatch(incoming, existing, opts) {
+    opts = opts || {};
+    if (opts.forceNew === true) return null;
+    var wantName = nameKey(incoming && incoming.name);
+    var wantEmail = emailKey(incoming && incoming.email);
+    var wantPhone = phoneKey(incoming && (incoming.mobile || incoming.phone));
+    if (!wantName && !wantEmail && !wantPhone) return null;
+    var emailHits = [];
+    var phoneHits = [];
+    var nameHits = [];
+    (existing || []).forEach(function (row) {
+      if (!row) return;
+      var haveName = nameKey(row.name);
+      var haveEmail = emailKey(row.email);
+      var havePhone = phoneKey(row.mobile || row.phone);
+      if (wantEmail && haveEmail && wantEmail === haveEmail) {
+        emailHits.push(row);
+        return;
+      }
+      if (wantPhone && havePhone && wantPhone === havePhone) {
+        if (!wantEmail || !haveEmail || wantEmail === haveEmail) phoneHits.push(row);
+        return;
+      }
+      if (wantName && haveName && wantName === haveName) {
+        if (wantEmail && haveEmail && wantEmail !== haveEmail) return;
+        if (wantPhone && havePhone && wantPhone !== havePhone) return;
+        nameHits.push(row);
+      }
+    });
+    var hits = emailHits.length ? emailHits : phoneHits.length ? phoneHits : nameHits;
+    return preferIngestHit(hits);
   }
 
   function incomingAsApplicant(norm) {
@@ -592,7 +678,8 @@
       expected: fields.expected || "",
       education: fields.education || "",
       years: fields.years || "",
-      docs: {},
+      mobile: fields.mobile || "",
+      docs: (norm && norm.docs) || {},
       exams: [],
       interviews: [],
       history: [],
@@ -630,10 +717,51 @@
       dates.length > 1
         ? "Re-applied " + dates[dates.length - 1] + " (earlier: " + dates.slice(0, -1).join(", ") + ")."
         : "";
-    if (reapp && (merged.notes || "").indexOf(reapp) < 0) {
-      merged.notes = mergeNotes([existing.notes, incoming.notes, reapp]);
+    if (reapp && (merged.notes || "").indexOf(noteNorm(reapp)) < 0) {
+      merged.notes = mergeNoteText(merged.notes, reapp);
     }
+    var previousResume = asString(merged.resumeLink);
+    if (asString(incoming.resumeLink)) merged.resumeLink = asString(incoming.resumeLink);
+    if (norm && norm.docs) merged.docs = mergeDocs([existing.docs, norm.docs, merged.docs]);
+    syncResumeDoc(merged, merged.resumeLink, previousResume);
     return merged;
+  }
+
+  /** Point docs.resume at resumeLink without dropping an older URL. */
+  function syncResumeDoc(doc, link, previousLink) {
+    if (!doc || typeof doc !== "object") return doc;
+    var previous = asString(previousLink != null ? previousLink : doc.resumeLink);
+    link = asString(link != null ? link : previous);
+    if (!link) return doc;
+    if (!doc.docs || typeof doc.docs !== "object" || Array.isArray(doc.docs)) doc.docs = {};
+    var cur = doc.docs.resume;
+    if (!cur || typeof cur !== "object" || Array.isArray(cur)) {
+      cur = { s: "on", link: "", links: [], filed: "", expiry: "", title: "" };
+    }
+    var links = [];
+    var seen = Object.create(null);
+    function push(url, title, on) {
+      url = asString(url);
+      if (!url || seen[url]) return;
+      seen[url] = true;
+      links.push({ url: url, title: asString(title), on: asString(on) });
+    }
+    push(link, "CV / application", doc.appliedOn);
+    push(previous, cur.title, cur.filed);
+    push(cur.link, cur.title, cur.filed);
+    (cur.links || []).forEach(function (x) {
+      if (typeof x === "string") push(x, "", "");
+      else if (x) push(x.url || x.link, x.title, x.on);
+    });
+    cur.link = link;
+    cur.links = links;
+    if (!cur.s || cur.s === "miss") cur.s = "on";
+    cur.filed = asString(cur.filed) || asString(doc.appliedOn);
+    cur.expiry = asString(cur.expiry);
+    cur.title = asString(cur.title) || "CV / application";
+    doc.docs.resume = cur;
+    doc.resumeLink = link;
+    return doc;
   }
 
   function recruitmentDocs(DOCS) {
@@ -726,14 +854,18 @@
     furthestStage: furthestStage,
     groupApplicants: groupApplicants,
     incomingAsApplicant: incomingAsApplicant,
+    ingestMatchedBy: ingestMatchedBy,
     mergeApplicantRecords: mergeApplicantRecords,
     mergeDocs: mergeDocs,
+    mergeNoteText: mergeNoteText,
     nameKey: nameKey,
+    phoneKey: phoneKey,
     pickKeeper: pickKeeper,
     recruitmentDocs: recruitmentDocs,
     rolesCompatible: rolesCompatible,
     seedApplicantDocs: seedApplicantDocs,
     stageRank: stageRank,
+    syncResumeDoc: syncResumeDoc,
     uniqueDates: uniqueDates,
   };
 });

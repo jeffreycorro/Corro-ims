@@ -8,8 +8,11 @@ const {
   findIngestMatch,
   furthestStage,
   groupApplicants,
+  ingestMatchedBy,
   mergeApplicantRecords,
+  mergeNoteText,
   nameKey,
+  phoneKey,
   seedApplicantDocs,
 } = require("../public/hr-applicant-dedupe");
 
@@ -31,6 +34,11 @@ describe("applicant name keys", () => {
     assert.equal(emailKey("Prince@Example.com"), "prince@example.com");
     assert.equal(emailKey("not-an-email"), "");
     assert.equal(emailKey(""), "");
+  });
+
+  it("matches Last, First with a middle initial against First Last", () => {
+    assert.equal(nameKey("Mulle, Frederick S."), nameKey("Frederick S. Mulle"));
+    assert.equal(nameKey("Antonino, Vince Michael B."), nameKey("Vince Michael B. Antonino"));
   });
 });
 
@@ -172,7 +180,38 @@ describe("ingest match", () => {
   it("finds a name match and skips when forceNew is set", () => {
     const hit = findIngestMatch({ name: "Tristan Sibonga" }, existing);
     assert.equal(hit.id, "a1");
+    assert.equal(ingestMatchedBy({ name: "Tristan Sibonga" }, hit), "name");
     assert.equal(findIngestMatch({ name: "Tristan Sibonga" }, existing, { forceNew: true }), null);
+  });
+
+  it("prefers email, then phone digits, then name", () => {
+    const rows = [
+      { id: "by-name", name: "Dela Cruz, Juan", email: "", mobile: "", stage: "Applied", appliedOn: "2026-01-01" },
+      { id: "by-phone", name: "Other", email: "", mobile: "0917 000 1111", stage: "Applied", appliedOn: "2026-02-01" },
+      { id: "by-mail", name: "Also Other", email: "juan@example.com", mobile: "0917 000 1111", stage: "Interview", appliedOn: "2026-03-01" },
+    ];
+    const emailHit = findIngestMatch(
+      { name: "Juan Dela Cruz", email: "Juan@example.com", mobile: "09170001111" },
+      rows
+    );
+    assert.equal(emailHit.id, "by-mail");
+    assert.equal(ingestMatchedBy({ name: "Juan Dela Cruz", email: "Juan@example.com", mobile: "09170001111" }, emailHit), "email");
+
+    const phoneHit = findIngestMatch({ name: "Nobody", mobile: "+63 917-000-1111" }, rows);
+    assert.equal(phoneHit.id, "by-phone");
+    assert.equal(phoneKey("0917 000 1111"), phoneKey("+63 917 000 1111"));
+    assert.equal(ingestMatchedBy({ name: "Nobody", mobile: "+63 917-000-1111" }, phoneHit), "phone");
+
+    const nameHit = findIngestMatch({ name: "Juan Dela Cruz" }, rows);
+    assert.equal(nameHit.id, "by-name");
+  });
+
+  it("appends only note lines that are not already present", () => {
+    assert.equal(
+      mergeNoteText("Called  19 Sep\nKeep this", "Called 19 Sep\nShortlist v2"),
+      "Called  19 Sep\nKeep this\nShortlist v2"
+    );
+    assert.equal(mergeNoteText("Keep this", ""), "Keep this");
   });
 });
 
