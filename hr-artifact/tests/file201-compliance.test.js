@@ -356,6 +356,86 @@ describe("refusal attachment completes statutory rows", () => {
   });
 });
 
+describe("government numbers count as On file", () => {
+  const shot = {
+    sssNo: "09 - 4348404 - 2",
+    tinNo: "663 - 590 - 790 - 000",
+    philhealthNo: "20 - 251398879 - 8",
+    pagibigNo: "1213 - 6105 - 3738",
+    bankAcct: "",
+  };
+
+  it("treats a real number as filled and ignores blanks, dashes and placeholders", () => {
+    assert.equal(checklist.govNumberFilled(shot.sssNo), true);
+    assert.equal(checklist.govNumberFilled(shot.tinNo), true);
+    assert.equal(checklist.govNumberFilled(shot.philhealthNo), true);
+    assert.equal(checklist.govNumberFilled(shot.pagibigNo), true);
+    ["", "   ", "-", "—", "–", " - - - ", "N/A", "n/a", "none", "pending", "000", "000-000", "xxx"].forEach((v) => {
+      assert.equal(checklist.govNumberFilled(v), false, JSON.stringify(v));
+    });
+    assert.equal(checklist.govNumberFilled(shot.bankAcct), false);
+  });
+
+  it("counts SSS, TIN, PhilHealth and Pag-IBIG on file for an existing record without saving", () => {
+    const e = emp({
+      ...shot,
+      docs: {
+        sss: { s: "miss", link: "", links: [] },
+        hdmf: { s: "miss" },
+        phic: { s: "miss" },
+        tin: { s: "miss" },
+        resume: { s: "miss" },
+      },
+    });
+    const before = JSON.parse(JSON.stringify(e.docs));
+    const c = checklist.complianceOf(e, BASE_DOCS);
+    assert.deepEqual(e.docs, before);
+    ["sss", "hdmf", "phic", "tin"].forEach((k) => {
+      assert.equal(c.missing.some((d) => d.k === k), false, k);
+    });
+    assert.ok(c.missing.some((d) => d.k === "resume"));
+    assert.ok(c.onFile >= 4);
+    const bare = checklist.complianceOf(emp({ docs: { resume: { s: "miss" } } }), BASE_DOCS);
+    assert.ok(c.pct > bare.pct);
+    assert.equal(c.missing.some((d) => d.k === "govrefuse"), bare.missing.some((d) => d.k === "govrefuse"));
+  });
+
+  it("keeps an attached scan and does not uncheck a row marked On file", () => {
+    const e = emp({
+      sssNo: "09 - 4348404 - 2",
+      tinNo: "",
+      docs: {
+        sss: {
+          s: "miss",
+          link: "https://drive.example/sss-e1.pdf",
+          links: [{ url: "https://drive.example/sss-e1.pdf", title: "E-1" }],
+          filed: "2026-08-01",
+        },
+        tin: { s: "on", link: "https://drive.example/tin.pdf", links: [{ url: "https://drive.example/tin.pdf" }], filed: "2026-07-01" },
+      },
+    });
+    checklist.applyEmployee(e, BASE_DOCS, "2026-09-26");
+    assert.equal(e.docs.sss.s, "on");
+    assert.equal(e.docs.sss.link, "https://drive.example/sss-e1.pdf");
+    assert.equal(e.docs.sss.filed, "2026-08-01");
+    assert.equal(e.docs.sss.links[0].title, "E-1");
+    assert.equal(e.docs.tin.s, "on");
+    assert.equal(e.docs.tin.link, "https://drive.example/tin.pdf");
+    e.sssNo = "-";
+    e.tinNo = "";
+    checklist.applyEmployee(e, BASE_DOCS, "2026-09-26");
+    assert.equal(e.docs.sss.s, "on");
+    assert.equal(e.docs.tin.s, "on");
+    assert.equal(e.docs.tin.link, "https://drive.example/tin.pdf");
+  });
+
+  it("leaves the merged refusal row as one checklist line", () => {
+    const docs = checklist.ensureCatalog(BASE_DOCS.slice());
+    assert.equal(docs.filter((d) => d.k === "govrefuse" || d.k === "kasabutan").length, 1);
+    assert.equal(docs.find((d) => d.k === "govrefuse").n, "Refusal of Government-mandated Deductions (Kasabutan)");
+  });
+});
+
 describe("Drive filename guesses for the new rows", () => {
   it("routes NBI, KASABUTAN, COE, and the requirement checklist", () => {
     const guess = [
