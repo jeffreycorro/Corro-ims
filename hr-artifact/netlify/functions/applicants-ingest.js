@@ -1,12 +1,13 @@
 "use strict";
 
 const { json } = require("../lib/session");
-const { getDoc, setDoc, listCollection } = require("../lib/supabase");
+const { deleteDoc, getDoc, setDoc, listCollection } = require("../lib/supabase");
 const { formatManilaDate, formatManilaIso } = require("../lib/manila");
 const { createLimiter } = require("../lib/rate-limit");
 const {
   authorizeIngest,
   ingestApplicants,
+  mergeApplicantsInto,
   parseIngestBody,
 } = require("../lib/applicants-ingest");
 
@@ -20,6 +21,7 @@ function createHandler(deps = {}) {
   const load = deps.getDoc || getDoc;
   const save = deps.setDoc || setDoc;
   const list = deps.listCollection || listCollection;
+  const remove = deps.deleteDoc || deleteDoc;
   const todayFn = deps.today || formatManilaDate;
 
   return async function handler(event) {
@@ -37,6 +39,19 @@ function createHandler(deps = {}) {
       }
 
       const parsed = parseIngestBody(event.body);
+      if (parsed.op === "mergeInto") {
+        const merged = await mergeApplicantsInto(parsed.merges, {
+          getDoc: load,
+          setDoc: save,
+          deleteDoc: remove,
+          today: todayFn(),
+        });
+        return json(200, {
+          ...merged,
+          timezone: "Asia/Manila",
+          serverTime: formatManilaIso(),
+        });
+      }
       const result = await ingestApplicants(parsed.applicants, {
         getDoc: load,
         setDoc: save,

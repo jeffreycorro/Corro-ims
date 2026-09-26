@@ -104,6 +104,7 @@
       "</b>. New people land at Applied; the same name or email updates the existing row.</li>" +
       "<li>Ready export as of <b>18 Sep 2026</b>: 67 Pipeline applicants, all with <span class=\"mono\">resumeLink</span>. " +
       "Use <b>Overwrite from extractor (by id)</b> — it updates those ids only and will not create new Pipeline rows. " +
+      "A missing id is matched by email, phone, or name instead of being created again. Notes already on the row are kept. " +
       'File: <a href="' +
       EXPORT_JSON_URL +
       '" target="_blank" rel="noopener">builder-latest-applicants-export.json</a> or <a href="' +

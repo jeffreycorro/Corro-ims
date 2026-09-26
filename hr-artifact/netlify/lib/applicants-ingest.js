@@ -5,8 +5,12 @@ const { formatManilaDate } = require("./manila");
 const { readSession, safeEqual, unauthorized } = require("./session");
 const {
   applyIngestOnto,
-  emailKey,
   findIngestMatch,
+  ingestMatchedBy,
+  mergeDocs,
+  mergeNoteText,
+  stageRank,
+  syncResumeDoc,
 } = require("../../public/hr-applicant-dedupe");
 const {
   looksLikeCsv,
@@ -17,6 +21,25 @@ const {
 const MAX_BATCH = 100;
 const ID_RE = /^[A-Za-z0-9._-]{1,80}$/;
 const APPLIED_ON_RE = /^\d{4}-\d{2}-\d{2}$/;
+const DOC_KEY_RE = /^[A-Za-z0-9._-]{1,40}$/;
+const DOC_STATUS = new Set(["miss", "na", "exp", "on"]);
+const CONTACT_REFRESH = Object.freeze([
+  "email",
+  "mobile",
+  "position",
+  "dept",
+  "expected",
+  "education",
+  "years",
+]);
+const HR_TEXT_FIELDS = Object.freeze([
+  "hrNotes",
+  "hrVerdict",
+  "hrBy",
+  "rffiNote",
+  "aiSummary",
+  "aiVerdict",
+]);
 
 const STAGES = Object.freeze([
   "Applied",
@@ -119,6 +142,7 @@ function blankApplicant(id, today) {
     history: [],
     background: [],
     staffNotes: [],
+    docs: {},
     rffiNote: "",
     hrVerdict: "",
     hrRating: "3",
@@ -165,6 +189,9 @@ function parseIngestBody(raw) {
     err.statusCode = 400;
     throw err;
   }
+  if (body.op === "mergeInto") {
+    return parseMergeInto(body);
+  }
   if (!Array.isArray(body.applicants)) {
     const err = new Error('Body must include an "applicants" array');
     err.statusCode = 400;
@@ -189,6 +216,97 @@ function parseIngestBody(raw) {
     forceNew: body.forceNew === true,
     updateOnly,
   };
+}
+
+function parseMergeInto(body) {
+  const merges = [];
+  if (body.strayId != null || body.keepId != null) {
+    merges.push({ strayId: asString(body.strayId), keepId: asString(body.keepId) });
+  }
+  if (Array.isArray(body.merges)) {
+    body.merges.forEach((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return;
+      merges.push({ strayId: asString(item.strayId), keepId: asString(item.keepId) });
+    });
+  }
+  if (!merges.length) {
+    const err = new Error("mergeInto requires strayId and keepId");
+    err.statusCode = 400;
+    throw err;
+  }
+  if (merges.length > MAX_BATCH) {
+    const err = new Error(`At most ${MAX_BATCH} merges per request`);
+    err.statusCode = 400;
+    throw err;
+  }
+  return { op: "mergeInto", merges };
+}
+
+function normalizeDocEntry(value, appliedOn) {
+  if (typeof value === "string") {
+    const link = asString(value);
+    if (!link) return null;
+    return {
+      s: "on",
+      link,
+      links: [{ url: link, title: "", on: appliedOn || "" }],
+      filed: appliedOn || "",
+      expiry: "",
+      title: "",
+    };
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const link = asString(value.link || value.url || value.href);
+  const links = [];
+  if (Array.isArray(value.links)) {
+    value.links.forEach((item) => {
+      if (typeof item === "string") {
+        const url = asString(item);
+        if (url) links.push({ url, title: "", on: "" });
+      } else if (item && typeof item === "object") {
+        const url = asString(item.url || item.link);
+        if (url) links.push({ url, title: asString(item.title), on: asString(item.on) });
+      }
+    });
+  }
+  if (link && !links.some((item) => item.url === link)) {
+    links.unshift({
+      url: link,
+      title: asString(value.title),
+      on: asString(value.filed) || appliedOn || "",
+    });
+  }
+  const status = asString(value.s);
+  if (!link && !links.length && !status && !asString(value.filed) && !asString(value.title)) {
+    return null;
+  }
+  return {
+    s: DOC_STATUS.has(status) ? status : link ? "on" : "miss",
+    link: link || (links[0] ? links[0].url : ""),
+    links,
+    filed: asString(value.filed),
+    expiry: asString(value.expiry),
+    title: asString(value.title),
+  };
+}
+
+function normalizeDocs(raw, appliedOn) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const out = {};
+  Object.keys(raw).forEach((key) => {
+    if (!DOC_KEY_RE.test(key)) return;
+    const entry = normalizeDocEntry(raw[key], appliedOn);
+    if (entry) out[key] = entry;
+  });
+  return Object.keys(out).length ? out : null;
+}
+
+function earlierDate(a, b) {
+  const left = asString(a);
+  const right = asString(b);
+  if (!left) return right;
+  if (!right) return left;
+  return left <= right ? left : right;
 }
 
 function normalizeItem(item, index, { today, batchOverwrite, batchUpdateOnly } = {}) {
@@ -242,6 +360,18 @@ function normalizeItem(item, index, { today, batchOverwrite, batchUpdateOnly } =
   for (const key of OPTIONAL_STRINGS) {
     if (item[key] != null) fields[key] = asString(item[key]);
   }
+  const docs = normalizeDocs(item.docs, appliedOn);
+  if (docs && docs.resume && !asString(fields.resumeLink)) {
+    const fromDocs = asString(docs.resume.link);
+    if (fromDocs) fields.resumeLink = fromDocs;
+  }
+  const replaceHrFields = item.replaceHrFields === true;
+  const hrFields = {};
+  if (replaceHrFields) {
+    for (const key of HR_TEXT_FIELDS) {
+      if (item[key] != null) hrFields[key] = asString(item[key]);
+    }
+  }
 
   return {
     ok: true,
@@ -252,6 +382,7 @@ function normalizeItem(item, index, { today, batchOverwrite, batchUpdateOnly } =
     overwrite,
     updateOnly,
     forceNew,
+    replaceHrFields,
     appliedOn,
     stage,
     source: asString(item.source) || "Email",
@@ -261,8 +392,61 @@ function normalizeItem(item, index, { today, batchOverwrite, batchUpdateOnly } =
       stage: Boolean(asString(item.stage)),
     },
     fields,
+    docs,
+    hrFields,
     warnings,
   };
+}
+
+/**
+ * Overwrite keeps the Pipeline row. Notes are merged. Empty incoming values
+ * do not clear filled fields. Stage and HR evaluation fields stay unless
+ * replaceHrFields is set, and stage never moves backwards. resumeLink may refresh.
+ */
+function applyOverwriteOnto(prior, norm, { today } = {}) {
+  const doc = JSON.parse(JSON.stringify(prior || {}));
+  doc.id = prior.id;
+  if (asString(norm.name)) doc.name = norm.name;
+  doc.notes = mergeNoteText(prior.notes, norm.fields && norm.fields.notes);
+  const fields = norm.fields || {};
+  for (const key of CONTACT_REFRESH) {
+    const incoming = asString(fields[key]);
+    if (incoming) doc[key] = incoming;
+  }
+  if (asString(fields.roleId)) doc.roleId = asString(fields.roleId);
+  const previousResume = asString(doc.resumeLink);
+  if (asString(fields.resumeLink)) doc.resumeLink = asString(fields.resumeLink);
+  if (norm.provided && norm.provided.source && asString(norm.source)) doc.source = norm.source;
+  if (norm.provided && norm.provided.appliedOn) {
+    doc.appliedOn = earlierDate(prior.appliedOn, norm.appliedOn) || asString(prior.appliedOn);
+  }
+  const priorStage = asString(prior.stage) || "Applied";
+  if (!norm.replaceHrFields) {
+    doc.stage = priorStage;
+  } else if (norm.provided && norm.provided.stage) {
+    if (stageRank(norm.stage) >= stageRank(priorStage) && stageRank(norm.stage) > 0) {
+      doc.stage = norm.stage;
+    } else {
+      doc.stage = priorStage;
+    }
+  } else {
+    doc.stage = priorStage;
+  }
+  if (norm.replaceHrFields && norm.hrFields) {
+    for (const key of HR_TEXT_FIELDS) {
+      const incoming = asString(norm.hrFields[key]);
+      if (incoming) doc[key] = incoming;
+    }
+  }
+  if (norm.docs) doc.docs = mergeDocs([prior.docs, norm.docs]);
+  syncResumeDoc(doc, doc.resumeLink, previousResume);
+  const hist = Array.isArray(prior.history) ? prior.history.slice() : [];
+  hist.push({ on: today || "", what: "Re-ingested application" });
+  doc.history = hist;
+  for (const key of ["exams", "interviews", "background", "staffNotes"]) {
+    if (!Array.isArray(doc[key])) doc[key] = [];
+  }
+  return doc;
 }
 
 function existingData(row) {
@@ -335,6 +519,7 @@ async function ingestApplicants(items, deps) {
       let id = norm.id;
       let prior = null;
       let matchedBy = "";
+      const requestedId = norm.id || "";
 
       if (id) {
         const row = await getDoc("applicants", id);
@@ -347,51 +532,52 @@ async function ingestApplicants(items, deps) {
             continue;
           }
           prior = existingData(row);
+          if (prior && !prior.id) prior.id = id;
           matchedBy = "id";
-        } else if (norm.updateOnly) {
-          errors.push({
-            index: i,
-            id,
-            error: `id ${id} is not on Pipeline; skipped (updateOnly)`,
-          });
-          continue;
-        }
-      } else if (norm.updateOnly) {
-        errors.push({ index: i, error: "updateOnly requires an explicit id" });
-        continue;
-      } else if (!forceNew) {
-        const match = findIngestMatch(
-          { name: norm.name, email: norm.fields.email, roleId: norm.fields.roleId },
-          known
-        );
-        if (match && match.id) {
-          prior = match;
-          id = match.id;
-          matchedBy = emailKey(norm.fields.email) && emailKey(match.email)
-            ? "email"
-            : "name";
         }
       }
 
-      if (!id) {
+      if (!prior && !forceNew) {
+        const probe = {
+          name: norm.name,
+          email: norm.fields.email,
+          mobile: norm.fields.mobile,
+        };
+        const match = findIngestMatch(probe, known);
+        if (match && match.id) {
+          prior = match;
+          id = match.id;
+          matchedBy = ingestMatchedBy(probe, match) || "name";
+        }
+      }
+
+      if (!prior && norm.updateOnly) {
+        errors.push({
+          index: i,
+          id: requestedId || undefined,
+          error: requestedId
+            ? `id ${requestedId} is not on Pipeline; skipped (updateOnly)`
+            : "updateOnly requires an explicit id",
+        });
+        continue;
+      }
+
+      if (!prior) {
         id = await allocateId();
         if (!id) {
           errors.push({ index: i, error: "could not allocate a unique id" });
           continue;
         }
+        matchedBy = "new";
       }
 
       let doc;
-      if (prior && matchedBy && matchedBy !== "id") {
+      if (prior && norm.overwrite) {
+        doc = applyOverwriteOnto(prior, norm, { today });
+        doc.id = id;
+      } else if (prior) {
         doc = applyIngestOnto(prior, norm, { today });
         doc.id = id;
-      } else if (prior && norm.overwrite) {
-        doc = { ...blankApplicant(id, today), ...prior, id };
-        doc.name = norm.name;
-        if (norm.provided && norm.provided.source) doc.source = norm.source;
-        if (norm.provided && norm.provided.appliedOn) doc.appliedOn = norm.appliedOn;
-        if (norm.provided && norm.provided.stage) doc.stage = norm.stage;
-        Object.assign(doc, norm.fields);
       } else {
         doc = blankApplicant(id, today);
         doc.name = norm.name;
@@ -399,6 +585,8 @@ async function ingestApplicants(items, deps) {
         doc.appliedOn = norm.appliedOn;
         doc.stage = norm.stage;
         Object.assign(doc, norm.fields);
+        if (norm.docs) doc.docs = mergeDocs([norm.docs]);
+        syncResumeDoc(doc, doc.resumeLink);
       }
       for (const key of ["exams", "interviews", "history", "background", "staffNotes"]) {
         if (!Array.isArray(doc[key])) doc[key] = [];
@@ -428,14 +616,11 @@ async function ingestApplicants(items, deps) {
       const idx = known.findIndex((row) => row && row.id === id);
       if (idx >= 0) known[idx] = doc;
       else known.push(doc);
-      const entry = { id, name: doc.name };
+      const entry = { id, name: doc.name, matchedBy: matchedBy || (prior ? "id" : "new") };
+      if (requestedId && requestedId !== id) entry.requestedId = requestedId;
       if (warnings.length) entry.warning = warnings.join("; ");
-      if (prior) {
-        entry.matchedBy = matchedBy || "id";
-        updated.push(entry);
-      } else {
-        created.push(entry);
-      }
+      if (prior) updated.push(entry);
+      else created.push(entry);
     } catch (err) {
       errors.push({ index: i, error: (err && err.message) || "persist failed" });
     }
@@ -449,6 +634,135 @@ async function ingestApplicants(items, deps) {
   };
 }
 
+function strayBlockedReason(row) {
+  const stage = asString(row && row.stage);
+  if (stage && stage !== "Applied") {
+    return `stray is at stage ${stage}; refused (past Applied)`;
+  }
+  if (
+    asString(row.hrNotes) ||
+    asString(row.hrVerdict) ||
+    asString(row.hrOn) ||
+    asString(row.hiredEmpId)
+  ) {
+    return "stray has HR evaluation fields; refused";
+  }
+  if (
+    asString(row.rffiNote) ||
+    asString(row.aiSummary) ||
+    asString(row.aiOn) ||
+    asString(row.editedBy) ||
+    asString(row.updatedBy) ||
+    asString(row.lastEditedBy) ||
+    row.portalEdited === true
+  ) {
+    return "stray was edited in the portal; refused";
+  }
+  if (Array.isArray(row.exams) && row.exams.length) return "stray has exam scores; refused";
+  if (Array.isArray(row.interviews) && row.interviews.length) return "stray has interviews; refused";
+  if (Array.isArray(row.staffNotes) && row.staffNotes.length) return "stray has staff notes; refused";
+  if (Array.isArray(row.background) && row.background.length) return "stray has background-check notes; refused";
+  return "";
+}
+
+/**
+ * Fold a bot-made stray into the keeper (notes + resumeLink) and delete the stray.
+ * Refuses when the stray has left Applied or carries portal evaluation fields.
+ * There is no separate per-field edit log on applicants; those HR fields are the signal.
+ */
+async function mergeApplicantsInto(merges, deps) {
+  const getDoc = deps.getDoc;
+  const setDoc = deps.setDoc;
+  const remove = deps.deleteDoc;
+  const today = deps.today || formatManilaDate();
+  const merged = [];
+  const errors = [];
+  if (typeof remove !== "function") {
+    const err = new Error("delete is not available");
+    err.statusCode = 500;
+    throw err;
+  }
+  for (let i = 0; i < (merges || []).length; i += 1) {
+    const spec = merges[i] || {};
+    const strayId = asString(spec.strayId);
+    const keepId = asString(spec.keepId);
+    if (!strayId || !keepId || !ID_RE.test(strayId) || !ID_RE.test(keepId)) {
+      errors.push({ index: i, strayId, keepId, error: "strayId and keepId must be applicant ids" });
+      continue;
+    }
+    if (strayId === keepId) {
+      errors.push({ index: i, strayId, keepId, error: "strayId and keepId must differ" });
+      continue;
+    }
+    try {
+      const strayRow = await getDoc("applicants", strayId);
+      const keepRow = await getDoc("applicants", keepId);
+      if (!strayRow) {
+        errors.push({ index: i, strayId, keepId, error: `stray ${strayId} is not on Pipeline` });
+        continue;
+      }
+      if (!keepRow) {
+        errors.push({ index: i, strayId, keepId, error: `keeper ${keepId} is not on Pipeline` });
+        continue;
+      }
+      const stray = existingData(strayRow) || {};
+      const keep = existingData(keepRow) || {};
+      if (!stray.id) stray.id = strayId;
+      if (!keep.id) keep.id = keepId;
+      const blocked = strayBlockedReason(stray);
+      if (blocked) {
+        errors.push({ index: i, strayId, keepId, error: blocked });
+        continue;
+      }
+      const keeper = JSON.parse(JSON.stringify(keep));
+      keeper.id = keepId;
+      keeper.notes = mergeNoteText(keeper.notes, stray.notes);
+      keeper.notes = mergeNoteText(
+        keeper.notes,
+        `Merged duplicate record ${strayId} on ${today}.`
+      );
+      const strayResume = asString(stray.resumeLink);
+      if (strayResume && !asString(keeper.resumeLink)) keeper.resumeLink = strayResume;
+      keeper.docs = mergeDocs([keeper.docs, stray.docs]);
+      if (strayResume && asString(keeper.resumeLink) && strayResume !== asString(keeper.resumeLink)) {
+        const docs = keeper.docs && typeof keeper.docs === "object" ? keeper.docs : {};
+        const resume =
+          docs.resume && typeof docs.resume === "object"
+            ? docs.resume
+            : { s: "on", link: "", links: [], filed: "", expiry: "", title: "" };
+        resume.links = Array.isArray(resume.links) ? resume.links.slice() : [];
+        if (!resume.links.some((item) => item && (item.url === strayResume || item.link === strayResume))) {
+          resume.links.push({ url: strayResume, title: "CV from merged duplicate", on: today });
+        }
+        docs.resume = resume;
+        keeper.docs = docs;
+      }
+      syncResumeDoc(keeper, keeper.resumeLink);
+      const hist = Array.isArray(keeper.history) ? keeper.history.slice() : [];
+      hist.push({ on: today, what: "Merged stray applicant", fromIds: [strayId] });
+      keeper.history = hist;
+      await setDoc("applicants", keepId, keeper);
+      await remove("applicants", strayId);
+      merged.push({
+        ok: true,
+        strayId,
+        keepId,
+        id: keepId,
+        name: asString(keeper.name),
+        deleted: strayId,
+      });
+    } catch (err) {
+      errors.push({
+        index: i,
+        strayId,
+        keepId,
+        error: (err && err.message) || "merge failed",
+      });
+    }
+  }
+  return { ok: errors.length === 0, op: "mergeInto", merged, errors };
+}
+
 module.exports = {
   MAX_BATCH,
   OPTIONAL_STRINGS,
@@ -457,6 +771,7 @@ module.exports = {
   blankApplicant,
   ingestApplicants,
   ingestKey,
+  mergeApplicantsInto,
   newApplicantId,
   normalizeItem,
   parseIngestBody,

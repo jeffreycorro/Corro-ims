@@ -92,12 +92,28 @@ CSV is accepted on the same URL when the first line is a header (`id,name,resume
 
 ## Soft-dedupe
 
-Without `forceNew`, a row that matches an existing applicant **updates that record** instead of creating another:
+Without `forceNew`, a row that matches an existing applicant **updates that record** instead of creating another. This runs when the caller sends no `id`, **and when the `id` is not already on Pipeline** (a stale id from an older export is not reused):
 
-1. Same email (if both sides have one), else
-2. Same normalized name (case, punctuation, diacritics, `Last, First` vs `First Last`, middle initials dropped) when emails do not conflict
+1. Same email (case-insensitive, if both sides have one), else
+2. Same phone (digits only; the last 10 digits, so `0917…` and `+63 917…` match), when emails do not conflict, else
+3. Same normalized name (case, punctuation, diacritics, `Last, First` vs `First Last`, middle initials dropped — `Mulle, Frederick S.` matches `Frederick S. Mulle`) when emails and phones do not conflict
 
-The update keeps the **earliest** `appliedOn`, the **furthest** stage, prefers non-empty email / mobile / resumeLink / roleId, and appends a re-application note plus a `history` entry. Same-name rows with **different** emails are treated as different people (ingest has no confirm step).
+Only when nothing matches is a new row created, and then the portal assigns a **fresh** `a_…` id. The caller's id is not written onto that row.
+
+The update keeps the **earliest** `appliedOn`, and for a normal re-application (no `overwrite`) the **furthest** stage. It prefers non-empty email / mobile / roleId, **refreshes `resumeLink` when the caller sends one**, and appends notes (see below) plus a `history` entry. Same-name rows with **different** emails, or different phones, are treated as different people (ingest has no confirm step).
+
+`updateOnly` still never creates a row. A stale id is updated when email, phone, or name matches; otherwise that item is skipped.
+
+## Notes and HR-owned fields
+
+Notes are always **merged**, including on `overwrite: true`. Existing notes stay. Incoming lines are appended only when that line is not already there after whitespace is collapsed (`Called  19 Sep` and `Called 19 Sep` are the same line).
+
+`overwrite` must not blank or downgrade a Pipeline row:
+
+- An empty incoming value does not clear a field that already has a value.
+- Stage does not move backwards.
+- Stage, exams, interviews, HR evaluation, staff notes, and background stay as HR left them unless the caller sets `replaceHrFields: true`. With that flag, stage may move forward and non-empty evaluation text may be replaced; stage still cannot move backwards.
+- `resumeLink` may be refreshed when the caller sends a non-empty link. The previous URL is kept on `docs.resume.links` when it differs.
 
 This is why a second GoDaddy load of the same inbox should not multiply Pipeline rows.
 
@@ -128,18 +144,20 @@ On the applicant editor, a dated **Background check and observations** log sits 
 | `roleId` | no | `""` | Seed ids `ro01`–`ro10` below. Unknown id is **not** a batch failure: that row is still created, unlinked, with a `warning`. |
 | `position` | no | role title if `roleId` is valid | |
 | `dept` | no | role dept if `roleId` is valid | |
-| `resumeLink` | no | `""` | Drive / CV URL. |
-| `notes` | no | `""` | Extractor remarks, mailbox subject, etc. |
+| `resumeLink` | no | `""` | Drive / CV URL. A non-empty value refreshes the link. An empty value does not clear one. If this is omitted, `docs.resume` is used. |
+| `docs` | no | — | Recruitment file slots. `docs.resume` may be a URL or `{ "link": "…" }`. Other keys (`tor`, `certs`, …) are stored on the applicant `docs` object and merged with what is already there. |
+| `notes` | no | `""` | Merged, not replaced. New lines are appended when not already present. |
 | `expected` | no | `""` | Expected pay. |
 | `education` | no | `""` | |
 | `years` | no | `""` | Years of experience (free text). |
 | `source` | no | `"Email"` | Override e.g. `"GoDaddy"`. |
 | `appliedOn` | no | today (Asia/Manila) | `YYYY-MM-DD`. |
 | `stage` | no | `"Applied"` | Unknown values default to Applied (warning). |
-| `id` | no | new `a_…` id | Never overwrites an existing id unless `overwrite: true` on that row (or batch `overwrite` **and** an explicit `id`). With `updateOnly`, a missing id is skipped — never created. |
-| `overwrite` | no | `false` | Requires an explicit `id`. When the id is not on Pipeline, a new row is created **unless** `updateOnly` is set. |
-| `updateOnly` | no | `false` | Overwrite existing ids only. Do not create new Pipeline rows. Alias: `overwriteExistingOnly`. |
-| `forceNew` | no | `false` | Create a new row even when the name/email already exists. Ignored when `updateOnly` is set. |
+| `id` | no | new `a_…` id | Never overwrites an existing id unless `overwrite: true` on that row (or batch `overwrite` **and** an explicit `id`). An id that is **not** on Pipeline is not stored: the row is matched by email, phone, then name, or created under a fresh portal id. With `updateOnly`, no match means the item is skipped — never created. |
+| `overwrite` | no | `false` | Requires an explicit `id`. Updates that id when it exists. When it does not, matches email / phone / name instead of minting a row under the stale id. Does not replace notes or move stage backwards. |
+| `replaceHrFields` | no | `false` | With `overwrite`, allow stage to move forward and allow non-empty HR evaluation text to be replaced. Never moves stage backwards. Never required for notes or `resumeLink`. |
+| `updateOnly` | no | `false` | Overwrite existing rows only. Do not create new Pipeline rows. A stale id can still update the email / phone / name match. Alias: `overwriteExistingOnly`. |
+| `forceNew` | no | `false` | Create a new row even when the name, email, or phone already exists. The new row still gets a fresh portal id. Ignored when `updateOnly` is set. |
 
 Each created record also gets empty `exams`, `interviews`, `history`, and `background` arrays so the pipeline editor can open it.
 
@@ -159,7 +177,7 @@ Persistence is the same as the artifact `put("applicants", id, data)` path (`doc
 ```
 
 - HTTP **200** means the request was authenticated and parsed. `ok` is true only when every row succeeded.
-- New people land in `created`. Re-applications of someone already on file, and **overwrite-by-id** updates, land in `updated` (`matchedBy` is `name`, `email`, or `id`).
+- New people land in `created` with `matchedBy: "new"` and the portal id (not a stale caller id). Re-applications and overwrites land in `updated`. `matchedBy` is `email`, `phone`, `name`, or `id`. When the caller id was not the row that was written, `requestedId` is the id they sent and `id` is the Pipeline id.
 - Per-row failures go in `errors` (`index` is the position in `applicants`). Other rows still create or update.
 - A missing `roleId` match adds `warning` on that `created` / `updated` item; the applicant is still stored.
 - HTTP **401** — no session and no valid ingest key.
@@ -236,6 +254,33 @@ Until IMAP is on, Cassie can still:
 All of these write the same `applicants` collection as the email pull.
 
 `GET` / `POST` `/.netlify/functions/applicants-email` requires the HR session cookie (not the ingest key).
+
+## mergeInto (remove a bot stray)
+
+Key-gated on the same URL (`X-HR-Ingest-Key` or `Authorization: Bearer`, or an HR session cookie). Folds the stray's notes into the keeper (new lines only), copies `resumeLink` onto the keeper when the keeper's link is empty, keeps a different stray CV on `docs.resume.links`, then deletes the stray.
+
+Refused when the stray's stage is anything other than Applied, or when the stray has portal evaluation data (HR notes / verdict, exams, interviews, staff notes, background checks, `hiredEmpId`, or an `editedBy` / `updatedBy` / `portalEdited` marker). Applicants do not have a separate edit log; those fields are the signal. A refused stray is left in place.
+
+Do **not** run this until the notes-merge deploy is live. One request for the two strays created on 27 Sep 2026:
+
+```bash
+curl -sS -X POST 'https://corcondev-hr.netlify.app/.netlify/functions/applicants-ingest' \
+  -H 'Content-Type: application/json' \
+  -H "X-HR-Ingest-Key: ${HR_APPLICANTS_INGEST_KEY}" \
+  -d '{
+    "op": "mergeInto",
+    "merges": [
+      {"strayId": "a_6249de79dv1x", "keepId": "a_057e4139cydo"},
+      {"strayId": "a_7328aadddmxl", "keepId": "a_4b50d6c9cr7r"}
+    ]
+  }'
+```
+
+A single pair `{ "op": "mergeInto", "strayId": "a_…", "keepId": "a_…" }` is the same operation. `ok` is true only when every pair succeeded. `merged[].id` is the keeper. Failures stay in `errors` and do not delete that stray.
+
+## Recovering notes overwritten around 2026-09-27 00:30 Manila
+
+Pipeline rows live in Supabase `public.docs` (`collection = 'applicants'`), one current JSON `data` blob plus `updated_at`. The table trigger replaces `updated_at` on every write. There is no history table, no note changelog, and no one-click restore for applicant notes. The applicant `history` array is work history and ingest/merge events, not the previous notes text. Settings → Restore from a backup reads a JSON file, and the portal's own export does not include the `applicants` collection. The 18 Sep Drive export is the extractor's copy, not HR's later edits. Recovery of notes replaced in that run needs a Supabase project backup or point-in-time restore from before 2026-09-26 16:30 UTC, if the project has one — it is not in this app.
 
 ## Security
 

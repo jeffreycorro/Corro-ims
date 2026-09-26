@@ -380,7 +380,7 @@
     var csvUrl = (exp && exp.EXPORT_CSV_URL) || "https://drive.google.com/file/d/1Mpguswqx_anA5sxmJ1VvyzI0kCy3805L/view";
     var note = updateOnly
       ? '<div class="note">Ready export as of <b>18 Sep 2026</b>: 67 Pipeline applicants, all with <span class="mono">resumeLink</span>. ' +
-        "<b>Overwrite by stable id only</b> — this does not create new Pipeline rows. Unknown ids are skipped. " +
+        "<b>Overwrite by id</b> — this does not create new Pipeline rows. An id that is no longer on Pipeline is matched by email, phone, then name, and skipped when nothing matches. Notes are merged, not replaced. " +
         "Shortlist 14 all have a CV link; 43 were backfill-patched (some Drive PDFs may still be stub size). " +
         'Download <a href="' +
         esc(jsonUrl) +
@@ -393,8 +393,9 @@
       : '<div class="note">Paste JSON from the extractor: <span class="mono">{ "applicants": [ { "name": "…" } ] }</span> ' +
         "or a bare array, or the extractor CSV (<span class=\"mono\">id,name,resumeLink</span>). Required field is <b>name</b>. " +
         "Optional: email, mobile, roleId (ro01–ro10), position, dept, resumeLink, notes, source (default Email), appliedOn. " +
-        "Same person (normalized name, or the same email) updates the existing row unless you send " +
-        '<span class="mono">forceNew: true</span>. An extractor export (asOf / Drive folder / all rows have id) ' +
+        "Same person (email, phone, or normalized name) updates the existing row unless you send " +
+        '<span class="mono">forceNew: true</span>. An id that is not on Pipeline is not reused. ' +
+        "An extractor export (asOf / Drive folder / all rows have id) " +
         "overwrites those ids only and will not mint new rows.</div>";
     root.openModal({
       title: updateOnly ? "Overwrite Pipeline from extractor" : "Bulk import applicants",
