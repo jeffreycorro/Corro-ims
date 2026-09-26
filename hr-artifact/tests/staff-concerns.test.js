@@ -76,6 +76,10 @@ function loadRosterFns() {
     "openDayKeepsLeaver",
     "stripOpenDayLeavers",
     "empSeparatedAsOf",
+    "empHireDate",
+    "empNotYetHired",
+    "rowHasEnteredData",
+    "dailyRowShown",
     "empPosition",
     "dayStatusOf",
     "mergeIncomingDoc",
@@ -132,7 +136,7 @@ describe("staff concern sheet — live 18a HTML", () => {
     assert.match(html, /cassieSig\(rec\)/);
     assert.match(html, /hrSigSrc\(rec\|\|null, "prepared"\)/);
     assert.match(html, /Object\.keys\(rec\.rows\|\|\{\}\)\.forEach\(id=>\{ if\(id\) seen\[id\]=true/);
-    assert.match(html, /const BUILD = "2026-09-26a"/);
+    assert.match(html, /const BUILD = "2026-09-26b"/);
     assert.match(html, /Has not yet arrived/);
     assert.match(html, /OT HRS/);
     assert.match(html, /Last name/);
@@ -261,6 +265,46 @@ describe("staff concern sheet — live 18a HTML", () => {
     ctx.persistRosterOnDay(tue);
     assert.equal(tue.rows.e1400.site, "CTU BARILI");
     assert.equal(JSON.stringify(tue.order), JSON.stringify(["e1400", "e1353", "e1250"]));
+    assert.equal(tue.rows.e1400.ot, null, "Tuesday does not inherit Monday's OT");
+    assert.equal(tue.rows.e1353.ot, null);
+    assert.equal(monday.rows.e1400.ot, 3, "Monday keeps the hours that were typed on Monday");
+  });
+
+  it("shows someone from their hire date and hides a blank pre-hire row", () => {
+    const ctx = loadRosterFns();
+    ctx.S.employees = {
+      e1250: { id: "e1250", empNo: "1250", name: "Armenio", status: "Regular", dateHired: "2024-01-01", project: "ADMINS" },
+      e1404: { id: "e1404", empNo: "1404", name: "Nuevo, Bea", status: "Probationary", dateHired: "2026-09-15", project: "Danlag" },
+      e1405: { id: "e1405", empNo: "1405", name: "No Date", status: "Regular", project: "ADMINS" },
+      e1243: { id: "e1243", empNo: "1243", name: "Adolfo", status: "Separated", separatedOn: "2026-08-31", project: "ADMINS" },
+    };
+    ctx.TODAY = "2026-09-12";
+    ctx.atWork = () => Object.values(ctx.S.employees).filter((e) => !ctx.empSeparatedAsOf(e, "2026-09-12"));
+    const beforeHire = ctx.dailyPeople({
+      date: "2026-09-12",
+      rows: {
+        e1404: { s: "Present", ot: null, site: "Danlag" },
+        e1250: { s: "Present", site: "ADMINS" },
+        e1243: { s: "Present", site: "ADMINS" },
+      },
+      extra: ["e1404", "e1243"],
+      omit: [],
+    });
+    assert.ok(!beforeHire.some((e) => e.id === "e1404"), "not listed before date hired");
+    assert.ok(beforeHire.some((e) => e.id === "e1405"), "missing hire date stays on the list");
+    assert.ok(!beforeHire.some((e) => e.id === "e1243"), "already separated stays off this later day");
+    assert.equal(ctx.dailyRowShown("e1404", "2026-09-12", { s: "Present", ot: 4 }), true);
+    assert.equal(ctx.dailyRowShown("e1404", "2026-09-12", { s: "Absent", r: "" }), true);
+    assert.equal(ctx.dailyRowShown("e1404", "2026-09-12", { s: "Present", ot: null }), false);
+    const withOt = ctx.dailyPeople({
+      date: "2026-09-12",
+      rows: { e1404: { s: "Present", ot: 4, site: "Danlag" } },
+      extra: [],
+      omit: [],
+    });
+    assert.ok(withOt.some((e) => e.id === "e1404"), "typed OT keeps the pre-hire row on screen");
+    const started = ctx.dailyPeople({ date: "2026-09-15", rows: {}, extra: [], omit: [] });
+    assert.ok(started.some((e) => e.id === "e1404"), "on the manpower list the day they start");
   });
 
   it("splits Drive-style last / first names and matches e-sig JPEGs by filename", () => {

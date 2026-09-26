@@ -368,6 +368,28 @@
     return Number(row && row.ot) || 0;
   }
 
+  function rowHasEnteredData(row) {
+    if (!row || typeof row !== "object") return false;
+    var st = String(row.s || row.status || "").trim();
+    if (st && st !== "Present") return true;
+    if (row.ot != null && String(row.ot).trim() !== "") return true;
+    if (String(row.r || row.reason || "").trim()) return true;
+    if (row.day != null && String(row.day).trim() !== "") return true;
+    var hol = row.hol;
+    if (hol != null && hol !== "" && hol !== 0 && hol !== "0" && hol !== false) return true;
+    return false;
+  }
+
+  /* No dateHired keeps the row. A hire date after this day hides a default row. */
+  function prehireRowHidden(emp, date, row) {
+    if (!emp) return false;
+    var h = String(emp.dateHired || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(h)) return false;
+    var day = String(date || "").slice(0, 10);
+    if (!day || h <= day) return false;
+    return !rowHasEnteredData(row);
+  }
+
   function tallyPersonPeriod(empId, from, to, ctx) {
     ctx = ctx || {};
     var daily = ctx.daily || {};
@@ -391,6 +413,8 @@
       }
       var row = (rec.rows || {})[empId];
       if (!row) return;
+      var emp = (ctx.employees || {})[empId];
+      if (prehireRowHidden(emp, d, row)) return;
       var credit = payDayCredit(row, empId, d, ctx);
       if (credit) {
         days += credit;
@@ -505,6 +529,7 @@
       if (rec && rec.rows) {
         Object.keys(rec.rows).forEach(function (id) {
           var row = rec.rows[id] || {};
+          if (prehireRowHidden((ctx.employees || {})[id], d, row)) return;
           var st = effectiveStatusOf(id, d, row.s || row.status, row.r || row.reason, ctx);
           counts.people += 1;
           if (st === "Present") counts.present += 1;
@@ -533,6 +558,7 @@
     return eachDate(from, to).map(function (d) {
       var rec = daily[dailyId(d)];
       var row = rec && rec.rows && rec.rows[empId];
+      if (row && prehireRowHidden((ctx.employees || {})[empId], d, row)) row = null;
       return {
         date: d,
         filed: !!rec,

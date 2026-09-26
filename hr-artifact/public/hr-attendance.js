@@ -785,8 +785,11 @@
       if (!rec || !rec.date) return;
       if (keep && !keep[monthKey(rec.date)]) return;
       Object.keys(rec.rows || {}).forEach(function (empId) {
+        var row = rec.rows[empId];
+        var emp = (ctx.employees || {})[empId];
+        if (prehireRowHidden(emp, rec.date, row)) return;
         var t = (tally[empId] = tally[empId] || blankPerson());
-        tallyRow(empId, rec, rec.rows[empId], ctx, t);
+        tallyRow(empId, rec, row, ctx, t);
       });
     });
     return Object.keys(tally)
@@ -807,6 +810,8 @@
     var t = { present: 0, late: 0, absent: 0, leave: 0, holiday: 0, other: 0 };
     Object.keys((rec && rec.rows) || {}).forEach(function (empId) {
       var row = rec.rows[empId] || {};
+      var emp = (ctx.employees || {})[empId];
+      if (prehireRowHidden(emp, rec.date, row)) return;
       var st = effectiveStatus(empId, rec.date, row.s, row.r, ctx);
       if (st === "Present") t.present++;
       else if (st === "Present/Late") {
@@ -866,6 +871,7 @@
       if (keep && !keep[monthKey(rec.date)]) return;
       var row = (rec.rows || {})[empId];
       if (!row) return;
+      if (prehireRowHidden((ctx.employees || {})[empId], rec.date, row)) return;
       allDates.push(rec.date);
       var st = effectiveStatus(empId, rec.date, row.s, row.r, ctx);
       var excuse = rowExcuse(empId, rec.date, row, ctx);
@@ -923,7 +929,39 @@
     if (!e || !leaverStatus(e)) return false;
     var on = isoDate(e.separatedOn);
     if (!on) return true;
-    return on < isoDate(date);
+    var day = isoDate(date);
+    /* Hidden starting on separatedOn. The day before still shows. */
+    if (!day) return true;
+    return on <= day;
+  }
+
+  function empHireDate(e) {
+    var h = String((e && e.dateHired) || "").slice(0, 10);
+    return /^\d{4}-\d{2}-\d{2}$/.test(h) ? h : "";
+  }
+
+  function empNotYetHired(e, date) {
+    var h = empHireDate(e);
+    var day = isoDate(date);
+    if (!h || !day) return false;
+    return h > day;
+  }
+
+  function rowHasEnteredData(row) {
+    if (!row || typeof row !== "object") return false;
+    var st = String(row.s || row.status || "").trim();
+    if (st && st !== "Present") return true;
+    if (row.ot != null && String(row.ot).trim() !== "") return true;
+    if (String(row.r || row.reason || "").trim()) return true;
+    if (row.day != null && String(row.day).trim() !== "") return true;
+    var hol = row.hol;
+    if (hol != null && hol !== "" && hol !== 0 && hol !== "0" && hol !== false) return true;
+    return false;
+  }
+
+  /* A default Present row saved before the hire date is not attendance. */
+  function prehireRowHidden(e, date, row) {
+    return !!(e && empNotYetHired(e, date) && !rowHasEnteredData(row));
   }
 
   function firstAttendanceIndex(ctx) {
@@ -982,7 +1020,9 @@
     if (rec.fixed) {
       return Object.keys(rec.rows || {})
         .map(function (id) { return emps[id]; })
-        .filter(Boolean)
+        .filter(function (e) {
+          return e && !prehireRowHidden(e, date, (rec.rows || {})[e.id]);
+        })
         .sort(sortByEmpNo);
     }
     var omit = {};
@@ -991,6 +1031,7 @@
     var list = [];
     function add(e) {
       if (!e || !e.id || have[e.id] || omit[e.id]) return;
+      if (prehireRowHidden(e, date, (rec.rows || {})[e.id])) return;
       have[e.id] = true;
       list.push(e);
     }
@@ -1256,6 +1297,10 @@
     collectReasonFromUi: collectReasonFromUi,
     mergeDayRow: mergeDayRow,
     empSeparatedAsOf: empSeparatedAsOf,
+    empHireDate: empHireDate,
+    empNotYetHired: empNotYetHired,
+    rowHasEnteredData: rowHasEnteredData,
+    prehireRowHidden: prehireRowHidden,
     firstAttendanceDate: firstAttendanceDate,
     firstAttendanceIndex: firstAttendanceIndex,
     rosterPeopleForDay: rosterPeopleForDay,

@@ -1238,7 +1238,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-09-26a";
+const BUILD = "2026-09-26b";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -1785,6 +1785,41 @@ function empSeparatedAsOf(e, date){
   const day=String(date||"").slice(0,10);
   if(!on) return true;
   return !day || on<=day;
+}
+/* dateHired on the 201 file. Blank means "do not hide" — a missing hire date
+   keeps the old roster behaviour. contractStart is a contract, not the hire. */
+function empHireDate(e){
+  const h=String((e&&e.dateHired)||"").slice(0,10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(h) ? h : "";
+}
+function empNotYetHired(e, date){
+  const h=empHireDate(e);
+  const day=String(date||"").slice(0,10);
+  if(!h || !day) return false;
+  return h>day;
+}
+/* A saved row that only repeats the standing default (Present, no OT) is not
+   something HR typed. OT includes a real zero. Site and the usual in/out
+   times are layout, not an entry. */
+function rowHasEnteredData(row){
+  if(!row || typeof row!=="object") return false;
+  const st=String(row.s||row.status||"").trim();
+  if(st && st!=="Present") return true;
+  if(row.ot!=null && String(row.ot).trim()!=="") return true;
+  if(String(row.r||row.reason||"").trim()) return true;
+  if(row.day!=null && String(row.day).trim()!=="") return true;
+  const hol=row.hol;
+  if(hol!=null && hol!=="" && hol!==0 && hol!=="0" && hol!==false) return true;
+  return false;
+}
+/* Not-yet-hired people stay off the list, the totals and the export. A row
+   that already holds typed attendance stays visible so that entry is not lost.
+   Separation itself is still empSeparatedAsOf — past filed days keep leavers. */
+function dailyRowShown(id, date, row){
+  const e=S.employees&&S.employees[id];
+  if(!e) return true;
+  if(empNotYetHired(e, date) && !rowHasEnteredData(row)) return false;
+  return true;
 }
 function empPosition(e){
   if(!e) return "";
@@ -5662,6 +5697,7 @@ function offenders(months){
   Object.values(S.daily).forEach(rec=>{
     if(!keep.has(monthKey(rec.date))) return;
     Object.entries(rec.rows||{}).forEach(([id,r])=>{
+      if(!dailyRowShown(id, rec.date, r)) return;
       const t=(tally[id]=tally[id]||{late:0,absent:0,leave:0,excused:0});
       const st=effectiveStatus(id, rec.date, r.s, r.r);
       if(st==="Present/Late"){ if(rowExcused(r)!==true) t.late++; }
@@ -5722,6 +5758,7 @@ function drillRows(o){
     const siteOf={};
     try{ dailyGroups(rec).forEach(g=>g.people.forEach(e=>{ siteOf[e.id]=g.site; })); }catch(err){}
     Object.entries(rec.rows||{}).forEach(([id,r])=>{
+      if(!dailyRowShown(id, rec.date, r)) return;
       if(o.empId && id!==o.empId) return;
       const raw=r.s||"";
       const cover = raw==="Absent" ? absenceExcuse(id, rec.date, r.r) : null;
@@ -6489,7 +6526,7 @@ function attendancePattern(months){
   const byDay={};
   Object.values(S.daily).forEach(rec=>{
     if(months && months.indexOf(monthKey(rec.date))<0) return;
-    const rows=Object.values(rec.rows||{});
+    const rows=Object.entries(rec.rows||{}).filter(([id,r])=>dailyRowShown(id, rec.date, r)).map(([,r])=>r);
     if(!rows.length) return;
     const late=rows.filter(r=>r.s==="Present/Late").length;
     byDay[rec.date]={late, head:rows.length, share:late/rows.length};
@@ -8200,7 +8237,10 @@ function dailyPeople(rec){
   rec=rec||{};
   if(rec.fixed){
     return sortByRosterOrder(
-      Object.keys(rec.rows||{}).map(id=>S.employees[id]).filter(Boolean),
+      Object.keys(rec.rows||{}).map(id=>S.employees[id]).filter(e=>{
+        if(!e) return false;
+        return dailyRowShown(e.id, rec.date, (rec.rows||{})[e.id]);
+      }),
       dailyOrderOf(rec)
     );
   }
@@ -8210,6 +8250,7 @@ function dailyPeople(rec){
   const have=new Set();
   const add=e=>{
     if(!e || !e.id || omit.has(e.id) || have.has(e.id)) return;
+    if(!dailyRowShown(e.id, rec.date, (rec.rows||{})[e.id])) return;
     have.add(e.id);
     list.push(e);
   };
@@ -8367,8 +8408,12 @@ function persistRosterOnDay(rec){
   people.forEach(e=>{
     if(!e || !e.id || omit.has(e.id)) return;
     const prev=rec.rows[e.id]||{};
+    const existed=!!rec.rows[e.id];
     const site=prev.site || dailySiteOf(rec,e) || e.project || "ADMINS";
+    /* OT belongs to this document only. A row created for the day starts blank;
+       yesterday's hours are never the seed. */
     const next=Object.assign({s:"Present", r:"", in:"", out:"", ot:null, day:null, hol:null}, prev, {site:site});
+    if(!existed) next.ot=null;
     if(!next.s) next.s="Present";
     rec.rows[e.id]=next;
     extra.add(e.id);
@@ -8547,7 +8592,8 @@ function viewDaily(){
   const saved=!!dailyGet(d);
   setCrumb("Daily Manpower Report", longDate(d)+(saved?" · saved":" · not saved yet"));
 
-  let h='<div class="row" style="margin-bottom:14px">'
+  let h='<div id="dm-sheet" data-dmdate="'+esc(d)+'" hidden></div>'
+   + '<div class="row" style="margin-bottom:14px">'
    + '<button class="btn sm" data-dmshift="-1" title="The day before">◂</button>'
    + '<div class="f" style="margin:0"><label>Date</label><input id="dm-date" type="date" value="'+esc(d)+'"></div>'
    + '<button class="btn sm" data-dmshift="1" title="The day after">▸</button>'
@@ -8782,8 +8828,21 @@ function viewDaily(){
   return h;
 }
 
+/* The open grid belongs to the day it was drawn for, not whatever date the
+   picker was just moved to. Reading S.ui.dailyDate here copied the previous
+   day's OT into the newly opened document. */
+function dailySheetDate(){
+  let stamped="";
+  try{
+    const el=typeof document!=="undefined" && document.querySelector && document.querySelector("#view [data-dmdate]");
+    stamped=el && el.getAttribute("data-dmdate") || "";
+  }catch(e){}
+  stamped=String(stamped||"").slice(0,10);
+  if(/^\d{4}-\d{2}-\d{2}$/.test(stamped)) return stamped;
+  return (S.ui&&S.ui.dailyDate)||TODAY;
+}
 function dailyCollect(){
-  const d=S.ui.dailyDate||TODAY;
+  const d=dailySheetDate();
   const live=dailyGet(d);
   if(live) slimDailyRecord(live);
   const rec=clone(live||dailyBlank(d));
@@ -17948,7 +18007,7 @@ function askDayRows(empId, from, to){
     if(from && d<from) return;
     if(to && d>to) return;
     const r=(rec.rows||{})[empId];
-    if(!r) return;
+    if(!r || !dailyRowShown(empId, d, r)) return;
     const cover = r.s==="Absent" ? absenceExcuse(empId, d, r.r) : null;
     out.push({date:d, status: cover?"Leave":(r.s||""),
       reason: r.r||"", site:r.site||"",
@@ -18358,7 +18417,7 @@ function payDaysFor(empId, dates){
   const out=[];
   dates.forEach(d=>{
     const rec=dailyGet(d); if(!rec) return;
-    const r=(rec.rows||{})[empId]; if(!r) return;
+    const r=(rec.rows||{})[empId]; if(!r || !dailyRowShown(empId, d, r)) return;
     out.push({ date:d, s:r.s||"", reason:r.r||"", site:r.site||"",
                in:r.in||"", out:r.out||"",
                day: dayVal(r,"day", dayCredit(r)),
@@ -19086,6 +19145,7 @@ function slimDailyRecord(rec){
 let DM_AUTOSAVE_T=null;
 let DM_OT_RESTORE=false;
 let DM_SAVE_CHAIN=Promise.resolve();
+let DM_SHEET_GEN=0;
 function noteDailySave(text){
   const el=typeof document!=="undefined" && document.getElementById && document.getElementById("dm-savestate");
   if(el) el.textContent=text||"";
@@ -19101,8 +19161,54 @@ function captureDailyForm(){
   rec._dmDirty=true;
   S.daily[rec.id]=rec;
 }
+async function saveDirtyDaily(why){
+  const ids=Object.keys(S.daily||{}).filter(id=>S.daily[id] && S.daily[id]._dmDirty);
+  if(!ids.length) return true;
+  noteDailySave("Saving…");
+  for(let i=0;i<ids.length;i++){
+    const pending=S.daily[ids[i]];
+    if(pending && pending._dmDirty) await dailySave(pending, why||"");
+  }
+  noteDailySave("Saved");
+  return true;
+}
+function flushDirtyDaily(why){
+  const job=DM_SAVE_CHAIN.then(()=>saveDirtyDaily(why)).catch(err=>{
+    noteDailySave("Not saved");
+    const msg=(err && err.message) || "Overtime did not save. The figures are still in the boxes — press Save again.";
+    if(typeof toast==="function") toast(msg, "err");
+    return false;
+  });
+  DM_SAVE_CHAIN=job.then(()=>{});
+  return job;
+}
+/* Move the Daily Manpower date without letting the open grid's OT ride along.
+   The boxes are captured onto the day they were drawn for, then the next day
+   is drawn from its own document — blank OT when that document has none. */
+function openDailyDate(next){
+  next=String(next||"").slice(0,10);
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(next)) return;
+  const onDaily=!!(S.ui && S.ui.view==="daily");
+  const formOpen=typeof document!=="undefined" && document.querySelector && document.querySelector("#view [data-dms]");
+  if(onDaily && formOpen){
+    DM_SHEET_GEN++;
+    if(DM_AUTOSAVE_T){ clearTimeout(DM_AUTOSAVE_T); DM_AUTOSAVE_T=null; }
+    const ae=document.activeElement;
+    if(ae && ae.blur && ae!==document.body) ae.blur();
+    captureDailyForm();
+  }
+  S.ui.dailyDate=next;
+  if(!onDaily){ go("daily"); return; }
+  render();
+  flushDirtyDaily("");
+}
 function enqueueDailySave(why){
+  const gen=DM_SHEET_GEN;
   const job=DM_SAVE_CHAIN.then(async()=>{
+    /* A date change bumped the generation while this save was waiting. The
+       boxes now belong to another day — write only what was already captured
+       onto the day being left, and do not create the new day from them. */
+    if(gen!==DM_SHEET_GEN) return saveDirtyDaily(why);
     const formOpen=typeof document!=="undefined" && document.querySelector && document.querySelector("#view [data-dms]");
     if(!formOpen){
       const ids=Object.keys(S.daily||{}).filter(id=>S.daily[id] && S.daily[id]._dmDirty);
@@ -19115,6 +19221,7 @@ function enqueueDailySave(why){
       noteDailySave("Saved");
       return true;
     }
+    if(gen!==DM_SHEET_GEN) return saveDirtyDaily(why);
     const rec=dailyCollect();
     const before=dailyGet(rec.date);
     const dirty=!!(rec._dmDirty || (before && before._dmDirty));
@@ -19804,7 +19911,7 @@ function payAttendanceCard(kind, per, lines){
       + dates.map(d=>{
           const rec=dailyGet(d), r=rec&&rec.rows?rec.rows[L.empId]:null;
           if(!rec) return '<td class="num" style="color:var(--ink3)" title="No report filed">·</td>';
-          if(!r) return '<td class="num" style="color:var(--ink3)" title="Not on this report">–</td>';
+          if(!r || !dailyRowShown(L.empId, d, r)) return '<td class="num" style="color:var(--ink3)" title="Not on this report">–</td>';
           const st=effectiveStatus(L.empId, d, r.s, r.r);
           const sev = st==="Absent" ? "crit" : (st==="Present/Late"||st==="Undertime") ? "warn" : "";
           const ot=Number(r.ot)||0, hc=holCode(r);
@@ -19827,7 +19934,8 @@ function payPersonDays(empId){
   const per=payCur().per, dates=payDates(per.from, per.to);
   const sty='width:100%;padding:3px 6px;border:1px solid var(--line2);border-radius:4px;background:var(--surface);font-size:12px';
   const rows=dates.map(d=>{
-    const rec=dailyGet(d), r=rec&&rec.rows?rec.rows[empId]:null;
+    const rec=dailyGet(d), r0=rec&&rec.rows?rec.rows[empId]:null;
+    const r=r0 && dailyRowShown(empId, d, r0) ? r0 : null;
     const day='<td class="mono" style="white-space:nowrap">'+esc(longDate(d))+'</td>';
     if(!rec) return '<tr>'+day+'<td colspan="6"><span class="lbl">No report filed for this day</span></td></tr>';
     if(!r) return '<tr>'+day+'<td colspan="6"><span class="lbl">Not on this day’s report — add them on Daily Manpower</span></td></tr>';
@@ -19966,6 +20074,7 @@ function attendanceSummaryCard(months){
   Object.values(S.daily).forEach(rec=>{
     if(!rec || !rec.date || !keep.has(monthKey(rec.date))) return;
     Object.entries(rec.rows||{}).forEach(([id,r])=>{
+      if(!dailyRowShown(id, rec.date, r)) return;
       const t=(T[id]=T[id]||{present:0,late:0,ut:0,absent:0,leave:0,waiting:0,excused:0,ot:0,prem:0,credit:0});
       const st=effectiveStatus(id, rec.date, r.s, r.r);
       if(st==="Present" || st==="Half Day") t.present++;
@@ -20507,7 +20616,7 @@ function wire(){
   };
   const payPaste=$("#pay-paste",v);   if(payPaste) payPaste.onclick=pasteManpowerDoor;
   const payPaste2=$("#pay-paste2",v); if(payPaste2) payPaste2.onclick=pasteManpowerDoor;
-  const payTa2=$("#pay-toattend2",v); if(payTa2) payTa2.onclick=()=>{ S.ui.dailyDate=payCur().per.to; go("daily"); };
+  const payTa2=$("#pay-toattend2",v); if(payTa2) payTa2.onclick=()=>{ openDailyDate(payCur().per.to); };
   const payAttT=$("#pay-atttoggle",v); if(payAttT) payAttT.onclick=()=>{ S.ui.payAttOpen = payAttT.dataset.open!=="1"; render(); };
   const payLatest=$("#pay-latest",v); if(payLatest) payLatest.onclick=ev=>{ ev.stopPropagation();
     S.ui.payFrom=""; S.ui.payTo=""; S.ui.payAnchor=payLatest.dataset.date; S.ui.paySnapped=0; render(); };
@@ -20520,8 +20629,7 @@ function wire(){
   const payToCon=$("#pay-tocontrib",v); if(payToCon) payToCon.onclick=()=>go("contrib");
   const payToAtt=$("#pay-toattend",v); if(payToAtt) payToAtt.onclick=()=>{
     /* land on the last day of the period being paid, not on today */
-    S.ui.dailyDate = payCur().per.to;
-    go("daily");
+    openDailyDate(payCur().per.to);
   };
   on("[data-payshift]","click",e=>{
     const n=+e.currentTarget.dataset.payshift;
@@ -20778,10 +20886,9 @@ function wire(){
         return [e.empNo,e.name,e.position,e.project||"",r.rateType||"",r.rate||"",r.allowance||"",r.from||"",r.source||""]; }));
     saveFile("salary-register-"+TODAY+".csv", toCSV(rows));
   };
-  const dd=$("#dm-date",v); if(dd) dd.onchange=()=>{ S.ui.dailyDate=dd.value; render(); };
+  const dd=$("#dm-date",v); if(dd) dd.onchange=()=>{ openDailyDate(dd.value); };
   on("[data-dmshift]","click",e=>{
-    S.ui.dailyDate = addDays(S.ui.dailyDate||TODAY, +e.currentTarget.dataset.dmshift);
-    render();
+    openDailyDate(addDays(dailySheetDate(), +e.currentTarget.dataset.dmshift));
   });
   const dap=$("#dm-allpresent",v); if(dap) dap.onclick=()=>{
     $$("[data-dms]").forEach(sel=>{ sel.value="Present"; });
@@ -20931,7 +21038,7 @@ function wire(){
   const dmaa=$("#dm-apply",v); if(dmaa) dmaa.onclick=dailyApplyAssignments;
   const dma=$("#dm-archive",v); if(dma) dma.onclick=()=>
     browseFolder(ATTENDANCE_ROOT, "Attendance — the filed scans", []);
-  on("[data-dmopen]","click",e=>{ S.ui.dailyDate=e.currentTarget.dataset.dmopen; go("daily"); });
+  on("[data-dmopen]","click",e=>{ openDailyDate(e.currentTarget.dataset.dmopen); });
   on("[data-dmview]","click",e=>{
     const r=dailyGet(e.currentTarget.dataset.dmview); if(r) printDaily(r);
   });

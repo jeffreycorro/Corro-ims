@@ -164,7 +164,7 @@ describe("Daily Manpower OT save", () => {
     assert.match(html, /No overtime amount is stored in this change history/);
     assert.match(html, /Overtime in this history/);
     assert.match(html, /L\.changes/);
-    assert.match(html, /const BUILD = "2026-09-26a"/);
+    assert.match(html, /const BUILD = "2026-09-26b"/);
   });
 
   it("offers On Hold and Shortlisted on the applicant stage list", () => {
