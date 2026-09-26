@@ -14,6 +14,12 @@
  * (govrefuse). A file, date, or status on either old key is kept on that
  * row. The 201 % counts it once. The refusal attachment still completes
  * SSS / Pag-IBIG / PhilHealth / TIN.
+ *
+ * Cassie 2026-09-26: a government number already typed on the 201
+ * (SSS, TIN, PhilHealth, Pag-IBIG) means that checklist row is On file.
+ * Read-time only for the percentage — the stored row is not rewritten
+ * just to compute it, an attached file stays, and a row somebody marked
+ * On file is never put back to Missing because the number box is blank.
  */
 (function (root, factory) {
   var api = factory();
@@ -43,6 +49,12 @@
   var LEGACY_KEY = "kasabutan";
   var MERGED_NAME = "Refusal of Government-mandated Deductions (Kasabutan)";
   var STATUTORY_KEYS = ["sss", "hdmf", "phic", "tin"];
+  var GOV_NUMBER_FIELDS = [
+    { field: "sssNo", key: "sss" },
+    { field: "tinNo", key: "tin" },
+    { field: "philhealthNo", key: "phic" },
+    { field: "pagibigNo", key: "hdmf" },
+  ];
   var REFUSAL_KEYS = ["govrefuse", "kasabutan"];
   var SEPARATION_GROUP = "Separation";
   var NA_RE = /^(n\/?a|n\.a\.?|not\s*applicable|na)$/i;
@@ -61,6 +73,45 @@
 
   function isSeparated(e) {
     return /separated/i.test(str(e && e.status));
+  }
+
+  /* "09 - 4348404 - 2" is a number. "-", "N/A", "pending" and "000" are not. */
+  function govNumberFilled(v) {
+    var s = str(v).replace(/\u00a0/g, " ").trim();
+    if (!s) return false;
+    var core = s.replace(/[\s\-\u2010-\u2015\u2212\uFE58\uFE63\uFF0D_.,\/\\|:;]+/g, "");
+    if (!core) return false;
+    if (/^(na|none|nil|null|tbd|tba|pending|blank|xxx+|unknown|notapplicable|0+)$/i.test(core)) return false;
+    if (!/\d/.test(core)) return false;
+    return true;
+  }
+
+  function govFieldFor(key) {
+    var i;
+    for (i = 0; i < GOV_NUMBER_FIELDS.length; i += 1) {
+      if (GOV_NUMBER_FIELDS[i].key === key) return GOV_NUMBER_FIELDS[i].field;
+    }
+    return "";
+  }
+
+  function govNumberOnFile(e, key) {
+    var field = govFieldFor(key);
+    return !!(field && govNumberFilled(e && e[field]));
+  }
+
+  /* Upgrade Missing / N/A to On file when the number is filled. Never clear
+     a file, a date, or a row already marked On file. */
+  function applyGovNumbers(e) {
+    if (!e || typeof e !== "object") return e;
+    var i;
+    for (i = 0; i < GOV_NUMBER_FIELDS.length; i += 1) {
+      var pair = GOV_NUMBER_FIELDS[i];
+      if (!govNumberFilled(e[pair.field])) continue;
+      var slot = ensureDocSlot(e, pair.key);
+      if (!slot || isOnStatus(slot.s)) continue;
+      slot.s = "on";
+    }
+    return e;
   }
 
   function hasAttachment(v) {
@@ -263,6 +314,7 @@
     mergeGovRefusal(e);
     applyActiveSeparations(e, docs);
     applyRefusalToStatutory(e, today);
+    applyGovNumbers(e);
     return e;
   }
 
@@ -364,6 +416,11 @@
   function bindArtifact(host) {
     host = host || (typeof window !== "undefined" ? window : null);
     if (!host || typeof document === "undefined" || !document.createElement) return host;
+    if (host.__hrBoundArtifact) {
+      if (host.__hrDOCS) host.DOCS = host.__hrDOCS;
+      if (host.__hrGUESS) host.GUESS = host.__hrGUESS;
+      return host;
+    }
     try {
       var s = document.createElement("script");
       s.textContent =
@@ -377,6 +434,7 @@
     } catch (err) {}
     if (host.__hrDOCS) host.DOCS = host.__hrDOCS;
     if (host.__hrGUESS) host.GUESS = host.__hrGUESS;
+    host.__hrBoundArtifact = !!(host.__hrDOCS || host.DOCS);
     return host;
   }
 
@@ -425,7 +483,12 @@
     if (typeof orig !== "function" || orig._hr201Checklist) return orig;
     host.render = function () {
       try {
-        patchGlobals(host);
+        /* Re-injecting the artifact bridge on every click re-parsed a script
+           and walked the catalog again. Once DOCS is visible, leave it. */
+        if (!host.__hr201Patched) {
+          patchGlobals(host);
+          if (host.DOCS || host.__hrDOCS) host.__hr201Patched = true;
+        }
         migrateRoster(host);
         var S = host.S || host.__hrS;
         var empId = S && S.ui && (S.ui.emp || S.ui.openEmp);
@@ -487,6 +550,7 @@
     patchGlobals: patchGlobals,
     EXTRA_DOCS: EXTRA_DOCS,
     STATUTORY_KEYS: STATUTORY_KEYS,
+    GOV_NUMBER_FIELDS: GOV_NUMBER_FIELDS,
     REFUSAL_KEYS: REFUSAL_KEYS,
     MERGED_KEY: MERGED_KEY,
     MERGED_NAME: MERGED_NAME,
@@ -499,6 +563,9 @@
     isCountable: isCountable,
     applyActiveSeparations: applyActiveSeparations,
     applyRefusalToStatutory: applyRefusalToStatutory,
+    applyGovNumbers: applyGovNumbers,
+    govNumberFilled: govNumberFilled,
+    govNumberOnFile: govNumberOnFile,
     applyEmployee: applyEmployee,
     complianceOf: complianceOf,
   };

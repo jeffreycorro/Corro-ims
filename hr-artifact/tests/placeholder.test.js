@@ -19,7 +19,7 @@ describe("placeholder and privacy", () => {
     const shimIndex = html.indexOf("/claude-shim.js");
     const pwaIndex = html.indexOf("/pwa.js");
     assert.ok(shimIndex > -1 && pwaIndex > shimIndex, "pwa.js must load after the shim");
-    assert.match(html, /const BUILD = "2026-09-26b"/);
+    assert.match(html, /const BUILD = "2026-09-26c"/);
     assert.doesNotMatch(html, /hr-dictation\.js/);
     assert.doesNotMatch(html, /hr-memo\.js/);
     assert.doesNotMatch(html, /<script[^>]+hr-attendance\.js/);

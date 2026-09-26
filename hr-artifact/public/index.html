@@ -884,7 +884,16 @@ const S = {
 
 const LSKEY = "corro201.v1";
 function lsSave(){
-  try{ const d={settings:S.settings}; COLLS.forEach(c=>d[c]=S[c]); localStorage.setItem(LSKEY, JSON.stringify(d)); }catch(e){}
+  try{
+    const d={settings:S.settings};
+    COLLS.forEach(c=>{
+      if(c!=="employees"){ d[c]=S[c]; return; }
+      const map={};
+      Object.keys(S.employees||{}).forEach(id=>{ map[id]=employeePersist(S.employees[id]); });
+      d.employees=map;
+    });
+    localStorage.setItem(LSKEY, JSON.stringify(d));
+  }catch(e){}
 }
 function lsLoad(){
   try{ const r=localStorage.getItem(LSKEY); if(!r) return false; const d=JSON.parse(r);
@@ -911,9 +920,89 @@ const COLLS = ["employees","nte","writeups","tasks","templates","periods",
 let LS_T=null;
 function lsSaveSoon(){ if(LS_T) return; LS_T=setTimeout(()=>{ LS_T=null; lsSave(); },800); }
 if(typeof window!=="undefined" && window.addEventListener){
-  window.addEventListener("pagehide", ()=>{ try{ captureDailyForm(); lsSave(); }catch(e){} });
+  window.addEventListener("pagehide", ()=>{ try{ captureDailyForm(); flushEmpSaves(); lsSave(); }catch(e){} });
 }
 
+function isHeavyImage(v){
+  return typeof v==="string" && /^data:image\//i.test(v) && v.length>4096;
+}
+function settingsHasImage(data){
+  if(!data) return false;
+  const st=S.settings||{};
+  if(st.hrSigData && st.hrSigData===data) return true;
+  const map=st.hrSigs||{};
+  const keys=Object.keys(map);
+  for(let i=0;i<keys.length;i++){
+    const p=map[keys[i]];
+    if(p && p.data && p.data===data) return true;
+  }
+  return false;
+}
+/* The 201 record is saved on every edit. Photo and e-signature bytes that
+   already live on Settings, or that already have a Drive link, do not ride
+   along. The copy on screen keeps the image. */
+function employeePersist(emp){
+  if(!emp || typeof emp!=="object") return emp;
+  let copy=null;
+  function drop(key){
+    if(!copy) copy=Object.assign({}, emp);
+    delete copy[key];
+  }
+  ["sigData","photoData","esigData","eSig"].forEach(k=>{
+    if(!isHeavyImage(emp[k])) return;
+    const link=k==="photoData" ? emp.photoLink : (emp.sigLink||emp.photoLink||"");
+    if(settingsHasImage(emp[k]) || (link && !/^data:/i.test(String(link)))) drop(k);
+  });
+  if(isHeavyImage(emp.photo) && emp.photoLink && !/^data:/i.test(String(emp.photoLink))) drop("photo");
+  return copy||emp;
+}
+let EMP_SAVE_T=null;
+let EMP_SAVE_CHAIN=Promise.resolve();
+let EMP_SAVE_LABEL="";
+const EMP_DIRTY={};
+function noteEmpSave(text){
+  EMP_SAVE_LABEL=text||"";
+  const el=typeof document!=="undefined" && document.getElementById && document.getElementById("emp-savestate");
+  if(el) el.textContent=EMP_SAVE_LABEL;
+}
+function queueEmpSave(id){
+  if(!id || !S.employees[id]) return;
+  EMP_DIRTY[id]=(EMP_DIRTY[id]||0)+1;
+  ALERTS_GEN++;
+  noteEmpSave("Editing…");
+  if(EMP_SAVE_T) clearTimeout(EMP_SAVE_T);
+  EMP_SAVE_T=setTimeout(()=>{ EMP_SAVE_T=null; flushEmpSaves(); }, 450);
+}
+function flushEmpSaves(){
+  if(EMP_SAVE_T){ clearTimeout(EMP_SAVE_T); EMP_SAVE_T=null; }
+  const ids=Object.keys(EMP_DIRTY);
+  if(!ids.length) return Promise.resolve(true);
+  noteEmpSave("Saving…");
+  const job=EMP_SAVE_CHAIN.then(async()=>{
+    let failed=false;
+    for(let i=0;i<ids.length;i++){
+      const id=ids[i];
+      const ver=EMP_DIRTY[id];
+      if(!ver) continue;
+      const emp=S.employees[id];
+      if(!emp){ delete EMP_DIRTY[id]; continue; }
+      let ok=false;
+      try{ ok=await put("employees", id, emp); }
+      catch(err){ ok=false; }
+      if(EMP_DIRTY[id]!==ver) continue;
+      if(ok===false){ failed=true; continue; }
+      delete EMP_DIRTY[id];
+    }
+    const pending=Object.keys(EMP_DIRTY).length;
+    if(pending && !failed){
+      noteEmpSave("Editing…");
+      if(!EMP_SAVE_T) EMP_SAVE_T=setTimeout(()=>{ EMP_SAVE_T=null; flushEmpSaves(); }, 450);
+    }else noteEmpSave(failed || pending ? "Not saved" : "Saved");
+    return !failed && !Object.keys(EMP_DIRTY).length;
+  }).catch(()=>{ noteEmpSave("Not saved"); return false; });
+  EMP_SAVE_CHAIN=job.then(()=>{});
+  return job;
+}
 async function put(coll,id,obj){
   /* A hire added after start-up belongs on People & Pay straight away rather
      than waiting to be adopted from a manpower report. */
@@ -926,9 +1015,11 @@ async function put(coll,id,obj){
     delete obj._dmShed;
     slimDailyRecord(obj);
   }
+  const payload=coll==="employees" ? employeePersist(obj) : obj;
   S[coll][id]=obj; lsSaveSoon();
+  ALERTS_GEN++;
   if(!S.db) return true;
-  try{ await S.db.doc(coll+"/"+id).set(obj); return true; }
+  try{ await S.db.doc(coll+"/"+id).set(payload); return true; }
   catch(e){
     if(coll!=="daily"){
       if(e && e.code==="quota_exceeded") toast("Storage is full — delete old records before adding more.","err");
@@ -949,10 +1040,11 @@ async function putMany(coll, entries, onProgress){
     while(i<entries.length){
       const [id,obj]=entries[i++];
       S[coll][id]=obj;
+      const payload=coll==="employees" ? employeePersist(obj) : obj;
       if(S.db){
         let ok=false;
         for(let t=0;t<TRIES && !ok;t++){
-          try{ await S.db.doc(coll+"/"+id).set(obj); ok=true; }
+          try{ await S.db.doc(coll+"/"+id).set(payload); ok=true; }
           catch(e){
             if(e && (e.code==="revoked" || e.code==="invalid_argument")) break;
             await new Promise(r=>setTimeout(r, 250*Math.pow(2,t)));
@@ -1238,7 +1330,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-09-26b";
+const BUILD = "2026-09-26c";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -1893,7 +1985,41 @@ async function fillBlankPositionsFromMaster(){
   return entries.length;
 }
 function activeEmps(){ return empList().filter(e=>!empSeparatedAsOf(e, TODAY)); }
-function compliance(e){
+/* Same rule as the 201 checklist companion — keep the two copies in step. */
+function govNoFilled(v){
+  const s=String(v==null?"":v).replace(/\u00a0/g," ").trim();
+  if(!s) return false;
+  const core=s.replace(/[\s\-\u2010-\u2015\u2212\uFE58\uFE63\uFF0D_.,\/\\|:;]+/g,"");
+  if(!core) return false;
+  if(/^(na|none|nil|null|tbd|tba|pending|blank|xxx+|unknown|notapplicable|0+)$/i.test(core)) return false;
+  if(!/\d/.test(core)) return false;
+  return true;
+}
+function govField(key){
+  return {sss:"sssNo",tin:"tinNo",phic:"philhealthNo",hdmf:"pagibigNo"}[key]||"";
+}
+function docShown(e, key, v){
+  const s=String((v&&v.s)||"miss");
+  if(s==="on") return "on";
+  const f=govField(key);
+  if(f && govNoFilled(e&&e[f])) return "on";
+  return s||"miss";
+}
+function empComplianceStamp(e){
+  if(!e) return "";
+  const d=e.docs||{};
+  let s=(e.status||"")+"\n"+(e.sssNo||"")+"\n"+(e.tinNo||"")+"\n"+(e.philhealthNo||"")+"\n"+(e.pagibigNo||"")+"\n";
+  const keys=Object.keys(d);
+  for(let i=0;i<keys.length;i++){
+    const k=keys[i], v=d[k];
+    if(!v || typeof v!=="object"){ s+=k+"|;"; continue; }
+    s+=k+"="+(v.s||"")+"|"+(v.link?String(v.link).length:0)+"|"+(v.url?String(v.url).length:0)
+      +"|"+(v.links?v.links.length:0)+"|"+(v.filed||"")+"|"+(v.expiry||"")+";";
+  }
+  return s;
+}
+const COMP_CACHE=typeof WeakMap==="function"?new WeakMap():null;
+function complianceCompute(e){
   if(typeof hr201Checklist!=="undefined" && hr201Checklist.complianceOf)
     return hr201Checklist.complianceOf(e, DOCS);
   const d=e.docs||{}; let need=0,have=0,onFile=0,na=0,missing=[];
@@ -1903,7 +2029,7 @@ function compliance(e){
     if(x.k==="kasabutan") return;
     if(x.opt && x.g!=="Separation") return;
     const v=d[x.k]||{s:"miss"};
-    const s=String(v.s||"miss");
+    const s=docShown(e, x.k, v);
     const treatNa = naRe.test(s) || (!sep && x.g==="Separation" && s!=="on");
     need++;
     if(treatNa){ have++; na++; return; }
@@ -1911,6 +2037,32 @@ function compliance(e){
     missing.push(x);
   });
   return {need,have,onFile,na,missing,pct: need? Math.round(have/need*100):100};
+}
+function paintOpenCompliance(){
+  const emp=S.employees && S.ui && S.employees[S.ui.emp];
+  if(!emp || typeof document==="undefined" || !document.getElementById) return;
+  const c=compliance(emp);
+  const col=c.pct===100?"var(--ok)":c.pct>=60?"var(--warn)":"var(--crit)";
+  const pct=document.getElementById("emp-pct");
+  if(pct){ pct.textContent=c.pct+"%"; pct.style.color=col; }
+  const filed=document.getElementById("emp-filed");
+  if(filed) filed.textContent=c.have+" of "+c.need+" filed";
+  const tab=document.getElementById("emp-docs-tab");
+  if(tab) tab.textContent="201 Checklist ("+c.have+"/"+c.need+")";
+  const btn=document.querySelector && document.querySelector(".remp.on .pc");
+  if(btn){ btn.textContent=c.pct+"%"; btn.style.color=col; }
+}
+function compliance(e){
+  if(!e || typeof e!=="object") return complianceCompute(e||{});
+  const via=typeof hr201Checklist!=="undefined" && hr201Checklist.complianceOf ? "c" : "f";
+  const stamp=empComplianceStamp(e)+"|"+via;
+  if(COMP_CACHE){
+    const hit=COMP_CACHE.get(e);
+    if(hit && hit.stamp===stamp) return hit.c;
+  }
+  const c=complianceCompute(e);
+  if(COMP_CACHE) COMP_CACHE.set(e,{stamp:stamp,c:c});
+  return c;
 }
 function empNTEs(id){ return Object.values(S.nte).filter(n=>n.empId===id).sort((a,b)=>(b.issued||"").localeCompare(a.issued||"")); }
 function empWU(id){ return Object.values(S.writeups).filter(w=>w.empId===id).sort((a,b)=>(b.date||"").localeCompare(a.date||"")); }
@@ -1932,7 +2084,14 @@ function sanctionFor(cat,step){
   return o.l[Math.min(step,o.l.length-1)];
 }
 
+let ALERTS_GEN=0, ALERTS_MEM=null;
 function alerts(){
+  if(ALERTS_MEM && ALERTS_MEM.gen===ALERTS_GEN) return ALERTS_MEM.out;
+  const out=_alertsBuild();
+  ALERTS_MEM={gen:ALERTS_GEN, out};
+  return out;
+}
+function _alertsBuild(){
   const out=[];
   const A=(sev,kind,text,empId,go,ref)=>out.push({sev,kind,text,empId,go,ref});
   /* A weekly programme only works if somebody is told when a week has come and
@@ -3191,7 +3350,11 @@ const VIEWS = [
   {k:"tasks",    n:"HR Tasks",        i:"i-check",  g:"Work"}
 ];
 function navCounts(){
-  const al=alerts();
+  /* Rebuilding every dashboard finding on each 201 click was the freeze.
+     The 201 badge below still reads the open roster through compliance(),
+     which only recomputes the record that changed. */
+  const al=(S.ui && S.ui.view==="employees" && ALERTS_MEM && ALERTS_MEM.out)
+    ? ALERTS_MEM.out : alerts();
   return {
     dash: al.filter(a=>a.sev==="crit").length,
     employees: activeEmps().filter(e=>compliance(e).missing.length).length,
@@ -4508,10 +4671,10 @@ function printChecklist(e, no, opt){
        ["Employee Data Sheet", on("datasheet"), "Residential Sketch", on("sketch")],
        ["Resume / Biodata", on("resume"), "TOR or Diploma if applicable", on("tor")],
        ["Birth Certificate", on("psa"), "Photo (1x1 or 2x2)", on("photo")||!!(e&&e.photoLink)],
-       ["Driver's License", on("license"), "TIN No. "+((e&&e.tinNo)||"__________"), on("tin")||!!(e&&e.tinNo)],
+       ["Driver's License", on("license"), "TIN No. "+((e&&e.tinNo)||"__________"), on("tin")||govNoFilled(e&&e.tinNo)],
        ["Barangay / Police Clearance", on("brgy"), "NBI Clearance", on("nbi")],
-       ["Government Valid ID", on("govid"), "SSS "+((e&&e.sssNo)||""), on("sss")||!!(e&&e.sssNo)],
-       ["Pag-IBIG "+((e&&e.pagibigNo)||""), on("hdmf")||!!(e&&e.pagibigNo), "PhilHealth "+((e&&e.philhealthNo)||""), on("phic")||!!(e&&e.philhealthNo)],
+       ["Government Valid ID", on("govid"), "SSS "+((e&&e.sssNo)||""), on("sss")||govNoFilled(e&&e.sssNo)],
+       ["Pag-IBIG "+((e&&e.pagibigNo)||""), on("hdmf")||govNoFilled(e&&e.pagibigNo), "PhilHealth "+((e&&e.philhealthNo)||""), on("phic")||govNoFilled(e&&e.philhealthNo)],
        ["Decline in Government Mandated Benefits", on("benefack")||on("govrefuse")||on("kasabutan"), "Vaccine Card", on("vax")],
        ["Medical Certificate", on("med"), "COE (CCD)", on("coeccd")],
        ["COE (from employee)", on("coeemp"), "Drug Tests", on("drug")],
@@ -9636,7 +9799,7 @@ function viewEmployees(){
    + '<button class="btn sm pri" id="add-emp"><svg><use href="#i-plus"/></svg> New</button></div></div>';
   if(!list.length) h+='<div class="empty">No records match.</div>';
   list.forEach(x=>{
-    const c=compliance(x), cs=contractState(x);
+    const c=compliance(x);
     const col = c.pct===100?"var(--ok)":c.pct>=60?"var(--warn)":"var(--crit)";
     h+='<button class="remp'+(x.id===S.ui.emp?" on":"")+'" data-emp-open="'+x.id+'">'
      + '<span class="av">'+esc(initials(x.name))+'</span>'
@@ -9675,15 +9838,16 @@ function viewEmployees(){
    + '</div>'
    + '<div style="text-align:right;min-width:118px">'
    + '<div class="lbl">201 completeness</div>'
-   + '<div style="font-family:var(--f-disp);font-size:23px;font-weight:700;line-height:1.1;color:'+(c.pct===100?"var(--ok)":c.pct>=60?"var(--warn)":"var(--crit)")+'">'+c.pct+'%</div>'
-   + '<div class="lbl">'+c.have+' of '+c.need+' filed</div>'
+   + '<div id="emp-pct" style="font-family:var(--f-disp);font-size:23px;font-weight:700;line-height:1.1;color:'+(c.pct===100?"var(--ok)":c.pct>=60?"var(--warn)":"var(--crit)")+'">'+c.pct+'%</div>'
+   + '<div class="lbl" id="emp-filed">'+c.have+' of '+c.need+' filed</div>'
+   + '<div class="lbl" id="emp-savestate">'+esc(EMP_SAVE_LABEL||"")+'</div>'
    + '</div></div>';
 
   const ob=obProgress(e);
   const TABS=[["info","Personal & Employment"],["docs","201 Checklist ("+c.have+"/"+c.need+")"],
     ["onboard","Onboarding ("+ob.done+"/"+ob.need+")"],
     ["disc","Discipline ("+(empNTEs(e.id).length+empWU(e.id).length)+")"],["pay","Pay & Attendance"]];
-  h+='<div class="tabs">'+TABS.map(([k,n])=>'<button class="tab'+(S.ui.tab===k?" on":"")+'" data-tab="'+k+'">'+esc(n)+'</button>').join("")+'</div>';
+  h+='<div class="tabs">'+TABS.map(([k,n])=>'<button class="tab'+(S.ui.tab===k?" on":"")+'" data-tab="'+k+'"'+(k==="docs"?' id="emp-docs-tab"':"")+'>'+esc(n)+'</button>').join("")+'</div>';
   h+='<div class="card-b">';
 
   if(S.ui.tab==="info") h+=empInfo(e,cs);
@@ -9947,9 +10111,10 @@ function empDocs(e,c){
     h+='<div class="sect-h" style="margin:6px 0 0"><h2 style="font-size:12.5px">'+esc(g)+'</h2><span class="rule"></span></div><div class="chklist">';
     items.forEach(d=>{
       const v=(e.docs||{})[d.k]||{s:"miss",link:"",links:[],filed:"",expiry:""};
+      const shown=docShown(e, d.k, v);
       const files=docFiles(v);
       const expd = d.exp && v.expiry ? daysFromToday(v.expiry) : null;
-      const cls = v.s==="miss"?"miss": (expd!=null && expd<=(S.settings.docExpiryWarnDays||60) ? "exp":"");
+      const cls = shown==="miss"?"miss": (expd!=null && expd<=(S.settings.docExpiryWarnDays||60) ? "exp":"");
       h+='<div class="chk '+cls+'"><span class="idx">'+String(DOCS.indexOf(d)+1).padStart(2,"0")+'</span>'
        + '<span class="n"><b>'+esc(d.n)
        /* the code the filed paper actually carries — a scan named LRF2026-0157
@@ -9978,7 +10143,7 @@ function empDocs(e,c){
             + '</span>'
           : "")
        + '</span>'
-       + '<select data-doc="'+d.k+'" data-dk="s">'+Object.entries(DSTAT).map(([k,n])=>'<option value="'+k+'"'+(v.s===k?" selected":"")+'>'+n+'</option>').join("")+'</select>'
+       + '<select data-doc="'+d.k+'" data-dk="s">'+Object.entries(DSTAT).map(([k,n])=>'<option value="'+k+'"'+(shown===k?" selected":"")+'>'+n+'</option>').join("")+'</select>'
        + '<input type="date" data-doc="'+d.k+'" data-dk="filed" value="'+esc(v.filed||"")+'" title="Date filed" style="width:126px">'
        + (d.exp?'<input type="date" data-doc="'+d.k+'" data-dk="expiry" value="'+esc(v.expiry||"")+'" title="Expiry" style="width:126px">':'<span style="width:126px"></span>')
        + (files.length
@@ -10051,7 +10216,7 @@ function empPay(e){
    + '<div class="card"><div class="card-b"><div class="lbl">Daily rate</div><div style="font-family:var(--f-disp);font-size:21px;font-weight:700;font-variant-numeric:tabular-nums">'+peso(e.dailyRate)+'</div><div class="lbl">'+esc(e.rateType||"Daily")+' basis</div></div></div>'
    + '<div class="card"><div class="card-b"><div class="lbl">Statutory enrollment</div><div class="row" style="margin-top:5px">'
    + ["sss","phic","hdmf"].map(k=>{ const v=(e.docs||{})[k]||{}; const n={sss:"SSS",phic:"PhilHealth",hdmf:"Pag-IBIG"}[k];
-       return '<span class="pill '+(v.s==="on"?"ok":"crit")+'">'+n+'</span>'; }).join("")
+       return '<span class="pill '+(docShown(e,k,v)==="on"?"ok":"crit")+'">'+n+'</span>'; }).join("")
    + '</div></div></div>'
    + '<div class="card"><div class="card-b"><div class="lbl">Periods on record</div><div style="font-family:var(--f-disp);font-size:21px;font-weight:700">'+ps.length+'</div><div class="lbl">attendance &amp; payroll</div></div></div>'
    + '</div>';
@@ -20804,6 +20969,7 @@ function wire(){
   on("[data-tab]","click",e=>{ S.ui.tab=e.currentTarget.dataset.tab; render(); });
   on("[data-emp-open]","click",e=>{
     const d=e.currentTarget.dataset;
+    flushEmpSaves();
     S.ui.emp=d.empOpen; if(d.tab) S.ui.tab=d.tab;
     if(d.goto) S.ui.view=d.goto;
     render();
@@ -21343,32 +21509,54 @@ function wire(){
   };
 
   /* field bindings */
-  on("[data-ef]","change",async e=>{
-    const emp=S.employees[S.ui.emp]; if(!emp) return;
-    const k=e.target.dataset.ef;
-    emp[k] = e.target.type==="number" ? (parseFloat(e.target.value)||0) : e.target.value;
+  const EMP_RENDER_FIELDS={name:1,empNo:1,dept:1,status:1,position:1,project:1,dateHired:1,contractEnd:1,supervisorId:1};
+  function applyEmpField(el){
+    const emp=S.employees[S.ui.emp]; if(!emp || !el) return null;
+    const k=el.dataset.ef; if(!k) return null;
+    emp[k] = el.type==="number" ? (parseFloat(el.value)||0) : el.value;
     /* the picker stores an id; keep the readable name in step so contracts and
        reports that print "supervisor" still read */
     if(k==="supervisorId"){
       const sup=S.employees[emp.supervisorId];
       emp.supervisor = sup ? flipName(sup.name) : "";
     }
-    if(k==="status"){
-      emp.statusBasis="Set on the 201 file";
-    }
-    await put("employees",emp.id,emp);
-    if(["name","dept","status","position","project","dateHired","contractEnd"].includes(k)) render();
+    if(k==="status") emp.statusBasis="Set on the 201 file";
+    return k;
+  }
+  /* Typing stays in the box. The write waits, and it does not redraw the roster. */
+  on("[data-ef]","input", e=>{
+    if(e.target.tagName==="SELECT") return;
+    applyEmpField(e.target);
+    queueEmpSave(S.ui.emp);
+    paintOpenCompliance();
   });
+  on("[data-ef]","change", e=>{
+    const k=applyEmpField(e.target);
+    queueEmpSave(S.ui.emp);
+    if(k && EMP_RENDER_FIELDS[k]) render();
+    else paintOpenCompliance();
+  });
+  function copyEmp(emp){
+    const c=Object.assign({}, emp);
+    c.docs=Object.assign({}, emp.docs||{});
+    if(Array.isArray(emp.linkedDocs)) c.linkedDocs=emp.linkedDocs.slice();
+    if(Array.isArray(emp.contracts)) c.contracts=emp.contracts.slice();
+    return c;
+  }
   on("[data-addlink]","change",async e=>{
     const emp=S.employees[S.ui.emp]; if(!emp) return;
     const url=String(e.target.value||"").trim(); if(!url) return;
     const k=e.target.dataset.addlink;
-    const c=clone(emp); c.docs=c.docs||blankDocs();
-    c.docs[k]=c.docs[k]||{s:"miss",link:"",links:[],filed:"",expiry:""};
+    const c=copyEmp(emp); c.docs=c.docs||blankDocs();
+    const slot=Object.assign({s:"miss",link:"",links:[],filed:"",expiry:""}, c.docs[k]||{});
+    if(Array.isArray(slot.links)) slot.links=slot.links.slice();
+    c.docs[k]=slot;
     if(!docAddLink(c.docs[k], url, "")){ toast("That file is already on this row.","err"); e.target.value=""; return; }
     if(c.docs[k].s==="miss"||c.docs[k].s==="na") c.docs[k].s="on";
     if(!c.docs[k].filed) c.docs[k].filed=TODAY;
-    await put("employees",c.id,c);
+    S.employees[c.id]=c;
+    queueEmpSave(c.id);
+    flushEmpSaves();
     toast(docFiles(c.docs[k]).length+" file(s) on this row now","ok");
     render();
   });
@@ -21378,21 +21566,30 @@ function wire(){
     if(!await askConfirm("Take this file off the checklist row?",
       {title:"Unlink the file", yes:"Unlink", danger:false,
        no:"Keep it"})) return;
-    const c=clone(emp); c.docs=c.docs||blankDocs();
-    c.docs[k]=c.docs[k]||{s:"miss",link:"",links:[],filed:"",expiry:""};
+    const c=copyEmp(emp); c.docs=c.docs||blankDocs();
+    const slot=Object.assign({s:"miss",link:"",links:[],filed:"",expiry:""}, c.docs[k]||{});
+    if(Array.isArray(slot.links)) slot.links=slot.links.slice();
+    c.docs[k]=slot;
     const left=docDropLink(c.docs[k], url);
     if(!left && c.docs[k].s==="on") c.docs[k].s="miss";
-    await put("employees",c.id,c);
+    S.employees[c.id]=c;
+    queueEmpSave(c.id);
+    const ok=await flushEmpSaves();
+    if(!ok) noteEmpSave("Not saved");
     toast(left?left+" file(s) left on the row":"Nothing linked to that row now","ok");
     render();
   });
-  on("[data-doc]","change",async e=>{
+  on("[data-doc]","change", e=>{
     const emp=S.employees[S.ui.emp]; if(!emp) return;
     const k=e.target.dataset.doc, f=e.target.dataset.dk;
     emp.docs=emp.docs||blankDocs(); emp.docs[k]=emp.docs[k]||{s:"miss",link:"",filed:"",expiry:""};
     emp.docs[k][f]=e.target.value;
     if(f==="s" && e.target.value==="on" && !emp.docs[k].filed) emp.docs[k].filed=TODAY;
-    await put("employees",emp.id,emp); render();
+    /* A filled government number stays On file. Clearing the tick by hand
+       while the number is still there would only flash Missing and come back. */
+    if(f==="s" && e.target.value!=="on" && govNoFilled(emp[govField(k)])) emp.docs[k].s="on";
+    queueEmpSave(emp.id);
+    render();
   });
   on("[data-ob]","change",async e=>{
     const emp=S.employees[S.ui.emp]; if(!emp) return;
@@ -21457,9 +21654,15 @@ document.addEventListener("click",e=>{
   const n=e.target.closest("[data-nav]"); if(n){ go(n.dataset.nav); }
 });
 $("#btn-settings").onclick=()=>go("settings");
+let Q_T=null;
 $("#q").addEventListener("input",e=>{
   S.ui.q=e.target.value;
-  if(["employees","doccontrol"].includes(S.ui.view)) render();
+  if(S.ui.view==="employees"){
+    if(Q_T) clearTimeout(Q_T);
+    Q_T=setTimeout(()=>{ Q_T=null; if(S.ui && S.ui.view==="employees") render(); }, 120);
+    return;
+  }
+  if(S.ui.view==="doccontrol") render();
   else if(S.ui.q){ S.ui.emp=null; go("employees"); setTimeout(()=>{ const q=$("#q"); q.focus(); q.setSelectionRange(q.value.length,q.value.length); },0); }
 });
 
