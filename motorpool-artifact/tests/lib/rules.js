@@ -936,6 +936,94 @@
     return next;
   }
 
+  /**
+   * An approved VRF that is still open may be written onto the ledger at
+   * liquidation even when approval never posted it. A draft still for approval
+   * may not.
+   */
+  function approvedVrfMayJoinLedger(entry, reserve) {
+    if (!entry) return false;
+    if (vrfAwaitingApproval(entry, reserve)) return false;
+    return !!vrfCanLiquidate(entry, reserve);
+  }
+
+  /** "update" existing spend rows, "seed" them for an approved hold, or "refuse". */
+  function planLiquidationLedgerWrite(entry, reserve, ledgerHitCount) {
+    if (!entry) return "refuse";
+    if ((ledgerHitCount || 0) > 0) return "update";
+    if (!approvedVrfMayJoinLedger(entry, reserve)) return "refuse";
+    return "seed";
+  }
+
+  function ledgerMonthKey(s, today) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(s || ""));
+    if (m) return m[1] + "-" + m[2];
+    m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(String(s || ""));
+    if (m) return m[3] + "-" + String(+m[1]).padStart(2, "0");
+    var t = String(today || "");
+    return /^\d{4}-\d{2}/.test(t) ? t.slice(0, 7) : "";
+  }
+
+  /** Real ledger row for one hold line. Does not copy src:"reserve-hold". */
+  function ledgerLineFromHoldRow(entry, row, today) {
+    row = row || {};
+    entry = entry || {};
+    var qty = moneyNum(row.qty);
+    var price = moneyNum(row.price);
+    var total = qty || price ? qty * price : moneyNum(row.total);
+    var cat = row.cat || "";
+    return {
+      month: row.month || ledgerMonthKey(row.date, today) || ledgerMonthKey(entry.date, today) || ledgerMonthKey(today, today),
+      date: row.date || entry.date || today || "",
+      vrf: String(entry.vrf || row.vrf || ""),
+      veh: entry.veh || row.veh || "",
+      name: row.name || "",
+      cat: cat,
+      sub: isFuel(cat) ? "Fuel" : row.sub || "",
+      grp: isFuel(cat) ? "Fuel" : row.grp || "Maintenance",
+      work: row.work || "",
+      item: row.item || "",
+      qty: qty,
+      price: price,
+      total: total,
+      supplier: row.supplier || "",
+      unit: row.unit || "pc",
+      project: row.project || entry.project || "",
+      liters: row.liters != null && row.liters !== "" ? row.liters : null,
+      odo: row.odo != null ? row.odo : entry.odo != null ? entry.odo : null,
+      reserve: String(entry.reserve || row.reserve || ""),
+      vstatus: "Open",
+      requestedBy: entry.requestedBy || row.requestedBy || "",
+      notes: row.notes || entry.notes || "",
+    };
+  }
+
+  function closedLedgerLinesFromHold(entry, edits, stamp, today) {
+    var rows =
+      entry && entry.rows && entry.rows.length
+        ? entry.rows
+        : [
+            {
+              date: entry && entry.date,
+              vrf: entry && entry.vrf,
+              qty: 0,
+              price: 0,
+              total: entry && entry.total,
+              reserve: entry && entry.reserve,
+            },
+          ];
+    return rows
+      .map(function (row, i) {
+        var base = ledgerLineFromHoldRow(entry, row, today);
+        var next = applyLiquidationLine(base, edits && edits[i], stamp, "bought");
+        delete next.src;
+        return next;
+      })
+      .filter(function (row) {
+        return row && String(row.vrf || "").trim();
+      });
+  }
+
   function vrfPrintWatermark(entry) {
     if (!entry) return "FOR APPROVAL";
     var st = String(entry.status || "").trim();
@@ -1731,6 +1819,10 @@
     vrfStatusForOutcome: vrfStatusForOutcome,
     lineWasNotPurchased: lineWasNotPurchased,
     applyLiquidationLine: applyLiquidationLine,
+    approvedVrfMayJoinLedger: approvedVrfMayJoinLedger,
+    planLiquidationLedgerWrite: planLiquidationLedgerWrite,
+    ledgerLineFromHoldRow: ledgerLineFromHoldRow,
+    closedLedgerLinesFromHold: closedLedgerLinesFromHold,
     vrfPrintWatermark: vrfPrintWatermark,
     parseOdo: parseOdo,
     reserveMeter: reserveMeter,

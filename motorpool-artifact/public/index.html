@@ -377,7 +377,7 @@ var SIGNATORIES = [
 ];
 var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
 /* Shown on the Ask screen, so a screenshot says which version someone is on. */
-var BUILD = "2026-09-26 a";
+var BUILD = "2026-09-27 a";
 var DAY = 86400000, MO = 30.44;
 
 /* Part categories that were entered under two spellings and so split a unit's
@@ -1339,6 +1339,78 @@ function ledgerRowsForVrf(no, includeHold){
   }
   return out;
 }
+/* The ledger is the monthly spend file (ledger/YYYY-MM). Office approval
+   normally writes the VRF there. A reserve-hold can still show on the VRF log
+   when that write never happened — often because the request lines have no
+   part category, so posting them was skipped. Liquidating an approved VRF
+   writes those lines under the same number. A draft still waiting for
+   approval must not be posted or closed from here. */
+function approvedVrfMayJoinLedger(entry, reserve){
+  if(!entry) return false;
+  if(arguments.length<2) reserve=reserveForVrf(entry);
+  if(vrfAwaitingApproval(entry, reserve)) return false;
+  return !!vrfCanLiquidate(entry, reserve);
+}
+function planLiquidationLedgerWrite(entry, reserve, ledgerHitCount){
+  if(!entry) return "refuse";
+  if((ledgerHitCount||0)>0) return "update";
+  if(!approvedVrfMayJoinLedger(entry, reserve)) return "refuse";
+  return "seed";
+}
+function ledgerLineFromHoldRow(entry, row){
+  row=row||{}; entry=entry||{};
+  var mk=row.month||monthKey(row.date)||monthKey(entry.date)||iso().slice(0,7);
+  var qty=moneyNum(row.qty), price=moneyNum(row.price);
+  var total=(qty||price)?qty*price:moneyNum(row.total);
+  var cat=row.cat||"";
+  var vehCode=entry.veh||row.veh||"";
+  var v=vehicle(vehCode);
+  var sp=partSpec(cat);
+  return {
+    month:mk,
+    date:row.date||entry.date||iso(),
+    vrf:String(entry.vrf||row.vrf||""),
+    veh:vehCode,
+    name:v?v.desc:(row.name||""),
+    cat:cat,
+    sub:sp?sp.sub:(isFuel(cat)?"Fuel":(row.sub||"")),
+    grp:isFuel(cat)?"Fuel":(row.grp||"Maintenance"),
+    work:row.work||"",
+    item:row.item||"",
+    qty:qty, price:price, total:total,
+    supplier:row.supplier||"",
+    unit:row.unit||"pc",
+    project:row.project||entry.project||"",
+    liters:(row.liters!=null&&row.liters!=="")?row.liters:null,
+    odo:row.odo!=null?row.odo:(entry.odo!=null?entry.odo:null),
+    reserve:String(entry.reserve||row.reserve||""),
+    vstatus:"Open",
+    requestedBy:entry.requestedBy||row.requestedBy||"",
+    notes:row.notes||entry.notes||""
+  };
+}
+function closedLedgerLinesFromHold(entry, edits, stamp){
+  var reserve=reserveForVrf(entry);
+  var drafts=((reserve&&reserve.draftLines)||[]).filter(function(l){ return l&&(l.cat||l.item); });
+  var rows=(entry&&entry.rows&&entry.rows.length)?entry.rows:[{
+    date:entry&&entry.date, vrf:entry&&entry.vrf, qty:0, price:0,
+    total:entry&&entry.total, reserve:entry&&entry.reserve
+  }];
+  return rows.map(function(row,i){
+    var draft=drafts[i]||{};
+    var merged=Object.assign({}, row||{});
+    if(!merged.cat&&draft.cat) merged.cat=draft.cat;
+    if((merged.liters==null||merged.liters==="")&&draft.liters!=null) merged.liters=draft.liters;
+    if(!merged.item&&draft.item) merged.item=draft.item;
+    if(!merged.supplier&&draft.supplier) merged.supplier=draft.supplier;
+    if(!merged.unit&&draft.unit) merged.unit=draft.unit;
+    if(!merged.work&&draft.work) merged.work=draft.work;
+    var base=ledgerLineFromHoldRow(entry, merged);
+    var next=applyLiquidationLine(base, edits&&edits[i], stamp, "bought");
+    delete next.src;
+    return next;
+  }).filter(function(row){ return row&&String(row.vrf||"").trim(); });
+}
 function seedZeroLines(entry, stamp, outcome){
   var seeds=(entry&&entry.rows&&entry.rows.length)?entry.rows:[{}];
   var mk0=(seeds[0]&&seeds[0].month)||monthKey(entry&&entry.date)||iso().slice(0,7);
@@ -1371,12 +1443,33 @@ async function liquidateVrf(entry,edits,added,by,note,outcome){
       });
     }
   }else{
-    (entry.rows||[]).forEach(function(r,i){
-      var mk=r.month, arr=S.ledger[mk]; if(!arr) return;
-      var idx=arr.indexOf(r); if(idx<0) return;
-      arr[idx]=applyLiquidationLine(r, edits[i], stamp, "bought");
-      touched[mk]=1;
-    });
+    var reserveForPlan=reserveForVrf(entry);
+    var plan=planLiquidationLedgerWrite(entry, reserveForPlan, ledgerRowsForVrf(entry.vrf).length);
+    if(plan==="seed"){
+      /* Keep this VRF number. Do not remint, and do not require a part
+         category — the lines on the form are what staff are closing. */
+      var seeded=closedLedgerLinesFromHold(entry, edits, stamp);
+      var byMk={};
+      seeded.forEach(function(row){
+        var mk=row.month||iso().slice(0,7);
+        row.month=mk;
+        (byMk[mk]=byMk[mk]||[]).push(row);
+      });
+      var seedMonths=Object.keys(byMk);
+      for(var si=0;si<seedMonths.length;si++){
+        await appendLedger(seedMonths[si], byMk[seedMonths[si]]);
+        touched[seedMonths[si]]=1;
+      }
+    }else if(plan==="update"){
+      (entry.rows||[]).forEach(function(r,i){
+        var mk=r.month, arr=S.ledger[mk]; if(!arr) return;
+        var idx=arr.indexOf(r); if(idx<0) return;
+        var next=applyLiquidationLine(r, edits[i], stamp, "bought");
+        delete next.src;
+        arr[idx]=next;
+        touched[mk]=1;
+      });
+    }
   }
   if(!dead && added&&added.length){
     var base=entry.rows[0]||{};
@@ -1405,7 +1498,17 @@ async function liquidateVrf(entry,edits,added,by,note,outcome){
   }
   _vrfs=null; _lw=null; _cons=null; _inv=null;
   var rsvNo=entry.reserve||(reserveForVrf(entry)&&reserveForVrf(entry).no);
-  if(rsvNo) await settleReserve(rsvNo, outcome, by, note);
+  var linkedNew=false;
+  if(rsvNo){
+    var rsvLink=reserveBy(rsvNo);
+    var vno=String(entry.vrf||"");
+    if(rsvLink && vno && reserveOwnsVrfNo(rsvLink, vno) && (rsvLink.vrfs||[]).indexOf(vno)<0){
+      rsvLink.vrfs=(rsvLink.vrfs||[]).concat([vno]);
+      linkedNew=true;
+    }
+    await settleReserve(rsvNo, outcome, by, note);
+    if(linkedNew && reserveBy(rsvNo) && reserveBy(rsvNo).status==="Approved") await saveReserves();
+  }
 }
 async function cancelApprovedVrf(entry, by, note){
   by=String(by||"").trim();
@@ -8642,21 +8745,31 @@ function openVrf(entry,tab){
         var bad=added.filter(function(a2){ return a2.cat&&!(parseFloat(a2.qty)>0); });
         if(outcome!=="not-bought"&&bad.length){ closeBtn.disabled=false; syncLiq();
           toast("Every added line needs a quantity."); return; }
+        var preHits=ledgerRowsForVrf(entry.vrf).length;
+        var prePlan=planLiquidationLedgerWrite(entry, reserveForVrf(entry), preHits);
         var target=entry;
-        try{ target=await materializeApprovedVrf(entry); }
-        catch(err){
-          if(outcome!=="not-bought"){
-            closeBtn.disabled=false; syncLiq();
-            toast("Could not post the lines for VRF "+entry.vrf+"."); return;
+        /* Seeding writes this number from the form. materialize/post would
+           remint or refuse when the hold has no categorized draft lines. */
+        if(prePlan!=="seed"){
+          try{ target=await materializeApprovedVrf(entry); }
+          catch(err){
+            if(outcome!=="not-bought"){
+              closeBtn.disabled=false; syncLiq();
+              toast("Could not post the lines for VRF "+entry.vrf+"."); return;
+            }
+            target=entry;
           }
-          target=entry;
         }
-        if(outcome!=="not-bought"&&!vrfRowsInLedger(target)&&!ledgerRowsForVrf(target.vrf).length){
+        var onLedger=vrfRowsInLedger(target)||ledgerRowsForVrf(target.vrf).length>0;
+        var planNow=planLiquidationLedgerWrite(target, reserveForVrf(target)||reserveForVrf(entry), onLedger?Math.max(preHits,1):0);
+        if(outcome!=="not-bought" && planNow==="refuse"){
           closeBtn.disabled=false; syncLiq();
-          toast("VRF "+entry.vrf+" is not on the ledger yet, so it cannot be liquidated.");
+          toast(vrfAwaitingApproval(target)
+            ? "VRF "+entry.vrf+" is still waiting for approval, so it cannot be liquidated."
+            : "VRF "+entry.vrf+" is not on the ledger yet, so it cannot be liquidated.");
           return;
         }
-        await liquidateVrf(target,edits,added,lby.value.trim(),lnt.value.trim(),outcome);
+        await liquidateVrf(prePlan==="seed"?entry:target,edits,added,lby.value.trim(),lnt.value.trim(),outcome);
         var rr2=(target.reserve||entry.reserve)?reserveBy(target.reserve||entry.reserve):null;
         var done=vrfByNo(target.vrf||entry.vrf);
         var shown=outcome==="not-bought"?0:(done?done.total:null);
