@@ -82,6 +82,43 @@ async function getDoc(collection, id) {
   return Array.isArray(rows) && rows[0] ? rows[0] : null;
 }
 
+async function listIds(collection) {
+  const rows = await rest({
+    method: "GET",
+    path: "/rest/v1/motorpool_docs",
+    query: `collection=eq.${encodeURIComponent(collection)}&select=id&order=id.asc`,
+  });
+  return (Array.isArray(rows) ? rows : [])
+    .map((row) => String((row && row.id) || ""))
+    .filter(Boolean);
+}
+
+/**
+ * Write only when updated_at is still the value we just read.
+ * The response is the new timestamp, not the document, so a large month
+ * is not echoed back over the wire.
+ */
+async function setDocIfUpdatedAt(collection, id, data, updatedAt) {
+  const rows = await rest({
+    method: "PATCH",
+    path: "/rest/v1/motorpool_docs",
+    query:
+      `collection=eq.${encodeURIComponent(collection)}` +
+      `&id=eq.${encodeURIComponent(id)}` +
+      `&updated_at=eq.${encodeURIComponent(updatedAt)}` +
+      "&select=updated_at",
+    prefer: "return=representation",
+    body: { data },
+  });
+  if (!Array.isArray(rows) || !rows.length) {
+    const err = new Error("The workbook changed while this VRF was saving.");
+    err.code = "conflict";
+    err.statusCode = 409;
+    throw err;
+  }
+  return rows[0];
+}
+
 async function setDoc(collection, id, data, { merge = false } = {}) {
   let payload = data;
   if (merge) {
@@ -223,9 +260,11 @@ module.exports = {
   getDoc,
   getProfile,
   listCollection,
+  listIds,
   rest,
   serviceRole,
   setDoc,
+  setDocIfUpdatedAt,
   supabaseUrl,
   verifySupabaseJwt,
   verifySupabasePassword,

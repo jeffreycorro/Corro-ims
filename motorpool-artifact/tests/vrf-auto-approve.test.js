@@ -89,7 +89,7 @@ describe("artifact HTML — auto-approve on send, queue unchanged at ₱1,000+",
     assert.match(body, /var total=vrfSpendTotal\(d\.lines\)/);
     assert.match(body, /status:"Requested"/);
     assert.match(body, /var auto=applyVrfAutoApproval\(hold, total, iso\(\)\)/);
-    assert.match(body, /if\(auto\)\{[\s\S]*await postReserveVrf\(hold\)/);
+    assert.match(body, /if\(auto\)\{[\s\S]*await postAndSaveReserve\(hold\)/);
     assert.match(body, /sent for approval at /);
     assert.match(body, /Requested \/ FOR APPROVAL/);
     assert.match(body, /skipped the approval queue/);
@@ -99,6 +99,6 @@ describe("artifact HTML — auto-approve on send, queue unchanged at ₱1,000+",
     assert.match(html, /function applyVrfAutoApproval/);
     assert.match(html, /var VRF_AUTO_APPROVE_UNDER=1000/);
     assert.match(html, /return n>0 && n<VRF_AUTO_APPROVE_UNDER/);
-    assert.match(html, /var BUILD = "2026-09-28 b"/);
+    assert.match(html, /var BUILD = "2026-09-29 a"/);
   });
 });
