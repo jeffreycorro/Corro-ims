@@ -377,7 +377,7 @@ var SIGNATORIES = [
 ];
 var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
 /* Shown on the Ask screen, so a screenshot says which version someone is on. */
-var BUILD = "2026-09-27 a";
+var BUILD = "2026-09-28 a";
 var DAY = 86400000, MO = 30.44;
 
 /* Part categories that were entered under two spellings and so split a unit's
@@ -438,6 +438,33 @@ function lineMoney(l){
   var q=moneyNum(l.qty), p=moneyNum(l.price);
   if(q||p) return q*p;
   return moneyNum(l.total);
+}
+/* CEO policy: a new VRF whose purchase total is strictly under ₱1,000 is
+   already approved. The figure is the same line total Send for approval
+   stores as the budget (qty × price via lineMoney). Posting uses the office
+   Approve path (postReserveVrf), not the remote Noah approval path.
+   ₱1,000 and above still wait in the queue. */
+var VRF_AUTO_APPROVE_UNDER=1000;
+function vrfSpendTotal(lines){
+  return (lines||[]).filter(function(l){
+    return l&&l.cat&&(moneyNum(l.qty)||moneyNum(l.price));
+  }).reduce(function(a,l){ return a+lineMoney(l); },0);
+}
+function vrfTotalAutoApproves(total){
+  var n=moneyNum(total);
+  return n>0 && n<VRF_AUTO_APPROVE_UNDER;
+}
+/* Stamp the reserve the way the office Approve button does. Returns false
+   when the total still has to wait. Does not post lines and does not set
+   approvedVia — that field belongs to the remote Noah approval path. */
+function applyVrfAutoApproval(hold, total, at){
+  if(!hold||!vrfTotalAutoApproves(total)) return false;
+  hold.status="Approved";
+  hold.approvedBudget=moneyNum(total);
+  hold.approvedBy="CEO policy";
+  hold.approvedAt=at||"";
+  hold.decisionNote="Auto-approved — purchase total under ₱1,000";
+  return true;
 }
 function spendEndStatus(raw){
   raw=String(raw||"").trim();
@@ -8923,7 +8950,7 @@ function workSelect(value,blankLabel){
 function vrfView(){
   var w=el("div");
   var headRow=pageHead("Vehicle Request Form","Raise a VRF",
-    "One form per request. The number is assigned when you send it for approval. The office posts it after Jeffrey approves — there is no Post VRF on this form.");
+    "One form per request. The number is assigned when you send it. Under ₱1,000 it is approved immediately. ₱1,000 and above waits for the office — there is no Post VRF on this form.");
   var clr=el("button","btn sm","Clear form");
   clr.title="Wipe this draft so the next VRF does not keep another form's photos or amounts.";
   clr.addEventListener("click",function(){ S.draft=null; render(); toast("New VRF cleared."); });
@@ -8937,7 +8964,8 @@ function vrfView(){
   var g=el("div","grid"); g.style.gap="var(--space-4)";
   var path=el("div","banner info");
   path.innerHTML="<div><b>Raise the VRF here.</b> Fuel does not need a gauge reading, a gauge photo, or a fuel check. "+
-    "<b>Send for approval</b> holds the number until the office approves it — then it appears on the reserve log. "+
+    "<b>Send for approval</b> assigns the number. A purchase total under ₱1,000 is approved at once and does not wait in the queue. "+
+    "₱1,000 and above holds the number until the office approves it — then it appears on the reserve log. "+
     "There is no Post VRF on this form. Reserves is only that log; do not invent a reserve there.</div>";
   g.appendChild(path);
 
@@ -9218,6 +9246,7 @@ function vrfView(){
 
   var totalCell=el("div"); totalCell.className="mono";
   totalCell.style.cssText="font-size:20px;font-weight:600";
+  var autoHint=el("span","hint","");
 
   function lineTotal(l){
     var q=parseFloat(l.qty)||0, p=parseFloat(l.price)||0; return q*p;
@@ -9225,6 +9254,10 @@ function vrfView(){
   function recalc(){
     var t=0; d.lines.forEach(function(l){ t+=lineTotal(l); });
     totalCell.textContent=peso(t);
+    var spend=vrfSpendTotal(d.lines);
+    autoHint.textContent=vrfTotalAutoApproves(spend)
+      ? "Under ₱1,000 — approved when you send it."
+      : (spend>=VRF_AUTO_APPROVE_UNDER ? "₱1,000 or more — waits for office approval." : "");
     var uniq={}; d.lines.forEach(function(l){ if(l.cat) uniq[l.work||d.work]=1; });
     var names=Object.keys(uniq).filter(Boolean).map(workName);
     scopeChips.textContent = names.length? "Jobs on this VRF: "+names.join(" · ") : "";
@@ -9344,6 +9377,7 @@ function vrfView(){
   var foot=el("div"); foot.style.cssText="display:flex;align-items:center;gap:12px;padding:12px 15px;border-top:1px solid var(--line)";
   foot.appendChild(el("div",null,"Grand total"));
   foot.appendChild(totalCell);
+  foot.appendChild(autoHint);
   var sp=el("div"); sp.style.flex="1"; foot.appendChild(sp);
   var pv=el("button","btn","Print preview");
   pv.addEventListener("click",function(){
@@ -9455,7 +9489,7 @@ async function sendForApproval(d,btn){
   if(!d.work){ toast("Pick the type of job — the approver decides on that."); return; }
   var rows=d.lines.filter(function(l){ return l.cat&&(moneyNum(l.qty)||moneyNum(l.price)); });
   if(!rows.length){ toast("Add at least one line so there is a figure to approve."); return; }
-  var total=rows.reduce(function(a,l){ return a+lineMoney(l); },0);
+  var total=vrfSpendTotal(d.lines);
   if(total<=0){ toast("Put the estimated amounts on the lines — that is what is being approved."); return; }
   /* Fuel lines stay on this form. Gauge / fuel-check walls do not apply. */
   /* No window.prompt here: this page runs in a sandboxed frame that blocks
@@ -9476,7 +9510,7 @@ async function sendForApproval(d,btn){
     var fuelish=rows.some(function(l){ return isFuel(l.cat); });
     var litres=rows.reduce(function(a,l){
       return a+(isFuel(l.cat)?(parseFloat(l.liters)||parseFloat(l.qty)||0):0); },0);
-    S.reserves.push({no:String(no),vrfNo:String(vno),date:d.date||iso(),
+    var hold={no:String(no),vrfNo:String(vno),date:d.date||iso(),
       kind:fuelSpendKind({work:d.work,lines:rows}),veh:d.veh,work:d.work,
       litres:fuelish?litres:null,
       project:d.project,budget:total,needBy:"",
@@ -9489,13 +9523,26 @@ async function sendForApproval(d,btn){
       draftOdo:d.odo||"", odoAtRequest:parseOdo(d.odo), draftPurpose:d.purpose||"",
       preparedSig:(function(){ var s=draftPreparedSig(d); return s.data||""; })(),
       preparedSigName:(function(){ var s=draftPreparedSig(d); return s.data?s.name:""; })(),
-      justification:"",justifiedBy:"",varianceBy:"",varianceAt:"",varianceNote:""});
+      justification:"",justifiedBy:"",varianceBy:"",varianceAt:"",varianceNote:""};
+    var auto=applyVrfAutoApproval(hold, total, iso());
+    var liveNo=String(vno);
+    if(auto){
+      /* Same end state as the office Approve button: lines posted on this
+         number. Does not stamp the remote Noah approval path. */
+      btn.textContent="Approving…";
+      var posted=await postReserveVrf(hold);
+      if(posted){
+        liveNo=String(posted);
+        if((hold.vrfs||[]).indexOf(liveNo)<0) hold.vrfs=(hold.vrfs||[]).concat([liveNo]);
+      }
+    }
+    S.reserves.push(hold);
     await saveReserves();
     if(d.photos&&d.photos.length){
       btn.textContent="Saving photos…";
       for(var pi=0;pi<d.photos.length;pi++){
         try{
-          await addPhotoToOwners([String(vno), rsvOwner(no)],{data:d.photos[pi].data,w:d.photos[pi].w,
+          await addPhotoToOwners([liveNo, rsvOwner(no)],{data:d.photos[pi].data,w:d.photos[pi].w,
             h:d.photos[pi].h,bytes:d.photos[pi].bytes,caption:d.photos[pi].caption,by:who});
         }catch(e){
           toast("Photo could not be saved: "+((e&&e.message)||"try again")); }
@@ -9503,9 +9550,11 @@ async function sendForApproval(d,btn){
     }
     S.draft=null;
     _vrfs=null;
-    toast("VRF "+vno+" sent for approval at "+peso(total)+" — it is on VRF Logs as Requested / FOR APPROVAL.");
-    S.view="vrflog"; S.logQ=String(vno); render();
-    var held=vrfByNo(vno);
+    toast(auto
+      ? "VRF "+liveNo+" approved at "+peso(total)+" — under ₱1,000, so it skipped the approval queue. Liquidate it when the purchase is done."
+      : "VRF "+vno+" sent for approval at "+peso(total)+" — it is on VRF Logs as Requested / FOR APPROVAL.");
+    S.view="vrflog"; S.logQ=String(liveNo); render();
+    var held=vrfByNo(liveNo);
     if(held) openVrf(held,"photos");
     else openReserve(no);
   }catch(e){

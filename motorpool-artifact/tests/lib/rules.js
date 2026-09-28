@@ -1221,6 +1221,34 @@
     return moneyNum(l.total);
   }
 
+  /* Same threshold the artifact uses on Send for approval. Strictly under 1000. */
+  var VRF_AUTO_APPROVE_UNDER = 1000;
+
+  function vrfSpendTotal(lines) {
+    return (lines || [])
+      .filter(function (l) {
+        return l && l.cat && (moneyNum(l.qty) || moneyNum(l.price));
+      })
+      .reduce(function (a, l) {
+        return a + lineMoney(l);
+      }, 0);
+  }
+
+  function vrfTotalAutoApproves(total) {
+    var n = moneyNum(total);
+    return n > 0 && n < VRF_AUTO_APPROVE_UNDER;
+  }
+
+  function applyVrfAutoApproval(hold, total, at) {
+    if (!hold || !vrfTotalAutoApproves(total)) return false;
+    hold.status = "Approved";
+    hold.approvedBudget = moneyNum(total);
+    hold.approvedBy = "CEO policy";
+    hold.approvedAt = at || "";
+    hold.decisionNote = "Auto-approved — purchase total under ₱1,000";
+    return true;
+  }
+
   function vrfRequestedBy(entry, signedIn, reserves) {
     function clean(v) {
       var s = String(v == null ? "" : v).trim();
@@ -1834,6 +1862,10 @@
     classifyPreparedSigFilename: classifyPreparedSigFilename,
     moneyNum: moneyNum,
     lineMoney: lineMoney,
+    VRF_AUTO_APPROVE_UNDER: VRF_AUTO_APPROVE_UNDER,
+    vrfSpendTotal: vrfSpendTotal,
+    vrfTotalAutoApproves: vrfTotalAutoApproves,
+    applyVrfAutoApproval: applyVrfAutoApproval,
     vrfRequestedBy: vrfRequestedBy,
     blankVrfDraft: blankVrfDraft,
     applyVehicleProjectDefault: applyVehicleProjectDefault,

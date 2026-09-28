@@ -262,7 +262,7 @@ describe("saving suppliers", () => {
 
 describe("supplier dropdowns on the page", () => {
   it("is this build and offers add-supplier on every supplier picker", () => {
-    assert.match(html, /var BUILD = "2026-09-27 a"/);
+    assert.match(html, /var BUILD = "2026-09-28 a"/);
     assert.match(html, /bindSupplierSelect\(ss, "vrf"/);
     assert.match(html, /bindSupplierSelect\(sel, "liq"/);
     assert.match(html, /bindSupplierSelect\(bsup, "bulk"/);
