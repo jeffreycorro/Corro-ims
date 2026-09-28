@@ -8,6 +8,7 @@ const {
   getDoc,
   listCollection,
   listIds,
+  listPhotoMeta,
   setDoc,
   setDocIfUpdatedAt,
 } = require("../lib/supabase");
@@ -115,6 +116,13 @@ exports.handler = async (event) => {
       const collection = assertCollection(body.collection || body.name);
       const ids = await listIds(collection);
       return json(200, { collection, ids, ...tz });
+    }
+
+    if (op === "photoMeta") {
+      const owner = String(body.owner || "").trim();
+      if (!owner) return json(400, { error: "owner is required" });
+      const docs = await listPhotoMeta(owner);
+      return json(200, { owner, docs, ...tz });
     }
 
     if (op === "list") {
