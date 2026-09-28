@@ -94,6 +94,70 @@ async function listIds(collection) {
 }
 
 /**
+ * Names and sizes of pictures for one VRF or reserve.
+ * The image itself is the JSON key `data` (a base64 data URL). This select
+ * reads the other keys only, so the Approvals screen can list pictures
+ * without downloading them.
+ */
+function photoMetaSelect() {
+  return [
+    "id",
+    "vrf:data->>vrf",
+    "idx:data->>idx",
+    "caption:data->>caption",
+    "kind:data->>kind",
+    "linkKind:data->>linkKind",
+    "url:data->>url",
+    "w:data->>w",
+    "h:data->>h",
+    "bytes:data->>bytes",
+    "mime:data->>mime",
+    "by:data->>by",
+    "at:data->>at",
+    "link:data->>link",
+    "thumb:data->>thumb",
+  ].join(",");
+}
+
+function photoMetaQuery(owner) {
+  const select = photoMetaSelect();
+  return (
+    "collection=eq.photos" +
+    "&data->>vrf=eq." +
+    encodeURIComponent(String(owner)) +
+    "&select=" +
+    encodeURIComponent(select) +
+    "&order=id.asc"
+  );
+}
+
+function photoMetaRow(row) {
+  if (!row || typeof row !== "object") return null;
+  const out = {};
+  ["id", "vrf", "idx", "caption", "kind", "linkKind", "url", "w", "h", "bytes", "mime", "by", "at", "link", "thumb"].forEach(
+    (key) => {
+      if (row[key] != null && row[key] !== "") out[key] = row[key];
+    }
+  );
+  return out.id ? out : null;
+}
+
+async function listPhotoMeta(owner) {
+  const select = photoMetaSelect();
+  if (select.split(",").indexOf("data") !== -1) {
+    const err = new Error("photo meta must not select the image blob");
+    err.statusCode = 500;
+    throw err;
+  }
+  const rows = await rest({
+    method: "GET",
+    path: "/rest/v1/motorpool_docs",
+    query: photoMetaQuery(owner),
+  });
+  return (Array.isArray(rows) ? rows : []).map(photoMetaRow).filter(Boolean);
+}
+
+/**
  * Write only when updated_at is still the value we just read.
  * The response is the new timestamp, not the document, so a large month
  * is not echoed back over the wire.
@@ -261,6 +325,10 @@ module.exports = {
   getProfile,
   listCollection,
   listIds,
+  listPhotoMeta,
+  photoMetaQuery,
+  photoMetaRow,
+  photoMetaSelect,
   rest,
   serviceRole,
   setDoc,

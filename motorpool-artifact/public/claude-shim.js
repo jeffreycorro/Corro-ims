@@ -490,6 +490,9 @@
         }
         return query([]);
       },
+      photoMeta: function (owner) {
+        return dbCall("photoMeta", { owner: String(owner || "") });
+      },
     });
   }
 

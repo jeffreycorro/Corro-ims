@@ -302,11 +302,13 @@ svg text{font-family:var(--font-body)}
 .pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:var(--space-2)}
 .pcell{border:1px solid var(--rule);border-radius:var(--radius);overflow:hidden;background:var(--surface)}
 .pcell img{width:100%;height:104px;object-fit:cover;display:block;cursor:zoom-in;background:var(--grey-200)}
+.pcell .photo-ph{height:104px;display:flex;align-items:center;justify-content:center;background:var(--grey-200);
+  color:var(--text-muted);font-size:12px;cursor:pointer;text-align:center;padding:8px}
 .pcell video,.pcard video{width:100%;max-height:180px;display:block;background:#111}
 .pcell .cap,.pcard .cap{padding:5px 6px;font-size:11px;color:var(--text-muted);line-height:1.3}
 .lightbox{position:fixed;inset:0;background:rgba(10,12,14,.9);z-index:140;display:flex;
   align-items:center;justify-content:center;padding:20px;cursor:zoom-out}
-.lightbox img{max-width:100%;max-height:100%;object-fit:contain}
+.lightbox img,.lightbox video{max-width:100%;max-height:100%;object-fit:contain}
 
 @media print{
   .rail,.topbar,.noprint,.btn{display:none!important}
@@ -377,7 +379,7 @@ var SIGNATORIES = [
 ];
 var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
 /* Shown on the Ask screen, so a screenshot says which version someone is on. */
-var BUILD = "2026-09-29 a";
+var BUILD = "2026-09-29 b";
 var DAY = 86400000, MO = 30.44;
 
 /* Part categories that were entered under two spellings and so split a unit's
@@ -3545,6 +3547,267 @@ async function listPhotosMany(owners){
   }
   return mergePhotoLists(lists);
 }
+/* Two picture files at a time. The Approvals sheet must not wait on these. */
+var PHOTO_FETCH_LIMIT=2;
+var PHOTO_THUMB_PX=160;
+var photoDocCache={};
+var photoDocFlight={};
+var photoJobActive=0;
+var photoJobWait=[];
+var PHOTO_META_KEYS=["id","vrf","idx","caption","kind","linkKind","url","w","h","bytes","mime","by","at","link","thumb"];
+function photoMetaOf(x){
+  if(!x) return null;
+  var o={};
+  PHOTO_META_KEYS.forEach(function(k){
+    if(x[k]!=null && x[k]!=="") o[k]=x[k];
+  });
+  if(!o.id) o.id=String(x.vrf||"")+"__"+(x.idx||"")+"__"+(x.at||"");
+  return o.id?o:null;
+}
+function rememberPhotoDoc(x){
+  if(x&&x.id&&x.data) photoDocCache[x.id]=x;
+}
+function localPhotoItems(owner){
+  return ((lsGet("photos/"+owner,null)||{}).items)||[];
+}
+/* Names and sizes only. A failed lookup stays on this device's names.
+   It must not fall back to listPhotos — that downloads every image. */
+async function listPhotoMeta(owner){
+  var loc=localPhotoItems(owner);
+  loc.forEach(rememberPhotoDoc);
+  var meta=loc.map(photoMetaOf).filter(Boolean);
+  if(!S.db||typeof S.db.photoMeta!=="function") return meta;
+  try{
+    var row=await S.db.photoMeta(String(owner));
+    var remote=(row&&row.docs||[]).map(photoMetaOf).filter(Boolean);
+    return mergePhotoLists([remote, meta]);
+  }catch(e){
+    return meta;
+  }
+}
+async function listPhotoMetaMany(owners){
+  var seen={}, jobs=[];
+  (owners||[]).forEach(function(o){
+    o=String(o||"");
+    if(!o||seen[o]) return;
+    seen[o]=1;
+    jobs.push(listPhotoMeta(o));
+  });
+  return mergePhotoLists(await Promise.all(jobs));
+}
+function pumpPhotoJobs(){
+  while(photoJobActive<PHOTO_FETCH_LIMIT && photoJobWait.length){
+    photoJobActive++;
+    (function(job){
+      Promise.resolve().then(job.fn).then(function(v){
+        photoJobActive--;
+        job.resolve(v);
+        pumpPhotoJobs();
+      },function(err){
+        photoJobActive--;
+        job.reject(err);
+        pumpPhotoJobs();
+      });
+    })(photoJobWait.shift());
+  }
+}
+function runPhotoJob(fn){
+  return new Promise(function(resolve,reject){
+    photoJobWait.push({fn:fn,resolve:resolve,reject:reject});
+    pumpPhotoJobs();
+  });
+}
+function loadPhotoDoc(id){
+  id=String(id||"");
+  if(!id) return Promise.resolve(null);
+  if(photoDocCache[id]&&photoDocCache[id].data) return Promise.resolve(photoDocCache[id]);
+  if(photoDocFlight[id]) return photoDocFlight[id];
+  if(!S.db) return Promise.resolve(photoDocCache[id]||null);
+  var p=runPhotoJob(function(){
+    if(photoDocCache[id]&&photoDocCache[id].data) return photoDocCache[id];
+    return S.db.doc("photos/"+id).get().then(function(snap){
+      var data=snap&&snap.exists&&snap.data?snap.data():null;
+      if(!data) return photoDocCache[id]||null;
+      var row=Object.assign({id:id}, data);
+      photoDocCache[id]=row;
+      return row;
+    }).catch(function(){ return photoDocCache[id]||null; });
+  }).then(function(row){
+    delete photoDocFlight[id];
+    return row;
+  },function(err){
+    delete photoDocFlight[id];
+    return Promise.reject(err);
+  });
+  photoDocFlight[id]=p;
+  return p;
+}
+function whenVisible(node, fn){
+  if(!node||typeof IntersectionObserver!=="function") return;
+  var io=new IntersectionObserver(function(entries){
+    for(var i=0;i<entries.length;i++){
+      if(!entries[i].isIntersecting) continue;
+      io.disconnect();
+      fn();
+      return;
+    }
+  },{root:null,rootMargin:"200px"});
+  io.observe(node);
+}
+function isVideoMeta(x){
+  if(!x||x.kind==="link") return false;
+  if(x.kind==="video") return true;
+  return String(x.mime||"").indexOf("video/")===0;
+}
+function thumbSrcFor(rec){
+  if(!rec) return "";
+  if(rec.thumb) return String(rec.thumb);
+  var url=String(rec.url||"");
+  if(url && /(?:width|height|transform|resize)=/i.test(url)) return url;
+  return "";
+}
+function downscaleDataUrl(dataUrl, maxPx){
+  return new Promise(function(resolve){
+    if(!dataUrl || !/^data:image\//i.test(String(dataUrl))){ resolve(""); return; }
+    var img=new Image();
+    img.decoding="async";
+    img.onload=function(){
+      var w=img.naturalWidth||img.width||maxPx;
+      var h=img.naturalHeight||img.height||maxPx;
+      var scale=Math.min(1, maxPx/Math.max(w,h,1));
+      var cw=Math.max(1, Math.round(w*scale));
+      var ch=Math.max(1, Math.round(h*scale));
+      try{
+        var canvas=document.createElement("canvas");
+        canvas.width=cw; canvas.height=ch;
+        var ctx=canvas.getContext("2d");
+        if(!ctx){ resolve(""); return; }
+        ctx.drawImage(img,0,0,cw,ch);
+        resolve(canvas.toDataURL("image/jpeg",0.6));
+      }catch(e){ resolve(""); }
+    };
+    img.onerror=function(){ resolve(""); };
+    img.src=dataUrl;
+  });
+}
+function paintLazyThumb(ph, x){
+  var preset=thumbSrcFor(x);
+  if(preset){
+    var known=document.createElement("img");
+    known.setAttribute("loading","lazy");
+    known.setAttribute("decoding","async");
+    known.alt=x.caption||"photo";
+    known.src=preset;
+    if(ph.parentNode) ph.replaceWith(known);
+    return Promise.resolve(known);
+  }
+  if(isVideoMeta(x)){
+    ph.textContent="Video — tap to play";
+    return Promise.resolve(ph);
+  }
+  return loadPhotoDoc(x.id).then(function(doc){
+    if(!doc||!doc.data){ ph.textContent="Photo unavailable"; return ph; }
+    if(isVideoAttachment(doc)||isVideoMeta(x)){
+      ph.textContent="Video — tap to play";
+      return ph;
+    }
+    return downscaleDataUrl(doc.data, PHOTO_THUMB_PX).then(function(thumb){
+      if(!thumb||!ph.parentNode){ if(!thumb) ph.textContent="Photo"; return ph; }
+      var im=document.createElement("img");
+      im.setAttribute("loading","lazy");
+      im.setAttribute("decoding","async");
+      im.alt=x.caption||"photo";
+      im.src=thumb;
+      ph.replaceWith(im);
+      return im;
+    });
+  }).catch(function(){ ph.textContent="Photo unavailable"; return ph; });
+}
+function openPhotoFull(x){
+  return loadPhotoDoc(x&&x.id).then(function(doc){
+    if(!doc||!doc.data){ toast("That picture is not here yet."); return; }
+    if(isVideoMeta(x)||isVideoAttachment(doc)) lightboxVideo(doc.data);
+    else lightbox(doc.data);
+  }).catch(function(){ toast("That picture is not here yet."); });
+}
+function mountLazyCell(x, opts){
+  var c=el("div","pcell");
+  var ph=el("div","photo-ph");
+  ph.textContent=isVideoMeta(x)?"Video — tap to play":"Photo";
+  c.appendChild(ph);
+  if(!isVideoMeta(x)) whenVisible(c, function(){ paintLazyThumb(ph, x); });
+  c.addEventListener("click",function(){ openPhotoFull(x); });
+  var cp=el("div","cap");
+  cp.appendChild(el("div",null,x.caption||(opts.captionFallback||"attachment")));
+  var meta=(x.by||"—")+" · "+(x.at||"");
+  if(x.bytes) meta+=" · "+Math.round((parseFloat(x.bytes)||0)/1024)+" KB";
+  cp.appendChild(el("div","hint",meta));
+  if(opts.onRemove){
+    var rm=el("button","btn sm","Remove");
+    rm.style.margin="4px 0 0";
+    rm.addEventListener("click",function(ev){
+      ev.stopPropagation();
+      rm.disabled=true;
+      Promise.resolve(opts.onRemove(x)).catch(function(){ rm.disabled=false; });
+    });
+    cp.appendChild(rm);
+  }
+  c.appendChild(cp);
+  return c;
+}
+function fillLazyGallery(pgal, owners, opts){
+  if(!pgal||!pgal.isConnected) return;
+  listPhotoMetaMany(owners).then(function(list){
+    if(!pgal.isConnected) return;
+    pgal.innerHTML="";
+    var links=list.filter(function(x){ return x.kind==="link"; });
+    var files=list.filter(function(x){ return x.kind!=="link"; });
+    if(!files.length&&!links.length){
+      var nb=el("div","banner warn");
+      nb.innerHTML=opts.emptyHtml||"<b>No pictures on this request.</b>";
+      pgal.appendChild(nb);
+      return;
+    }
+    files.forEach(function(x){ pgal.appendChild(mountLazyCell(x, opts)); });
+    if(links.length){
+      var lw=el("div"); lw.style.cssText="grid-column:1/-1";
+      lw.appendChild(el("div","hint","Linked — opens in a new tab"));
+      links.forEach(function(x){
+        var row=el("div","row");
+        row.style.cssText="padding:6px 0;border-bottom:1px solid var(--rule)";
+        row.appendChild(el("span","chip accent",
+          (x.linkKind==="video"?"▶ ":"")+(LINK_KINDS[x.linkKind]||"Link")));
+        var a=el("a",null,x.caption||x.url);
+        a.href=x.url; a.target="_blank"; a.rel="noopener noreferrer";
+        a.style.cssText="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
+        row.appendChild(a);
+        row.appendChild(el("span","hint",(x.by||"—")+" · "+(x.at||"")));
+        if(opts.onRemove){
+          var rmL=el("button","btn sm","Remove");
+          rmL.addEventListener("click",function(){
+            rmL.disabled=true;
+            Promise.resolve(opts.onRemove(x)).catch(function(){ rmL.disabled=false; });
+          });
+          row.appendChild(rmL);
+        }
+        lw.appendChild(row);
+      });
+      pgal.appendChild(lw);
+    }
+  }).catch(function(){});
+}
+/* Call this only after the sheet is on the page. The first argument is the
+   empty grid; names start on the next turn, and image bytes wait until a
+   cell is on screen. */
+function mountLazyGallery(pgal, owners, opts){
+  opts=opts||{};
+  var n=photoCountMany(owners);
+  pgal.innerHTML="";
+  pgal.appendChild(el("div","hint", n
+    ? (n+" picture"+(n===1?"":"s")+" — they load when you reach them.")
+    : "Picture names load in the background."));
+  setTimeout(function(){ fillLazyGallery(pgal, owners, opts); }, 0);
+}
 async function bumpPhotoCount(vrf,delta){
   var c=Object.assign({},S.photoCounts);
   c[vrf]=Math.max(0,(c[vrf]||0)+delta);
@@ -6464,53 +6727,6 @@ function openReserve(no,asApprover){
     }
   }
 
-  var pcard=el("div","card"); pcard.style.marginBottom="var(--space-4)";
-  var pch=el("div","hd");
-  pch.appendChild(el("h3",null,rsvKind(r)==="job"
-    ?"Attachments on this request"
-    :(rsvKind(r)==="fuel-bulk"?"Drum photo on the request":"Gauge photo on the request")));
-  pch.appendChild(el("span","note",rsvKind(r)==="job"
-    ?"The pictures saved with this VRF — they stay after Send for approval."
-    :"Taken before any fuel moved."));
-  pcard.appendChild(pch);
-  var pcb=el("div","bd");
-  var pgal=el("div","pgrid");
-  pgal.appendChild(el("div","hint","Loading…"));
-  pcb.appendChild(pgal);
-  pcard.appendChild(pcb);
-  b.appendChild(pcard);
-  listPhotosMany(photoOwnersForReserve(r)).then(function(list){
-    pgal.innerHTML="";
-    var links=list.filter(function(x){ return x.kind==="link"; });
-    list=list.filter(function(x){ return x.kind!=="link"&&x.data; });
-    if(!list.length&&!links.length){
-      var nb=el("div","banner warn");
-      nb.innerHTML=rsvKind(r)==="job"
-        ?"<b>No pictures on this request.</b> Open the VRF to attach them — they print with the form."
-        :"<b>No picture of the gauge on this request.</b> Optional — it does not block approval.";
-      pgal.appendChild(nb);
-      return;
-    }
-    list.forEach(function(x){
-      var c=el("div","pcell");
-      var im=document.createElement("img"); im.src=x.data;
-      im.addEventListener("click",function(){ lightbox(x.data); });
-      c.appendChild(im);
-      var cp=el("div","cap");
-      cp.appendChild(el("div",null,x.caption||(rsvKind(r)==="job"?"attachment":"gauge")));
-      cp.appendChild(el("div","hint",(x.by||"—")+" · "+(x.at||"")));
-      c.appendChild(cp); pgal.appendChild(c);
-    });
-    links.forEach(function(x){
-      var row=el("div","row");
-      row.style.cssText="grid-column:1/-1;padding:6px 0;border-bottom:1px solid var(--rule)";
-      var a=el("a",null,x.caption||x.url);
-      a.href=x.url; a.target="_blank"; a.rel="noopener noreferrer";
-      row.appendChild(a);
-      pgal.appendChild(row);
-    });
-  });
-
   if((r.draftLines||[]).length){
     var dlc=el("div","card"); dlc.style.marginBottom="var(--space-4)";
     var dlh=el("div","hd");
@@ -6890,12 +7106,35 @@ function openReserve(no,asApprover){
   }
 
   b.appendChild(actions);
+
+  var photoOwners=photoOwnersForReserve(r);
+  var pcard=el("div","card"); pcard.style.marginTop="var(--space-4)";
+  var pch=el("div","hd");
+  pch.appendChild(el("h3",null,rsvKind(r)==="job"
+    ?"Attachments on this request"
+    :(rsvKind(r)==="fuel-bulk"?"Drum photo on the request":"Gauge photo on the request")));
+  pch.appendChild(el("span","note",rsvKind(r)==="job"
+    ?"The pictures saved with this VRF — they stay after Send for approval."
+    :"Taken before any fuel moved."));
+  pcard.appendChild(pch);
+  var pcb=el("div","bd");
+  var pgal=el("div","pgrid");
+  pcb.appendChild(pgal);
+  pcard.appendChild(pcb);
+  b.appendChild(pcard);
+
   var close=el("div"); close.style.cssText="display:flex;justify-content:flex-end;margin-top:var(--space-5)";
   var cb=el("button","btn","Close"); cb.addEventListener("click",function(){ m.remove(); });
   close.appendChild(cb); b.appendChild(close);
   sheet.appendChild(b); m.appendChild(sheet);
   m.addEventListener("click",function(e){ if(e.target===m) m.remove(); });
   document.body.appendChild(m);
+  mountLazyGallery(pgal, photoOwners, {
+    emptyHtml: rsvKind(r)==="job"
+      ? "<b>No pictures on this request.</b> Open the VRF to attach them — they print with the form."
+      : "<b>No picture of the gauge on this request.</b> Optional — it does not block approval.",
+    captionFallback: rsvKind(r)==="job"?"attachment":"gauge"
+  });
 }
 
 /* ---- office: approvals ---- */
@@ -8603,7 +8842,16 @@ async function printVrf(entry,photos){
 }
 function lightbox(src){
   var b=el("div","lightbox");
-  var im=document.createElement("img"); im.src=src; b.appendChild(im);
+  var im=document.createElement("img"); im.src=src; im.decoding="async"; b.appendChild(im);
+  b.addEventListener("click",function(){ b.remove(); });
+  document.body.appendChild(b);
+}
+function lightboxVideo(src){
+  var b=el("div","lightbox");
+  var v=document.createElement("video");
+  v.src=src||""; v.controls=true; v.playsInline=true; v.autoplay=true;
+  v.setAttribute("playsinline","");
+  b.appendChild(v);
   b.addEventListener("click",function(){ b.remove(); });
   document.body.appendChild(b);
 }
@@ -8933,6 +9181,7 @@ function confirmSheet(entry){ openVrf(entry); }
 function openVrf(entry,tab){
   var ex=document.getElementById("cfSheet"); if(ex) ex.remove();
   tab=tab||"lines";
+  var lazyGal=null;
   var m=el("div","modal"); m.id="cfSheet";
   var sheet=el("div","sheet"); sheet.style.maxWidth="900px";
   var b=el("div"); b.style.padding="var(--space-5) var(--space-6)";
@@ -9504,7 +9753,7 @@ function openVrf(entry,tab){
     body.appendChild(note);
     var gal=el("div","pgrid"); gal.style.margin="var(--space-4) 0";
     body.appendChild(gal);
-    var loading=el("div","hint","Loading attachments…"); gal.appendChild(loading);
+    lazyGal=gal;
 
     var upRow=el("div","f3");
     function f2(l,n){ var x=el("div","field"); x.appendChild(el("label",null,l)); x.appendChild(n); return x; }
@@ -9557,62 +9806,23 @@ function openVrf(entry,tab){
       toast(ok+" photo"+(ok===1?"":"s")+" attached"+(failed?", "+failed+" could not be read":"")+".");
       openVrf(entry,"photos");
     });
-
-    listPhotosMany(photoOwnersForOpenVrf(entry)).then(function(list){
-      gal.innerHTML="";
-      var links=list.filter(function(x){ return x.kind==="link"; });
-      list=list.filter(function(x){ return x.kind!=="link"; });
-      if(links.length){
-        var lw=el("div"); lw.style.cssText="grid-column:1/-1";
-        lw.appendChild(el("div","hint","Linked — opens in a new tab"));
-        links.forEach(function(x){
-          var row=el("div","row");
-          row.style.cssText="padding:6px 0;border-bottom:1px solid var(--rule)";
-          row.appendChild(el("span","chip accent",
-            (x.linkKind==="video"?"▶ ":"")+(LINK_KINDS[x.linkKind]||"Link")));
-          var a=el("a",null,x.caption||x.url);
-          a.href=x.url; a.target="_blank"; a.rel="noopener noreferrer";
-          a.style.cssText="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
-          row.appendChild(a);
-          row.appendChild(el("span","hint",(x.by||"—")+" · "+(x.at||"")));
-          var rmL=el("button","btn sm","Remove");
-          rmL.addEventListener("click",async function(){
-            rmL.disabled=true;
-            await removePhoto(entry.vrf,x.id);
-            toast("Link removed."); openVrf(entry,"photos");
-          });
-          row.appendChild(rmL);
-          lw.appendChild(row);
-        });
-        gal.appendChild(lw);
-      }
-      if(!list.length&&!links.length){
-        gal.appendChild(el("div","hint","Nothing attached to this VRF yet.")); return; }
-      list.forEach(function(x){
-        var c=el("div","pcell");
-        var im=document.createElement("img"); im.src=x.data; im.alt=x.caption||"attachment";
-        im.addEventListener("click",function(){ lightbox(x.data); });
-        c.appendChild(im);
-        var cp=el("div","cap");
-        cp.appendChild(el("div",null,x.caption||"attachment"));
-        cp.appendChild(el("div","hint",(x.by||"—")+" · "+(x.at||"")+" · "+Math.round((x.bytes||0)/1024)+" KB"));
-        var rm=el("button","btn sm","Remove");
-        rm.style.margin="4px 0 0";
-        rm.addEventListener("click",async function(){
-          rm.disabled=true;
-          await removePhoto(entry.vrf,x.id);
-          toast("Attachment removed."); openVrf(entry,"photos");
-        });
-        cp.appendChild(rm);
-        c.appendChild(cp);
-        gal.appendChild(c);
-      });
-    });
   }
 
   sheet.appendChild(b); m.appendChild(sheet);
   m.addEventListener("click",function(e){ if(e.target===m) m.remove(); });
   document.body.appendChild(m);
+  if(lazyGal){
+    mountLazyGallery(lazyGal, photoOwnersForOpenVrf(entry), {
+      emptyHtml:"<b>Nothing attached to this VRF yet.</b>",
+      captionFallback:"attachment",
+      onRemove:function(x){
+        return removePhoto(x.vrf||entry.vrf, x.id).then(function(){
+          toast(x.kind==="link"?"Link removed.":"Attachment removed.");
+          openVrf(entry,"photos");
+        });
+      }
+    });
+  }
 }
 
 /* ---- new VRF ---- */
