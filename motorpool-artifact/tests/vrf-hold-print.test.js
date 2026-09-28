@@ -127,7 +127,8 @@ describe("artifact HTML — hold print / photos / log after Send for approval", 
     const end = html.indexOf("\nasync function postVrf", start);
     assert.ok(start > 0 && end > start);
     const body = html.slice(start, end);
-    assert.match(body, /addPhotoToOwners\(\[String\(vno\), rsvOwner\(no\)\]/);
+    assert.match(body, /addPhotoToOwners\(\[liveNo, rsvOwner\(no\)\]/);
+    assert.match(body, /var liveNo=String\(vno\)/);
     assert.match(body, /S\.view="vrflog"/);
     assert.match(body, /openVrf\(held,"photos"\)/);
     assert.doesNotMatch(body, /appendLedger/);
@@ -144,7 +145,7 @@ describe("artifact HTML — hold print / photos / log after Send for approval", 
     assert.match(html, /Photos and print work now/);
     assert.match(html, /if\(!waiting\) tabDefs\.push\(\["liq"/);
     assert.match(html, /listPhotosMany\(photoOwnersForOpenVrf\(entry\)\)/);
-    assert.match(html, /var BUILD = "2026-09-27 a"/);
+    assert.match(html, /var BUILD = "2026-09-28 a"/);
     assert.match(html, /function vrfPrintWatermark/);
     assert.match(html, /function vrfMarkNode/);
     assert.match(html, /d\.appendChild\(vrfMarkNode\(mark\)\)/);
