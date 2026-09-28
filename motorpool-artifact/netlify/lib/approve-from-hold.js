@@ -114,20 +114,39 @@ function reserveOwnsPostedVrf(r) {
   return (r.vrfs || []).some((x) => String(x) === no);
 }
 
+function holdIsSealed(r) {
+  if (!r) return false;
+  const st = String(r.status || "");
+  if (st === "Closed" || st === "Cancelled" || st === "Rejected") return true;
+  if (r.liquidatedAt || r.printedAt) return true;
+  if (reserveOwnsPostedVrf(r)) return true;
+  return false;
+}
+
 function shouldRemintHeldVrf(r, vrfs, reserves) {
   if (!r || !normNo(r.vrfNo)) return false;
-  const st = String(r.status || "");
-  if (st === "Rejected" || st === "Closed") return false;
-  if (reserveOwnsPostedVrf(r)) return false;
+  if (holdIsSealed(r)) return false;
   const no = normNo(r.vrfNo);
   const posted = !!postedVrfNumbers(vrfs)[no];
-  const otherHold = (reserves || []).some((o) => {
+  const others = (reserves || []).filter((o) => {
     if (!o || String(o.no) === String(r.no)) return false;
     if (!liveReserveStatus(o.status)) return false;
     if (normNo(o.vrfNo) === no) return true;
     return (o.vrfs || []).some((x) => String(x) === no);
   });
-  return posted || otherHold;
+  if (posted) return true;
+  if (!others.length) return false;
+  return others.some((o) => holdIsSealed(o));
+}
+
+function otherReservesClaiming(reserves, hold, vrfNo) {
+  const no = normNo(vrfNo);
+  return (reserves || []).filter((o) => {
+    if (!o || String(o.no) === String(hold && hold.no)) return false;
+    if (!liveReserveStatus(o.status)) return false;
+    if (normNo(o.vrfNo) === no) return true;
+    return (o.vrfs || []).some((x) => String(x) === no);
+  });
 }
 
 function nextFreeVrf(from, used) {
@@ -366,6 +385,15 @@ function applyApproveFromHold(snapshot, hold, opts) {
     throw approveError(409, "already_posted", `VRF ${vrfNo} is already posted`);
   }
 
+  const others = otherReservesClaiming(snapshot.reserves, hold, vrfNo);
+  if (others.length) {
+    throw approveError(
+      409,
+      "ambiguous",
+      `VRF ${vrfNo} is also on RSV-${others.map((o) => o.no).join(", RSV-")} — refusing to guess`
+    );
+  }
+
   const today = opts.now || manilaDate();
   const note = String(opts.approverNote || "").trim();
   hold.status = "Approved";
@@ -499,12 +527,40 @@ function configPayload(cfg) {
 
 async function persistApprove(store, snapshot, result) {
   const year = yearOf(result.hold.date);
-  const yearRows = snapshot.reserves.filter((r) => yearOf(r.date) === year);
+  const vrfNo = String(result.payload.vrf);
+  (result.rows || []).forEach((row) => {
+    if (!row || String(row.vrf) !== vrfNo) {
+      throw approveError(
+        409,
+        "vrf_mismatch",
+        `Refusing to write VRF ${row && row.vrf} while saving VRF ${vrfNo}`
+      );
+    }
+  });
+  const freshYear = await store.get("reserves", year);
+  const freshReserves =
+    freshYear && Array.isArray(freshYear.rows) ? freshYear.rows.map(thaw) : [];
+  const holdNo = String(result.hold.no);
+  let placed = false;
+  const yearRows = freshReserves.map((r) => {
+    if (r && String(r.no) === holdNo) {
+      placed = true;
+      return result.hold;
+    }
+    return r;
+  });
+  if (!placed) yearRows.push(result.hold);
+
+  const freshMonth = await store.get("ledger", result.month);
+  const freshRows =
+    freshMonth && Array.isArray(freshMonth.rows) ? freshMonth.rows.map(thaw) : [];
+  const kept = freshRows.filter((row) => !row || String(row.vrf) !== vrfNo);
+  const monthRows = kept.concat(result.rows || []);
   const writes = [
     store.set("reserves", year, { year, rows: yearRows }),
     store.set("ledger", result.month, {
       month: result.month,
-      rows: snapshot.ledgerByMonth[result.month] || [],
+      rows: monthRows,
     }),
   ];
   if (snapshot.ledgerIndexDirty) {

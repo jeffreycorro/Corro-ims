@@ -998,7 +998,70 @@
     };
   }
 
-  function closedLedgerLinesFromHold(entry, edits, stamp, today) {
+  function lineIdentity(line) {
+    return [
+      String((line && line.cat) || "")
+        .trim()
+        .toLowerCase(),
+      String((line && line.item) || "")
+        .trim()
+        .toLowerCase(),
+      String((line && line.supplier) || "")
+        .trim()
+        .toLowerCase(),
+      String((line && line.work) || "")
+        .trim()
+        .toLowerCase(),
+    ].join("\u0001");
+  }
+
+  /**
+   * A draft line may fill blanks on a hold row only when it is the same line
+   * (lineKey or cat/item/supplier/work) or the only draft left. Never drafts[i].
+   */
+  function matchDraftLine(row, drafts, used) {
+    drafts = drafts || [];
+    used = used || {};
+    var i;
+    if (row && row.lineKey) {
+      for (i = 0; i < drafts.length; i++) {
+        if (used[i]) continue;
+        if (drafts[i] && String(drafts[i].lineKey || "") === String(row.lineKey)) {
+          used[i] = 1;
+          return drafts[i];
+        }
+      }
+    }
+    var hasOwn =
+      row &&
+      (String(row.cat || "").trim() ||
+        String(row.item || "").trim() ||
+        String(row.supplier || "").trim());
+    if (hasOwn) {
+      var id = lineIdentity(row);
+      for (i = 0; i < drafts.length; i++) {
+        if (used[i]) continue;
+        if (lineIdentity(drafts[i]) === id) {
+          used[i] = 1;
+          return drafts[i];
+        }
+      }
+      return null;
+    }
+    var left = [];
+    for (i = 0; i < drafts.length; i++) if (!used[i]) left.push(i);
+    if (left.length === 1) {
+      used[left[0]] = 1;
+      return drafts[left[0]];
+    }
+    return null;
+  }
+
+  function closedLedgerLinesFromHold(entry, edits, stamp, today, reserve) {
+    var drafts = ((reserve && reserve.draftLines) || []).filter(function (l) {
+      return l && (l.cat || l.item);
+    });
+    var used = {};
     var rows =
       entry && entry.rows && entry.rows.length
         ? entry.rows
@@ -1012,16 +1075,117 @@
               reserve: entry && entry.reserve,
             },
           ];
+    var want = String((entry && entry.vrf) || "").trim();
     return rows
       .map(function (row, i) {
-        var base = ledgerLineFromHoldRow(entry, row, today);
+        var draft = matchDraftLine(row, drafts, used) || {};
+        var merged = Object.assign({}, row || {});
+        if (!merged.cat && draft.cat) merged.cat = draft.cat;
+        if ((merged.liters == null || merged.liters === "") && draft.liters != null) merged.liters = draft.liters;
+        if (!merged.item && draft.item) merged.item = draft.item;
+        if (!merged.supplier && draft.supplier) merged.supplier = draft.supplier;
+        if (!merged.unit && draft.unit) merged.unit = draft.unit;
+        if (!merged.work && draft.work) merged.work = draft.work;
+        var base = ledgerLineFromHoldRow(entry, merged, today);
+        if (want) base.vrf = want;
         var next = applyLiquidationLine(base, edits && edits[i], stamp, "bought");
         delete next.src;
         return next;
       })
       .filter(function (row) {
-        return row && String(row.vrf || "").trim();
+        return row && String(row.vrf || "").trim() && (!want || String(row.vrf) === want);
       });
+  }
+
+  /**
+   * Re-read ledger rows, then keep every other VRF byte-for-byte.
+   * mode "replace" swaps this VRF's rows; "append" adds lines for this VRF only.
+   * Throws if a row's vrf is not the one being saved.
+   */
+  function mergeLedgerRows(existing, vrfNo, incoming, mode) {
+    var no = String(vrfNo == null ? "" : vrfNo).trim();
+    if (!no) {
+      var missing = new Error("VRF number is required");
+      missing.code = "vrf_mismatch";
+      throw missing;
+    }
+    (incoming || []).forEach(function (row) {
+      if (!row || String(row.vrf) !== no) {
+        var err = new Error(
+          "Refusing to write VRF " + (row && row.vrf) + " while saving VRF " + no
+        );
+        err.code = "vrf_mismatch";
+        throw err;
+      }
+    });
+    var kept = (existing || []).filter(function (row) {
+      return !row || String(row.vrf) !== no;
+    });
+    var mine = (existing || []).filter(function (row) {
+      return row && String(row.vrf) === no;
+    });
+    var nextMine = mode === "replace" ? incoming || [] : mine.concat(incoming || []);
+    return kept.concat(nextMine);
+  }
+
+  function reservesClaimingVrf(reserves, vrfNo) {
+    var no = String(vrfNo == null ? "" : vrfNo).trim();
+    if (!no) return [];
+    return (reserves || []).filter(function (r) {
+      if (!r || String(r.status || "") === "Rejected") return false;
+      return reserveOwnsVrfNo(r, no);
+    });
+  }
+
+  function headerAuditNotes(before, patch, by, at) {
+    var fields = [
+      ["vehicle", "veh"],
+      ["project", "project"],
+      ["date", "date"],
+      ["odometer", "odo"],
+      ["requestedBy", "requestedBy"],
+      ["purpose", "purpose"],
+      ["job", "work"],
+    ];
+    var notes = [];
+    fields.forEach(function (pair) {
+      var from = before ? before[pair[1]] : "";
+      var to = patch ? patch[pair[1]] : "";
+      if (String(from == null ? "" : from) === String(to == null ? "" : to)) return;
+      notes.push({
+        at: at || "",
+        by: by || "",
+        field: pair[0],
+        from: String(from == null ? "" : from),
+        to: String(to == null ? "" : to),
+      });
+    });
+    return notes;
+  }
+
+  /** Header correction. Totals, line amounts, and approval/liquidation status stay. */
+  function applyVrfHeaderPatch(rows, patch, notes) {
+    patch = patch || {};
+    return (rows || []).map(function (row) {
+      var copy = Object.assign({}, row);
+      if (patch.veh != null) copy.veh = patch.veh;
+      if (patch.name != null) copy.name = patch.name;
+      if (patch.project != null) copy.project = patch.project;
+      if (patch.date != null) copy.date = patch.date;
+      if (patch.month != null) copy.month = patch.month;
+      if (patch.odo !== undefined) copy.odo = patch.odo;
+      if (patch.requestedBy != null) copy.requestedBy = patch.requestedBy;
+      if (patch.purpose != null) copy.notes = patch.purpose;
+      if (patch.work) copy.work = patch.work;
+      copy.qty = row.qty;
+      copy.price = row.price;
+      copy.total = row.total;
+      copy.vstatus = row.vstatus;
+      copy.liq = row.liq;
+      copy.vrf = row.vrf;
+      copy.audit = (row.audit || []).concat(notes || []);
+      return copy;
+    });
   }
 
   function vrfPrintWatermark(entry) {
@@ -1489,14 +1653,22 @@
     return false;
   }
 
+  /** Posted, printed, or liquidated holds keep their number. Do not remint them. */
+  function holdIsSealed(r) {
+    if (!r) return false;
+    var st = String(r.status || "");
+    if (st === "Closed" || st === "Cancelled" || st === "Rejected") return true;
+    if (r.liquidatedAt || r.printedAt) return true;
+    if (reserveOwnsPostedVrf(r)) return true;
+    return false;
+  }
+
   function shouldRemintHeldVrf(r, vrfs, reserves) {
     if (!r || !normVrfNo(r.vrfNo)) return false;
-    var st = String(r.status || "");
-    if (st === "Rejected" || st === "Closed") return false;
-    if (reserveOwnsPostedVrf(r)) return false;
+    if (holdIsSealed(r)) return false;
     var no = normVrfNo(r.vrfNo);
     var posted = !!postedVrfNumbers(vrfs)[no];
-    var otherHold = (reserves || []).some(function (o) {
+    var others = (reserves || []).filter(function (o) {
       if (!o || String(o.no) === String(r.no)) return false;
       if (!liveReserveStatus(o.status)) return false;
       if (normVrfNo(o.vrfNo) === no) return true;
@@ -1504,7 +1676,12 @@
         return String(x) === no;
       });
     });
-    return posted || otherHold;
+    if (posted) return true;
+    if (!others.length) return false;
+    /* Another sealed reserve keeps the number. Two unsealed holds: do not guess. */
+    return others.some(function (o) {
+      return holdIsSealed(o);
+    });
   }
 
   function remintHeldVrf(r, vrfs, reserves, from) {
@@ -1851,6 +2028,12 @@
     planLiquidationLedgerWrite: planLiquidationLedgerWrite,
     ledgerLineFromHoldRow: ledgerLineFromHoldRow,
     closedLedgerLinesFromHold: closedLedgerLinesFromHold,
+    matchDraftLine: matchDraftLine,
+    mergeLedgerRows: mergeLedgerRows,
+    reservesClaimingVrf: reservesClaimingVrf,
+    headerAuditNotes: headerAuditNotes,
+    applyVrfHeaderPatch: applyVrfHeaderPatch,
+    holdIsSealed: holdIsSealed,
     vrfPrintWatermark: vrfPrintWatermark,
     parseOdo: parseOdo,
     reserveMeter: reserveMeter,

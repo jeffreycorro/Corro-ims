@@ -377,7 +377,7 @@ var SIGNATORIES = [
 ];
 var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
 /* Shown on the Ask screen, so a screenshot says which version someone is on. */
-var BUILD = "2026-09-28 a";
+var BUILD = "2026-09-28 b";
 var DAY = 86400000, MO = 30.44;
 
 /* Part categories that were entered under two spellings and so split a unit's
@@ -1222,19 +1222,92 @@ function reserveOwnsPostedVrf(r){
   if(!no) return false;
   return (r.vrfs||[]).some(function(x){ return String(x)===no; });
 }
+/* A posted, printed, or liquidated VRF keeps its number. Reminting it, or
+   copying its photos onto another number, is how 5864 took on 5881. */
+function holdIsSealed(r){
+  if(!r) return false;
+  var st=String(r.status||"");
+  if(st==="Closed"||st==="Cancelled"||st==="Rejected") return true;
+  if(r.liquidatedAt||r.printedAt) return true;
+  if(reserveOwnsPostedVrf(r)) return true;
+  return false;
+}
 function shouldRemintHeldVrf(r){
   if(!r||!String(r.vrfNo||"").trim()) return false;
-  var st=String(r.status||"");
-  if(st==="Rejected"||st==="Closed"||st==="Cancelled") return false;
-  if(reserveOwnsPostedVrf(r)) return false;
+  if(holdIsSealed(r)) return false;
   var no=String(r.vrfNo).trim();
   if(postedVrfNumbers()[no]) return true;
-  return (S.reserves||[]).some(function(o){
+  var others=(S.reserves||[]).filter(function(o){
     if(!o||String(o.no)===String(r.no)) return false;
     if(String(o.status||"") === "Rejected") return false;
     if(String(o.vrfNo||"").trim()===no) return true;
     return (o.vrfs||[]).some(function(x){ return String(x)===no; });
   });
+  if(!others.length) return false;
+  /* The other reserve already owns this number for good. Two open holds
+     that share a number are a collision — do not guess which one keeps it. */
+  return others.some(function(o){ return holdIsSealed(o); });
+}
+function vrfNumberSealed(no){
+  no=String(no||"").trim();
+  if(!no) return false;
+  if(postedVrfNumbers()[no]) return true;
+  var k,i,arr,row,vs;
+  for(k in S.ledger){
+    if(!S.ledger.hasOwnProperty(k)) continue;
+    arr=S.ledger[k]||[];
+    for(i=0;i<arr.length;i++){
+      row=arr[i];
+      if(!row||String(row.vrf)!==no) continue;
+      if(row.liq||row.printedAt) return true;
+      vs=String(row.vstatus||"");
+      if(vs==="Closed"||vs==="Not bought"||vs==="Cancelled") return true;
+    }
+  }
+  return (S.reserves||[]).some(function(rv){
+    return rv&&reserveOwnsVrfNo(rv, no)&&(rv.printedAt||rv.liquidatedAt);
+  });
+}
+function reservesOwningVrf(vrfNo){
+  var no=String(vrfNo||"").trim();
+  if(!no) return [];
+  return (S.reserves||[]).filter(function(r){
+    return r && String(r.status||"")!=="Rejected" && reserveOwnsVrfNo(r, no);
+  });
+}
+function assertSingleVrfOwner(vrfNo, reserveNo){
+  var no=String(vrfNo||"").trim();
+  var owners=reservesOwningVrf(no);
+  if(owners.length>1){
+    var err=new Error("VRF "+no+" is on "+owners.map(function(r){ return "RSV-"+r.no; }).join(" and ")+
+      ". Not saving — a VRF number can belong to only one reserve.");
+    err.code="vrf_collision";
+    throw err;
+  }
+  if(reserveNo && owners.length===1 && String(owners[0].no)!==String(reserveNo)){
+    var err2=new Error("VRF "+no+" belongs to RSV-"+owners[0].no+", not RSV-"+reserveNo+".");
+    err2.code="vrf_collision";
+    throw err2;
+  }
+  return owners[0]||null;
+}
+function vrfCollisions(){
+  var map={};
+  (S.reserves||[]).forEach(function(r){
+    if(!r||String(r.status||"")==="Rejected") return;
+    var nos={};
+    var vn=String(r.vrfNo||"").trim();
+    if(vn) nos[vn]=1;
+    (r.vrfs||[]).forEach(function(x){ x=String(x||"").trim(); if(x) nos[x]=1; });
+    Object.keys(nos).forEach(function(no){
+      (map[no]=map[no]||[]).push(r);
+    });
+  });
+  var out=[];
+  Object.keys(map).forEach(function(no){
+    if(map[no].length>1) out.push({vrf:no, reserves:map[no]});
+  });
+  return out;
 }
 async function remintHeldVrfCollisions(){
   var changes=[];
@@ -1255,8 +1328,11 @@ async function remintHeldVrfCollisions(){
         varianceTol:S.cfg.varianceTol,nextReserve:S.cfg.nextReserve,driveFolder:S.cfg.driveFolder||""});
     }catch(e){}
   }
-  await saveReserves();
+  await saveReserves(changes.map(function(c){ return c.reserve; }));
   for(var ci=0;ci<changes.length;ci++){
+    /* Photos on a number that is already posted, printed, or liquidated
+       belong to that VRF. Do not copy them onto the reminted hold. */
+    if(vrfNumberSealed(changes[ci].from)) continue;
     try{ await copyPhotos(changes[ci].from, changes[ci].to); }catch(e){}
   }
   _vrfs=null;
@@ -1273,6 +1349,9 @@ function addHeldReserveVrfs(){
   (S.reserves||[]).forEach(function(r){
     var no=String((r&&r.vrfNo)||"").trim();
     if(!no||have[no]) return;
+    /* Two reserves claim this number. Do not paint the first one's unit
+       and lines onto the VRF — staff have to separate them. */
+    if(reservesOwningVrf(no).length>1) return;
     var lines=(r.draftLines||[]).filter(function(l){ return l&&l.cat; });
     var meter=reserveMeter(r);
     var deadHold=reserveSpendClosed(r);
@@ -1416,15 +1495,52 @@ function ledgerLineFromHoldRow(entry, row){
     notes:row.notes||entry.notes||""
   };
 }
+function lineIdentity(line){
+  return [String(line&&line.cat||"").trim().toLowerCase(),
+    String(line&&line.item||"").trim().toLowerCase(),
+    String(line&&line.supplier||"").trim().toLowerCase(),
+    String(line&&line.work||"").trim().toLowerCase()].join("\u0001");
+}
+/* Fill blanks from the reserve's own draft only when the line is the same
+   one, or there is a single draft. Never drafts[i] — that is how liquidating
+   one VRF copied the next VRF's fuel-reserve line onto this number. */
+function matchDraftLine(row, drafts, used){
+  drafts=drafts||[]; used=used||{};
+  var i;
+  if(row&&row.lineKey){
+    for(i=0;i<drafts.length;i++){
+      if(used[i]) continue;
+      if(drafts[i]&&String(drafts[i].lineKey||"")===String(row.lineKey)){ used[i]=1; return drafts[i]; }
+    }
+  }
+  var hasOwn=row&&(String(row.cat||"").trim()||String(row.item||"").trim()||String(row.supplier||"").trim());
+  if(hasOwn){
+    var id=lineIdentity(row);
+    for(i=0;i<drafts.length;i++){
+      if(used[i]) continue;
+      if(lineIdentity(drafts[i])===id){ used[i]=1; return drafts[i]; }
+    }
+    return null;
+  }
+  var left=[];
+  for(i=0;i<drafts.length;i++) if(!used[i]) left.push(i);
+  if(left.length===1){ used[left[0]]=1; return drafts[left[0]]; }
+  return null;
+}
 function closedLedgerLinesFromHold(entry, edits, stamp){
-  var reserve=reserveForVrf(entry);
+  var reserve=null;
+  try{ reserve=reserveForVrf(entry); }catch(e){ reserve=null; }
+  var no=String(entry&&entry.vrf||"").trim();
+  if(reserve && no && reservesOwningVrf(no).length!==1) reserve=null;
+  if(reserve && no && !reserveOwnsVrfNo(reserve, no)) reserve=null;
   var drafts=((reserve&&reserve.draftLines)||[]).filter(function(l){ return l&&(l.cat||l.item); });
+  var used={};
   var rows=(entry&&entry.rows&&entry.rows.length)?entry.rows:[{
     date:entry&&entry.date, vrf:entry&&entry.vrf, qty:0, price:0,
     total:entry&&entry.total, reserve:entry&&entry.reserve
   }];
   return rows.map(function(row,i){
-    var draft=drafts[i]||{};
+    var draft=matchDraftLine(row, drafts, used)||{};
     var merged=Object.assign({}, row||{});
     if(!merged.cat&&draft.cat) merged.cat=draft.cat;
     if((merged.liters==null||merged.liters==="")&&draft.liters!=null) merged.liters=draft.liters;
@@ -1433,10 +1549,11 @@ function closedLedgerLinesFromHold(entry, edits, stamp){
     if(!merged.unit&&draft.unit) merged.unit=draft.unit;
     if(!merged.work&&draft.work) merged.work=draft.work;
     var base=ledgerLineFromHoldRow(entry, merged);
+    if(no) base.vrf=no;
     var next=applyLiquidationLine(base, edits&&edits[i], stamp, "bought");
     delete next.src;
     return next;
-  }).filter(function(row){ return row&&String(row.vrf||"").trim(); });
+  }).filter(function(row){ return row&&String(row.vrf||"").trim()&&(!no||String(row.vrf)===no); });
 }
 function seedZeroLines(entry, stamp, outcome){
   var seeds=(entry&&entry.rows&&entry.rows.length)?entry.rows:[{}];
@@ -1449,53 +1566,75 @@ function seedZeroLines(entry, stamp, outcome){
     return next;
   });
 }
+function rowsConfinedToVrf(rows, vrfNo){
+  var no=String(vrfNo||"").trim();
+  (rows||[]).forEach(function(row){
+    if(!row||String(row.vrf)!==no){
+      var err=new Error("Refusing to write VRF "+(row&&row.vrf)+" while saving VRF "+no+".");
+      err.code="vrf_mismatch";
+      throw err;
+    }
+  });
+  return rows||[];
+}
 async function liquidateVrf(entry,edits,added,by,note,outcome){
+  var no=String(entry&&entry.vrf||"").trim();
+  if(!no) throw new Error("VRF number is required.");
+  var ownerNo=entry.reserve||"";
+  assertSingleVrfOwner(no, ownerNo||null);
   outcome=outcome||liquidationOutcome(entry.rows, edits, added);
   var stamp={at:iso(),by:by||"",note:note||"",outcome:outcome};
-  var touched={};
   var dead=outcome==="cancelled"||outcome==="not-bought";
   if(dead){
-    var hits=ledgerRowsForVrf(entry.vrf, true);
+    var hits=ledgerRowsForVrf(no, true);
     if(!hits.length){
-      var seeded=seedZeroLines(entry, stamp, outcome);
-      var mkSeed=seeded[0].month;
-      S.ledger[mkSeed]=(S.ledger[mkSeed]||[]).concat(seeded);
-      touched[mkSeed]=1;
+      var seeded=rowsConfinedToVrf(seedZeroLines(entry, stamp, outcome), no);
+      await replaceLedgerVrf(seeded[0].month, no, seeded);
     }else{
+      var byDead={};
       hits.forEach(function(hit){
-        var next=applyLiquidationLine(hit.row,{remove:true},stamp,outcome);
+        var next=applyLiquidationLine(Object.assign({}, hit.row),{remove:true},stamp,outcome);
         delete next.src;
-        hit.arr[hit.idx]=next;
-        touched[hit.mk]=1;
+        next.vrf=no;
+        (byDead[hit.mk]=byDead[hit.mk]||[]).push(next);
       });
+      var deadMonths=Object.keys(byDead);
+      for(var di=0;di<deadMonths.length;di++){
+        await replaceLedgerVrf(deadMonths[di], no, rowsConfinedToVrf(byDead[deadMonths[di]], no));
+      }
     }
   }else{
     var reserveForPlan=reserveForVrf(entry);
-    var plan=planLiquidationLedgerWrite(entry, reserveForPlan, ledgerRowsForVrf(entry.vrf).length);
+    var plan=planLiquidationLedgerWrite(entry, reserveForPlan, ledgerRowsForVrf(no).length);
     if(plan==="seed"){
       /* Keep this VRF number. Do not remint, and do not require a part
          category — the lines on the form are what staff are closing. */
-      var seeded=closedLedgerLinesFromHold(entry, edits, stamp);
+      var seeded=rowsConfinedToVrf(closedLedgerLinesFromHold(entry, edits, stamp), no);
       var byMk={};
       seeded.forEach(function(row){
         var mk=row.month||iso().slice(0,7);
         row.month=mk;
+        row.vrf=no;
         (byMk[mk]=byMk[mk]||[]).push(row);
       });
       var seedMonths=Object.keys(byMk);
       for(var si=0;si<seedMonths.length;si++){
         await appendLedger(seedMonths[si], byMk[seedMonths[si]]);
-        touched[seedMonths[si]]=1;
       }
     }else if(plan==="update"){
+      var byUp={};
       (entry.rows||[]).forEach(function(r,i){
-        var mk=r.month, arr=S.ledger[mk]; if(!arr) return;
-        var idx=arr.indexOf(r); if(idx<0) return;
-        var next=applyLiquidationLine(r, edits[i], stamp, "bought");
+        if(!r||String(r.vrf)!==no) return;
+        var mk=r.month||monthKey(entry.date)||iso().slice(0,7);
+        var next=applyLiquidationLine(Object.assign({}, r), edits&&edits[i], stamp, "bought");
         delete next.src;
-        arr[idx]=next;
-        touched[mk]=1;
+        next.vrf=no;
+        (byUp[mk]=byUp[mk]||[]).push(next);
       });
+      var upMonths=Object.keys(byUp);
+      for(var ui=0;ui<upMonths.length;ui++){
+        await replaceLedgerVrf(upMonths[ui], no, rowsConfinedToVrf(byUp[upMonths[ui]], no));
+      }
     }
   }
   if(!dead && added&&added.length){
@@ -1505,7 +1644,7 @@ async function liquidateVrf(entry,edits,added,by,note,outcome){
     var extra=added.filter(function(a2){ return a2.cat; }).map(function(a2){
       var sp=partSpec(a2.cat);
       var qty=parseFloat(a2.qty)||0, price=parseFloat(a2.price)||0;
-      return {month:mk0, date:entry.date, vrf:String(entry.vrf), veh:entry.veh,
+      return {month:mk0, date:entry.date, vrf:no, veh:entry.veh,
         name:v?v.desc:(base.name||""),
         cat:a2.cat, sub:sp?sp.sub:(isFuel(a2.cat)?"Fuel":""),
         grp:isFuel(a2.cat)?"Fuel":"Maintenance",
@@ -1517,11 +1656,7 @@ async function liquidateVrf(entry,edits,added,by,note,outcome){
         vstatus:"Closed", liq:stamp, addedAtLiquidation:true,
         notes:base.notes||""};
     });
-    if(extra.length){ S.ledger[mk0]=(S.ledger[mk0]||[]).concat(extra); touched[mk0]=1; }
-  }
-  for(var mk in touched){
-    if(!touched.hasOwnProperty(mk)) continue;
-    await writeDoc("ledger/"+mk,{month:mk,rows:S.ledger[mk]});
+    if(extra.length) await appendLedger(mk0, rowsConfinedToVrf(extra, no));
   }
   _vrfs=null; _lw=null; _cons=null; _inv=null;
   var rsvNo=entry.reserve||(reserveForVrf(entry)&&reserveForVrf(entry).no);
@@ -1534,41 +1669,73 @@ async function liquidateVrf(entry,edits,added,by,note,outcome){
       linkedNew=true;
     }
     await settleReserve(rsvNo, outcome, by, note);
-    if(linkedNew && reserveBy(rsvNo) && reserveBy(rsvNo).status==="Approved") await saveReserves();
+    if(linkedNew && reserveBy(rsvNo) && reserveBy(rsvNo).status==="Approved") await saveReserves(rsvNo);
   }
 }
 async function cancelApprovedVrf(entry, by, note){
   by=String(by||"").trim();
   note=String(note||"").trim()||"Purchase did not go through";
   if(!entry||!by) return null;
+  var screenNo=String(entry.vrf||"");
   var target=entry;
   try{ target=await materializeApprovedVrf(entry); }
-  catch(err){ target=entry; }
+  catch(err){
+    if(err&&(err.code==="vrf_mismatch"||err.code==="vrf_collision")) throw err;
+    target=entry;
+  }
+  if(String((target&&target.vrf)||"")!==screenNo){
+    var err=new Error("Stopped. Cancelling would have changed VRF "+(target&&target.vrf)+" instead of VRF "+screenNo+".");
+    err.code="vrf_mismatch";
+    throw err;
+  }
   var edits=((target&&target.rows)||[]).map(function(){ return {remove:true}; });
   await liquidateVrf(target||entry, edits, [], by, note, "cancelled");
   _vrfs=null;
-  return vrfByNo(String((target&&target.vrf)||entry.vrf));
+  return vrfByNo(screenNo);
 }
 
 /* Approving IS the VRF. The held number goes live the moment the office says
    yes, with the requested lines already on it, so the yard does the work and
    liquidates — there is no second approval to wait for. */
 async function postReserveVrf(r){
+  var want=String((r&&r.vrfNo)||"").trim();
   var already=String((r.vrfs||[])[0]||"");
-  if(already && vrfPostedInLedger(already)) return already;
+  /* vrfs[0] is this reserve's posted number only when it is the number on
+     the hold. Returning some other posted VRF is how a liquidate landed
+     on the wrong form. */
+  if(already && vrfPostedInLedger(already) && (!want || already===want) && reserveOwnsVrfNo(r, already)){
+    if(reservesOwningVrf(already).length>1){
+      var clash=new Error("VRF "+already+" is on more than one reserve. Not posting it again.");
+      clash.code="vrf_collision";
+      throw clash;
+    }
+    return already;
+  }
   var lines=(r.draftLines||[]).filter(function(l){ return l.cat; });
   if(!lines.length) return null;
   var prevNo=String(r.vrfNo||"").trim();
   if(shouldRemintHeldVrf(r)){
+    if(vrfNumberSealed(prevNo)){
+      var sealed=new Error("VRF "+prevNo+" is already posted, printed, or liquidated. Not renumbering it.");
+      sealed.code="vrf_mismatch";
+      throw sealed;
+    }
     var nxt=nextFreeVrf(S.cfg.nextVrf, r.no);
     r.vrfNo=String(nxt);
     if(nxt+1>(S.cfg.nextVrf||0)) S.cfg.nextVrf=nxt+1;
   }
-  var no=r.vrfNo||String(await claimVrf());
+  var no=String(r.vrfNo||"").trim()||String(await claimVrf());
   if(postedVrfNumbers()[String(no)]){
+    if(reserveOwnsPostedVrf(r)) return String(no);
+    if(r.printedAt||r.liquidatedAt||vrfNumberSealed(prevNo)){
+      var taken=new Error("VRF "+no+" is already posted. Not renumbering a printed or liquidated VRF.");
+      taken.code="vrf_mismatch";
+      throw taken;
+    }
     no=String(await claimVrf());
     r.vrfNo=String(no);
   }
+  assertSingleVrfOwner(String(no), r.no);
   var mk=monthKey(r.date)||iso().slice(0,7);
   var v=vehicle(r.veh);
   var rows=lines.map(function(l){
@@ -1592,8 +1759,8 @@ async function postReserveVrf(r){
       bypass:!!r.bypass,
       notes:note};
   });
-  await appendLedger(mk,rows);
-  try{ if(prevNo&&prevNo!==String(no)) await copyPhotos(prevNo, String(no)); }catch(e){}
+  await appendLedger(mk,rowsConfinedToVrf(rows, String(no)));
+  try{ if(prevNo&&prevNo!==String(no)&&!vrfNumberSealed(prevNo)) await copyPhotos(prevNo, String(no)); }catch(e){}
   try{ await copyPhotos(rsvOwner(r.no), String(no)); }catch(e){}
   return String(no);
 }
@@ -1621,18 +1788,45 @@ function vrfRowsInLedger(entry){
 /* An approved hold can sit on the log with no ledger lines (post missed, or the
    month was not indexed). Liquidate needs those lines in the ledger first. */
 async function materializeApprovedVrf(entry){
+  var no=String(entry&&entry.vrf||"").trim();
+  if(!no) return entry;
   if(vrfRowsInLedger(entry)) return entry;
-  var no=String(entry&&entry.vrf||"");
-  if(no&&vrfPostedInLedger(no)){ _vrfs=null; return vrfByNo(no)||entry; }
+  if(vrfPostedInLedger(no)){
+    _vrfs=null;
+    var hit=vrfByNo(no)||entry;
+    if(String(hit.vrf)!==no){
+      var wrong=new Error("VRF "+no+" is open, but the ledger came back as VRF "+hit.vrf+".");
+      wrong.code="vrf_mismatch";
+      throw wrong;
+    }
+    return hit;
+  }
   var r=reserveForVrf(entry);
   if(!r||String(r.status)!=="Approved") return entry;
+  if(String(r.vrfNo||"").trim() && String(r.vrfNo).trim()!==no){
+    var diff=new Error("VRF "+no+" is open, but RSV-"+r.no+" is numbered "+r.vrfNo+". Not liquidating a different VRF.");
+    diff.code="vrf_mismatch";
+    throw diff;
+  }
+  assertSingleVrfOwner(no, r.no);
   var made=await postReserveVrf(r);
+  if(String(made||"")!==no){
+    var moved=new Error("Stopped. Posting would save VRF "+(made||"?")+" instead of VRF "+no+".");
+    moved.code="vrf_mismatch";
+    throw moved;
+  }
   if(made&&(r.vrfs||[]).indexOf(String(made))<0){
     r.vrfs=(r.vrfs||[]).concat([String(made)]);
   }
-  if(made) await saveReserves();
+  if(made) await saveReserves(r.no);
   _vrfs=null;
-  return vrfByNo(String(made||no))||entry;
+  var back=vrfByNo(no);
+  if(!back||String(back.vrf)!==no){
+    var lost=new Error("VRF "+no+" did not come back as itself after posting.");
+    lost.code="vrf_mismatch";
+    throw lost;
+  }
+  return back;
 }
 async function saveEsigs(){
   await writeDoc("config/esigs", S.esigs||{});
@@ -1640,27 +1834,24 @@ async function saveEsigs(){
 async function saveVrfOdo(entry, n){
   var no=String(entry&&entry.vrf||"").trim();
   if(!no) return;
-  var touched={}, k, i, changed;
+  assertSingleVrfOwner(no, entry.reserve||null);
+  var k, i;
   for(k in S.ledger){
     if(!S.ledger.hasOwnProperty(k)) continue;
     var arr=S.ledger[k]||[];
-    changed=false;
+    var mine=[], any=false;
     for(i=0;i<arr.length;i++){
       if(!arr[i]||String(arr[i].vrf)!==no||arr[i].src==="reserve-hold") continue;
-      arr[i]=Object.assign({},arr[i],{odo:n});
-      changed=true;
+      mine.push(Object.assign({}, arr[i], {odo:n, vrf:no}));
+      any=true;
     }
-    if(changed){ S.ledger[k]=arr; touched[k]=1; }
-  }
-  for(k in touched){
-    if(!touched.hasOwnProperty(k)) continue;
-    await writeDoc("ledger/"+k,{month:k,rows:S.ledger[k]});
+    if(any) await replaceLedgerVrf(k, no, mine);
   }
   var r=reserveForVrf(entry);
-  if(r&&reserveOwnsVrfNo(r, no)){
+  if(r&&reserveOwnsVrfNo(r, no)&&reservesOwningVrf(no).length<=1){
     r.draftOdo=n==null?"":String(n);
     r.odoAtRequest=n;
-    await saveReserves();
+    await saveReserves(r.no);
   }
   _vrfs=null;
 }
@@ -1697,7 +1888,7 @@ async function settleReserve(no, outcome, by, note){
     r.actual=actual;
     r.status = rv.over ? "Flagged" : "Closed";
   }
-  await saveReserves();
+  await saveReserves(no);
 }
 function lineWork(r){ buildIndex(); var e=_lw.get(r); return e?e.work:"UNCLASS"; }
 function lineConfirmed(r){ buildIndex(); var e=_lw.get(r); return e?!!e.confirmed:false; }
@@ -1846,6 +2037,14 @@ async function readDoc(path){
   if(!S.db) return lsGet(path,null);
   try{ var s = await S.db.doc(path).get(); return s.exists ? thaw(s.data()) : null; }
   catch(e){ return lsGet(path,null); }
+}
+/* Ledger and reserve writes re-read the shared doc first. A failed read must
+   not fall back to this device's copy — that copy is how a stale phone
+   replaced VRF 5864 with VRF 5881's unit. */
+async function readDocLive(path){
+  if(!S.db) return lsGet(path,null);
+  var s=await S.db.doc(path).get();
+  return s.exists ? thaw(s.data()) : null;
 }
 async function writeDoc(path,body,opts){
   opts=opts||{};
@@ -2599,10 +2798,15 @@ function openSuppliersManager(opts){
 async function claimVrf(){
   function take(cur){
     var n=nextFreeVrf(cur);
+    if(vrfNumberTaken(n)) n=nextFreeVrf(n+1);
     S.cfg.nextVrf=n+1;
     return n;
   }
-  if(!S.db){ var n=take(S.cfg.nextVrf); await writeDoc(PATHS.cfg,S.cfg); return n; }
+  function persistCfg(){
+    return writeDoc(PATHS.cfg,{nextVrf:S.cfg.nextVrf,pass:S.cfg.pass,fuel:S.cfg.fuel||null,
+      varianceTol:S.cfg.varianceTol,nextReserve:S.cfg.nextReserve,driveFolder:S.cfg.driveFolder||""});
+  }
+  if(!S.db){ var n=take(S.cfg.nextVrf); await persistCfg(); return n; }
   for(var i=0;i<6;i++){
     try{
       var r = await S.db.doc("config/counter").acquire({holder:SID, ttlMs:6000});
@@ -2610,25 +2814,63 @@ async function claimVrf(){
         var s = await S.db.doc(PATHS.cfg).get();
         var cur = (s.exists && s.data().nextVrf) || S.cfg.nextVrf;
         var got=take(cur);
-        await writeDoc(PATHS.cfg,{nextVrf:S.cfg.nextVrf, pass:S.cfg.pass, fuel:S.cfg.fuel||null,
-          varianceTol:S.cfg.varianceTol, nextReserve:S.cfg.nextReserve, driveFolder:S.cfg.driveFolder||""});
+        await persistCfg();
         return got;
       }
-    }catch(e){ break; }
-    await new Promise(function(r){ setTimeout(r,450); });
+    }catch(e){ /* keep trying — do not hand out the local counter */ }
+    await new Promise(function(res){ setTimeout(res,450); });
   }
-  var f=take(S.cfg.nextVrf); await writeDoc(PATHS.cfg,S.cfg); return f;
+  var err=new Error("Could not reserve a VRF number. Another device may be using the counter — nothing was numbered. Try again.");
+  err.code="vrf_counter";
+  throw err;
 }
 
+async function replaceLedgerVrf(month, vrfNo, rows){
+  var no=String(vrfNo||"").trim();
+  if(!month||!no) throw new Error("VRF number and month are required.");
+  rowsConfinedToVrf(rows, no);
+  var doc=await readDocLive("ledger/"+month);
+  var cur=(doc&&Array.isArray(doc.rows))?doc.rows:[];
+  var kept=cur.filter(function(row){ return !row || String(row.vrf)!==no; });
+  var next=kept.concat(rows||[]);
+  S.ledger[month]=next;
+  _vrfs=null; _lw=null; _cons=null; _inv=null;
+  await writeDoc("ledger/"+month,{month:month,rows:next});
+  if((rows||[]).length){
+    var idx=await readDocLive("ledger/index");
+    var ms=(idx&&idx.months)?idx.months.slice():Object.keys(S.ledger);
+    if(ms.indexOf(month)<0){ ms.push(month); ms.sort(); await writeDoc("ledger/index",{months:ms}); }
+  }
+  return next;
+}
 async function appendLedger(month,rows){
-  var doc = await readDoc("ledger/"+month);
-  var cur = (doc&&doc.rows)||S.ledger[month]||[];
-  var next = cur.concat(rows);
+  rows=rows||[];
+  var no="";
+  for(var i=0;i<rows.length;i++){
+    var vn=String(rows[i]&&rows[i].vrf||"").trim();
+    if(!vn){
+      var missing=new Error("Refusing to write a ledger row with no VRF number.");
+      missing.code="vrf_mismatch";
+      throw missing;
+    }
+    if(!no) no=vn;
+    else if(vn!==no){
+      var mix=new Error("Refusing to write VRF "+vn+" while saving VRF "+no+".");
+      mix.code="vrf_mismatch";
+      throw mix;
+    }
+  }
+  if(!no) return;
+  var doc=await readDocLive("ledger/"+month);
+  var cur=(doc&&Array.isArray(doc.rows))?doc.rows:[];
+  var kept=cur.filter(function(row){ return !row || String(row.vrf)!==no; });
+  var mine=cur.filter(function(row){ return row && String(row.vrf)===no; });
+  var next=kept.concat(mine).concat(rows);
   S.ledger[month]=next;
   _vrfs=null; _lw=null; _cons=null;   /* the derived views are stale the moment a line lands */
   await writeDoc("ledger/"+month,{month:month,rows:next});
-  var idx = await readDoc("ledger/index");
-  var ms = (idx&&idx.months)||Object.keys(S.ledger);
+  var idx=await readDocLive("ledger/index");
+  var ms=(idx&&idx.months)?idx.months.slice():Object.keys(S.ledger);
   if(ms.indexOf(month)<0){ ms.push(month); ms.sort(); await writeDoc("ledger/index",{months:ms}); }
 }
 async function appendRows(key,rows){
@@ -2763,7 +3005,7 @@ async function logBypassFuelVrf(r, override){
       }]);
     }
   }
-  await saveReserves();
+  await saveReserves(r.no);
   return no;
 }
 
@@ -2818,19 +3060,78 @@ function reserveSpentLabel(r){
   if(r.actual!=null||r.status==="Closed"||r.status==="Flagged"||r.liquidatedAt) return peso(rv.actual||0);
   return rv.actual?peso(rv.actual):"—";
 }
-async function saveReserves(){
+function reserveVrfClaims(r){
+  var out=[], seen={};
+  function add(n){ n=String(n||"").trim(); if(!n||seen[n]) return; seen[n]=1; out.push(n); }
+  if(r){ add(r.vrfNo); (r.vrfs||[]).forEach(add); }
+  return out;
+}
+function collisionsInvolving(reserves, reserveNo){
+  var map={};
+  (reserves||[]).forEach(function(r){
+    if(!r||String(r.status||"")==="Rejected") return;
+    reserveVrfClaims(r).forEach(function(no){
+      (map[no]=map[no]||[]).push(r);
+    });
+  });
+  var hits=[];
+  Object.keys(map).forEach(function(no){
+    if(map[no].length<2) return;
+    if(!map[no].some(function(r){ return String(r.no)===String(reserveNo); })) return;
+    hits.push({vrf:no, reserves:map[no]});
+  });
+  return hits;
+}
+async function saveReserves(onlyNos){
+  /* Re-read the year, then write only the reserve numbers this action
+     changed. Other reserves — and every other VRF — stay as they were
+     on the shared workbook. */
+  var wanted={};
+  var list;
+  if(onlyNos==null) list=(S.reserves||[]).map(function(r){ return r&&r.no; });
+  else if(Array.isArray(onlyNos)) list=onlyNos;
+  else list=[onlyNos];
+  list.forEach(function(n){ if(n!=null&&String(n)!=="") wanted[String(n)]=1; });
   var byYear={};
-  S.reserves.forEach(function(r){
+  (S.reserves||[]).forEach(function(r){
+    if(!r||!wanted[String(r.no)]) return;
     var y=String((parseDate(r.date)||new Date()).getFullYear());
     (byYear[y]=byYear[y]||[]).push(r);
   });
   var years=Object.keys(byYear).sort();
   for(var i=0;i<years.length;i++){
-    await writeDoc("reserves/"+years[i],{year:years[i],rows:byYear[years[i]]});
+    var y=years[i];
+    var doc=await readDocLive("reserves/"+y);
+    var cur=(doc&&Array.isArray(doc.rows))?doc.rows.slice():[];
+    var incoming=byYear[y];
+    var index={};
+    cur.forEach(function(r,idx){ if(r) index[String(r.no)]=idx; });
+    for(var j=0;j<incoming.length;j++){
+      var rep=incoming[j];
+      var key=String(rep.no);
+      if(index[key]!=null) cur[index[key]]=rep;
+      else { index[key]=cur.length; cur.push(rep); }
+      var clashes=collisionsInvolving(cur, rep.no);
+      if(clashes.length){
+        var err=new Error("VRF "+clashes[0].vrf+" is on "+
+          clashes[0].reserves.map(function(r){ return "RSV-"+r.no; }).join(" and ")+
+          ". Not saving — a VRF number can belong to only one reserve.");
+        err.code="vrf_collision";
+        throw err;
+      }
+    }
+    await writeDoc("reserves/"+y,{year:y,rows:cur});
+    var others=(S.reserves||[]).filter(function(r){
+      return String((parseDate(r&&r.date)||new Date()).getFullYear())!==String(y);
+    });
+    S.reserves=others.concat(cur);
   }
-  if(years.join(",")!==S.rsvYears.join(",")){
-    S.rsvYears=years;
-    await writeDoc("reserves/index",{years:years});
+  if(years.length){
+    var merged=mergeIdList(S.rsvYears||[], years);
+    if(merged.join(",")!==(S.rsvYears||[]).join(",")){
+      S.rsvYears=merged;
+      await writeDoc("reserves/index",{years:merged});
+    }
   }
   /* A send-for-approval hold is only on the reserve log. Drop the VRF
      index so VRF Logs can show it as Requested without a full reload. */
@@ -6210,8 +6511,19 @@ function openReserve(no,asApprover){
     var atb=el("button","btn","Attach");
     atb.addEventListener("click",async function(){
       if(!sel.value) return;
+      var owners=reservesOwningVrf(sel.value).filter(function(o){ return String(o.no)!==String(r.no); });
+      if(owners.length){
+        toast("VRF "+sel.value+" is already on RSV-"+owners[0].no+". Not attaching it here.");
+        return;
+      }
       r.vrfs=(r.vrfs||[]).concat([sel.value]);
-      await saveReserves(); toast("VRF "+sel.value+" attached to RSV-"+r.no+".");
+      try{ await saveReserves(r.no); }
+      catch(err){
+        r.vrfs=(r.vrfs||[]).filter(function(x){ return String(x)!==String(sel.value); });
+        toast(err&&err.message||"Could not attach that VRF.");
+        return;
+      }
+      toast("VRF "+sel.value+" attached to RSV-"+r.no+".");
       render(); openReserve(r.no,asApprover);
     });
     row1.appendChild(atb);
@@ -6247,7 +6559,7 @@ function openReserve(no,asApprover){
         mkb.disabled=true; mkb.textContent="Creating…";
         try{
           var madeNo=await postReserveVrf(r);
-          if(madeNo){ r.vrfs=(r.vrfs||[]).concat([madeNo]); await saveReserves(); }
+          if(madeNo){ r.vrfs=(r.vrfs||[]).concat([madeNo]); await saveReserves(r.no); }
           toast(madeNo?("VRF "+madeNo+" created."):"Nothing to create — no lines on the request.");
         }catch(err){
           mkb.disabled=false; mkb.textContent="Create VRF "+(r.vrfNo||"")+" now";
@@ -6283,7 +6595,7 @@ function openReserve(no,asApprover){
       var rr=reserveVariance(Object.assign({},r,{actual:actual}));
       r.actual=actual; r.liquidatedAt=iso();
       r.status = rr.over ? "Flagged" : "Closed";
-      await saveReserves();
+      await saveReserves(r.no);
       toast(rr.over
         ? "RSV-"+r.no+" is "+(rr.pct*100).toFixed(1)+"% over — flagged for a decision."
         : "RSV-"+r.no+" closed at "+peso(actual)+".");
@@ -6326,7 +6638,7 @@ function openReserve(no,asApprover){
     jsv.addEventListener("click",async function(){
       if(!jt.value.trim()||!jw.value.trim()){ toast("Write the explanation and put your name to it."); return; }
       r.justification=jt.value.trim(); r.justifiedBy=jw.value.trim();
-      await saveReserves(); toast("Explanation saved.");
+      await saveReserves(r.no); toast("Explanation saved.");
       render(); openReserve(r.no,asApprover);
     });
     jact.appendChild(jsv);
@@ -6367,13 +6679,13 @@ function openReserve(no,asApprover){
         if(!dw.value.trim()){ toast("The decision has to carry a name."); return; }
         r.status="Closed"; r.varianceBy=dw.value.trim(); r.varianceAt=iso();
         r.varianceNote=dn.value.trim()||"Notice seen and closed";
-        await saveReserves(); toast("Notice on RSV-"+r.no+" closed.");
+        await saveReserves(r.no); toast("Notice on RSV-"+r.no+" closed.");
         m.remove(); render();
       });
       back.addEventListener("click",async function(){
         if(!dn.value.trim()){ toast("Say what you want explained."); return; }
         r.varianceNote=dn.value.trim(); r.justification=""; 
-        await saveReserves(); toast("Sent back to the yard for a fuller explanation.");
+        await saveReserves(r.no); toast("Sent back to the yard for a fuller explanation.");
         render(); openReserve(r.no,asApprover);
       });
       jb.appendChild(dec);
@@ -6437,7 +6749,7 @@ function openReserve(no,asApprover){
         r.approvedAt=iso(); r.decisionNote=an.value.trim();
         madeVrf=await postReserveVrf(r);
         if(madeVrf) r.vrfs=(r.vrfs||[]).concat([madeVrf]);
-        await saveReserves();
+        await saveReserves(r.no);
       }catch(err){
         okb.disabled=false; okb.textContent="Approve";
         toast("Could not approve it: "+(err&&err.message||"unknown error"));
@@ -6453,7 +6765,7 @@ function openReserve(no,asApprover){
       if(!aw.value.trim()||!an.value.trim()){ toast("A rejection needs a reason and a name."); return; }
       r.status="Rejected"; r.approvedBy=aw.value.trim(); r.approvedAt=iso();
       r.decisionNote=an.value.trim();
-      await saveReserves(); toast("RSV-"+r.no+" rejected.");
+      await saveReserves(r.no); toast("RSV-"+r.no+" rejected.");
       m.remove(); render();
     });
     arow.appendChild(okb); arow.appendChild(nob);
@@ -7424,6 +7736,16 @@ function vrfLogView(){
 
   function draw(){
     host.innerHTML="";
+    var clashes=vrfCollisions();
+    if(clashes.length){
+      var ban=el("div","banner warn");
+      ban.innerHTML="<b>A VRF number is on more than one reserve.</b> "+
+        clashes.map(function(c){
+          return "VRF "+esc(c.vrf)+" is on "+c.reserves.map(function(rv){ return "RSV-"+esc(String(rv.no)); }).join(" and ");
+        }).join(". ")+
+        ". Nothing will be saved against that number until the reserves are separated.";
+      host.appendChild(ban);
+    }
     var term=(S.logQ||"").trim().toLowerCase();
     var list=vrfIndex().filter(function(v){
       if(S.regWork&&v.works.indexOf(S.regWork)<0) return false;
@@ -7500,6 +7822,11 @@ function vrfLogView(){
           });
           row.appendChild(cqb);
         }
+        if(vrfMayEdit(v)){
+          var edb=el("button","btn sm","Edit");
+          edb.addEventListener("click",function(ev){ ev.stopPropagation(); openVrfEdit(v, function(){ render(); }); });
+          row.appendChild(edb);
+        }
         var ob=el("button","btn sm","Open");
         ob.addEventListener("click",function(ev){ ev.stopPropagation(); openVrf(v); });
         row.appendChild(ob);
@@ -7525,18 +7852,18 @@ function vrfLogView(){
 /* Writes a scope onto individual lines — a VRF that covers a change oil and an
    aircon repair keeps both, rather than being flattened to whichever came first. */
 async function setLineWork(entry,codes){
-  var touched={};
-  entry.rows.forEach(function(r,i){
-    var mk=r.month;
-    var arr=S.ledger[mk]; if(!arr) return;
-    var idx=arr.indexOf(r);
-    if(idx<0) return;
-    arr[idx]=Object.assign({},r,{work:codes[i]||""});
-    touched[mk]=1;
+  var no=String(entry&&entry.vrf||"").trim();
+  if(!no) return;
+  assertSingleVrfOwner(no, entry.reserve||null);
+  var byMk={};
+  (entry.rows||[]).forEach(function(r,i){
+    if(!r||String(r.vrf)!==no) return;
+    var mk=r.month||monthKey(entry.date)||iso().slice(0,7);
+    (byMk[mk]=byMk[mk]||[]).push(Object.assign({}, r, {work:codes[i]||"", vrf:no}));
   });
-  for(var mk in touched){
-    if(!touched.hasOwnProperty(mk)) continue;
-    await writeDoc("ledger/"+mk,{month:mk,rows:S.ledger[mk]});
+  var months=Object.keys(byMk);
+  for(var i=0;i<months.length;i++){
+    await replaceLedgerVrf(months[i], no, byMk[months[i]]);
   }
   _vrfs=null; _lw=null;
 }
@@ -7925,6 +8252,18 @@ function buildVrfDoc(entry,photos){
     pu.style.marginBottom="8px";
     d.appendChild(pu);
   }
+  var printAudits=vrfAuditList(entry);
+  if(printAudits.length){
+    var ah=el("div"); ah.style.margin="0 0 8px";
+    ah.appendChild(el("div","k","Corrections"));
+    printAudits.forEach(function(n){
+      var line=el("div");
+      line.style.cssText="font-size:10px;padding:1px 0";
+      line.textContent=(n.at||"—")+" · "+(n.by||"—")+" · "+n.field+" · "+(n.from||"—")+" → "+(n.to||"—");
+      ah.appendChild(line);
+    });
+    d.appendChild(ah);
+  }
 
   var t=el("table"), th=el("thead"), hr=el("tr");
   [["No.",""],["Part category",""],["Description / item",""],["Supplier",""],
@@ -8076,6 +8415,7 @@ async function entryWithPrintableSig(entry){
   return Object.assign({}, entry, {preparedSig:trimmed});
 }
 async function printVrf(entry,photos){
+  try{ markVrfPrinted(entry); }catch(e){}
   try{ entry=await entryWithPrintableSig(entry); }catch(e){}
   var ex=document.getElementById("pvSheet"); if(ex) ex.remove();
   var m=el("div","modal"); m.id="pvSheet";
@@ -8156,17 +8496,17 @@ function lightbox(src){
    it travels with the record; if none is set, the log falls back to searching
    the Drive folder named in the office settings. */
 async function setVrfDrive(entry,url){
-  var touched={};
-  entry.rows.forEach(function(r){
-    var mk=r.month, arr=S.ledger[mk]; if(!arr) return;
-    var idx=arr.indexOf(r); if(idx<0) return;
-    arr[idx]=Object.assign({},r,{driveUrl:url||""});
-    touched[mk]=1;
+  var no=String(entry&&entry.vrf||"").trim();
+  if(!no) return;
+  assertSingleVrfOwner(no, entry.reserve||null);
+  var byMk={};
+  (entry.rows||[]).forEach(function(r){
+    if(!r||String(r.vrf)!==no) return;
+    var mk=r.month||monthKey(entry.date)||iso().slice(0,7);
+    (byMk[mk]=byMk[mk]||[]).push(Object.assign({}, r, {driveUrl:url||"", vrf:no}));
   });
-  for(var mk in touched){
-    if(!touched.hasOwnProperty(mk)) continue;
-    await writeDoc("ledger/"+mk,{month:mk,rows:S.ledger[mk]});
-  }
+  var months=Object.keys(byMk);
+  for(var i=0;i<months.length;i++) await replaceLedgerVrf(months[i], no, byMk[months[i]]);
   _vrfs=null; _lw=null;
 }
 function vrfDrive(entry){
@@ -8280,6 +8620,197 @@ function askCancelVrf(entry, after){
 /* The VRF as finance and the yard both need to see it: the lines grouped under
    the jobs they belong to, the receipts attached, and a print that is the paper
    form. Confirming a job is line by line, because a VRF is line by line. */
+function vrfMayEdit(entry){
+  if(!entry||!String(entry.vrf||"").trim()) return false;
+  var st=String(entry.status||"");
+  return st==="Open"||st==="Requested"||st==="Closed";
+}
+function vrfAuditList(entry){
+  var seen={}, out=[];
+  function add(n){
+    if(!n||!n.field) return;
+    var k=[n.at,n.by,n.field,n.from,n.to].join("|");
+    if(seen[k]) return;
+    seen[k]=1; out.push(n);
+  }
+  ((entry&&entry.rows)||[]).forEach(function(r){ (r.audit||[]).forEach(add); });
+  var no=String(entry&&entry.vrf||"");
+  if(reservesOwningVrf(no).length<=1){
+    var rsv=reserveForVrf(entry);
+    if(rsv) (rsv.audit||[]).forEach(add);
+  }
+  out.sort(function(a,b){ return String(a.at||"").localeCompare(String(b.at||"")); });
+  return out;
+}
+function vrfHeaderSnapshot(entry){
+  var rsv=reserveForVrf(entry);
+  var work=(entry.works&&entry.works[0])||(rsv&&rsv.work)||((entry.rows||[])[0]&&entry.rows[0].work)||"";
+  var odo=vrfOdo(entry);
+  return {
+    veh:entry.veh||((entry.units||[])[0])||"",
+    project:entry.project||(rsv&&rsv.project)||"",
+    date:entry.date||"",
+    odo:odo==null?"":String(odo),
+    requestedBy:vrfRequestedBy(entry)||"",
+    purpose:entry.notes||(rsv&&(rsv.draftPurpose||rsv.scope))||"",
+    work:work||""
+  };
+}
+function headerAuditNotes(before, patch, by, at){
+  var fields=[["vehicle","veh"],["project","project"],["date","date"],["odometer","odo"],
+    ["requestedBy","requestedBy"],["purpose","purpose"],["job","work"]];
+  var notes=[];
+  fields.forEach(function(pair){
+    var from=before?before[pair[1]]:"";
+    var to=patch?patch[pair[1]]:"";
+    if(String(from==null?"":from)===String(to==null?"":to)) return;
+    notes.push({at:at||"", by:by||"", field:pair[0],
+      from:String(from==null?"":from), to:String(to==null?"":to)});
+  });
+  return notes;
+}
+async function markVrfPrinted(entry){
+  var no=String(entry&&entry.vrf||"").trim();
+  if(!no) return;
+  var r=reserveForVrf(entry);
+  if(!r||r.printedAt||!reserveOwnsVrfNo(r, no)) return;
+  if(reservesOwningVrf(no).length>1) return;
+  r.printedAt=iso();
+  try{ await saveReserves(r.no); }catch(e){}
+}
+async function saveVrfHeader(entry, patch, by){
+  var no=String(entry&&entry.vrf||"").trim();
+  if(!no) throw new Error("VRF number is required.");
+  assertSingleVrfOwner(no, entry.reserve||null);
+  var before=vrfHeaderSnapshot(entry);
+  var notes=headerAuditNotes(before, patch, by||signedInName(), iso());
+  if(!notes.length) return notes;
+  var master=vehicle(patch.veh);
+  var name=master?master.desc:"";
+  var posted=vrfPostedInLedger(no);
+  if(posted){
+    var oldMonths={}, groups={};
+    (entry.rows||[]).forEach(function(r){
+      if(!r||String(r.vrf)!==no) return;
+      var copy=Object.assign({}, r);
+      copy.vrf=no;
+      copy.veh=patch.veh;
+      if(name) copy.name=name;
+      copy.project=patch.project;
+      copy.date=patch.date||copy.date;
+      var mk=monthKey(patch.date)||copy.month||monthKey(entry.date)||iso().slice(0,7);
+      copy.month=mk;
+      copy.odo=parseOdo(patch.odo);
+      copy.requestedBy=patch.requestedBy;
+      copy.notes=patch.purpose;
+      if(patch.work) copy.work=patch.work;
+      copy.qty=r.qty; copy.price=r.price; copy.total=r.total;
+      copy.vstatus=r.vstatus; copy.liq=r.liq;
+      copy.audit=(r.audit||[]).concat(notes);
+      if(r.month) oldMonths[r.month]=1;
+      (groups[mk]=groups[mk]||[]).push(copy);
+    });
+    var mkList=Object.keys(oldMonths);
+    for(var i=0;i<mkList.length;i++){
+      if(!groups[mkList[i]]) await replaceLedgerVrf(mkList[i], no, []);
+    }
+    var dest=Object.keys(groups);
+    for(var j=0;j<dest.length;j++) await replaceLedgerVrf(dest[j], no, groups[dest[j]]);
+  }
+  var rsv=entry.reserve?reserveBy(entry.reserve):reserveForVrf(entry);
+  if(rsv && reserveOwnsVrfNo(rsv, no) && reservesOwningVrf(no).length<=1){
+    rsv.veh=patch.veh;
+    rsv.project=patch.project;
+    if(patch.date) rsv.date=patch.date;
+    rsv.draftOdo=patch.odo==null?"":String(patch.odo);
+    rsv.odoAtRequest=parseOdo(patch.odo);
+    rsv.requestedBy=patch.requestedBy;
+    rsv.draftPurpose=patch.purpose;
+    if(patch.work) rsv.work=patch.work;
+    rsv.audit=(rsv.audit||[]).concat(notes);
+    (rsv.draftLines||[]).forEach(function(l){ if(l&&patch.work) l.work=patch.work; });
+    await saveReserves(rsv.no);
+  }else if(!posted){
+    throw new Error("VRF "+no+" is not on the ledger and has no reserve of its own to correct.");
+  }
+  _vrfs=null;
+  return notes;
+}
+function openVrfEdit(entry, after){
+  if(!entry) return;
+  var ex=document.getElementById("editVrfSheet"); if(ex) ex.remove();
+  var snap=vrfHeaderSnapshot(entry);
+  var m=el("div","modal"); m.id="editVrfSheet";
+  var sheet=el("div","sheet"); sheet.style.maxWidth="640px";
+  var b=el("div"); b.style.padding="var(--space-5) var(--space-6)";
+  b.appendChild(el("h3",null,"Edit VRF "+entry.vrf));
+  b.appendChild(el("div","hint",
+    "Corrects the header only — vehicle, project, date, odometer, who asked, purpose, and job. Amounts, lines, and approval stay as they are. Each change is written on this VRF and on its own reserve."));
+  function fld(l,n){ var x=el("div","field"); x.appendChild(el("label",null,l)); x.appendChild(n); return x; }
+  var grid=el("div","f3"); grid.style.marginTop="var(--space-4)";
+  var dIn=el("input"); dIn.type="date"; dIn.value=snap.date||"";
+  var vSel=unitPicker(snap.veh, function(){}, {hint:"Search by code, name or plate."});
+  var pSel=projectPicker(snap.project, function(){}, {hint:"Project on this VRF."});
+  grid.appendChild(fld("Date", dIn));
+  grid.appendChild(fld("Vehicle", vSel));
+  grid.appendChild(fld("Project", pSel));
+  b.appendChild(grid);
+  var grid2=el("div","f3"); grid2.style.marginTop="var(--space-3)";
+  var oIn=el("input"); oIn.className="mono"; oIn.inputMode="numeric"; oIn.value=snap.odo||"";
+  var who=el("input"); who.value=snap.requestedBy||"";
+  var job=workSelect(snap.work, "— job type —");
+  grid2.appendChild(fld("Odometer", oIn));
+  grid2.appendChild(fld("Requested by", who));
+  grid2.appendChild(fld("Job type", job));
+  b.appendChild(grid2);
+  var pur=el("div","field"); pur.style.marginTop="var(--space-3)";
+  pur.appendChild(el("label",null,"Purpose"));
+  var pIn=el("input"); pIn.value=snap.purpose||"";
+  pur.appendChild(pIn); b.appendChild(pur);
+  var byF=el("div","field"); byF.style.cssText="margin-top:var(--space-3);max-width:280px";
+  byF.appendChild(el("label",null,"Your name"));
+  var byIn=el("input"); byIn.value=signedInName(); byIn.placeholder="signed-in name";
+  byF.appendChild(byIn); b.appendChild(byF);
+  var prior=vrfAuditList(entry);
+  if(prior.length){
+    var old=el("div"); old.style.marginTop="var(--space-3)";
+    old.appendChild(el("div","hint","Corrections already on this VRF"));
+    prior.forEach(function(n){
+      old.appendChild(el("div",null,(n.at||"—")+" · "+(n.by||"—")+" · "+n.field+" · "+(n.from||"—")+" → "+(n.to||"—")));
+    });
+    b.appendChild(old);
+  }
+  var msg=el("div","hint"); msg.style.marginTop="var(--space-2)";
+  b.appendChild(msg);
+  var acts=el("div"); acts.style.cssText="display:flex;gap:var(--space-2);justify-content:flex-end;margin-top:var(--space-5)";
+  var back=el("button","btn","Cancel");
+  back.addEventListener("click",function(){ m.remove(); });
+  var go=el("button","btn pri","Save correction");
+  go.addEventListener("click",async function(){
+    var vehCode=vSel.getCode?vSel.getCode():snap.veh;
+    if(!byIn.value.trim()){ msg.textContent="Put your name on the correction."; msg.style.color="var(--danger)"; return; }
+    if(!vehCode){ msg.textContent="Pick the vehicle."; msg.style.color="var(--danger)"; return; }
+    go.disabled=true; go.textContent="Saving…";
+    var patch={veh:vehCode, project:pSel.getCode?pSel.getCode():snap.project, date:dIn.value||snap.date,
+      odo:oIn.value, requestedBy:who.value.trim(), purpose:pIn.value, work:job.value||snap.work};
+    try{ await saveVrfHeader(entry, patch, byIn.value.trim()); }
+    catch(err){
+      go.disabled=false; go.textContent="Save correction";
+      msg.textContent=err&&err.message||"Could not save.";
+      msg.style.color="var(--danger)";
+      return;
+    }
+    m.remove();
+    toast("VRF "+entry.vrf+" header saved.");
+    if(after) after();
+    else render();
+  });
+  acts.appendChild(back); acts.appendChild(go);
+  b.appendChild(acts);
+  sheet.appendChild(b); m.appendChild(sheet);
+  m.addEventListener("click",function(e){ if(e.target===m) m.remove(); });
+  document.body.appendChild(m);
+}
 function confirmSheet(entry){ openVrf(entry); }
 function openVrf(entry,tab){
   var ex=document.getElementById("cfSheet"); if(ex) ex.remove();
@@ -8324,13 +8855,23 @@ function openVrf(entry,tab){
     odoSave.disabled=true;
     var n=parseOdo(odoEd.value);
     try{ await saveVrfOdo(entry, n); }
-    catch(err){ odoSave.disabled=false; toast("Could not save the odometer."); return; }
+    catch(err){ odoSave.disabled=false; toast(err&&err.message||"Could not save the odometer."); return; }
     toast(n==null?"Odometer cleared on VRF "+entry.vrf+".":"Odometer "+nnum(n)+" saved on VRF "+entry.vrf+".");
     var fresh=vrfByNo(entry.vrf)||entry;
     openVrf(fresh, tab);
   });
   odoRow.appendChild(odoEd); odoRow.appendChild(odoSave);
   b.appendChild(odoRow);
+  var audits=vrfAuditList(entry);
+  if(audits.length){
+    var hist=el("div"); hist.style.marginTop="var(--space-3)";
+    hist.appendChild(el("div","hint","Corrections"));
+    audits.forEach(function(n){
+      hist.appendChild(el("div",null,(n.at||"—")+" · "+(n.by||"—")+" · "+n.field+
+        " · "+(n.from||"—")+" → "+(n.to||"—")));
+    });
+    b.appendChild(hist);
+  }
 
   var waiting=vrfAwaitingApproval(entry);
   if(waiting){
@@ -8359,6 +8900,16 @@ function openVrf(entry,tab){
       askCancelVrf(entry, function(){ m.remove(); render(); });
     });
     tabs.appendChild(cxlTop);
+  }
+  if(vrfMayEdit(entry)){
+    var edTop=el("button","btn","Edit");
+    edTop.addEventListener("click",function(){
+      openVrfEdit(entry, function(){
+        var fresh=vrfByNo(entry.vrf)||entry;
+        openVrf(fresh, tab);
+      });
+    });
+    tabs.appendChild(edTop);
   }
   var pr=el("button","btn","Print / save as PDF");
   pr.addEventListener("click",async function(){
@@ -8519,14 +9070,22 @@ function openVrf(entry,tab){
       if(entry.status!=="Closed") rop.hidden=true;
       rop.addEventListener("click",async function(){
         rop.disabled=true;
-        var touched={};
-        entry.rows.forEach(function(r){
-          var mk=r.month, arr=S.ledger[mk]; if(!arr) return;
-          var idx=arr.indexOf(r); if(idx<0) return;
-          arr[idx]=Object.assign({},r,{vstatus:"Open"}); touched[mk]=1;
-        });
-        for(var mk in touched){ if(touched.hasOwnProperty(mk))
-          await writeDoc("ledger/"+mk,{month:mk,rows:S.ledger[mk]}); }
+        try{
+          var no=String(entry.vrf||"");
+          assertSingleVrfOwner(no, entry.reserve||null);
+          var byMk={};
+          (entry.rows||[]).forEach(function(r){
+            if(!r||String(r.vrf)!==no) return;
+            var mk=r.month||monthKey(entry.date)||iso().slice(0,7);
+            (byMk[mk]=byMk[mk]||[]).push(Object.assign({}, r, {vstatus:"Open", vrf:no}));
+          });
+          var months=Object.keys(byMk);
+          for(var ri=0;ri<months.length;ri++) await replaceLedgerVrf(months[ri], no, byMk[months[ri]]);
+        }catch(err){
+          rop.disabled=false;
+          toast(err&&err.message||"Could not reopen VRF "+entry.vrf+".");
+          return;
+        }
         _vrfs=null; _lw=null; _cons=null;
         toast("VRF "+entry.vrf+" reopened.");
         render(); var e2=vrfByNo(entry.vrf); if(e2) openVrf(e2,"liq");
@@ -8782,7 +9341,9 @@ function openVrf(entry,tab){
           catch(err){
             if(outcome!=="not-bought"){
               closeBtn.disabled=false; syncLiq();
-              toast("Could not post the lines for VRF "+entry.vrf+"."); return;
+              toast((err&&(err.code==="vrf_mismatch"||err.code==="vrf_collision")&&err.message)||
+                ("Could not post the lines for VRF "+entry.vrf+"."));
+              return;
             }
             target=entry;
           }
@@ -8796,7 +9357,18 @@ function openVrf(entry,tab){
             : "VRF "+entry.vrf+" is not on the ledger yet, so it cannot be liquidated.");
           return;
         }
-        await liquidateVrf(prePlan==="seed"?entry:target,edits,added,lby.value.trim(),lnt.value.trim(),outcome);
+        if(String((target&&target.vrf)||"")!==String(entry.vrf)){
+          closeBtn.disabled=false; syncLiq();
+          toast("Stopped. That would have changed VRF "+(target&&target.vrf)+" instead of VRF "+entry.vrf+".");
+          return;
+        }
+        try{
+          await liquidateVrf(prePlan==="seed"?entry:target,edits,added,lby.value.trim(),lnt.value.trim(),outcome);
+        }catch(err){
+          closeBtn.disabled=false; syncLiq();
+          toast(err&&err.message||"Could not liquidate VRF "+entry.vrf+".");
+          return;
+        }
         var rr2=(target.reserve||entry.reserve)?reserveBy(target.reserve||entry.reserve):null;
         var done=vrfByNo(target.vrf||entry.vrf);
         var shown=outcome==="not-bought"?0:(done?done.total:null);
@@ -9537,7 +10109,7 @@ async function sendForApproval(d,btn){
       }
     }
     S.reserves.push(hold);
-    await saveReserves();
+    await saveReserves(hold.no);
     if(d.photos&&d.photos.length){
       btn.textContent="Saving photos…";
       for(var pi=0;pi<d.photos.length;pi++){
@@ -9559,7 +10131,7 @@ async function sendForApproval(d,btn){
     else openReserve(no);
   }catch(e){
     btn.disabled=false; btn.textContent="Send for approval";
-    toast("Could not send it. Nothing was saved — try again.");
+    toast((e&&e.message)||"Could not send it. Nothing was saved — try again.");
   }
 }
 
@@ -9764,7 +10336,9 @@ function fuelView(){
     if(L<=0){ toast("Containers must be at least 1."); return; }
     if(L>f.onHand){ toast("Only "+nnum(f.onHand,0)+" L on hand — record a delivery first."); return; }
     sub.disabled=true; sub.textContent="Recording…";
-    var no=await claimVrf();
+    var no;
+    try{ no=await claimVrf(); }
+    catch(err){ sub.disabled=false; sub.textContent="Record dispense"; toast(err&&err.message||"Could not reserve a VRF number."); return; }
     var rsvNo=rsel.value;
     await appendRows("withdrawals",[{date:dt.value,vrf:String(no),vehicle:vs.getCode(),project:ps.getCode(),
       fuel:"Diesel",cont:parseFloat(cn.value)||0,liters:L,cost:null,rate:null,
@@ -9784,7 +10358,7 @@ function fuelView(){
     var rr=reserveBy(rsvNo);
     if(rr){
       if((rr.vrfs||[]).indexOf(String(no))<0) rr.vrfs=(rr.vrfs||[]).concat([String(no)]);
-      await saveReserves();
+      await saveReserves(rr.no);
     }
     toast("Dispensed "+nnum(L,0)+" L on VRF "+no+" against RSV-"+rsvNo+".");
     render();
@@ -9873,7 +10447,9 @@ function fuelView(){
     var L=(parseFloat(bcn.value)||0)*CONTAINER_L, pr=parseFloat(bpl.value)||0;
     if(!(L>0)||!(pr>0)){ toast("Containers and price per litre are both needed."); return; }
     bsv.disabled=true; bsv.textContent="Recording…";
-    var no=await claimVrf();
+    var no;
+    try{ no=await claimVrf(); }
+    catch(err){ bsv.disabled=false; bsv.textContent="Record delivery"; toast(err&&err.message||"Could not reserve a VRF number."); return; }
     await appendRows("purchases",[{date:bdt.value,vrf:String(no),supplier:bsup.value,
       fuel:"Diesel",cont:parseFloat(bcn.value)||0,liters:L,pricePerL:pr,total:L*pr,
       remarks:"Received by "+(brc.value||"—"),reserve:brs.value}]);
@@ -9888,7 +10464,7 @@ function fuelView(){
         bytes:bphotos[pi].bytes,caption:bphotos[pi].caption,by:brc.value}); }catch(e){}
     }
     var brr=reserveBy(brs.value);
-    if(brr){ brr.vrfs=(brr.vrfs||[]).concat([String(no)]); await saveReserves(); }
+    if(brr){ brr.vrfs=(brr.vrfs||[]).concat([String(no)]); await saveReserves(brr.no); }
     toast(nnum(L,0)+" L received on VRF "+no+" against RSV-"+brs.value+".");
     render();
   });
@@ -10089,7 +10665,7 @@ function downView(){
       proofs:[],status:"Open",doneAt:"",doneBy:"",verifiedAt:"",verifiedBy:"",verifyNotes:""}]);
     if(mrsv.value){
       var rr2=reserveBy(mrsv.value);
-      if(rr2){ rr2.jo=String(n); await saveReserves(); }
+      if(rr2){ rr2.jo=String(n); await saveReserves(rr2.no); }
     }
     toast("JO-"+n+" raised against "+mvs.getCode()+
       (mrsv.value?" under RSV-"+mrsv.value:"")+".");
