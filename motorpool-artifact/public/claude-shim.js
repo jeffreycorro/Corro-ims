@@ -413,6 +413,9 @@
               return { ok: true };
             });
           },
+          merge: function (spec) {
+            return dbCall("merge", { path: pathArg, spec: spec || {} });
+          },
           acquire: function (options) {
             var holder = (options && options.holder) || getHolder();
             return dbCall("acquire", { path: pathArg, holder: holder, ttlSeconds: options && options.ttlSeconds }).then(

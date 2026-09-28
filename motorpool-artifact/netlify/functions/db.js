@@ -7,8 +7,11 @@ const {
   deleteDoc,
   getDoc,
   listCollection,
+  listIds,
   setDoc,
+  setDocIfUpdatedAt,
 } = require("../lib/supabase");
+const { applyClientMerge } = require("../lib/doc-merge");
 const { formatManilaIso } = require("../lib/manila");
 
 function snapshotFromRow(id, row) {
@@ -85,6 +88,35 @@ exports.handler = async (event) => {
       });
     }
 
+    if (op === "merge") {
+      const spec = body.spec;
+      if (!spec || typeof spec !== "object" || Array.isArray(spec)) {
+        return json(400, { error: "spec is required", code: "bad_request" });
+      }
+      const io = {
+        async getRecord(collection, id) {
+          const row = await getDoc(collection, id);
+          if (!row || row.data == null) return { data: null, updated_at: null };
+          return { data: row.data, updated_at: row.updated_at || null };
+        },
+        async cas(collection, id, data, updatedAt) {
+          return setDocIfUpdatedAt(collection, id, data, updatedAt);
+        },
+        async set(collection, id, data) {
+          const row = await setDoc(collection, id, data);
+          return row;
+        },
+      };
+      const result = await applyClientMerge(spec, io);
+      return json(200, Object.assign({ ok: true }, result, tz));
+    }
+
+    if (op === "listIds") {
+      const collection = assertCollection(body.collection || body.name);
+      const ids = await listIds(collection);
+      return json(200, { collection, ids, ...tz });
+    }
+
     if (op === "list") {
       const collection = assertCollection(body.collection || body.name);
       const filters = normalizeListFilters(body.filters || body.where);
@@ -100,6 +132,8 @@ exports.handler = async (event) => {
     return json(400, { error: `Unknown op: ${op}` });
   } catch (err) {
     const status = err.statusCode || 500;
-    return json(status, { error: err.message || "Database error" });
+    const payload = { error: err.message || "Database error" };
+    if (err && err.code) payload.code = err.code;
+    return json(status, payload);
   }
 };

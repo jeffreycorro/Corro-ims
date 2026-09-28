@@ -11,6 +11,7 @@
  */
 
 const { manilaDate, manilaYear } = require("./manila");
+const { mergeLedgerRows, mergeReserveRows } = require("./doc-merge");
 
 function approveError(statusCode, code, error) {
   const err = new Error(error);
@@ -458,59 +459,128 @@ function configFromDoc(doc) {
   };
 }
 
-async function loadSnapshot(store) {
-  const [reservesIndex, listedReserves, ledgerIndex, listedLedger, cfgDoc, vehicles, parts] =
+async function readRec(store, collection, id) {
+  if (store.getRecord) {
+    const rec = await store.getRecord(collection, id);
+    if (!rec || rec.data == null) return { data: null, updated_at: null };
+    return { data: rec.data, updated_at: rec.updated_at || null };
+  }
+  const data = await store.get(collection, id);
+  return { data: data == null ? null : data, updated_at: null };
+}
+
+async function listIdsOf(store, collection) {
+  if (store.listIds) return store.listIds(collection);
+  const rows = await store.list(collection);
+  return (rows || []).map((row) => String(row && row.id != null ? row.id : ""));
+}
+
+function findPendingHold(reserves, key) {
+  const pending = pendingHolds(reserves);
+  if (!key) return null;
+  if (key.kind === "reserve") {
+    const hits = pending.filter((r) => normNo(r.no) === key.no);
+    if (hits.length > 1) {
+      throw approveError(
+        409,
+        "ambiguous",
+        `RSV-${key.no} matches ${hits.length} pending holds — refusing to guess`
+      );
+    }
+    return hits[0] || null;
+  }
+  const byVrf = pending.filter((r) => normNo(r.vrfNo) === key.no);
+  if (byVrf.length > 1) {
+    throw approveError(
+      409,
+      "ambiguous",
+      `VRF ${key.no} matches ${byVrf.length} pending holds — refusing to guess`
+    );
+  }
+  if (byVrf.length === 1) return byVrf[0];
+  if (key.bareNumber) {
+    const byReserve = pending.filter((r) => normNo(r.no) === key.no);
+    if (byReserve.length > 1) {
+      throw approveError(
+        409,
+        "ambiguous",
+        `${key.no} matches ${byReserve.length} pending reserve numbers — refusing to guess`
+      );
+    }
+    if (byReserve.length === 1) return byReserve[0];
+  }
+  return null;
+}
+
+/**
+ * Load the reserve year and the one ledger month this VRF belongs to.
+ * Other months stay on the server — approving must not download the workbook.
+ */
+async function loadSnapshot(store, key) {
+  const [reserveIds, ledgerIds, reservesIndexRec, ledgerIndexRec, cfgRec, vehiclesRec, partsRec] =
     await Promise.all([
-      store.get("reserves", "index"),
-      store.list("reserves"),
-      store.get("ledger", "index"),
-      store.list("ledger"),
-      store.get("config", "app"),
-      store.get("master", "vehicles"),
-      store.get("master", "parts"),
+      listIdsOf(store, "reserves"),
+      listIdsOf(store, "ledger"),
+      readRec(store, "reserves", "index"),
+      readRec(store, "ledger", "index"),
+      readRec(store, "config", "app"),
+      readRec(store, "master", "vehicles"),
+      readRec(store, "master", "parts"),
     ]);
 
-  const years = mergeIds(listedReserves, (reservesIndex && reservesIndex.years) || [], /^\d{4}$/);
+  const reservesIndex = reservesIndexRec.data;
+  const ledgerIndex = ledgerIndexRec.data;
+  const years = mergeIds(reserveIds, (reservesIndex && reservesIndex.years) || [], /^\d{4}$/);
   if (!years.length) years.push(String(manilaYear()));
 
-  const yearDocs = await Promise.all(years.map((y) => store.get("reserves", y)));
+  const yearRecs = await Promise.all(years.map((y) => readRec(store, "reserves", y)));
+  const reserveDocs = {};
   const reserves = [];
-  yearDocs.forEach((doc) => {
-    if (doc && Array.isArray(doc.rows)) {
-      doc.rows.forEach((row) => {
-        if (row) reserves.push(thaw(row));
-      });
-    }
+  years.forEach((y, i) => {
+    const rec = yearRecs[i];
+    const rows =
+      rec && rec.data && Array.isArray(rec.data.rows) ? rec.data.rows.map(thaw) : [];
+    reserveDocs[y] = { rows, updated_at: rec && rec.updated_at };
+    rows.forEach((row) => {
+      if (row) reserves.push(row);
+    });
   });
 
-  const months = mergeIds(listedLedger, (ledgerIndex && ledgerIndex.months) || [], /^\d{4}-\d{2}$/);
-  reserves.forEach((r) => {
-    const mk = monthKey(r && r.date);
-    if (mk && months.indexOf(mk) < 0) months.push(mk);
-  });
-  months.sort();
-
-  const monthDocs = await Promise.all(months.map((m) => store.get("ledger", m)));
+  const peek = findPendingHold(reserves, key);
+  const targetMonth = peek ? monthKey(peek.date) || String(manilaDate()).slice(0, 7) : null;
+  const monthRec = targetMonth ? await readRec(store, "ledger", targetMonth) : { data: null, updated_at: null };
+  const months = mergeIds(ledgerIds, (ledgerIndex && ledgerIndex.months) || [], /^\d{4}-\d{2}$/);
+  let ledgerIndexDirty = false;
   const ledgerByMonth = {};
   const ledgerRows = [];
-  months.forEach((m, i) => {
-    const doc = monthDocs[i];
-    const rows = doc && Array.isArray(doc.rows) ? doc.rows.map(thaw) : [];
-    ledgerByMonth[m] = rows;
+  if (targetMonth) {
+    const rows =
+      monthRec && monthRec.data && Array.isArray(monthRec.data.rows)
+        ? monthRec.data.rows.map(thaw)
+        : [];
+    ledgerByMonth[targetMonth] = rows;
     rows.forEach((row) => ledgerRows.push(row));
-  });
+    if (months.indexOf(targetMonth) < 0) {
+      months.push(targetMonth);
+      ledgerIndexDirty = true;
+    }
+  }
+  months.sort();
 
   return {
     reserves,
+    reserveDocs,
     reserveYears: years,
     ledgerRows,
     ledgerByMonth,
     ledgerMonths: months.slice(),
-    ledgerIndexDirty: false,
-    cfg: configFromDoc(cfgDoc),
+    ledgerIndexDirty,
+    ledgerStamp: targetMonth ? monthRec && monthRec.updated_at : null,
+    targetMonth,
+    cfg: configFromDoc(cfgRec.data),
     cfgDirty: false,
-    vehicles: thaw(vehicles) || { rows: [] },
-    parts: thaw(parts) || { rows: [] },
+    vehicles: thaw(vehiclesRec.data) || { rows: [] },
+    parts: thaw(partsRec.data) || { rows: [] },
   };
 }
 
@@ -525,6 +595,31 @@ function configPayload(cfg) {
   };
 }
 
+async function writeVersioned(store, collection, id, data, updatedAt, remix) {
+  const limit = 3;
+  let stamp = updatedAt || null;
+  let payload = data;
+  for (let attempt = 0; attempt < limit; attempt++) {
+    if (attempt > 0) {
+      const rec = await readRec(store, collection, id);
+      stamp = rec.updated_at;
+      payload = remix(rec.data);
+    }
+    if (stamp && store.cas && attempt < limit - 1) {
+      try {
+        await store.cas(collection, id, payload, stamp);
+        return;
+      } catch (err) {
+        if (err && err.code === "conflict") continue;
+        throw err;
+      }
+    }
+    await store.set(collection, id, payload);
+    return;
+  }
+  throw approveError(409, "conflict", "The workbook changed while approving. Try again.");
+}
+
 async function persistApprove(store, snapshot, result) {
   const year = yearOf(result.hold.date);
   const vrfNo = String(result.payload.vrf);
@@ -537,31 +632,40 @@ async function persistApprove(store, snapshot, result) {
       );
     }
   });
-  const freshYear = await store.get("reserves", year);
-  const freshReserves =
-    freshYear && Array.isArray(freshYear.rows) ? freshYear.rows.map(thaw) : [];
-  const holdNo = String(result.hold.no);
-  let placed = false;
-  const yearRows = freshReserves.map((r) => {
-    if (r && String(r.no) === holdNo) {
-      placed = true;
-      return result.hold;
-    }
-    return r;
-  });
-  if (!placed) yearRows.push(result.hold);
-
-  const freshMonth = await store.get("ledger", result.month);
-  const freshRows =
-    freshMonth && Array.isArray(freshMonth.rows) ? freshMonth.rows.map(thaw) : [];
-  const kept = freshRows.filter((row) => !row || String(row.vrf) !== vrfNo);
-  const monthRows = kept.concat(result.rows || []);
+  const yearDoc = (snapshot.reserveDocs && snapshot.reserveDocs[year]) || { rows: [], updated_at: null };
+  const yearRows = mergeReserveRows(yearDoc.rows || [], result.hold);
+  const monthBase = (snapshot.ledgerByMonth && snapshot.ledgerByMonth[result.month]) || [];
+  /* applyApproveFromHold already concatenated this VRF onto the month copy.
+     Replace with the approved lines so a retry cannot append them twice. */
+  const monthRows = mergeLedgerRows(monthBase, vrfNo, result.rows || [], "replace");
   const writes = [
-    store.set("reserves", year, { year, rows: yearRows }),
-    store.set("ledger", result.month, {
-      month: result.month,
-      rows: monthRows,
-    }),
+    writeVersioned(
+      store,
+      "reserves",
+      year,
+      { year, rows: yearRows },
+      yearDoc.updated_at,
+      (fresh) => ({
+        year,
+        rows: mergeReserveRows(fresh && Array.isArray(fresh.rows) ? fresh.rows : [], result.hold),
+      })
+    ),
+    writeVersioned(
+      store,
+      "ledger",
+      result.month,
+      { month: result.month, rows: monthRows },
+      snapshot.ledgerStamp,
+      (fresh) => ({
+        month: result.month,
+        rows: mergeLedgerRows(
+          fresh && Array.isArray(fresh.rows) ? fresh.rows : [],
+          vrfNo,
+          result.rows || [],
+          "replace"
+        ),
+      })
+    ),
   ];
   if (snapshot.ledgerIndexDirty) {
     writes.push(store.set("ledger", "index", { months: snapshot.ledgerMonths }));
@@ -581,7 +685,7 @@ async function persistApprove(store, snapshot, result) {
  */
 async function approvePendingVrf(store, body, options) {
   const key = normalizeVrfRequest(body);
-  const snapshot = await loadSnapshot(store);
+  const snapshot = await loadSnapshot(store, key);
   const hold = resolveHold(snapshot, key);
   const result = applyApproveFromHold(snapshot, hold, {
     approverNote: body && body.approverNote,
@@ -609,28 +713,67 @@ function createSupabaseStore(api) {
         data: row.data,
       }));
     },
+    async listIds(collection) {
+      return docs.listIds(collection);
+    },
+    async getRecord(collection, id) {
+      const row = await docs.getDoc(collection, id);
+      if (!row || row.data == null) return { data: null, updated_at: null };
+      return { data: row.data, updated_at: row.updated_at || null };
+    },
+    async cas(collection, id, data, updatedAt) {
+      return docs.setDocIfUpdatedAt(collection, id, data, updatedAt);
+    },
   };
 }
 
 function createMemoryStore(initial) {
   const docs = Object.create(null);
+  const stamps = Object.create(null);
+  let rev = 1;
   Object.keys(initial || {}).forEach((path) => {
     docs[path] = thaw(initial[path]);
+    stamps[path] = "t0";
   });
   return {
     async get(collection, id) {
       const data = docs[`${collection}/${id}`];
       return data == null ? null : thaw(data);
     },
+    async getRecord(collection, id) {
+      const path = `${collection}/${id}`;
+      if (docs[path] == null) return { data: null, updated_at: null };
+      return { data: thaw(docs[path]), updated_at: stamps[path] || null };
+    },
     async set(collection, id, data) {
-      docs[`${collection}/${id}`] = thaw(data);
-      return docs[`${collection}/${id}`];
+      const path = `${collection}/${id}`;
+      docs[path] = thaw(data);
+      stamps[path] = "t" + ++rev;
+      return docs[path];
+    },
+    async cas(collection, id, data, updatedAt) {
+      const path = `${collection}/${id}`;
+      if (docs[path] == null || stamps[path] !== updatedAt) {
+        const err = new Error("The workbook changed while this VRF was saving.");
+        err.code = "conflict";
+        err.statusCode = 409;
+        throw err;
+      }
+      docs[path] = thaw(data);
+      stamps[path] = "t" + ++rev;
+      return { updated_at: stamps[path] };
     },
     async list(collection) {
       const prefix = `${collection}/`;
       return Object.keys(docs)
         .filter((k) => k.startsWith(prefix))
         .map((k) => ({ id: k.slice(prefix.length), data: thaw(docs[k]) }));
+    },
+    async listIds(collection) {
+      const prefix = `${collection}/`;
+      return Object.keys(docs)
+        .filter((k) => k.startsWith(prefix))
+        .map((k) => k.slice(prefix.length));
     },
     _docs: docs,
   };
