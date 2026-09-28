@@ -1330,7 +1330,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-09-28a";
+const BUILD = "2026-09-28b";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -18632,12 +18632,123 @@ function payPeople(kind, per){
     .sort((a,b)=>String(a.name||"").localeCompare(String(b.name||"")));
 }
 
+/* Manila calendar dates are YYYY-MM-DD strings. A day saved under any
+   document id still counts when its date field is that day — payroll must
+   not miss overtime because the key is not dYYYYMMDD. Two copies of the
+   same day are folded together so a blank cell does not hide hours that
+   were saved on the other copy. */
+function dailyRecordFor(date){
+  const day=String(date||"").slice(0,10);
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
+  const id=dailyId(day);
+  const direct=S.daily&&S.daily[id];
+  const alts=[];
+  Object.keys(S.daily||{}).forEach(k=>{
+    const rec=S.daily[k];
+    if(!rec || k===id) return;
+    if(String(rec.date||"").slice(0,10)===day) alts.push(rec);
+  });
+  if(!direct && !alts.length) return null;
+  if(direct && !alts.length) return direct;
+  const src=direct||alts[0];
+  const base=Object.assign({}, src, {date:day, rows:Object.assign({}, src.rows||{})});
+  const rest=direct ? alts : alts.slice(1);
+  rest.forEach(rec=>{
+    Object.keys(rec.rows||{}).forEach(k=>{
+      const cur=base.rows[k];
+      base.rows[k]=cur ? mergeDailyRowKeep(cur, rec.rows[k]) : rec.rows[k];
+    });
+    if((rec.log||[]).length>(base.log||[]).length) base.log=rec.log;
+  });
+  return base;
+}
+function normPersonName(s){
+  return String(s||"").toLowerCase().replace(/[.,]/g,"").replace(/\s+/g," ").trim();
+}
+/* Rows are normally keyed by employee id. Last week's OT was sometimes
+   stored under the employee number or the printed name instead. */
+function summaryPersonId(key, row){
+  if(S.employees && S.employees[key]) return key;
+  const no=normNo(key) || normNo(row && (row.empNo||row.no));
+  if(no && typeof empList==="function"){
+    const hit=empList().find(e=>normNo(e.empNo)===no);
+    if(hit) return hit.id;
+  }
+  const nm=normPersonName(key) || normPersonName(row && (row.name||row.empName));
+  if(nm && typeof empList==="function"){
+    const hit=empList().find(e=>{
+      const a=normPersonName(e.name);
+      const b=typeof flipName==="function" ? normPersonName(flipName(e.name)) : "";
+      return a===nm || (b && b===nm);
+    });
+    if(hit) return hit.id;
+  }
+  return "";
+}
+function dailyRowForEmp(rec, empId){
+  if(!rec || !empId) return null;
+  const rows=rec.rows||{};
+  if(rows[empId]) return rows[empId];
+  let hit=null;
+  Object.keys(rows).forEach(k=>{
+    if(hit) return;
+    if(summaryPersonId(k, rows[k])===empId) hit=rows[k];
+  });
+  return hit;
+}
+/* A number already on the cell wins, including a real zero. A blank cell
+   still pays the hours PR #69 wrote into change history when nothing later
+   cleared them. */
+function payrollOtHours(rec, empId, row){
+  const raw=row && row.ot!=null && String(row.ot).trim()!=="" ? row.ot
+    : row && row.otHours!=null && String(row.otHours).trim()!=="" ? row.otHours
+    : row && row.overtime!=null && String(row.overtime).trim()!=="" ? row.overtime
+    : null;
+  if(raw!=null){
+    const n=Number(raw);
+    if(Number.isFinite(n)) return n;
+  }
+  if(typeof recoverableDailyOt!=="function" || !rec) return 0;
+  const e=S.employees&&S.employees[empId];
+  const no=e ? normNo(e.empNo) : "";
+  const hits=recoverableDailyOt(rec);
+  const hit=hits.find(h=>h && (h.id===empId || (no && normNo(h.id)===no)));
+  return hit ? (Number(hit.ot)||0) : 0;
+}
+/* One day, the way Daily Manpower Monitoring credits it: typed day wins,
+   otherwise the status on the report. Same figure Payroll Maker pays. */
+function summaryDayOt(rec, empId, row){
+  if(!rec || !row) return null;
+  const date=String(rec.date||"").slice(0,10);
+  if(!dailyRowShown(empId, date, row)) return null;
+  const e=S.employees&&S.employees[empId];
+  const blocked=payDayAfterSeparation(e, date);
+  return {
+    day: blocked ? 0 : payDayAmount(row, empId, date),
+    ot: blocked ? 0 : payrollOtHours(rec, empId, row)
+  };
+}
+/* Days and overtime the monitoring summary shows for this person between
+   two dates. Payroll Maker uses the same rows. */
+function dailyMonitorTotals(empId, from, to){
+  let days=0, ot=0;
+  payDates(from, to).forEach(d=>{
+    const rec=dailyRecordFor(d);
+    if(!rec) return;
+    const row=payDayRow(empId, rec);
+    if(!row) return;
+    const part=summaryDayOt(rec, empId, row);
+    if(!part) return;
+    days+=part.day; ot+=part.ot;
+  });
+  return {days, ot};
+}
 /* The day the Daily Manpower screen would show. A filed scan is only the
    saved rows. An open day with no row yet is Present, which is what the
    sheet draws for someone on the standing list. */
 function payDayRow(empId, rec){
   if(!rec) return null;
-  const saved=(rec.rows||{})[empId];
+  const saved=dailyRowForEmp(rec, empId);
   if(saved) return saved;
   if(rec.fixed) return null;
   if(typeof dailyPeople!=="function") return null;
@@ -18671,12 +18782,14 @@ function payDaysFor(empId, dates){
   const out=[];
   const e=S.employees&&S.employees[empId];
   dates.forEach(d=>{
-    const rec=dailyGet(d); if(!rec) return;
+    const rec=typeof dailyRecordFor==="function" ? dailyRecordFor(d) : dailyGet(d);
+    if(!rec) return;
     const r=payDayRow(empId, rec);
     if(!r || !dailyRowShown(empId, d, r)) return;
     const blocked=payDayAfterSeparation(e, d);
-    const day=blocked ? 0 : payDayAmount(r, empId, d);
-    const ot=blocked ? 0 : dayVal(r,"ot", 0);
+    const part=typeof summaryDayOt==="function" ? summaryDayOt(rec, empId, r) : null;
+    const day=part ? part.day : (blocked ? 0 : payDayAmount(r, empId, d));
+    const ot=part ? part.ot : (blocked ? 0 : dayVal(r,"ot", 0));
     out.push({ date:d, s:r.s||"", reason:r.r||"", site:r.site||"",
                in:r.in||"", out:r.out||"",
                day, ot,
@@ -18714,11 +18827,12 @@ function payLine(e, kind, dates, saved){
     empId:e.id, empNo:e.empNo||"", name:e.name, position:e.position||"",
     site: days.length ? (days[days.length-1].site||e.project||"") : (e.project||""),
     daily:rate.daily, hourly:rate.hourly, basis:rate.basis, monthly:rate.monthly,
-    /* Days, overtime and the premium are never overridden here. They are
-       whatever the daily manpower reports say, so the payroll and the
-       attendance record cannot drift apart. Corrections go on the day. */
+    /* Days and overtime are recomputed from Daily Manpower every time the
+       run is opened. A saved line may still hold days or ot from before
+       they were typed — those stored numbers are not used. */
     days:  auto.days,
     ot:    auto.ot,
+    refusedContrib: govDeductionRefused(e),
     hol:   auto.hol,
     holFactor: auto.holFactor, hol30: auto.hol30, hol100: auto.hol100, eligible: auto.eligible,
     allowance: sv.allowance!=null ? Number(sv.allowance) : (rate.monthly ? (Number(e.allowance)||0) : 0),
@@ -18728,9 +18842,9 @@ function payLine(e, kind, dates, saved){
     uniform:   Number(sv.uniform)||0,
     sssLoan:   Number(sv.sssLoan)||0,
     hdmfLoan:  Number(sv.hdmfLoan)||0,
-    sss:       payStatKept(sv, "sss",  payStat(kind,"sss", e)),
-    phic:      payStatKept(sv, "phic", payStat(kind,"phic", e)),
-    hdmf:      payStatKept(sv, "hdmf", payStat(kind,"hdmf", e)),
+    sss:       payStatForLine(kind, "sss", e, sv),
+    phic:      payStatForLine(kind, "phic", e, sv),
+    hdmf:      payStatForLine(kind, "hdmf", e, sv),
     rows:days, auto
   };
   return payTotals(L);
@@ -18791,6 +18905,15 @@ function payStatKept(saved, key, fallback){
   if(saved[key]==null || saved[key]==="") return 0;
   const n=Number(saved[key]);
   return isNaN(n) ? 0 : n;
+}
+/* A run saved before the refusal was recognised still holds the company
+   SSS / PhilHealth / Pag-IBIG. That snapshot is not an edit. Reopening the
+   draft uses the refusal (0) until HR types a figure for this run. */
+function payStatForLine(kind, which, e, saved){
+  const fallback=payStat(kind, which, e);
+  const touched=!!(saved && saved.statTouched);
+  if(govDeductionRefused(e) && !empStatSet(e, which) && !touched) return fallback;
+  return payStatKept(saved, which, fallback);
 }
 function contribSource(e){
   const keys=["sss","phic","hdmf"];
@@ -18945,6 +19068,7 @@ function viewPayrollRun(){
    + '<button class="btn" id="pay-csv"><svg><use href="#i-dl"/></svg> CSV</button>'
    + '<button class="btn" id="pay-slips">Payslips for everyone</button>'
    + '<button class="btn" id="pay-save">Save this run</button>'
+   + '<button class="btn" id="pay-recompute" title="Read days and overtime again from Daily Manpower, and put refused contributions back to 0 unless you have typed a figure">Recompute from attendance</button>'
    + (saved?'<span class="pill ok">saved '+esc(saved.savedOn||"")+'</span>':'<span class="lbl">not saved yet</span>')
    + '<div class="f" style="margin-left:auto;width:210px"><input id="pay-q" placeholder="Find someone in this run" autocomplete="off"></div>'
    + '</div>';
@@ -19006,11 +19130,13 @@ function viewPayrollRun(){
     return String(v);
   };
   const inp=(L,k,v)=>'<input data-payf="'+esc(L.empId)+'|'+k+'" type="number" step="0.01" '
-    + 'placeholder="0.00" value="'+esc(payFieldShown(k,v))+'" style="'+money+'">';
+    + ((k==="sss"||k==="phic"||k==="hdmf")?' title="Editable on this run, including a refusal. Clear the box or type 0 and it prints as 0."':'')
+    + ' placeholder="0.00" value="'+esc(payFieldShown(k,v))+'" style="'+money+'">';
   worked.forEach(L=>{
     h+='<tr data-payrow="1" data-hay="'+esc((L.name+" "+flipName(L.name)+" "+L.empNo+" "+L.site+" "+L.position).toLowerCase())+'">'
      + '<td class="mono">'+esc(L.empNo||"—")+'</td>'
      + '<td><b>'+esc(flipName(L.name))+'</b>'
+     + (L.refusedContrib?' <span class="pill mut" title="Kasabutan or a decline of government benefits. The three contribution boxes start at 0 and stay editable.">refused</span>':"")
      + (L.monthly?' <span class="pill mut" title="'+esc(L.basis)+'">÷26</span>':'')
      + '<div class="lbl" style="text-transform:none;letter-spacing:0;font-family:var(--f-ui)">'+esc(L.position||"")+'</div></td>'
      + '<td style="font-size:11px">'+esc(L.site||"—")+'</td>'
@@ -19149,7 +19275,7 @@ function payslipBody(L, kind, per){
     ["SSS contribution", "", L.sss],
     ["PhilHealth",       "", L.phic],
     [kind==="semi"?"HMIC":"Pag-IBIG contribution", "", L.hdmf]
-  ].filter(r=>Math.abs(r[2])>0.005);
+  ].filter(r=>Math.abs(r[2])>0.005 || (L.refusedContrib && /SSS contribution|PhilHealth|Pag-IBIG contribution|HMIC/.test(r[0])));
 
   const cell=r=>'<td style="font-size:9.6px">'+esc(r[0])
     + (r[1]?'<br><span style="color:#666;font-size:8.4px">'+esc(r[1])+'</span>':"")+'</td>'
@@ -20247,12 +20373,12 @@ function payAttendanceCard(kind, per, lines){
   lines.forEach(L=>{
     h+='<tr><td><b>'+esc(flipName(L.name))+'</b></td>'
       + dates.map(d=>{
-          const rec=dailyGet(d), r=rec&&rec.rows?rec.rows[L.empId]:null;
+          const rec=dailyRecordFor(d), r=rec ? dailyRowForEmp(rec, L.empId) : null;
           if(!rec) return '<td class="num" style="color:var(--ink3)" title="No report filed">·</td>';
           if(!r || !dailyRowShown(L.empId, d, r)) return '<td class="num" style="color:var(--ink3)" title="Not on this report">–</td>';
           const st=effectiveStatus(L.empId, d, r.s, r.r);
           const sev = st==="Absent" ? "crit" : (st==="Present/Late"||st==="Undertime") ? "warn" : "";
-          const ot=Number(r.ot)||0, hc=holCode(r);
+          const ot=payrollOtHours(rec, L.empId, r), hc=holCode(r);
           const tip=[st, r.in?"in "+r.in:"", r.out?"out "+r.out:"", ot?"OT "+ot+" h":"", hc?holLabel(hc):"", r.r||""].filter(Boolean).join(" · ");
           return '<td class="num mono" style="padding:4px 2px'+(sev?';color:var(--'+sev+');font-weight:600':'')+'" title="'+esc(tip)+'">'
             + esc(abbr(st)) + (ot?'<sup style="font-size:8px">'+esc(String(ot))+'</sup>':'')
@@ -20408,22 +20534,31 @@ function pasteManpowerDoor(){
    and discipline side by side. An excused absence is counted as leave, never as
    an absence; it still pays nothing. */
 function attendanceSummaryCard(months){
-  const keep=new Set(months), T={};
-  Object.values(S.daily).forEach(rec=>{
-    if(!rec || !rec.date || !keep.has(monthKey(rec.date))) return;
-    Object.entries(rec.rows||{}).forEach(([id,r])=>{
-      if(!dailyRowShown(id, rec.date, r)) return;
+  const keep=new Set(months), T={}, seenDate={};
+  Object.values(S.daily||{}).forEach(src=>{
+    const d=String(src&&src.date||"").slice(0,10);
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(d) || !keep.has(monthKey(d)) || seenDate[d]) return;
+    seenDate[d]=1;
+    const rec=dailyRecordFor(d)||src;
+    const seen={};
+    Object.entries(rec.rows||{}).forEach(([key,r])=>{
+      const id=summaryPersonId(key, r);
+      if(!id || seen[id]) return;
+      const row=dailyRowForEmp(rec, id)||r;
+      const part=summaryDayOt(rec, id, row);
+      if(!part) return;
+      seen[id]=1;
       const t=(T[id]=T[id]||{present:0,late:0,ut:0,absent:0,leave:0,waiting:0,excused:0,ot:0,prem:0,credit:0});
-      const st=effectiveStatus(id, rec.date, r.s, r.r);
+      const st=effectiveStatus(id, rec.date, row.s, row.r);
       if(st==="Present" || st==="Half Day") t.present++;
       else if(st==="Present/Late"){ t.present++; t.late++; }
       else if(st==="Undertime"){ t.present++; t.ut++; }
       else if(st===STATUS_PENDING) t.waiting++;
       else if(st==="Absent") t.absent++;
-      else if(st==="Leave" || st==="Leave with Pay"){ t.leave++; if(r.s==="Absent") t.excused++; }
-      t.ot+=Number(r.ot)||0;
-      if(holCode(r)) t.prem++;
-      t.credit+=dayVal(r,"day",dayCredit(r));
+      else if(st==="Leave" || st==="Leave with Pay"){ t.leave++; if(row.s==="Absent") t.excused++; }
+      t.ot+=part.ot;
+      if(holCode(row)) t.prem++;
+      t.credit+=part.day;
     });
   });
   const rows=Object.entries(T).map(([id,t])=>Object.assign({e:S.employees[id], id}, t)).filter(x=>x.e)
@@ -21001,6 +21136,7 @@ function wire(){
       const val=stat ? payRunStatValue(el.value) : (el.value===""?null:(parseFloat(el.value)||0));
       run.lines[id]=run.lines[id]||{};
       run.lines[id][f]=val;
+      if(stat) run.lines[id].statTouched=true;
     });
     S.payruns=S.payruns||{}; S.payruns[key]=run;
     if(commit){ run.savedOn=TODAY; await put("payruns",key,run); toast("Run saved.","ok"); }
@@ -21008,6 +21144,23 @@ function wire(){
   };
   $$("[data-payf]").forEach(el=>el.onchange=()=>payEdit(false));
   const psv=$("#pay-save",v); if(psv) psv.onclick=()=>payEdit(true);
+  const payRec=$("#pay-recompute",v); if(payRec) payRec.onclick=()=>{
+    const kind=S.ui.payKind||"weekly";
+    const per=payCur().per;
+    const run=payRunGet(kind, per.from, per.to);
+    if(run && run.lines){
+      Object.keys(run.lines).forEach(id=>{
+        const line=run.lines[id]; if(!line) return;
+        delete line.days; delete line.ot; delete line.hol; delete line.holFactor;
+        const e=S.employees&&S.employees[id];
+        if(e && govDeductionRefused(e) && !line.statTouched){
+          delete line.sss; delete line.phic; delete line.hdmf;
+        }
+      });
+    }
+    toast("Days and overtime recomputed from Daily Manpower.","ok");
+    render();
+  };
 
   const payBuild=()=>{
     const kind=S.ui.payKind||"weekly";

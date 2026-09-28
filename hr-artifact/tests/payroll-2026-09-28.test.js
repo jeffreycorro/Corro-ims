@@ -99,6 +99,18 @@ function loadPay() {
     "rowHasEnteredData",
     "dailyRowShown",
     "dayCredit",
+    "dailyId",
+    "mergeDailyRowKeep",
+    "normPersonName",
+    "summaryPersonId",
+    "dailyRecordFor",
+    "dailyRowForEmp",
+    "logStampKey",
+    "otAmountFromHistory",
+    "dailyOtEvents",
+    "recoverableDailyOt",
+    "payrollOtHours",
+    "summaryDayOt",
     "payPersonListed",
     "empSeparationDate",
     "payKindOf",
@@ -117,6 +129,7 @@ function loadPay() {
     "contribSaveValue",
     "payRunStatValue",
     "payStatKept",
+    "payStatForLine",
     "contribSource",
     "payStat",
     "payTotals",
@@ -132,8 +145,8 @@ function putDay(ctx, date, rows, extra) {
 }
 
 describe("2026-09-28 payroll — active roster only", () => {
-  it("is build 2026-09-28a", () => {
-    assert.match(html, /const BUILD = "2026-09-28a"/);
+  it("is build 2026-09-28b", () => {
+    assert.match(html, /const BUILD = "2026-09-28b"/);
   });
 
   it("drops non-active statuses and a separation date on or before the period start", () => {
