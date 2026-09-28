@@ -167,11 +167,35 @@
     };
   }
 
+  function docSlotRefused(v) {
+    if (!v || typeof v !== "object") return false;
+    if (String(v.s || "").trim().toLowerCase() === "on") return true;
+    if (String(v.link || v.url || "").trim()) return true;
+    var links = v.links;
+    if (!Array.isArray(links)) return false;
+    var i;
+    for (i = 0; i < links.length; i++) {
+      var x = links[i];
+      if (!x) continue;
+      if (typeof x === "string" && x.trim()) return true;
+      if (String(x.url || x.link || "").trim()) return true;
+    }
+    return false;
+  }
+
+  function govDeductionRefused(e) {
+    var docs = (e && e.docs) || {};
+    return ["govrefuse", "kasabutan", "benefack"].some(function (k) {
+      return docSlotRefused(docs[k]);
+    });
+  }
+
   function empSemiDed(e, settings) {
     var def = companyDed(settings);
     var d = (e && e.ded) || {};
+    var refused = govDeductionRefused(e);
     function pick(k) {
-      if (d[k] == null || d[k] === "") return def[k];
+      if (d[k] == null || d[k] === "") return refused ? 0 : def[k];
       var n = Number(d[k]);
       return isNaN(n) ? def[k] : n;
     }
@@ -288,8 +312,12 @@
     return 0;
   }
 
-  /* Payroll ignores stored DayRow.day overrides — live credit only. */
+  /* A typed day credit on the manpower row wins. Status is the fallback. */
   function payDayCredit(row, empId, date, ctx) {
+    if (row && row.day != null && String(row.day).trim() !== "") {
+      var n = Number(row.day);
+      if (!isNaN(n)) return n;
+    }
     return dayCredit(row && (row.s || row.status), row, empId, date, ctx);
   }
 
@@ -415,6 +443,7 @@
       if (!row) return;
       var emp = (ctx.employees || {})[empId];
       if (prehireRowHidden(emp, d, row)) return;
+      if (separationBlocksDay(emp, d)) return;
       var credit = payDayCredit(row, empId, d, ctx);
       if (credit) {
         days += credit;
@@ -1156,8 +1185,29 @@
 
   function empStatusIsSeparated(e) {
     var s = String((e && e.status) || "").trim();
-    if (s === "Separated") return true;
-    return /^(resigned|terminated|awol)$/i.test(s);
+    if (!s) return false;
+    if (/^(separated|resigned|terminated|awol|inactive|retired|deceased)$/i.test(s)) return true;
+    if (/^eoc$/i.test(s)) return true;
+    if (/end\s*of\s*contract/i.test(s)) return true;
+    return false;
+  }
+
+  function separationBlocksDay(emp, date) {
+    if (!emp || !date) return false;
+    var day = String(date).slice(0, 10);
+    var on = String(emp.separatedOn || "").slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(on) && day >= on) return true;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(on) && empStatusIsSeparated(emp)) return true;
+    return false;
+  }
+
+  function personListed(e) {
+    if (!e) return false;
+    var name = String(e.name || "").replace(/\s+/g, " ").trim();
+    if (!name || name === "—" || name === "-") return false;
+    var no = String(e.empNo || "").replace(/\D/g, "");
+    if (!no && !String(e.status || "").trim() && !(Number(e.dailyRate) > 0) && !e.dateHired) return false;
+    return true;
   }
 
   function peopleForKind(kind, S) {
@@ -1165,7 +1215,7 @@
     var list = [];
     Object.keys(S.employees || {}).forEach(function (id) {
       var e = S.employees[id];
-      if (!e || empStatusIsSeparated(e)) return;
+      if (!e || !personListed(e) || empStatusIsSeparated(e)) return;
       if (payKindOf(e) !== kind) return;
       list.push(e);
     });
@@ -2239,7 +2289,7 @@
     var S = store();
     var q = (S.ui && S.ui.contribQ) || "";
     var list = Object.values(S.employees || {}).filter(function (e) {
-      return e && !empStatusIsSeparated(e) && nameMatches(e, q);
+      return e && personListed(e) && !empStatusIsSeparated(e) && nameMatches(e, q);
     });
     list.sort(function (a, b) {
       return String(a.empNo || "").localeCompare(String(b.empNo || ""));

@@ -59,10 +59,14 @@ function loadPayFns() {
     },
   };
   const names = [
+    "statusTextIsSeparated",
     "empStatusIsLive",
     "empStatusIsSeparated",
     "knownSepRec",
     "empSeparatedAsOf",
+    "empHireDate",
+    "empSeparationDate",
+    "payPersonListed",
     "dayCredit",
     "payKindOf",
     "payRosterInclude",
@@ -111,11 +115,12 @@ describe("2026-09-19 concern sheet — payroll excludes leavers", () => {
     assert.equal(ctx.empStatusIsSeparated(ctx.S.employees.e5), true);
   });
 
-  it("keeps a leaver on a past period only when they have credited days", () => {
+  it("drops leavers for good, including a past period that still has credited days", () => {
     const ctx = loadPayFns();
     ctx.S.employees = {
       eBen: {
         id: "eBen",
+        empNo: "1351",
         name: "Pasion, Ben",
         status: "Separated",
         separatedOn: "2026-08-26",
@@ -123,9 +128,24 @@ describe("2026-09-19 concern sheet — payroll excludes leavers", () => {
       },
       eIdle: {
         id: "eIdle",
+        empNo: "1400",
         name: "Idle, Ivy",
         status: "Separated",
         separatedOn: "2026-09-20",
+        rateType: "Daily",
+      },
+      eEoc: {
+        id: "eEoc",
+        empNo: "1401",
+        name: "Contract, Cora",
+        status: "End of contract",
+        rateType: "Daily",
+      },
+      eActive: {
+        id: "eActive",
+        empNo: "1402",
+        name: "Still, Sam",
+        status: "Active",
         rateType: "Daily",
       },
     };
@@ -135,11 +155,16 @@ describe("2026-09-19 concern sheet — payroll excludes leavers", () => {
     };
     const august = { from: "2026-08-20", to: "2026-08-26" };
     const sept = { from: "2026-09-17", to: "2026-09-23" };
-    assert.equal(ctx.payRosterInclude(ctx.S.employees.eBen, august), true);
+    assert.equal(ctx.payRosterInclude(ctx.S.employees.eBen, august), false);
     assert.equal(ctx.payRosterInclude(ctx.S.employees.eBen, sept), false);
     assert.equal(ctx.payRosterInclude(ctx.S.employees.eIdle, sept), false);
-    assert.ok(ctx.payPeople("weekly", august).some((e) => e.id === "eBen"));
+    assert.equal(ctx.payRosterInclude(ctx.S.employees.eEoc, sept), false);
+    assert.equal(ctx.payRosterInclude(ctx.S.employees.eActive, sept), true);
+    assert.ok(!ctx.payPeople("weekly", august).some((e) => e.id === "eBen"));
     assert.ok(!ctx.payPeople("weekly", sept).some((e) => e.id === "eBen"));
+    assert.equal(ctx.dayCredit({ s: "Separated" }), 0);
+    assert.equal(ctx.dayCredit({ s: "Resigned" }), 0);
+    assert.equal(ctx.dayCredit({ s: "Present" }), 1);
   });
 
   it("peopleForKind in the payroll companion uses the same leaver flags", () => {
@@ -155,6 +180,13 @@ describe("2026-09-19 concern sheet — payroll excludes leavers", () => {
     assert.equal(list.length, 1);
     assert.equal(list[0].id, "e1");
     assert.equal(P.empStatusIsSeparated({ status: "Terminated" }), true);
+    assert.equal(P.empStatusIsSeparated({ status: "End of contract" }), true);
+    assert.equal(P.empStatusIsSeparated({ status: "EOC" }), true);
+    assert.equal(P.empStatusIsSeparated({ status: "Inactive" }), true);
+    assert.equal(P.empStatusIsSeparated({ status: "Retired" }), true);
+    assert.equal(P.empStatusIsSeparated({ status: "Deceased" }), true);
+    assert.equal(P.empStatusIsSeparated({ status: "Active" }), false);
+    assert.equal(P.empStatusIsSeparated({ status: "" }), false);
     assert.equal(P.empStatusIsSeparated({ status: "Regular" }), false);
   });
 });
@@ -188,7 +220,7 @@ describe("2026-09-19 concern sheet — Leave/CA Catherine + upload quota", () =>
   it("raises the Leave/CA scan cap to 80 MB and maps Drive storage quota", () => {
     assert.match(html, /const MAX_UPLOAD_MB = 80/);
     assert.doesNotMatch(html, /const MAX_UPLOAD_MB = 15/);
-    assert.match(html, /const BUILD = "2026-09-27a"/);
+    assert.match(html, /const BUILD = "2026-09-28a"/);
 
     const quota = mapDriveHttpError(403, {
       error: {

@@ -114,6 +114,26 @@ describe("weekly statutory half drops the leftover centavo", () => {
     assert.equal(semi.phic, 131.25);
     assert.equal(semi.hdmf, 80);
   });
+
+  it("keeps an explicit 0 and zeros a signed Kasabutan or benefack refusal", () => {
+    const settings = { ded: { sss: 325, phic: 131.25, hdmf: 100 } };
+    const zero = P.statutoryOf({ ded: { sss: 0, phic: 0, hdmf: 0 } }, "semi", settings);
+    assert.equal(zero.sss, 0);
+    assert.equal(zero.phic, 0);
+    assert.equal(zero.hdmf, 0);
+    const refused = P.statutoryOf(
+      { docs: { kasabutan: { s: "on", link: "https://drive.example/kasabutan.pdf" } } },
+      "weekly",
+      settings
+    );
+    assert.equal(refused.sss, 0);
+    assert.equal(refused.phic, 0);
+    assert.equal(refused.hdmf, 0);
+    const decline = P.statutoryOf({ docs: { benefack: { s: "on" } } }, "semi", settings);
+    assert.equal(decline.sss, 0);
+    assert.equal(decline.phic, 0);
+    assert.equal(decline.hdmf, 0);
+  });
 });
 
 describe("verified paper regressions (to the centavo)", () => {
@@ -230,7 +250,7 @@ describe("attendance is the only source of days / OT / premium", () => {
     assert.equal(noHire.days, 1, "no hire date still counts the saved row");
   });
 
-  it("ignores a stored DayRow.day override when tallying pay", () => {
+  it("a typed day override wins over the status when tallying pay", () => {
     const ctx = {
       daily: {
         d20260820: {
@@ -242,7 +262,7 @@ describe("attendance is the only source of days / OT / premium", () => {
       holidays: [],
     };
     const t = P.tallyPersonPeriod("e1", "2026-08-20", "2026-08-20", ctx);
-    assert.equal(t.days, 1);
+    assert.equal(t.days, 0);
     assert.equal(t.ot, 2);
     assert.equal(t.hol, 1);
   });
@@ -255,6 +275,24 @@ describe("attendance is the only source of days / OT / premium", () => {
   it("undertime is a full day of credit", () => {
     assert.equal(P.dayCredit("Undertime"), 1);
     assert.equal(P.payDayCredit({ s: "Undertime" }, "e", "2026-08-20", {}), 1);
+  });
+
+  it("does not credit a day on or after separatedOn, and a leaver status credits nothing", () => {
+    assert.equal(P.dayCredit("Separated"), 0);
+    assert.equal(P.dayCredit("Resigned"), 0);
+    const ctx = {
+      employees: {
+        e1: { id: "e1", status: "Regular", separatedOn: "2026-09-12", dateHired: "2026-01-01" },
+      },
+      daily: {
+        d20260911: { id: "d20260911", date: "2026-09-11", rows: { e1: { s: "Present", ot: 1 } } },
+        d20260912: { id: "d20260912", date: "2026-09-12", rows: { e1: { s: "Present", ot: 4 } } },
+      },
+      holidays: [],
+    };
+    const t = P.tallyPersonPeriod("e1", "2026-09-11", "2026-09-12", ctx);
+    assert.equal(t.days, 1);
+    assert.equal(t.ot, 1);
   });
 });
 

@@ -1330,7 +1330,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-09-27a";
+const BUILD = "2026-09-28a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -1802,7 +1802,9 @@ function knownSepRec(e){
 }
 function empStatusIsLive(e){
   const s=String((e&&e.status)||"").trim();
-  if(/^(probationary|regular|fixed-term|fixed term|consultant)$/i.test(s)) return true;
+  /* Blank is not "live": an unmarked 201 still takes the separated-roster date.
+     Active is a real 201 status and wins over that static list, same as Regular. */
+  if(/^(probationary|regular|fixed-term|fixed term|consultant|active)$/i.test(s)) return true;
   /* "Project-based", "project-based", and "Project-based with a definite period"
      are active engagements. A separated-roster row must not treat them as leavers. */
   if(/project[-\s]?based/i.test(s)) return true;
@@ -1821,9 +1823,18 @@ function separatedSnapIsStale(e){
 function employeeLiveBeatsSeparatedSnap(local, incoming){
   return empStatusIsLive(local) && separatedSnapIsStale(incoming);
 }
+/* Non-active employment. Blank, Probationary, Regular, Project-based,
+   Fixed-term, Consultant and Active stay off this list. */
+function statusTextIsSeparated(s){
+  const t=String(s||"").trim();
+  if(!t) return false;
+  if(/^(separated|resigned|terminated|awol|inactive|retired|deceased)$/i.test(t)) return true;
+  if(/^eoc$/i.test(t)) return true;
+  if(/end\s*of\s*contract/i.test(t)) return true;
+  return false;
+}
 function empStatusIsSeparated(e){
-  const s=String((e&&e.status)||"").trim();
-  return /^(separated|resigned|terminated|awol)$/i.test(s);
+  return statusTextIsSeparated(e&&e.status);
 }
 function sepRosterWouldApply(e){
   /* Only backfill unmarked / leftover rows. A 201 status HR already set
@@ -8627,7 +8638,11 @@ function dayCredit(r){
   /* A special non-working day nobody worked is no work, no pay; a regular
      holiday is paid worked or not. Anyone who worked either one reads Present. */
   if(st==="Special Holiday") return 0;
-  return 1;                                   /* Present, Present/Late, Undertime, Regular Holiday */
+  /* A leaver status on the day itself is not a worked day. Unrecognised
+     statuses used to fall through to 1 and pull separated people back onto a run. */
+  if(statusTextIsSeparated(st)) return 0;
+  if(!st || st==="Present" || st==="Present/Late" || st==="Undertime" || st==="Regular Holiday") return 1;
+  return 0;
 }
 /* The 30% premium: a special non-working holiday, or a Sunday, that was
    actually worked. Catherine's sheets carry it as 0.3 of a day. */
@@ -12630,12 +12645,31 @@ function viewAttendance(){
    + (p?'<button class="btn" id="att-csv"><svg><use href="#i-dl"/></svg> Export CSV</button><button class="btn danger" id="del-period">Delete period</button>':"")+'</div>';
   if(!p) return h+'<div class="card"><div class="empty">Paste a timesheet or payroll export to get started. The importer reads the column headings you already use — Name, Days, OT Hrs, Daily Rate, Late/Absent and the rest.</div></div>';
 
-  const rows=p.rows||[], std=S.settings.workdaysPerPeriod||13;
-  const totDays=rows.reduce((s,r)=>s+(r.days||0),0), totOT=rows.reduce((s,r)=>s+(r.ot||0),0);
+  const rows=(p.rows||[]).map(r=>Object.assign({}, r));
+  const std=S.settings.workdaysPerPeriod||13;
+  const win=p.start && p.end && p.start<=p.end;
+  rows.forEach(r=>{
+    if(!win || !r.empId){ r.dmDays=null; r.dmOt=null; return; }
+    const t=manpowerPayTally(r.empId, p.start, p.end);
+    r.dmDays=t.days; r.dmOt=t.ot;
+  });
+  const daysOf=r=> (r.dmDays!=null ? r.dmDays : (r.days||0));
+  const otOf=r=> (r.dmOt!=null ? r.dmOt : (r.ot||0));
+  const totDays=rows.reduce((s,r)=>s+daysOf(r),0), totOT=rows.reduce((s,r)=>s+otOf(r),0);
   const rate= rows.length? totDays/(rows.length*std)*100 : 0;
-  const short=rows.filter(r=>(r.days||0)<std);
+  const short=rows.filter(r=>daysOf(r)<std);
   const late=rows.filter(r=>(r.late||0)>0);
-  const otTop=rows.slice().sort((a,b)=>(b.ot||0)-(a.ot||0)).slice(0,5).filter(r=>r.ot>0);
+  const otTop=rows.slice().sort((a,b)=>otOf(b)-otOf(a)).slice(0,5).filter(r=>otOf(r)>0);
+  if(win){
+    h+='<div class="note" style="margin-bottom:12px">Days and overtime below are the <b>Daily Manpower</b> tally for '
+     + esc(p.start)+' to '+esc(p.end)+' — the same rows, dates and statuses <b>Payroll Maker</b> pays. '
+     + 'Half a day is 0.5, a typed day credit wins, unpaid leave and rest days are 0, leave with pay is 1. '
+     + 'A figure in grey is the imported sheet where it does not match.</div>';
+  }else{
+    h+='<div class="note" style="margin-bottom:12px;border-left-color:var(--warn)">This import has no cut-off start and end, '
+     + 'so the days and overtime are the <b>pasted sheet</b>, not the Daily Manpower tally Payroll Maker uses. '
+     + 'Set the cut-off on the import and the two will line up.</div>';
+  }
 
   h+='<div class="strip">'
    + tile(Math.round(rate)+"%","Attendance rate",num(totDays,1)+" of "+num(rows.length*std,0)+" standard days",rate>=95?"ok":rate>=85?"warn":"crit")
@@ -12645,23 +12679,27 @@ function viewAttendance(){
    + '</div>';
 
   if(otTop.length){
-    h+='<div class="sect-h"><h2>Where the overtime sits</h2><span class="rule"></span><span class="lbl">top 5 of '+rows.filter(r=>r.ot>0).length+'</span></div>'
+    h+='<div class="sect-h"><h2>Where the overtime sits</h2><span class="rule"></span><span class="lbl">top 5 of '+rows.filter(r=>otOf(r)>0).length+'</span></div>'
      + '<div class="card"><div class="card-b stack">';
-    const mx=otTop[0].ot||1;
-    otTop.forEach(r=>{ h+='<div><div class="row" style="justify-content:space-between"><span>'+esc(r.name)+'</span><span class="mono lbl">'+num(r.ot,1)+' hrs</span></div>'+meterBar(Math.round(r.ot/mx*100))+'</div>'; });
+    const mx=otOf(otTop[0])||1;
+    otTop.forEach(r=>{ h+='<div><div class="row" style="justify-content:space-between"><span>'+esc(r.name)+'</span><span class="mono lbl">'+num(otOf(r),1)+' hrs</span></div>'+meterBar(Math.round(otOf(r)/(mx||1)*100))+'</div>'; });
     h+='</div></div>';
   }
 
   h+='<div class="sect-h"><h2>Attendance summary</h2><span class="rule"></span></div>'
    + '<div class="card"><div class="tw"><table><thead><tr><th>Employee</th><th>201 file</th><th class="num">Days</th><th class="num">vs '+std+'</th><th class="num">OT hrs</th><th class="num">Late / absent</th><th style="width:120px">Share of period</th></tr></thead><tbody>';
-  rows.slice().sort((a,b)=>(a.days||0)-(b.days||0)).forEach(r=>{
-    const e=S.employees[r.empId], d=(r.days||0)-std;
+  rows.slice().sort((a,b)=>daysOf(a)-daysOf(b)).forEach(r=>{
+    const e=S.employees[r.empId], shown=daysOf(r), d=shown-std;
+    const sheetDiff = r.dmDays!=null && (Math.abs((r.days||0)-r.dmDays)>0.001 || Math.abs((r.ot||0)-r.dmOt)>0.001);
     h+='<tr><td class="nm">'+esc(r.name)+'</td>'
      + '<td>'+(e?'<button class="btn sm" data-emp-open="'+e.id+'" data-goto="employees">open</button>':'<span class="pill crit">unmatched</span>')+'</td>'
-     + '<td class="num">'+num(r.days,1)+'</td>'
+     + '<td class="num" title="'+(r.dmDays!=null?"Daily Manpower / Payroll Maker":"Imported sheet")+'">'+num(shown,1)
+     + (sheetDiff?'<div class="lbl">sheet '+esc(num(r.days||0,1))+'</div>':"")+'</td>'
      + '<td class="num" style="color:'+(d<0?"var(--crit)":d>0?"var(--ok)":"inherit")+'">'+(d>0?"+":"")+num(d,1)+'</td>'
-     + '<td class="num">'+num(r.ot,1)+'</td><td class="num">'+(r.late?peso(r.late):"—")+'</td>'
-     + '<td>'+meterBar(Math.min(100,Math.round((r.days||0)/std*100)))+'</td></tr>';
+     + '<td class="num">'+num(otOf(r),1)
+     + (sheetDiff?'<div class="lbl">sheet '+esc(num(r.ot||0,1))+'</div>':"")+'</td>'
+     + '<td class="num">'+(r.late?peso(r.late):"—")+'</td>'
+     + '<td>'+meterBar(Math.min(100,Math.round(shown/std*100)))+'</td></tr>';
   });
   h+='</tbody></table></div></div>';
   return h;
@@ -18556,40 +18594,107 @@ function payRate(e, kind){
 function payKindOf(e){
   return String((e||{}).rateType||"").toLowerCase()==="monthly" ? "semi" : "weekly";
 }
-/* Active payroll roster matches Daily Manpower: Separated / resigned /
-   terminated / AWOL are off the list. A past period still keeps a leaver who
-   has credited days in that window (final pay). Status must be the 201
-   flags already used by empStatusIsSeparated — not a bare !== "Separated",
-   which left resigned leavers on every run. */
+/* A name with no number, no status, no hire date and no rate is an old
+   directory row, not somebody on a run. A blank name is the same. */
+function payPersonListed(e){
+  if(!e) return false;
+  const name=String(e.name||"").replace(/\s+/g," ").trim();
+  if(!name || name==="—" || name==="-" || /^n\/?a$/i.test(name)) return false;
+  if(!normNo(e.empNo) && !String(e.status||"").trim() && !(Number(e.dailyRate)>0) && !empHireDate(e)) return false;
+  return true;
+}
+/* The date the person left: the 201 date, or the separated-roster date when
+   the 201 was never classified. A live 201 status (Regular, Project-based,
+   Active, …) wins over the static roster — same rule as empSeparatedAsOf. */
+function empSeparationDate(e){
+  if(!e) return "";
+  const own=String(e.separatedOn||"").slice(0,10);
+  if(/^\d{4}-\d{2}-\d{2}$/.test(own)) return own;
+  if(empStatusIsLive(e)) return "";
+  const known=knownSepRec(e);
+  const k=String((known&&known.separatedOn)||"").slice(0,10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(k) ? k : "";
+}
+/* Currently active only. A non-active status is off every run. A separation
+   date on or before the period start is off that run, including a custom
+   range. Credited days do not pull a leaver back. */
 function payRosterInclude(e, per){
-  const asOf = (per && per.to) || TODAY;
-  const leaver = (typeof empSeparatedAsOf==="function" && empSeparatedAsOf(e, asOf))
-    || (typeof empStatusIsSeparated==="function" && empStatusIsSeparated(e));
-  if(!leaver) return true;
-  if(!per || !per.from || !per.to) return false;
-  return payDates(per.from, per.to).some(d=>{
-    const r=((dailyGet(d)||{}).rows||{})[e.id];
-    return r && dayCredit(r)>0;
-  });
+  if(!payPersonListed(e)) return false;
+  if(empStatusIsSeparated(e)) return false;
+  const start=(per&&per.from)||TODAY;
+  if(empSeparatedAsOf(e, start)) return false;
+  const on=empSeparationDate(e);
+  if(on && on<=start) return false;
+  return true;
 }
 function payPeople(kind, per){
   return empList().filter(e=>payKindOf(e)===kind && payRosterInclude(e, per))
     .sort((a,b)=>String(a.name||"").localeCompare(String(b.name||"")));
 }
 
-/* One person's days over the period, straight off the manpower reports. */
+/* The day the Daily Manpower screen would show. A filed scan is only the
+   saved rows. An open day with no row yet is Present, which is what the
+   sheet draws for someone on the standing list. */
+function payDayRow(empId, rec){
+  if(!rec) return null;
+  const saved=(rec.rows||{})[empId];
+  if(saved) return saved;
+  if(rec.fixed) return null;
+  if(typeof dailyPeople!=="function") return null;
+  if(!dailyPeople(rec).some(p=>p && p.id===empId)) return null;
+  return {s:"Present", r:"", in:"", out:"", ot:null, day:null, hol:null};
+}
+/* Typed day credit wins. Otherwise the status Daily Manpower shows, including
+   an approved absence read as leave. */
+function payDayAmount(r, empId, date){
+  if(r && r.day!=null && String(r.day).trim()!==""){
+    const n=Number(r.day);
+    if(!isNaN(n)) return n;
+  }
+  let st=String((r&&r.s)||"");
+  if(typeof effectiveStatus==="function")
+    st=effectiveStatus(empId, date, st||"Present", (r&&(r.r||r.reason))||"") || st || "Present";
+  else if(!st) st="Present";
+  return dayCredit({s:st, r:(r&&r.r)||""});
+}
+function payDayAfterSeparation(e, date){
+  if(!e || !date) return false;
+  const day=String(date).slice(0,10);
+  const on=empSeparationDate(e);
+  if(on && day>=on) return true;
+  if(!on && !empStatusIsLive(e) && empSeparatedAsOf(e, day)) return true;
+  return false;
+}
+/* One person's days over the period, straight off the manpower reports.
+   The same rows, window and status map the Attendance screen reads. */
 function payDaysFor(empId, dates){
   const out=[];
+  const e=S.employees&&S.employees[empId];
   dates.forEach(d=>{
     const rec=dailyGet(d); if(!rec) return;
-    const r=(rec.rows||{})[empId]; if(!r || !dailyRowShown(empId, d, r)) return;
+    const r=payDayRow(empId, rec);
+    if(!r || !dailyRowShown(empId, d, r)) return;
+    const blocked=payDayAfterSeparation(e, d);
+    const day=blocked ? 0 : payDayAmount(r, empId, d);
+    const ot=blocked ? 0 : dayVal(r,"ot", 0);
     out.push({ date:d, s:r.s||"", reason:r.r||"", site:r.site||"",
                in:r.in||"", out:r.out||"",
-               day: dayVal(r,"day", dayCredit(r)),
-               ot:  dayVal(r,"ot", 0),
-               hol: holCode(r), holRate: holRate(r), elig: holEligible(d, r) });
+               day, ot,
+               hol: blocked ? 0 : holCode(r),
+               holRate: blocked ? 0 : holRate(r),
+               elig: blocked ? false : holEligible(d, r) });
   });
   return out;
+}
+/* Days and overtime Payroll Maker pays. Attendance uses this for the same
+   cut-off so the two screens cannot disagree. */
+function manpowerPayTally(empId, from, to){
+  const rows=payDaysFor(empId, payDates(from, to));
+  return {
+    days: rows.reduce((n,x)=>n+(Number(x.day)||0),0),
+    ot: rows.reduce((n,x)=>n+(Number(x.ot)||0),0),
+    rows
+  };
 }
 /* What the run pays this person before HR touches anything. */
 function payLine(e, kind, dates, saved){
@@ -18623,25 +18728,78 @@ function payLine(e, kind, dates, saved){
     uniform:   Number(sv.uniform)||0,
     sssLoan:   Number(sv.sssLoan)||0,
     hdmfLoan:  Number(sv.hdmfLoan)||0,
-    sss:       sv.sss !=null ? Number(sv.sss)  : payStat(kind,"sss", e),
-    phic:      sv.phic!=null ? Number(sv.phic) : payStat(kind,"phic", e),
-    hdmf:      sv.hdmf!=null ? Number(sv.hdmf) : payStat(kind,"hdmf", e),
+    sss:       payStatKept(sv, "sss",  payStat(kind,"sss", e)),
+    phic:      payStatKept(sv, "phic", payStat(kind,"phic", e)),
+    hdmf:      payStatKept(sv, "hdmf", payStat(kind,"hdmf", e)),
     rows:days, auto
   };
   return payTotals(L);
 }
 /* The statutory slice for the length of the period. The settings figures are
    per semi-monthly period; a week is half of one. */
-/* What the person's own record says, or the company default where their line
-   was never set. Stored per semi-monthly period, the way the sheets carry it. */
-function empStat(e, which){
-  const own=((e&&e.ded)||{})[which];
-  if(own!=null && own!=="") return Number(own)||0;
-  return Number((S.settings.ded||{})[which])||0;
+/* Signed Kasabutan / refusal, or the 201 "Decline in Government Mandated
+   Benefits" (benefack). An attachment or an On status is enough. */
+function docSlotRefused(v){
+  if(!v || typeof v!=="object") return false;
+  if(String(v.s||"").trim().toLowerCase()==="on") return true;
+  if(String(v.link||v.url||"").trim()) return true;
+  if(Array.isArray(v.links) && v.links.some(x=>{
+    if(!x) return false;
+    if(typeof x==="string") return !!x.trim();
+    return !!String(x.url||x.link||"").trim();
+  })) return true;
+  return false;
 }
+function govDeductionRefused(e){
+  const docs=(e&&e.docs)||{};
+  return ["govrefuse","kasabutan","benefack"].some(k=>docSlotRefused(docs[k]));
+}
+/* Explicit 0 is a number on the 201. Blank / missing is not set. */
 function empStatSet(e, which){
   const own=((e&&e.ded)||{})[which];
   return own!=null && own!=="";
+}
+/* What the person's own record says. A signed refusal defaults all three to
+   0. The company figure is only the fallback when nothing is on file. */
+function empStat(e, which){
+  const own=((e&&e.ded)||{})[which];
+  if(own!=null && own!==""){
+    const n=Number(own);
+    return isNaN(n) ? 0 : n;
+  }
+  if(govDeductionRefused(e)) return 0;
+  return Number((S.settings.ded||{})[which])||0;
+}
+/* Empty box on a figure that was set becomes an explicit 0. An empty box that
+   was never set stays unset, so the refusal or the company figure still applies. */
+function contribSaveValue(raw, wasSet){
+  const s=String(raw==null?"":raw).trim();
+  if(s==="") return wasSet ? 0 : null;
+  const n=parseFloat(s);
+  return isNaN(n) ? (wasSet ? 0 : null) : n;
+}
+/* A cleared SSS / PhilHealth / Pag-IBIG box on a run is an explicit 0 for
+   that run. It is not "use the 201 again". */
+function payRunStatValue(raw){
+  const s=String(raw==null?"":raw).trim();
+  if(s==="") return 0;
+  const n=parseFloat(s);
+  return isNaN(n) ? 0 : n;
+}
+function payStatKept(saved, key, fallback){
+  if(!saved || !Object.prototype.hasOwnProperty.call(saved, key)) return fallback;
+  if(saved[key]==null || saved[key]==="") return 0;
+  const n=Number(saved[key]);
+  return isNaN(n) ? 0 : n;
+}
+function contribSource(e){
+  const keys=["sss","phic","hdmf"];
+  const own=keys.filter(k=>empStatSet(e,k));
+  const anyNonZero=own.some(k=>Number(((e&&e.ded)||{})[k])!==0);
+  if(govDeductionRefused(e) && !anyNonZero) return "refused";
+  if(own.length===3) return "own";
+  if(own.length) return "part";
+  return "company";
 }
 function payStat(kind, which, e){
   const d=S.settings.ded||{};
@@ -18840,8 +18998,15 @@ function viewPayrollRun(){
    + TAIL.map(th).join("")
    + '</tr></thead><tbody>';
 
+  const payFieldShown=(k,v)=>{
+    if(v==null || v==="") return "";
+    const n=Number(v);
+    if(k==="sss"||k==="phic"||k==="hdmf") return isNaN(n) ? "" : String(v);
+    if(!n) return "";
+    return String(v);
+  };
   const inp=(L,k,v)=>'<input data-payf="'+esc(L.empId)+'|'+k+'" type="number" step="0.01" '
-    + 'placeholder="0.00" value="'+(v?esc(v):"")+'" style="'+money+'">';
+    + 'placeholder="0.00" value="'+esc(payFieldShown(k,v))+'" style="'+money+'">';
   worked.forEach(L=>{
     h+='<tr data-payrow="1" data-hay="'+esc((L.name+" "+flipName(L.name)+" "+L.empNo+" "+L.site+" "+L.position).toLowerCase())+'">'
      + '<td class="mono">'+esc(L.empNo||"—")+'</td>'
@@ -19091,21 +19256,26 @@ function statFromRate(e){
 }
 
 function viewContrib(){
-  const q=(S.ui.contribQ||"").toLowerCase().trim();
   const only=S.ui.contribKind||"";
-  let people=activeEmps().slice().sort((a,b)=>flipName(a.name).localeCompare(flipName(b.name)));
+  let people=activeEmps().filter(e=>payRosterInclude(e, {from:TODAY,to:TODAY}))
+    .slice().sort((a,b)=>flipName(a.name).localeCompare(flipName(b.name)));
   if(only) people=people.filter(e=>payKindOf(e)===only);
   const set=people.filter(e=>["sss","phic","hdmf"].some(k=>empStatSet(e,k))).length;
+  const refusedN=people.filter(e=>contribSource(e)==="refused").length;
   const d=S.settings.ded||{};
 
-  setCrumb("Contributions", people.length+" people · "+set+" with their own figures · the rest on the company default");
+  setCrumb("Contributions", people.length+" active · "+set+" with their own figures · "
+    + refusedN+" refused · the rest on the company default");
 
   let h='<div class="note" style="margin-bottom:12px">'
    + 'These are the <b>SSS, PhilHealth and Pag-IBIG amounts deducted from the employee</b>, '
-   + 'per semi-monthly period. A weekly run takes half of each. Leave a box empty and the person '
-   + 'is deducted the company figure — <b>SSS '+peso(d.sss||0)+', PhilHealth '+peso(d.phic||0)
-   + ', Pag-IBIG '+peso(d.hdmf||0)+'</b> — which is what everybody was on before. '
-   + 'Type a figure and it belongs to that person from the next run onwards.</div>';
+   + 'per semi-monthly period. A weekly run takes half of each, and drops the leftover centavo. '
+   + 'Only people who are <b>currently active</b> are listed. A signed Kasabutan or a decline of '
+   + 'government-mandated benefits sets all three to <b>0</b> and the row reads refused. '
+   + 'Otherwise the figures on the 201 are used, and the company figure — <b>SSS '+peso(d.sss||0)
+   + ', PhilHealth '+peso(d.phic||0)+', Pag-IBIG '+peso(d.hdmf||0)+'</b> — applies only when nothing is on file. '
+   + 'Type <b>0</b> or clear a box that already has a figure and Save: that stores an explicit 0 on the 201. '
+   + 'An empty box that was never filled is still "not set".</div>';
 
   h+='<div class="row" style="margin-bottom:10px"><div class="seg">'
    + [["","Everyone"],["weekly","Site — weekly"],["semi","Admin — semi-monthly"]]
@@ -19129,11 +19299,19 @@ function viewContrib(){
   people.forEach(e=>{
     const kind=payKindOf(e);
     const r=payRate(e,kind);
-    const half=["sss","phic","hdmf"].reduce((a,k)=>a+empStat(e,k),0);
     const wk  =["sss","phic","hdmf"].reduce((a,k)=>a+payStat("weekly",k,e),0);
     const own =["sss","phic","hdmf"].filter(k=>empStatSet(e,k));
-    const box=k=>'<td><input data-cf="'+esc(e.id)+'|'+k+'" type="number" step="0.01" min="0" '
-      + 'value="'+(empStatSet(e,k)?esc(String(e.ded[k])):"")+'" placeholder="'+num((S.settings.ded||{})[k]||0,2)+'" style="'+money+'"></td>';
+    const src=contribSource(e);
+    const phOf=k=> src==="refused" && !empStatSet(e,k) ? "0.00" : num((S.settings.ded||{})[k]||0,2);
+    const box=k=>'<td><input data-cf="'+esc(e.id)+'|'+k+'" data-set="'+(empStatSet(e,k)?"1":"0")+'" type="number" step="0.01" min="0" '
+      + 'value="'+(empStatSet(e,k)?esc(String(e.ded[k])):"")+'" placeholder="'+phOf(k)+'" style="'+money+'"></td>';
+    const pill = src==="refused"
+      ? '<span class="pill warn">refused (Kasabutan)</span>'
+      : src==="own"
+        ? '<span class="pill acc">their own</span>'
+        : src==="part"
+          ? '<span class="pill warn" title="'+esc(own.map(k=>STAT_N[k]).join(", ")+" set; the rest follow the 201")+'">part own</span>'
+          : '<span class="pill mut">company figure</span>';
     h+='<tr data-crow="1" data-hay="'+esc((e.name+" "+flipName(e.name)+" "+(e.empNo||"")+" "+(e.position||"")+" "+(e.project||"")).toLowerCase())+'">'
      + '<td class="mono">'+esc(e.empNo||"—")+'</td>'
      + '<td><b>'+esc(flipName(e.name))+'</b><div class="lbl" style="text-transform:none;letter-spacing:0;font-family:var(--f-ui)">'+esc(e.position||"")+'</div></td>'
@@ -19141,12 +19319,7 @@ function viewContrib(){
      + '<td class="num mono" title="'+esc(r.basis||"")+'">'+num(r.monthly ? (Number(e.dailyRate)||0) : r.daily*26, 2)+'</td>'
      + box("sss")+box("phic")+box("hdmf")
      + '<td class="num mono">'+num(wk,2)+'</td>'
-     + '<td>'+(own.length===3
-         ? '<span class="pill acc">their own</span>'
-         : own.length
-           ? '<span class="pill warn" title="'+esc(own.map(k=>STAT_N[k]).join(", ")+" set; the rest on the company figure")+'">part own</span>'
-           : '<span class="pill mut">company figure</span>')
-       + '</td></tr>';
+     + '<td>'+pill+'</td></tr>';
   });
   h+='</tbody></table></div>'
    + '<div class="row" style="margin-top:10px"><button class="btn pri" id="c-save">Save</button>'
@@ -20824,7 +20997,8 @@ function wire(){
     run.lines=run.lines||{};
     $$("[data-payf]").forEach(el=>{
       const [id,f]=el.dataset.payf.split("|");
-      const val=el.value===""?null:(parseFloat(el.value)||0);
+      const stat=f==="sss"||f==="phic"||f==="hdmf";
+      const val=stat ? payRunStatValue(el.value) : (el.value===""?null:(parseFloat(el.value)||0));
       run.lines[id]=run.lines[id]||{};
       run.lines[id][f]=val;
     });
@@ -20909,7 +21083,7 @@ function wire(){
     const by={};
     $$("[data-cf]").forEach(el=>{
       const [id,k]=el.dataset.cf.split("|");
-      (by[id]=by[id]||{})[k] = el.value===""? null : (parseFloat(el.value)||0);
+      (by[id]=by[id]||{})[k] = contribSaveValue(el.value, el.dataset.set==="1");
     });
     let n=0;
     for(const id in by){
@@ -20945,7 +21119,7 @@ function wire(){
   const cClear=$("#c-clear",v); if(cClear) cClear.onclick=async()=>{
     const r=await askText("Put everyone back on the company figure",
       [{k:"ok", label:'Type CLEAR to confirm', placeholder:"CLEAR",
-        hint:"Every per-person SSS, PhilHealth and Pag-IBIG figure is removed. The company figures in Settings apply again."}]);
+        hint:"Every per-person SSS, PhilHealth and Pag-IBIG figure is removed. The company figures in Settings apply again, except a signed Kasabutan or benefits refusal, which stays at 0."}]);
     if(!r || String(r.ok||"").toUpperCase()!=="CLEAR") return;
     let n=0;
     for(const e of activeEmps()){ if(!e.ded) continue; delete e.ded; await put("employees", e.id, e); n++; }
