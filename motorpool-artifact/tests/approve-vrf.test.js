@@ -154,7 +154,7 @@ describe("approve-from-hold (Office approve path)", () => {
     assert.equal(cfg.nextVrf, 5813);
   });
 
-  it("remints a colliding RSV-keyed hold and leaves the posted row untouched", async () => {
+  it("refuses a colliding RSV-keyed hold instead of minting another VRF", async () => {
     const store = createMemoryStore(
       seedDocs({
         hold: { no: "44", vrfNo: "58528" },
@@ -177,13 +177,36 @@ describe("approve-from-hold (Office approve path)", () => {
     const posted = [{ vrf: "58528", src: "ledger" }];
     assert.equal(shouldRemintHeldVrf(pending, posted, docs.rows), true);
 
-    const out = await approvePendingVrf(store, { vrf: "RSV-44" }, { now: "2026-09-21" });
-    assert.equal(out.vrf, "58529");
+    await assert.rejects(
+      () => approvePendingVrf(store, { vrf: "RSV-44" }, { now: "2026-09-21" }),
+      (err) => err.code === "already_posted"
+    );
     const year = await store.get("reserves", "2026");
-    assert.equal(year.rows.find((r) => r.no === "44").vrfNo, "58529");
+    assert.equal(year.rows.find((r) => r.no === "44").vrfNo, "58528");
     const month = await store.get("ledger", "2026-09");
     assert.equal(month.rows.filter((r) => r.vrf === "58528").length, 1);
-    assert.equal(month.rows.some((r) => r.vrf === "58529" && r.vstatus === "Open"), true);
+    assert.equal(month.rows.some((r) => r.vrf === "58529"), false);
+    const cfg = await store.get("config", "app");
+    assert.equal(cfg.nextVrf, 58529);
+  });
+
+  it("finishes an already-posted hold without writing a second VRF", async () => {
+    const store = createMemoryStore(
+      seedDocs({
+        hold: { no: "44", vrfNo: "5812", status: "Requested", vrfs: [] },
+        ledgerRows: [{ vrf: "5812", date: "2026-09-21", total: 12500, src: "ledger", vstatus: "Open" }],
+      })
+    );
+    const out = await approvePendingVrf(store, { vrf: "RSV-44" }, { now: "2026-09-21" });
+    assert.equal(out.ok, true);
+    assert.equal(out.already, true);
+    assert.equal(out.vrf, "5812");
+    const month = await store.get("ledger", "2026-09");
+    assert.equal(month.rows.filter((r) => r.vrf === "5812").length, 1);
+    const year = await store.get("reserves", "2026");
+    const hold = year.rows.find((r) => r.no === "44");
+    assert.equal(hold.status, "Approved");
+    assert.equal(hold.vrfNo, "5812");
   });
 
   it("never invents a VRF when the hold has no number or no lines", () => {

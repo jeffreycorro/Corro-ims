@@ -845,6 +845,7 @@
   function spendEndStatus(raw) {
     raw = String(raw || "").trim();
     if (/^not[- ]bought$/i.test(raw)) return "Not bought";
+    if (/^duplicate\b/i.test(raw)) return "Duplicate";
     if (/^cancel(?:led|ed)$/i.test(raw)) return "Cancelled";
     return "";
   }
@@ -853,7 +854,7 @@
     if (!reserve) return false;
     if (String(reserve.status || "") === "Cancelled" || reserve.cancelledAt) return true;
     var outcome = String(reserve.cancelOutcome || "");
-    return outcome === "cancelled" || outcome === "not-bought";
+    return outcome === "cancelled" || outcome === "not-bought" || outcome === "duplicate";
   }
 
   /** A cancelled or not-bought hold must not come back at the approved budget. */
@@ -867,7 +868,10 @@
     if (!reserve) return fallback || "Open";
     if (reserve.status === "Requested") return "Requested";
     if (reserveSpendClosed(reserve)) {
-      return String(reserve.cancelOutcome) === "not-bought" ? "Not bought" : "Cancelled";
+      var outcome = String(reserve.cancelOutcome || "");
+      if (outcome === "not-bought") return "Not bought";
+      if (outcome === "duplicate") return "Duplicate";
+      return "Cancelled";
     }
     if (
       reserve.status === "Closed" ||
@@ -895,6 +899,7 @@
 
   function vrfStatusForOutcome(outcome) {
     if (outcome === "not-bought") return "Not bought";
+    if (outcome === "duplicate") return "Duplicate";
     if (outcome === "cancelled") return "Cancelled";
     return "Closed";
   }
@@ -908,9 +913,16 @@
   /** Not bought / cancelled keeps the line and zeroes it. Bought keeps the receipt amounts. */
   function applyLiquidationLine(row, edit, stamp, outcome) {
     var e = edit || {};
-    var drop = outcome === "cancelled" || outcome === "not-bought" || !!e.remove;
+    var drop = outcome === "cancelled" || outcome === "not-bought" || outcome === "duplicate" || !!e.remove;
     if (drop) {
-      var st = outcome === "cancelled" ? "Cancelled" : outcome === "not-bought" ? "Not bought" : "Closed";
+      var st =
+        outcome === "duplicate"
+          ? "Duplicate"
+          : outcome === "cancelled"
+            ? "Cancelled"
+            : outcome === "not-bought"
+              ? "Not bought"
+              : "Closed";
       return Object.assign({}, row || {}, {
         qty: 0,
         price: 0,
@@ -1196,6 +1208,7 @@
     }
     var ended = spendEndStatus(st);
     if (ended === "Not bought") return "NOT BOUGHT";
+    if (ended === "Duplicate") return "DUPLICATE";
     if (ended === "Cancelled") return "CANCELLED";
     if (/^rejected$/i.test(st) || /^disapproved$/i.test(st)) return "FOR APPROVAL";
     /* held / reserve-hold means "not in the ledger yet", not "still waiting".
@@ -1470,6 +1483,63 @@
       jo: "",
       vrfNo: "",
     };
+  }
+
+  function requestFingerprint(rec) {
+    var jobs = rec && (rec.jobs || rec.works) || [];
+    if (!Array.isArray(jobs)) jobs = jobs ? [jobs] : [];
+    var odo = rec && rec.odo;
+    if ((odo == null || odo === "") && rec) odo = rec.draftOdo != null ? rec.draftOdo : rec.odoAtRequest;
+    var total = rec && rec.total != null ? rec.total : rec && rec.budget;
+    return [
+      String((rec && rec.veh) || "").trim(),
+      String((rec && rec.date) || "").trim(),
+      String(parseOdo(odo) == null ? "" : parseOdo(odo)),
+      String(Math.round(moneyNum(total) * 100)),
+      jobs
+        .map(function (w) {
+          return String(w || "").trim();
+        })
+        .filter(Boolean)
+        .sort()
+        .join("|"),
+    ].join("\u0001");
+  }
+
+  function findSameOpenRequests(list, rec, exceptVrf) {
+    var key = requestFingerprint(rec);
+    var except = String(exceptVrf || "");
+    return (list || []).filter(function (v) {
+      if (!v || String(v.vrf || "") === except) return false;
+      var st = String(v.status || "");
+      if (st !== "Open" && st !== "Requested") return false;
+      return requestFingerprint(v) === key;
+    });
+  }
+
+  function earliestVrfNumber(list) {
+    var best = null;
+    var bestN = Infinity;
+    (list || []).forEach(function (v) {
+      var n = parseInt(String((v && v.vrf) || "").replace(/\D/g, ""), 10);
+      if (!isFinite(n) || n >= bestN) return;
+      bestN = n;
+      best = v;
+    });
+    return best;
+  }
+
+  function reuseSubmissionHold(reserves, submissionId) {
+    var id = String(submissionId || "").trim();
+    if (!id) return null;
+    var i;
+    for (i = 0; i < (reserves || []).length; i++) {
+      var r = reserves[i];
+      if (!r || String(r.submissionId || "") !== id) continue;
+      if (String(r.status || "") === "Rejected") continue;
+      if (String(r.vrfNo || "").trim()) return r;
+    }
+    return null;
   }
 
   function normProjCode(p) {
@@ -2066,6 +2136,10 @@
     remintHeldVrf: remintHeldVrf,
     repairDuplicateHeldVrfs: repairDuplicateHeldVrfs,
     nextFreeVrf: nextFreeVrf,
+    requestFingerprint: requestFingerprint,
+    findSameOpenRequests: findSameOpenRequests,
+    earliestVrfNumber: earliestVrfNumber,
+    reuseSubmissionHold: reuseSubmissionHold,
     heldReserveVrfs: heldReserveVrfs,
     vrfLogVisible: vrfLogVisible,
     vrfLogSortNewestFirst: vrfLogSortNewestFirst,

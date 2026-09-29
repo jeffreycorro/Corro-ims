@@ -140,8 +140,13 @@ describe("VRF number uniqueness — posted and pending", () => {
     assert.match(html, /function shouldRemintHeldVrf/);
     assert.match(html, /async function remintHeldVrfCollisions/);
     assert.match(html, /if\(vrfNumberTaken\(vno\)\) vno=await claimVrf\(\)/);
-    assert.match(html, /if\(shouldRemintHeldVrf\(r\)\)/);
+    assert.match(html, /if\(!shouldRemintHeldVrf\(r\)\) return/);
     assert.match(html, /if\(postedVrfNumbers\(\)\[String\(no\)\]\)/);
+    const prepStart = html.indexOf("async function prepareReservePost");
+    const prepEnd = html.indexOf("function queueReservePhotos", prepStart);
+    const prep = html.slice(prepStart, prepEnd);
+    assert.doesNotMatch(prep, /claimVrf|shouldRemintHeldVrf/);
+    assert.match(prep, /Not creating another number/);
     assert.match(html, /try\{ await remintHeldVrfCollisions\(\); \}catch\(e\)\{\}/);
   });
 });
