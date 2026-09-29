@@ -149,8 +149,8 @@ function putDay(ctx, date, rows, extra) {
 }
 
 describe("2026-09-28 payroll — active roster only", () => {
-  it("is build 2026-09-29b", () => {
-    assert.match(html, /const BUILD = "2026-09-29b"/);
+  it("is build 2026-09-29c", () => {
+    assert.match(html, /const BUILD = "2026-09-29c"/);
   });
 
   it("drops non-active statuses and a separation date on or before the period start", () => {
@@ -371,7 +371,7 @@ describe("2026-09-28 payroll — attendance days match payroll", () => {
     assert.equal(line.gross, 1200);
   });
 
-  it("does not credit days before hire or on/after separation, and counts a default Present", () => {
+  it("does not credit days before hire or on/after separation, and does not invent a Present", () => {
     const ctx = loadPay();
     ctx.S.employees.e1 = {
       id: "e1",
@@ -406,7 +406,7 @@ describe("2026-09-28 payroll — attendance days match payroll", () => {
     ctx._dailyPeople = (rec) => (rec.date === "2026-09-20" ? [ctx.S.employees.e2] : []);
     const open = ctx.manpowerPayTally("e2", "2026-09-20", "2026-09-20");
     const openLine = ctx.payLine(ctx.S.employees.e2, "weekly", ["2026-09-20"], null);
-    assert.equal(open.days, 1);
+    assert.equal(open.days, 0);
     assert.equal(open.ot, 0);
     assert.equal(openLine.days, open.days);
     assert.equal(openLine.ot, open.ot);

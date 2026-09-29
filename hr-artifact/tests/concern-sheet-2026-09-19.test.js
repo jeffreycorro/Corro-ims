@@ -115,7 +115,7 @@ describe("2026-09-19 concern sheet — payroll excludes leavers", () => {
     assert.equal(ctx.empStatusIsSeparated(ctx.S.employees.e5), true);
   });
 
-  it("drops leavers for good, including a past period that still has credited days", () => {
+  it("keeps a mid-period resignation for the days worked before the date, and drops them after", () => {
     const ctx = loadPayFns();
     ctx.S.employees = {
       eBen: {
@@ -155,12 +155,14 @@ describe("2026-09-19 concern sheet — payroll excludes leavers", () => {
     };
     const august = { from: "2026-08-20", to: "2026-08-26" };
     const sept = { from: "2026-09-17", to: "2026-09-23" };
-    assert.equal(ctx.payRosterInclude(ctx.S.employees.eBen, august), false);
+    /* Resigned on the last day of the August week: still on that run, off the next. */
+    assert.equal(ctx.payRosterInclude(ctx.S.employees.eBen, august), true);
     assert.equal(ctx.payRosterInclude(ctx.S.employees.eBen, sept), false);
-    assert.equal(ctx.payRosterInclude(ctx.S.employees.eIdle, sept), false);
+    /* Resignation inside September keeps the roster slot; the worked table still needs a payable day. */
+    assert.equal(ctx.payRosterInclude(ctx.S.employees.eIdle, sept), true);
     assert.equal(ctx.payRosterInclude(ctx.S.employees.eEoc, sept), false);
     assert.equal(ctx.payRosterInclude(ctx.S.employees.eActive, sept), true);
-    assert.ok(!ctx.payPeople("weekly", august).some((e) => e.id === "eBen"));
+    assert.ok(ctx.payPeople("weekly", august).some((e) => e.id === "eBen"));
     assert.ok(!ctx.payPeople("weekly", sept).some((e) => e.id === "eBen"));
     assert.equal(ctx.dayCredit({ s: "Separated" }), 0);
     assert.equal(ctx.dayCredit({ s: "Resigned" }), 0);
@@ -220,7 +222,7 @@ describe("2026-09-19 concern sheet — Leave/CA Catherine + upload quota", () =>
   it("raises the Leave/CA scan cap to 80 MB and maps Drive storage quota", () => {
     assert.match(html, /const MAX_UPLOAD_MB = 80/);
     assert.doesNotMatch(html, /const MAX_UPLOAD_MB = 15/);
-    assert.match(html, /const BUILD = "2026-09-29b"/);
+    assert.match(html, /const BUILD = "2026-09-29c"/);
 
     const quota = mapDriveHttpError(403, {
       error: {

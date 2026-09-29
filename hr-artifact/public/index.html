@@ -1375,7 +1375,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-09-29b";
+const BUILD = "2026-09-29c";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -1849,7 +1849,7 @@ function empStatusIsLive(e){
   const s=String((e&&e.status)||"").trim();
   /* Blank is not "live": an unmarked 201 still takes the separated-roster date.
      Active is a real 201 status and wins over that static list, same as Regular. */
-  if(/^(probationary|regular|fixed-term|fixed term|consultant|active)$/i.test(s)) return true;
+  if(/^(probationary|regular|fixed-term|fixed term|consultant|active|contractual|seasonal)$/i.test(s)) return true;
   /* "Project-based", "project-based", and "Project-based with a definite period"
      are active engagements. A separated-roster row must not treat them as leavers. */
   if(/project[-\s]?based/i.test(s)) return true;
@@ -18692,21 +18692,20 @@ function empSeparationDate(e){
   const k=String((known&&known.separatedOn)||"").slice(0,10);
   return /^\d{4}-\d{2}-\d{2}$/.test(k) ? k : "";
 }
-/* Currently active only. A non-active status is off every run. A separation
-   date on or before the period start is off that run, including a custom
-   range. Credited days do not pull a leaver back. */
+/* Engaged during this period. Already gone when the period opens is off.
+   A resignation dated inside the period stays on, and days on or after that
+   date pay 0. Hired after the period ends is off. A blank hire date is not
+   a future start. */
 function payRosterInclude(e, per){
   if(!payPersonListed(e)) return false;
-  if(empStatusIsSeparated(e)) return false;
   const start=(per&&per.from)||TODAY;
+  const end=String((per&&per.to)||start).slice(0,10);
+  const hired=empHireDate(e);
+  if(hired && end && hired>end) return false;
+  /* Separated as of the first day, including a leaver status with no date. */
   if(empSeparatedAsOf(e, start)) return false;
   const on=empSeparationDate(e);
   if(on && on<=start) return false;
-  /* Hired after this period ends is not on the run. A blank date hired
-     still counts — a missing date is not a future start. */
-  const hired=empHireDate(e);
-  const end=String((per&&per.to)||"").slice(0,10);
-  if(hired && end && hired>end) return false;
   return true;
 }
 function payPeople(kind, per){
@@ -18844,17 +18843,12 @@ function dailyMonitorTotals(empId, from, to){
   });
   return {days, ot};
 }
-/* The day the Daily Manpower screen would show. A filed scan is only the
-   saved rows. An open day with no row yet is Present, which is what the
-   sheet draws for someone on the standing list. */
+/* Payroll days come only from a saved Daily Manpower row. The open sheet may
+   still draw Present for someone on today's standing list, but that drawing
+   is not attendance and must not put them on a run. */
 function payDayRow(empId, rec){
   if(!rec) return null;
-  const saved=dailyRowForEmp(rec, empId);
-  if(saved) return saved;
-  if(rec.fixed) return null;
-  if(typeof dailyPeople!=="function") return null;
-  if(!dailyPeople(rec).some(p=>p && p.id===empId)) return null;
-  return {s:"Present", r:"", in:"", out:"", ot:null, day:null, hol:null};
+  return dailyRowForEmp(rec, empId);
 }
 /* "1:00 PM", "1 PM", "13:00", "12:00 NN". Empty is not a time. */
 function clockMinutes(raw){
@@ -19231,6 +19225,80 @@ function payRunLines(kind, per, dates, saved){
   const lines=people.map(e=>payLine(e, kind, dates, (saved&&saved.lines&&saved.lines[e.id])||null));
   return lines.concat(payUnmatchedLines(kind, dates));
 }
+function paySiteName(L){
+  const s=String((L&&L.site)||"").trim();
+  return s || "(no area)";
+}
+function payFilterLines(lines, site){
+  const want=String(site||"").trim();
+  if(!want) return (lines||[]).slice();
+  return (lines||[]).filter(L=>paySiteName(L)===want);
+}
+function payLineSum(lines){
+  return (lines||[]).reduce((a,L)=>({
+    gross:a.gross+(Number(L.gross)||0), ded:a.ded+(Number(L.ded)||0), net:a.net+(Number(L.net)||0),
+    ot:a.ot+(Number(L.ot)||0), days:a.days+(Number(L.days)||0), n:a.n+1
+  }),{gross:0,ded:0,net:0,ot:0,days:0,n:0});
+}
+function paySiteGroups(lines){
+  const map={};
+  (lines||[]).forEach(L=>{
+    const k=paySiteName(L);
+    (map[k]=map[k]||[]).push(L);
+  });
+  return Object.keys(map).sort((a,b)=>a.localeCompare(b)).map(site=>({
+    site:site, lines:map[site], T:payLineSum(map[site])
+  }));
+}
+/* A leaver status counts only when the separation date is already past.
+   No date is not a past date. A note about an unsigned letter is not a status. */
+function leaverStatusWithPastDate(e, asOf){
+  if(!e || !statusTextIsSeparated(e.status)) return false;
+  const on=empSeparationDate(e);
+  if(!on) return false;
+  const day=String(asOf||TODAY).slice(0,10);
+  return !day || on<=day;
+}
+/* Employee ids with a saved Daily Manpower row in the last `days` days. */
+function recentManpowerIds(days){
+  const n=Math.abs(Number(days)||30);
+  const since=typeof addDays==="function" ? addDays(TODAY, -n) : "";
+  const ids={};
+  Object.keys(S.daily||{}).forEach(k=>{
+    const rec=S.daily[k];
+    if(!rec) return;
+    const d=String(rec.date||"").slice(0,10);
+    if(since && (!d || d<since || d>TODAY)) return;
+    Object.keys(rec.rows||{}).forEach(key=>{
+      const row=rec.rows[key];
+      if(!row) return;
+      let id="";
+      if(S.employees && S.employees[key]) id=key;
+      else if(typeof summaryPersonId==="function") id=summaryPersonId(key, row)||"";
+      if(id) ids[id]=1;
+    });
+  });
+  return ids;
+}
+/* Contributions uses the engaged list: a real name, not a leaver status whose
+   separation date is already past. Blank, Project-based, Contractual,
+   Seasonal and the other live statuses stay. Attendance in the last 30 days
+   keeps someone who is back at work. An unsigned-resignation note does not
+   remove them. */
+function contribEngaged(e, recent){
+  if(!e) return false;
+  const name=String(e.name||"").replace(/\s+/g," ").trim();
+  if(!name || name==="—" || name==="-" || /^n\/?a$/i.test(name)) return false;
+  const seen=recent || recentManpowerIds(30);
+  if(seen[e.id]) return true;
+  if(leaverStatusWithPastDate(e, TODAY)) return false;
+  return true;
+}
+function contribHay(e){
+  const mk=typeof personMatchKey==="function" ? personMatchKey(e&&e.name).replace(/\|/g," ") : "";
+  return ((e&&e.name)||"")+" "+(typeof flipName==="function"?flipName(e.name):"")+" "
+    +(e&&e.empNo||"")+" "+mk+" "+((e&&e.position)||"")+" "+((e&&e.project)||"");
+}
 
 /* The period on screen. Normally the standard weekly or semi-monthly window
    the anchor falls in; HR can set any two dates instead, which is what a
@@ -19277,10 +19345,13 @@ function viewPayrollRun(){
   const dates=payDates(per.from,per.to);
   const saved=payRunGet(kind,per.from,per.to);
   const lines=payRunLines(kind, per, dates, saved);
-  const worked=lines.filter(L=>L.days>0 || L.ot>0);
-  const idle=lines.length-worked.length;
-  const T=worked.reduce((a,L)=>({gross:a.gross+L.gross, ded:a.ded+L.ded, net:a.net+L.net,
-    ot:a.ot+L.ot, days:a.days+L.days}),{gross:0,ded:0,net:0,ot:0,days:0});
+  const allWorked=lines.filter(L=>L.days>0 || L.ot>0);
+  const idle=lines.length-allWorked.length;
+  const siteWant=String((S.ui&&S.ui.paySite)||"");
+  const grouped=!!(S.ui&&S.ui.payGroupSite);
+  const worked=payFilterLines(allWorked, siteWant);
+  const T=payLineSum(worked);
+  const siteNames=paySiteGroups(allWorked).map(g=>g.site);
   const cov=dates.filter(d=>dailyGet(d)).length;
 
   setCrumb("Payroll — "+payLabel(per.from,per.to),
@@ -19361,6 +19432,15 @@ function viewPayrollRun(){
    + '<button class="btn" id="pay-recompute" title="Read days and overtime again from Daily Manpower, and put refused contributions back to 0 unless you have typed a figure">Recompute from attendance</button>'
    + (saved?'<span class="pill ok">saved '+esc(saved.savedOn||"")+'</span>':'<span class="lbl">not saved yet</span>')
    + '<div class="f" style="margin-left:auto;width:210px"><input id="pay-q" placeholder="Find someone in this run" autocomplete="off"></div>'
+   + '</div>'
+   + '<div class="row" style="margin:0 0 8px">'
+   + '<div class="f" style="width:240px"><label>Site</label><select id="pay-site">'
+   + '<option value="">All sites</option>'
+   + siteNames.map(s=>'<option value="'+esc(s)+'"'+(siteWant===s?" selected":"")+'>'+esc(s)+'</option>').join("")
+   + '</select></div>'
+   + '<button class="btn sm'+(grouped?" pri":"")+'" id="pay-group" type="button">'
+   + (grouped?"Grouped by site":"Group by site")+'</button>'
+   + '<span class="lbl">'+(siteWant ? esc(siteWant)+" only" : (grouped ? "each site has its own subtotal" : "one list, every site"))+'</span>'
    + '</div>';
 
   /* One list drives the heading, the cells and the footer. Three places
@@ -19422,11 +19502,13 @@ function viewPayrollRun(){
   const inp=(L,k,v)=>'<input data-payf="'+esc(L.empId)+'|'+k+'" type="number" step="0.01" '
     + ((k==="sss"||k==="phic"||k==="hdmf")?' title="Editable on this run, including a refusal. Clear the box or type 0 and it prints as 0."':'')
     + ' placeholder="0.00" value="'+esc(payFieldShown(k,v))+'" style="'+money+'">';
-  worked.forEach(L=>{
-    h+='<tr data-payrow="1" data-hay="'+esc((L.name+" "+flipName(L.name)+" "+L.empNo+" "+L.site+" "+L.position).toLowerCase())+'">'
+  const paintPayRow=L=>{
+    const rateMissing=!(Number(L.daily)>0);
+    h+='<tr data-payrow="1" data-hay="'+esc(contribHay(L).toLowerCase())+'">'
      + '<td class="mono">'+esc(L.empNo||"—")+'</td>'
      + '<td><b>'+esc(flipName(L.name))+'</b>'
      + (L.refusedContrib?' <span class="pill mut" title="Kasabutan or a decline of government benefits. The three contribution boxes start at 0 and stay editable.">refused</span>':"")
+     + (rateMissing?' <span class="pill warn" title="No daily rate on the 201 file, so gross stays 0 until a rate is set.">no rate</span>':"")
      + (L.payWarn?' <span class="pill warn" title="'+esc(L.payWarn)+'">check 201</span>':"")
      + (L.monthly?' <span class="pill mut" title="'+esc(L.basis)+'">÷26</span>':'')
      + '<div class="lbl" style="text-transform:none;letter-spacing:0;font-family:var(--f-ui)">'+esc(L.position||"")+'</div>'
@@ -19445,13 +19527,31 @@ function viewPayrollRun(){
      + '<td class="num mono"><b>'+num(L.net,0)+'</b></td>'
      + '<td style="white-space:nowrap"><button class="btn sm" data-payperson="'+esc(L.empId)+'" title="Status, times, overtime and holiday for each day">Days</button> '
      + '<button class="btn sm" data-payslip="'+esc(L.empId)+'">Payslip</button></td></tr>';
-  });
-  h+='</tbody><tfoot><tr style="font-weight:700;background:var(--surface2)">'
-   + '<td colspan="'+(LEAD.length-1)+'">TOTAL — '+worked.length+' people</td>'
-   + '<td class="num mono">'+num(T.gross,2)+'</td>'
-   + '<td colspan="'+used.length+'"></td>'
-   + '<td class="num mono">'+num(T.ded,2)+'</td><td class="num mono">'+num(T.net,0)+'</td><td></td>'
-   + '</tr></tfoot></table></div>';
+  };
+  const subtotalRow=(label, sum)=>{
+    h+='<tr style="font-weight:700;background:var(--surface2)">'
+     + '<td colspan="3">'+esc(label)+' — '+sum.n+' '+(sum.n===1?"person":"people")+'</td>'
+     + '<td></td><td></td>'
+     + '<td class="num mono">'+num(sum.days,1)+'</td>'
+     + '<td class="num mono">'+num(sum.ot,1)+'</td>'
+     + '<td></td>'
+     + (kind==="semi"?'<td></td>':'')
+     + '<td class="num mono">'+num(sum.gross,2)+'</td>'
+     + '<td colspan="'+used.length+'"></td>'
+     + '<td class="num mono">'+num(sum.ded,2)+'</td>'
+     + '<td class="num mono">'+num(sum.net,0)+'</td><td></td></tr>';
+  };
+  if(grouped){
+    const span=LEAD.length+used.length+TAIL.length;
+    paySiteGroups(worked).forEach(g=>{
+      h+='<tr style="background:var(--surface2)"><td colspan="'+span+'"><b>'+esc(g.site)+'</b></td></tr>';
+      g.lines.forEach(paintPayRow);
+      subtotalRow(g.site+" subtotal", g.T);
+    });
+  }else worked.forEach(paintPayRow);
+  h+='</tbody><tfoot>';
+  subtotalRow("TOTAL", T);
+  h+='</tfoot></table></div>';
 
   if(idle){
     h+='<div class="note" style="margin-top:10px">'+idle+' '+(idle===1?'person is':'people are')
@@ -19464,7 +19564,7 @@ function viewPayrollRun(){
 /* The sheet as Catherine lays it out: period and release date at the head, a
    line per person with the day rows beneath, then the project summary and the
    two signatures. Landscape, because their own file is. */
-function payPaper(kind, per, lines, T){
+function payPaper(kind, per, lines, T, groups){
   const K=payKind(kind);
   const st=S.settings;
   let h=pfHead()
@@ -19485,13 +19585,19 @@ function payPaper(kind, per, lines, T){
        ["Daily",6],["Hourly",5.5],["Allowance",6.5],["Gross",7.5],["Deductions",7.5],["NET PAY",8],["Signature",11.5]]
     : [["No.",3],["Name",17],["Position",9.5],["Area",10],["Days",4.5],["OT hrs",5],["Prem.",4.5],
        ["Daily",6.5],["Hourly",6],["Gross",8],["Deductions",8],["NET PAY",8.5],["Signature",9.5]];
+  const chunks=(groups&&groups.length)
+    ? groups.map(g=>({title:g.site, lines:g.lines, T:g.T}))
+    : [{title:"", lines:lines, T:T}];
+  chunks.forEach(chunk=>{
+    if(chunk.title) h+=pfBand(chunk.title);
   h+='<table class="pf-t reg" style="margin-top:0">'
    + '<colgroup>'+COLS.map(c=>'<col style="width:'+c[1]+'%">').join("")+'</colgroup>'
    + '<tr>'+COLS.map(c=>'<td class="hd">'+esc(c[0])+'</td>').join("")+'</tr>';
-  lines.forEach((L,i)=>{
+  chunk.lines.forEach((L,i)=>{
     h+='<tr>'
      + '<td class="c">'+(i+1)+'</td>'
      + '<td class="nm">'+esc(flipName(L.name))+(L.empNo?'<small>ID No. '+esc(L.empNo)+'</small>':'')
+     + (!(Number(L.daily)>0)?'<small>no rate</small>':'')
      + (L.payWarn?'<small>'+esc(L.payWarn)+'</small>':'')+'</td>'
      + '<td>'+esc(L.position||"")+'</td>'
      + '<td>'+esc(L.site||"")+'</td>'
@@ -19506,12 +19612,28 @@ function payPaper(kind, per, lines, T){
      + '<td class="n" style="font-weight:700">'+num(L.net,2)+'</td>'
      + '<td></td></tr>';
   });
-  /* everything up to and including Hourly, plus Allowance on the admin sheet */
-  h+='<tr><td class="hd" colspan="'+(kind==="semi"?10:9)+'" style="text-align:left">'
-   + 'TOTAL — '+lines.length+' employees</td>'
-   + '<td class="n" style="font-weight:700">'+num(T.gross,2)+'</td>'
-   + '<td class="n" style="font-weight:700">'+num(T.ded,2)+'</td>'
-   + '<td class="n" style="font-weight:700">'+num(T.net,2)+'</td><td></td></tr></table>';
+  /* No., Name, Position, Area, then Days and OT, then the money columns. */
+  const chunkT=chunk.T||{};
+  h+='<tr><td class="hd" colspan="4" style="text-align:left">'
+   + (chunk.title ? esc(chunk.title)+" — " : "TOTAL — ")+chunk.lines.length+' employees</td>'
+   + '<td class="n" style="font-weight:700">'+num(chunkT.days||0,1)+'</td>'
+   + '<td class="n" style="font-weight:700">'+num(chunkT.ot||0,1)+'</td>'
+   + '<td class="hd" colspan="'+(kind==="semi"?4:3)+'"></td>'
+   + '<td class="n" style="font-weight:700">'+num(chunkT.gross!=null?chunkT.gross:T.gross,2)+'</td>'
+   + '<td class="n" style="font-weight:700">'+num(chunkT.ded!=null?chunkT.ded:T.ded,2)+'</td>'
+   + '<td class="n" style="font-weight:700">'+num(chunkT.net!=null?chunkT.net:T.net,2)+'</td><td></td></tr></table>';
+  });
+  if(groups&&groups.length){
+    h+=pfBand("GRAND TOTAL")
+     + '<table class="pf-t" style="margin-top:0"><tr>'
+     + '<td class="pf-l">PEOPLE</td><td class="pf-v">'+lines.length+'</td>'
+     + '<td class="pf-l">DAYS</td><td class="pf-v">'+num(T.days||0,1)+'</td>'
+     + '<td class="pf-l">OT HRS</td><td class="pf-v">'+num(T.ot||0,1)+'</td>'
+     + '<td class="pf-l">GROSS</td><td class="pf-v">'+num(T.gross,2)+'</td>'
+     + '<td class="pf-l">DEDUCTIONS</td><td class="pf-v">'+num(T.ded,2)+'</td>'
+     + '<td class="pf-l">NET</td><td class="pf-v">'+num(T.net,2)+'</td>'
+     + '</tr></table>';
+  }
 
   /* by project, the way the summary page is set out */
   const byS={};
@@ -19677,14 +19799,15 @@ function statFromRate(e){
 
 function viewContrib(){
   const only=S.ui.contribKind||"";
-  let people=activeEmps().filter(e=>payRosterInclude(e, {from:TODAY,to:TODAY}))
+  const recent=recentManpowerIds(30);
+  let people=empList().filter(e=>contribEngaged(e, recent))
     .slice().sort((a,b)=>flipName(a.name).localeCompare(flipName(b.name)));
   if(only) people=people.filter(e=>payKindOf(e)===only);
   const set=people.filter(e=>["sss","phic","hdmf"].some(k=>empStatSet(e,k))).length;
   const refusedN=people.filter(e=>contribSource(e)==="refused").length;
   const d=S.settings.ded||{};
 
-  setCrumb("Contributions", people.length+" active · "+set+" with their own figures · "
+  setCrumb("Contributions", people.length+" engaged · "+set+" with their own figures · "
     + refusedN+" refused · the rest on the company default");
 
   let h='<div class="note" style="margin-bottom:12px">'
@@ -19694,7 +19817,12 @@ function viewContrib(){
    + 'The row then reads <b>manual — standing</b> and shows the number you typed. '
    + 'Type <b>0</b> to store an explicit 0. Clearing a box that already has a figure also stores 0. '
    + 'An empty box that was never filled is still "not set". '
-   + 'Only people who are <b>currently active</b> are listed. A signed Kasabutan or a decline of '
+   + 'The list is everyone <b>engaged</b>: Active, Regular, Probationary, Project-based, '
+   + 'Contractual, Seasonal, Fixed-term, Consultant, a blank status, and anyone with Daily Manpower '
+   + 'attendance in the last 30 days. A Separated, Resigned, Terminated, AWOL, Inactive, Retired, '
+   + 'Deceased, or end-of-contract status is left off only when the separation date is already past. '
+   + 'A note that a resignation letter is unsigned does not remove anyone. '
+   + 'A signed Kasabutan or a decline of '
    + 'government-mandated benefits still sets all three to <b>0</b> until you type something else. '
    + 'Company defaults: <b>SSS '+peso(d.sss||0)+', PhilHealth '+peso(d.phic||0)+', Pag-IBIG '+peso(d.hdmf||0)
    + '</b> per semi-monthly period. A week is half, and the leftover centavo is dropped. '
@@ -19743,7 +19871,7 @@ function viewContrib(){
           ? "Kasabutan or a decline of government benefits. Type a figure here if this person should pay something."
           : "Nothing stored on the 201 yet. The gray amounts are the company figure.";
     const pill = '<span data-csrc="'+esc(e.id)+'" class="'+contribSourceClass(src)+'" title="'+esc(pillTitle)+'">'+esc(contribSourceLabel(src))+'</span>';
-    h+='<tr data-crow="1" data-hay="'+esc((e.name+" "+flipName(e.name)+" "+(e.empNo||"")+" "+(e.position||"")+" "+(e.project||"")).toLowerCase())+'">'
+    h+='<tr data-crow="1" data-hay="'+esc(contribHay(e).toLowerCase())+'">'
      + '<td class="mono">'+esc(e.empNo||"—")+'</td>'
      + '<td><b>'+esc(flipName(e.name))+'</b><div class="lbl" style="text-transform:none;letter-spacing:0;font-family:var(--f-ui)">'+esc(e.position||"")+'</div></td>'
      + '<td style="font-size:11.5px">'+(kind==="semi"?"Semi-monthly":"Weekly")+'</td>'
@@ -21586,16 +21714,18 @@ function wire(){
     const per=payCur().per;
     const dates=payDates(per.from,per.to);
     const saved=payRunGet(kind,per.from,per.to);
-    const lines=payRunLines(kind, per, dates, saved).filter(L=>L.days>0||L.ot>0);
-    const T=lines.reduce((a,L)=>({gross:a.gross+L.gross, ded:a.ded+L.ded, net:a.net+L.net}),
-      {gross:0,ded:0,net:0});
-    return {kind, per, lines, T};
+    const ui=S.ui||{};
+    const all=payRunLines(kind, per, dates, saved).filter(L=>L.days>0||L.ot>0);
+    const lines=payFilterLines(all, ui.paySite);
+    const grouped=!!ui.payGroupSite;
+    const T=payLineSum(lines);
+    return {kind, per, lines, T, grouped, groups:grouped?paySiteGroups(lines):null};
   };
   const payPrintBtn=$("#pay-print",v); if(payPrintBtn) payPrintBtn.onclick=()=>{
     const b=payBuild();
     if(!b.lines.length){ toast("Nobody has a day recorded in this period.","err"); return; }
     if(blockCompanyPrint([(S.settings.payrollBy?"evaluated":"dept"),"signatory"])) return;
-    const body=payPaper(b.kind,b.per,b.lines,b.T);
+    const body=payPaper(b.kind,b.per,b.lines,b.T,b.grouped?b.groups:null);
     const no=(b.kind==="semi"?"ADMIN":"WEEKLY")+" PAYROLL "+payLabel(b.per.from,b.per.to);
     openModal({ title:no, wide:true, body:pfWrap(body,{land:true}),
       foot:'<button class="btn" id="pyp-back">Back</button>'
@@ -21637,14 +21767,29 @@ function wire(){
       .concat(semi?["Allowance"]:[])
       .concat(["Gross","Late/Undertime","Cash advance","Uniform/Others","SSS loan","Pag-IBIG loan",
                "SSS","PhilHealth",semi?"HMIC":"Pag-IBIG","Total deductions","NET PAY"]);
-    const rows=b.lines.map(L=>[L.empNo,flipName(L.name),L.position,L.site,
+    const rowOf=L=>[L.empNo,flipName(L.name),L.position,L.site,
       L.daily.toFixed(2),L.hourly.toFixed(2),L.days,L.ot]
       .concat([L.hol30||0, L.hol100||0, (L.holPay||0).toFixed(2)])
-      .concat(semi?[L.allowance.toFixed(2)]:[])
+      .concat(semi?[Number(L.allowance||0).toFixed(2)]:[])
       .concat([L.gross.toFixed(2),L.late,L.ca,L.uniform,L.sssLoan,L.hdmfLoan,
-               L.sss,L.phic,L.hdmf,L.ded.toFixed(2),L.net]));
+               L.sss,L.phic,L.hdmf,L.ded.toFixed(2),L.net]);
+    const rows=[];
+    const pushLine=L=>rows.push(rowOf(L));
+    if(b.grouped && b.groups && b.groups.length){
+      b.groups.forEach(g=>{
+        g.lines.forEach(pushLine);
+        pushLine({empNo:"", name:g.site+" subtotal", position:"", site:g.site,
+          daily:0, hourly:0, days:g.T.days, ot:g.T.ot, hol30:0, hol100:0, holPay:0,
+          allowance:0, gross:g.T.gross, late:0, ca:0, uniform:0, sssLoan:0, hdmfLoan:0,
+          sss:0, phic:0, hdmf:0, ded:g.T.ded, net:g.T.net});
+      });
+    }else b.lines.forEach(pushLine);
     saveFile(slugNo((semi?"ADMIN":"WEEKLY")+"-PAYROLL-"+b.per.from)+".csv", toCSV([head].concat(rows)));
   };
+  const paySiteEl=$("#pay-site",v);
+  if(paySiteEl) paySiteEl.onchange=()=>{ S.ui.paySite=paySiteEl.value; render(); };
+  const payGroupEl=$("#pay-group",v);
+  if(payGroupEl) payGroupEl.onclick=()=>{ S.ui.payGroupSite=!S.ui.payGroupSite; render(); };
 
   /* ---- contributions ---- */
   on("[data-ckind]","click",e=>{ S.ui.contribKind=e.currentTarget.dataset.ckind; render(); });
@@ -21689,7 +21834,9 @@ function wire(){
         hint:"Every per-person SSS, PhilHealth and Pag-IBIG figure is removed. The company figures in Settings apply again, except a signed Kasabutan or benefits refusal, which stays at 0."}]);
     if(!r || String(r.ok||"").toUpperCase()!=="CLEAR") return;
     let n=0, failed=0;
-    for(const e of activeEmps()){
+    const recent=recentManpowerIds(30);
+    for(const e of empList()){
+      if(!contribEngaged(e, recent)) continue;
       if(!e.ded && !e._contribHold) continue;
       delete e.ded;
       e._contribHold={_cleared:1};
