@@ -1375,7 +1375,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-09-29a";
+const BUILD = "2026-09-29b";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -1945,6 +1945,13 @@ function empNotYetHired(e, date){
   const day=String(date||"").slice(0,10);
   if(!h || !day) return false;
   return h>day;
+}
+/* Payroll does not pay a day before the hire date. Blank hire date pays. */
+function payDayBeforeHire(e, date){
+  if(!e || !date) return false;
+  const h=empHireDate(e);
+  const day=String(date).slice(0,10);
+  return !!(h && day && day<h);
 }
 /* A saved row that only repeats the standing default (Present, no OT) is not
    something HR typed. OT includes a real zero. Site and the usual in/out
@@ -4408,6 +4415,31 @@ function personKey(name){
     .filter(w=>w.length>1)                    /* drop middle initials */
     .join(" ");
   return last+"|"+given;
+}
+/* Same person when the printed name drops a middle initial or flips to
+   "First Last". Single letters and Jr/Sr are ignored. Given names stay, so
+   John Mark and John Louie do not collapse. Used only when exactly one
+   employee shares the key. */
+function personMatchKey(name){
+  const SUFFIX=/^(jr|sr|ii|iii|iv|junior|senior)$/;
+  let s=String(name||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase();
+  s=s.replace(/[^a-z0-9, ]/g," ");
+  let words;
+  const comma=s.indexOf(",");
+  if(comma>=0){
+    const last=s.slice(0,comma).trim().split(/\s+/).filter(Boolean);
+    const given=s.slice(comma+1).trim().split(/\s+/).filter(w=>w.length>1 && !SUFFIX.test(w));
+    words=last.concat(given);
+  }else{
+    words=s.trim().split(/\s+/).filter(w=>w.length>1 && !SUFFIX.test(w));
+  }
+  const seen={}, uniq=[];
+  words.forEach(w=>{
+    if(!w || seen[w]) return;
+    seen[w]=1; uniq.push(w);
+  });
+  uniq.sort();
+  return uniq.join("|");
 }
 function byPerson(){
   const m={};
@@ -18670,6 +18702,11 @@ function payRosterInclude(e, per){
   if(empSeparatedAsOf(e, start)) return false;
   const on=empSeparationDate(e);
   if(on && on<=start) return false;
+  /* Hired after this period ends is not on the run. A blank date hired
+     still counts — a missing date is not a future start. */
+  const hired=empHireDate(e);
+  const end=String((per&&per.to)||"").slice(0,10);
+  if(hired && end && hired>end) return false;
   return true;
 }
 function payPeople(kind, per){
@@ -18728,6 +18765,25 @@ function summaryPersonId(key, row){
     });
     if(hit) return hit.id;
   }
+  /* Printed manpower often drops the middle initial ("John Mark" vs
+     "John Mark B.") or writes First Last. Attach that row only when one
+     employee has those words. Two different given names stay apart. */
+  if(typeof personMatchKey==="function" && typeof empList==="function"){
+    const raws=[];
+    if(key) raws.push(String(key));
+    const rn=row && (row.name||row.empName);
+    if(rn) raws.push(String(rn));
+    const keys=raws.map(personMatchKey).filter(Boolean);
+    if(keys.length){
+      const hits=empList().filter(e=>{
+        const pk=personMatchKey(e&&e.name);
+        return pk && keys.indexOf(pk)>=0;
+      });
+      const uniq=[];
+      hits.forEach(e=>{ if(e && e.id && !uniq.some(x=>x.id===e.id)) uniq.push(e); });
+      if(uniq.length===1) return uniq[0].id;
+    }
+  }
   return "";
 }
 function dailyRowForEmp(rec, empId){
@@ -18767,7 +18823,7 @@ function summaryDayOt(rec, empId, row){
   const date=String(rec.date||"").slice(0,10);
   if(!dailyRowShown(empId, date, row)) return null;
   const e=S.employees&&S.employees[empId];
-  const blocked=payDayAfterSeparation(e, date);
+  const blocked=payDayAfterSeparation(e, date) || payDayBeforeHire(e, date);
   return {
     day: blocked ? 0 : payDayAmount(row, empId, date),
     ot: blocked ? 0 : payrollOtHours(rec, empId, row)
@@ -18800,8 +18856,39 @@ function payDayRow(empId, rec){
   if(!dailyPeople(rec).some(p=>p && p.id===empId)) return null;
   return {s:"Present", r:"", in:"", out:"", ot:null, day:null, hol:null};
 }
+/* "1:00 PM", "1 PM", "13:00", "12:00 NN". Empty is not a time. */
+function clockMinutes(raw){
+  let s=String(raw||"").trim().toLowerCase().replace(/\./g,"");
+  if(!s) return null;
+  s=s.replace(/\s+/g," ");
+  const m=s.match(/^(\d{1,2})(?::(\d{2}))?(?::\d{2})?\s*(am|pm|nn)?$/);
+  if(!m) return null;
+  let h=Number(m[1]);
+  const min=m[2]==null ? 0 : Number(m[2]);
+  let ap=m[3]||"";
+  if(ap==="nn"){ h=12; ap="pm"; }
+  if(ap==="am"){ if(h===12) h=0; }
+  else if(ap==="pm"){ if(h<12) h+=12; }
+  if(h===24 && min===0) h=0;
+  if(h>23 || min>59 || h<0) return null;
+  return h*60+min;
+}
+/* Morning-only or afternoon-only is half a day. A shift that crosses noon
+   stays a full day. Half Day status is handled by the caller. */
+function sessionIsHalf(r, st){
+  if(st && st!=="Present" && st!=="Present/Late" && st!=="Undertime") return false;
+  const inn=clockMinutes(r&&r.in);
+  const out=clockMinutes(r&&r.out);
+  if(inn==null && out==null) return false;
+  const NOON=12*60;
+  if(inn!=null && out!=null && inn<NOON && out>NOON) return false;
+  if(inn!=null && inn>=NOON && (out==null || out>=inn)) return true;
+  if(out!=null && out<=NOON && (inn==null || inn<=out) && (inn==null || inn<NOON)) return true;
+  return false;
+}
 /* Typed day credit wins. Otherwise the status Daily Manpower shows, including
-   an approved absence read as leave. */
+   an approved absence read as leave. A single session (time in at or after
+   noon, or time out at or before noon) is half a day when no day was typed. */
 function payDayAmount(r, empId, date){
   if(r && r.day!=null && String(r.day).trim()!==""){
     const n=Number(r.day);
@@ -18811,7 +18898,10 @@ function payDayAmount(r, empId, date){
   if(typeof effectiveStatus==="function")
     st=effectiveStatus(empId, date, st||"Present", (r&&(r.r||r.reason))||"") || st || "Present";
   else if(!st) st="Present";
-  return dayCredit({s:st, r:(r&&r.r)||""});
+  if(st==="Half Day") return 0.5;
+  const credit=dayCredit({s:st, r:(r&&r.r)||""});
+  if(credit===1 && sessionIsHalf(r, st)) return 0.5;
+  return credit;
 }
 function payDayAfterSeparation(e, date){
   if(!e || !date) return false;
@@ -18831,7 +18921,7 @@ function payDaysFor(empId, dates){
     if(!rec) return;
     const r=payDayRow(empId, rec);
     if(!r || !dailyRowShown(empId, d, r)) return;
-    const blocked=payDayAfterSeparation(e, d);
+    const blocked=payDayAfterSeparation(e, d) || payDayBeforeHire(e, d);
     const part=typeof summaryDayOt==="function" ? summaryDayOt(rec, empId, r) : null;
     const day=part ? part.day : (blocked ? 0 : payDayAmount(r, empId, d));
     const ot=part ? part.ot : (blocked ? 0 : dayVal(r,"ot", 0));
@@ -18892,6 +18982,8 @@ function payLine(e, kind, dates, saved){
     hdmf:      payStatForLine(kind, "hdmf", e, sv),
     rows:days, auto
   };
+  if(!(Number(rate.daily)>0) && ((Number(L.days)||0)>0 || (Number(L.ot)||0)>0))
+    L.payWarn="No daily rate on the 201 file, so this attendance pays 0 until a rate is set.";
   return payTotals(L);
 }
 /* The statutory slice for the length of the period. The settings figures are
@@ -19027,6 +19119,118 @@ function payTotals(L){
   L.net     = pesoCeil(L.gross - L.ded);
   return L;
 }
+/* A Daily Manpower row that did not attach to one 201 record. Group the
+   week by employee number, or by the same word key used for name matching. */
+function payLooseKey(key, row){
+  const no=normNo(key) || normNo(row && (row.empNo||row.no));
+  if(no) return "no:"+no;
+  const name=String((row && (row.name||row.empName)) || key || "").trim();
+  const mk=typeof personMatchKey==="function" ? personMatchKey(name) : "";
+  if(mk) return "nm:"+mk;
+  return "k:"+String(key||"");
+}
+function payUnmatchedWhy(key, row){
+  const name=String((row && (row.name||row.empName)) || "").trim() || String(key||"").trim();
+  const no=normNo(key) || normNo(row && (row.empNo||row.no));
+  const mk=typeof personMatchKey==="function" ? personMatchKey(name) : "";
+  let hits=[];
+  if(mk && typeof empList==="function"){
+    hits=empList().filter(e=>e && personMatchKey(e.name)===mk);
+  }
+  if(hits.length>1){
+    return "Daily Manpower name “"+name+"” matches "+hits.length+" employee records ("
+      + hits.map(e=>(e.empNo?e.empNo+" ":"")+(e.name||"")).join("; ")
+      + "), so it was not attached to one of them.";
+  }
+  if(no && name && normNo(name)!==no)
+    return "Employee number "+no+" on the Daily Manpower row (“"+name+"”) is not on any 201 record.";
+  if(no) return "Employee number "+no+" is on the Daily Manpower row but no 201 record has that number.";
+  if(name) return "No 201 record matches “"+name+"”. Shown from attendance with no rate until the employee file exists.";
+  return "This Daily Manpower row is not tied to a 201 record.";
+}
+/* Weekly site run only. A matched employee stays on the normal roster rules
+   (active, not separated, hired on or before the period end). */
+function payUnmatchedLines(kind, dates){
+  if(kind && kind!=="weekly") return [];
+  const bags={};
+  (dates||[]).forEach(d=>{
+    const rec=typeof dailyRecordFor==="function" ? dailyRecordFor(d) : null;
+    if(!rec || !rec.rows) return;
+    Object.keys(rec.rows).forEach(k=>{
+      const row=rec.rows[k];
+      if(!row || typeof row!=="object") return;
+      if(summaryPersonId(k, row)) return;
+      const day=payDayAmount(row, "", d);
+      const ot=typeof payrollOtHours==="function" ? payrollOtHours(rec, "", row) : (Number(row.ot)||0);
+      if(!(Number(day)>0) && !(Number(ot)>0)) return;
+      const id=payLooseKey(k, row);
+      const bag=bags[id]||(bags[id]={
+        id:id, key:k, row:row,
+        name:String((row.name||row.empName)||"").trim() || String(k||"").trim() || "Unmatched attendance",
+        empNo:normNo(k) || normNo(row.empNo||row.no) || "",
+        site:row.site||"",
+        why:payUnmatchedWhy(k, row),
+        rows:[]
+      });
+      if(row.site) bag.site=row.site;
+      bag.rows.push({
+        date:d, s:row.s||"", reason:row.r||"", site:row.site||"",
+        in:row.in||"", out:row.out||"",
+        day:Number(day)||0, ot:Number(ot)||0,
+        hol:typeof holCode==="function"?holCode(row):0,
+        holRate:typeof holRate==="function"?holRate(row):0,
+        elig:typeof holEligible==="function"?!!holEligible(d, row):false
+      });
+    });
+  });
+  return Object.keys(bags).sort((a,b)=>String(bags[a].name).localeCompare(String(bags[b].name))).map(id=>{
+    const b=bags[id];
+    const days=b.rows.reduce((n,x)=>n+(Number(x.day)||0),0);
+    const ot=b.rows.reduce((n,x)=>n+(Number(x.ot)||0),0);
+    const L={
+      empId:b.id, empNo:b.empNo, name:b.name, position:"",
+      site:b.site, daily:0, hourly:0, basis:"no daily rate on file", monthly:false,
+      days:days, ot:ot, refusedContrib:false,
+      hol:b.rows.filter(x=>x.hol>0).length,
+      holFactor:b.rows.reduce((n,x)=>n+(Number(x.holRate)||0),0),
+      hol30:b.rows.filter(x=>x.hol===1).length,
+      hol100:b.rows.filter(x=>x.hol===2).length,
+      eligible:b.rows.filter(x=>x.elig).length,
+      allowance:0, incentive:0, late:0, ca:0, uniform:0, sssLoan:0, hdmfLoan:0,
+      sss:0, phic:0, hdmf:0,
+      rows:b.rows, auto:{days:days, ot:ot},
+      unmatched:true,
+      payWarn:b.why
+    };
+    return payTotals(L);
+  });
+}
+/* On the manpower report, but date hired is after the period, so the run
+   leaves them off. Separation is still a hard exclude and is not listed here. */
+function payFutureHireNotes(kind, per, dates){
+  if(typeof empList!=="function" || !per) return [];
+  const end=String(per.to||"").slice(0,10);
+  return empList().filter(e=>{
+    if(!e || payKindOf(e)!==kind) return false;
+    if(empStatusIsSeparated(e)) return false;
+    const hired=empHireDate(e);
+    if(!hired || !end || hired<=end) return false;
+    return (dates||[]).some(d=>{
+      const rec=typeof dailyRecordFor==="function" ? dailyRecordFor(d) : null;
+      if(!rec) return false;
+      const row=dailyRowForEmp(rec, e.id);
+      if(!row) return false;
+      const day=payDayAmount(row, e.id, d);
+      const ot=typeof payrollOtHours==="function" ? payrollOtHours(rec, e.id, row) : 0;
+      return (Number(day)||0)>0 || (Number(ot)||0)>0;
+    });
+  }).map(e=>({id:e.id, empNo:e.empNo||"", name:e.name||"", hired:empHireDate(e)}));
+}
+function payRunLines(kind, per, dates, saved){
+  const people=payPeople(kind, per);
+  const lines=people.map(e=>payLine(e, kind, dates, (saved&&saved.lines&&saved.lines[e.id])||null));
+  return lines.concat(payUnmatchedLines(kind, dates));
+}
 
 /* The period on screen. Normally the standard weekly or semi-monthly window
    the anchor falls in; HR can set any two dates instead, which is what a
@@ -19072,8 +19276,7 @@ function viewPayrollRun(){
   const anchor=S.ui.payAnchor||TODAY;
   const dates=payDates(per.from,per.to);
   const saved=payRunGet(kind,per.from,per.to);
-  const people=payPeople(kind, per);
-  const lines=people.map(e=>payLine(e,kind,dates,(saved&&saved.lines&&saved.lines[e.id])||null));
+  const lines=payRunLines(kind, per, dates, saved);
   const worked=lines.filter(L=>L.days>0 || L.ot>0);
   const idle=lines.length-worked.length;
   const T=worked.reduce((a,L)=>({gross:a.gross+L.gross, ded:a.ded+L.ded, net:a.net+L.net,
@@ -19109,6 +19312,20 @@ function viewPayrollRun(){
      + '<b>'+(dates.length-cov)+' of '+dates.length+' days in this period have no manpower report</b> — '
      + missing.map(d=>esc(d.slice(5))).join(", ")
      + '. Those days pay nothing to anybody. File the reports first, or the run is short.</div>';
+  }
+  const futureHires=payFutureHireNotes(kind, per, dates);
+  if(futureHires.length){
+    h+='<div class="note" style="border-left-color:var(--warn);margin-bottom:12px">'
+     + '<b>Not on this run — date hired is after '+esc(per.to)+'.</b> '
+     + futureHires.map(e=>esc(flipName(e.name)||e.name)+(e.empNo?" ("+esc(e.empNo)+")":"")+" hired "+esc(e.hired)).join("; ")
+     + '. Days before the hire date are not paid either.</div>';
+  }
+  const warned=worked.filter(L=>L.payWarn);
+  if(warned.length){
+    h+='<div class="note" style="border-left-color:var(--warn);margin-bottom:12px">'
+     + '<b>Attendance on this run that is not a complete 201 record.</b> '
+     + warned.map(L=>'<b>'+esc(flipName(L.name)||L.name)+'</b> — '+esc(L.payWarn)).join(" ")
+     + '</div>';
   }
   if(S.ui.paySnapped && S.ui.payAnchor){
     h+='<div class="note" style="margin-bottom:12px">Opened the <b>latest period with filed reports</b> — the current '
@@ -19210,8 +19427,11 @@ function viewPayrollRun(){
      + '<td class="mono">'+esc(L.empNo||"—")+'</td>'
      + '<td><b>'+esc(flipName(L.name))+'</b>'
      + (L.refusedContrib?' <span class="pill mut" title="Kasabutan or a decline of government benefits. The three contribution boxes start at 0 and stay editable.">refused</span>':"")
+     + (L.payWarn?' <span class="pill warn" title="'+esc(L.payWarn)+'">check 201</span>':"")
      + (L.monthly?' <span class="pill mut" title="'+esc(L.basis)+'">÷26</span>':'')
-     + '<div class="lbl" style="text-transform:none;letter-spacing:0;font-family:var(--f-ui)">'+esc(L.position||"")+'</div></td>'
+     + '<div class="lbl" style="text-transform:none;letter-spacing:0;font-family:var(--f-ui)">'+esc(L.position||"")+'</div>'
+     + (L.payWarn?'<div class="lbl" style="text-transform:none;letter-spacing:0;color:var(--warn)">'+esc(L.payWarn)+'</div>':"")
+     + '</td>'
      + '<td style="font-size:11px">'+esc(L.site||"—")+'</td>'
      + '<td class="num mono">'+num(L.daily,2)+'</td><td class="num mono">'+num(L.hourly,2)+'</td>'
      + '<td class="num mono" title="'+esc(payDayHint(L,"day"))+'">'+num(L.days,1)+'</td>'
@@ -19271,7 +19491,8 @@ function payPaper(kind, per, lines, T){
   lines.forEach((L,i)=>{
     h+='<tr>'
      + '<td class="c">'+(i+1)+'</td>'
-     + '<td class="nm">'+esc(flipName(L.name))+(L.empNo?'<small>ID No. '+esc(L.empNo)+'</small>':'')+'</td>'
+     + '<td class="nm">'+esc(flipName(L.name))+(L.empNo?'<small>ID No. '+esc(L.empNo)+'</small>':'')
+     + (L.payWarn?'<small>'+esc(L.payWarn)+'</small>':'')+'</td>'
      + '<td>'+esc(L.position||"")+'</td>'
      + '<td>'+esc(L.site||"")+'</td>'
      + '<td class="n">'+num(L.days,1)+'</td>'
@@ -21365,9 +21586,7 @@ function wire(){
     const per=payCur().per;
     const dates=payDates(per.from,per.to);
     const saved=payRunGet(kind,per.from,per.to);
-    const lines=payPeople(kind, per)
-      .map(e=>payLine(e,kind,dates,(saved&&saved.lines&&saved.lines[e.id])||null))
-      .filter(L=>L.days>0||L.ot>0);
+    const lines=payRunLines(kind, per, dates, saved).filter(L=>L.days>0||L.ot>0);
     const T=lines.reduce((a,L)=>({gross:a.gross+L.gross, ded:a.ded+L.ded, net:a.net+L.net}),
       {gross:0,ded:0,net:0});
     return {kind, per, lines, T};

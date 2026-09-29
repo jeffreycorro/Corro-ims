@@ -113,6 +113,7 @@ function loadPay() {
     "dailyId",
     "mergeDailyRowKeep",
     "normPersonName",
+    "personMatchKey",
     "summaryPersonId",
     "dailyRecordFor",
     "dailyRowForEmp",
@@ -121,6 +122,9 @@ function loadPay() {
     "dailyOtEvents",
     "recoverableDailyOt",
     "payrollOtHours",
+    "clockMinutes",
+    "sessionIsHalf",
+    "payDayBeforeHire",
     "payDayAmount",
     "payDayAfterSeparation",
     "summaryDayOt",
@@ -145,8 +149,8 @@ function loadPay() {
 }
 
 describe("2026-09-28b payroll — monitoring week equals payroll", () => {
-  it("is build 2026-09-29a and offers recompute", () => {
-    assert.match(html, /const BUILD = "2026-09-29a"/);
+  it("is build 2026-09-29b and offers recompute", () => {
+    assert.match(html, /const BUILD = "2026-09-29b"/);
     assert.match(html, /id="pay-recompute"/);
     assert.match(html, /Recompute from attendance/);
     assert.match(extractFunction(html, "viewPayrollRun"), /data-payf/);
