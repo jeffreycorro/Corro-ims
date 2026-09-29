@@ -379,7 +379,7 @@ var SIGNATORIES = [
 ];
 var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
 /* Shown on the Ask screen, so a screenshot says which version someone is on. */
-var BUILD = "2026-09-29 b";
+var BUILD = "2026-09-29 c";
 var DAY = 86400000, MO = 30.44;
 
 /* Part categories that were entered under two spellings and so split a unit's
@@ -471,6 +471,7 @@ function applyVrfAutoApproval(hold, total, at){
 function spendEndStatus(raw){
   raw=String(raw||"").trim();
   if(/^not[- ]bought$/i.test(raw)) return "Not bought";
+  if(/^duplicate\b/i.test(raw)) return "Duplicate";
   if(/^cancel(?:led|ed)$/i.test(raw)) return "Cancelled";
   return "";
 }
@@ -478,7 +479,7 @@ function reserveSpendClosed(reserve){
   if(!reserve) return false;
   if(String(reserve.status||"")==="Cancelled"||reserve.cancelledAt) return true;
   var outcome=String(reserve.cancelOutcome||"");
-  return outcome==="cancelled"||outcome==="not-bought";
+  return outcome==="cancelled"||outcome==="not-bought"||outcome==="duplicate";
 }
 /* A cancelled or not-bought hold must not come back at the approved budget. */
 function heldLineAmount(reserve, line){
@@ -489,7 +490,12 @@ function heldLineAmount(reserve, line){
 function heldVrfStatus(reserve, fallback){
   if(!reserve) return fallback||"Open";
   if(reserve.status==="Requested") return "Requested";
-  if(reserveSpendClosed(reserve)) return String(reserve.cancelOutcome)==="not-bought"?"Not bought":"Cancelled";
+  if(reserveSpendClosed(reserve)){
+    var outcome=String(reserve.cancelOutcome||"");
+    if(outcome==="not-bought") return "Not bought";
+    if(outcome==="duplicate") return "Duplicate";
+    return "Cancelled";
+  }
   if(reserve.status==="Closed"||reserve.status==="Rejected"||reserve.status==="Flagged"||reserve.liquidatedAt)
     return "Closed";
   return fallback||"Open";
@@ -506,6 +512,7 @@ function liquidationOutcome(rows, edits, added){
 }
 function vrfStatusForOutcome(outcome){
   if(outcome==="not-bought") return "Not bought";
+  if(outcome==="duplicate") return "Duplicate";
   if(outcome==="cancelled") return "Cancelled";
   return "Closed";
 }
@@ -517,9 +524,9 @@ function lineWasNotPurchased(row){
 /* Not bought / cancelled keeps the line and zeroes it. Bought keeps the receipt amounts. */
 function applyLiquidationLine(row, edit, stamp, outcome){
   var e=edit||{};
-  var drop=outcome==="cancelled"||outcome==="not-bought"||!!e.remove;
+  var drop=outcome==="cancelled"||outcome==="not-bought"||outcome==="duplicate"||!!e.remove;
   if(drop){
-    var st=outcome==="cancelled"?"Cancelled":outcome==="not-bought"?"Not bought":"Closed";
+    var st=outcome==="duplicate"?"Duplicate":outcome==="cancelled"?"Cancelled":outcome==="not-bought"?"Not bought":"Closed";
     return Object.assign({}, row||{}, {
       qty:0, price:0, total:0, liters:null,
       notBought:true, vstatus:st, liq:stamp||null
@@ -1166,8 +1173,10 @@ function buildIndex(){
       if(!who&&r.requestedBy) who=String(r.requestedBy);
     });
     var canon=canonicalVrfStatus(st, reserve?reserveBy(reserve):null, liq, k);
+    var rsvRow=reserve?reserveBy(reserve):null;
     return {vrf:k, date:rows[0].date, month:rows[0].month, rows:rows,
       status: canon.status, legacy:canon.legacy, liq:liq, reserve:reserve,
+      duplicateOf:(rsvRow&&rsvRow.duplicateOf)||(liq&&liq.duplicateOf)||"",
       units:Object.keys(units), veh:rows[0].veh,
       works:works, scopes:scopes, multi:works.length>1,
       confirmed:nConf===rows.length, partial:nConf>0&&nConf<rows.length,
@@ -1392,7 +1401,7 @@ function addHeldReserveVrfs(){
     });
     var st=heldVrfStatus(r, rows[0].vstatus);
     _vrfs.push({vrf:no, date:r.date, month:rows[0].month, rows:rows,
-      status:st, legacy:false,
+      status:st, legacy:false, duplicateOf:r.duplicateOf||"",
       liq:(reserveSpendClosed(r)||r.liquidatedAt)?{at:r.cancelledAt||r.liquidatedAt, outcome:r.cancelOutcome||"", by:r.cancelledBy||""}:null,
       reserve:String(r.no),
       units:r.veh?[r.veh]:[], veh:r.veh, works:works, scopes:scopes,
@@ -1586,11 +1595,17 @@ async function liquidateVrf(entry,edits,added,by,note,outcome){
   assertSingleVrfOwner(no, ownerNo||null);
   outcome=outcome||liquidationOutcome(entry.rows, edits, added);
   var stamp={at:iso(),by:by||"",note:note||"",outcome:outcome};
-  var dead=outcome==="cancelled"||outcome==="not-bought";
+  var dead=outcome==="cancelled"||outcome==="not-bought"||outcome==="duplicate";
   if(dead){
     var hits=ledgerRowsForVrf(no, true);
     if(!hits.length){
       var seeded=rowsConfinedToVrf(seedZeroLines(entry, stamp, outcome), no);
+      if(outcome==="duplicate"){
+        seeded.forEach(function(row){
+          row.audit=(row.audit||[]).concat([{at:stamp.at, by:stamp.by||"", field:"duplicate",
+            from:String(no), to:stamp.note||"Duplicate"}]);
+        });
+      }
       await replaceLedgerVrf(seeded[0].month, no, seeded);
     }else{
       var byDead={};
@@ -1598,6 +1613,10 @@ async function liquidateVrf(entry,edits,added,by,note,outcome){
         var next=applyLiquidationLine(Object.assign({}, hit.row),{remove:true},stamp,outcome);
         delete next.src;
         next.vrf=no;
+        if(outcome==="duplicate"){
+          next.audit=(hit.row.audit||[]).concat([{at:stamp.at, by:stamp.by||"", field:"duplicate",
+            from:String(no), to:stamp.note||"Duplicate"}]);
+        }
         (byDead[hit.mk]=byDead[hit.mk]||[]).push(next);
       });
       var deadMonths=Object.keys(byDead);
@@ -1695,6 +1714,117 @@ async function cancelApprovedVrf(entry, by, note){
   _vrfs=null;
   return vrfByNo(screenNo);
 }
+function vrfMayMarkDuplicate(entry){
+  var st=String(entry&&entry.status||"");
+  return st==="Open"||st==="Requested";
+}
+function newSubmissionId(){
+  return "sub-"+Date.now().toString(36)+"-"+Math.random().toString(36).slice(2,10);
+}
+function requestFingerprint(rec){
+  var jobs=rec&&(rec.jobs||rec.works)||[];
+  if(!Array.isArray(jobs)) jobs=jobs?[jobs]:[];
+  var odo=rec&&rec.odo;
+  if((odo==null||odo==="")&&rec) odo=rec.draftOdo!=null?rec.draftOdo:rec.odoAtRequest;
+  var total=rec&&rec.total!=null?rec.total:rec&&rec.budget;
+  return [String(rec&&rec.veh||"").trim(),
+    String(rec&&rec.date||"").trim(),
+    String(parseOdo(odo)==null?"":parseOdo(odo)),
+    String(Math.round(moneyNum(total)*100)),
+    jobs.map(function(w){ return String(w||"").trim(); }).filter(Boolean).sort().join("|")
+  ].join("\u0001");
+}
+function findSameOpenRequests(list, rec, exceptVrf){
+  var key=requestFingerprint(rec);
+  var except=String(exceptVrf||"");
+  return (list||[]).filter(function(v){
+    if(!v||String(v.vrf||"")===except) return false;
+    var st=String(v.status||"");
+    if(st!=="Open"&&st!=="Requested") return false;
+    return requestFingerprint(v)===key;
+  });
+}
+function earliestVrfNumber(list){
+  var best=null, bestN=Infinity;
+  (list||[]).forEach(function(v){
+    var n=parseInt(String(v&&v.vrf||"").replace(/\D/g,""),10);
+    if(!isFinite(n)||n>=bestN) return;
+    bestN=n; best=v;
+  });
+  return best;
+}
+function reserveBySubmission(id){
+  id=String(id||"").trim();
+  if(!id) return null;
+  var i, r;
+  for(i=0;i<(S.reserves||[]).length;i++){
+    r=S.reserves[i];
+    if(!r||String(r.submissionId||"")!==id) continue;
+    if(String(r.status||"")==="Rejected") continue;
+    if(String(r.vrfNo||"").trim()) return r;
+  }
+  return null;
+}
+function draftRequestRec(d){
+  var rows=(d.lines||[]).filter(function(l){ return l&&l.cat&&(moneyNum(l.qty)||moneyNum(l.price)); });
+  var jobs={};
+  if(d.work) jobs[d.work]=1;
+  rows.forEach(function(l){ var w=l.work||d.work; if(w) jobs[w]=1; });
+  return {veh:d.veh, date:d.date||"", odo:d.odo, total:vrfSpendTotal(d.lines), jobs:Object.keys(jobs),
+    status:"Open"};
+}
+async function markVrfDuplicate(entry, keptNo, by, note){
+  by=String(by||"").trim();
+  keptNo=String(keptNo||"").replace(/\D/g,"");
+  if(!entry||!by) return null;
+  if(!keptNo) throw new Error("Say which VRF this one duplicates.");
+  var screenNo=String(entry.vrf||"");
+  if(keptNo===screenNo) throw new Error("A VRF cannot be a duplicate of itself.");
+  note=String(note||"").trim()||("Duplicate of VRF "+keptNo);
+  var rsv=reserveForVrf(entry);
+  if(rsv) rsv.duplicateOf=keptNo;
+  var posted=vrfPostedInLedger(screenNo)||ledgerRowsForVrf(screenNo, true).length>0;
+  if(posted){
+    var target=entry;
+    try{ target=await materializeApprovedVrf(entry); }
+    catch(err){
+      if(err&&(err.code==="vrf_mismatch"||err.code==="vrf_collision"||err.code==="already_posted")) throw err;
+      target=entry;
+    }
+    if(String((target&&target.vrf)||"")!==screenNo){
+      var moved=new Error("Stopped. That would have changed VRF "+(target&&target.vrf)+" instead of VRF "+screenNo+".");
+      moved.code="vrf_mismatch";
+      throw moved;
+    }
+    var edits=((target&&target.rows)||[]).map(function(){ return {remove:true}; });
+    await liquidateVrf(target||entry, edits, [], by, note, "duplicate");
+  }else if(rsv){
+    rsv.status="Cancelled";
+    rsv.cancelOutcome="duplicate";
+    rsv.duplicateOf=keptNo;
+    rsv.actual=0;
+    rsv.cancelledAt=iso();
+    rsv.cancelledBy=by;
+    rsv.cancelNote=note;
+    rsv.audit=(rsv.audit||[]).concat([{at:rsv.cancelledAt, by:by, field:"duplicate",
+      from:screenNo, to:note}]);
+    (rsv.draftLines||[]).forEach(function(l){
+      if(!l) return;
+      l.qty=0; l.price=0; l.notBought=true;
+      if(l.liters!=null) l.liters=0;
+    });
+    await saveReserves(rsv.no);
+  }else{
+    throw new Error("VRF "+screenNo+" is not on a reserve or the ledger, so it was left as it is.");
+  }
+  var copied=0;
+  try{
+    copied=await copyMissingPhotos(screenNo, keptNo);
+    if(rsv) copied+=await copyMissingPhotos(rsvOwner(rsv.no), keptNo);
+  }catch(e){ copied=copied||0; }
+  _vrfs=null;
+  return {vrf:vrfByNo(screenNo), copied:copied, kept:keptNo};
+}
 
 /* Approving IS the VRF. The held number goes live the moment the office says
    yes, with the requested lines already on it, so the yard does the work and
@@ -1715,27 +1845,31 @@ async function prepareReservePost(r){
   }
   var lines=(r.draftLines||[]).filter(function(l){ return l.cat; });
   if(!lines.length) return null;
-  var prevNo=String(r.vrfNo||"").trim();
-  if(shouldRemintHeldVrf(r)){
-    if(vrfNumberSealed(prevNo)){
-      var sealed=new Error("VRF "+prevNo+" is already posted, printed, or liquidated. Not renumbering it.");
-      sealed.code="vrf_mismatch";
-      throw sealed;
-    }
-    var nxt=nextFreeVrf(S.cfg.nextVrf, r.no);
-    r.vrfNo=String(nxt);
-    if(nxt+1>(S.cfg.nextVrf||0)) S.cfg.nextVrf=nxt+1;
+  /* Approve posts the number this request already has. A retry must not
+     mint another VRF when that number is already on the ledger. */
+  var no=String(r.vrfNo||"").trim();
+  var prevNo=no;
+  if(!no){
+    var missing=new Error("This request has no VRF number. Not creating another number.");
+    missing.code="missing_vrf_number";
+    throw missing;
   }
-  var no=String(r.vrfNo||"").trim()||String(await claimVrf());
   if(postedVrfNumbers()[String(no)]){
-    if(reserveOwnsPostedVrf(r)) return {already:true, no:String(no), prevNo:prevNo};
-    if(r.printedAt||r.liquidatedAt||vrfNumberSealed(prevNo)){
-      var taken=new Error("VRF "+no+" is already posted. Not renumbering a printed or liquidated VRF.");
-      taken.code="vrf_mismatch";
+    var owners=reservesOwningVrf(no);
+    if(owners.length>1){
+      var clash2=new Error("VRF "+no+" is on more than one reserve. Not posting it again.");
+      clash2.code="vrf_collision";
+      throw clash2;
+    }
+    if(owners.length===1 && String(owners[0].no)!==String(r.no)){
+      var taken=new Error("VRF "+no+" is already on the ledger. Not creating another number.");
+      taken.code="already_posted";
       throw taken;
     }
-    no=String(await claimVrf());
-    r.vrfNo=String(no);
+    if(reserveOwnsVrfNo(r, no)||reserveOwnsPostedVrf(r)) return {already:true, no:String(no), prevNo:prevNo};
+    var taken2=new Error("VRF "+no+" is already on the ledger. Not creating another number.");
+    taken2.code="already_posted";
+    throw taken2;
   }
   assertSingleVrfOwner(String(no), r.no);
   var mk=monthKey(r.date)||iso().slice(0,7);
@@ -1891,10 +2025,10 @@ async function settleReserve(no, outcome, by, note){
   var r=reserveBy(no); if(!r||r.status!=="Approved") return;
   var linked=(r.vrfs||[]).map(vrfByNo).filter(Boolean);
   if(linked.some(function(v){ return v.status==="Open"||v.status==="Requested"; })) return;
-  var stopping=outcome==="cancelled"||outcome==="not-bought";
+  var stopping=outcome==="cancelled"||outcome==="not-bought"||outcome==="duplicate";
   if(!linked.length && !stopping) return;
   var allDead=linked.length>0 && linked.every(function(v){
-    return v.status==="Not bought"||v.status==="Cancelled";
+    return v.status==="Not bought"||v.status==="Cancelled"||v.status==="Duplicate";
   });
   if(!linked.length && stopping) allDead=true;
   var actual=linked.reduce(function(a,v){ return a+(v.total||0); },0);
@@ -1903,10 +2037,15 @@ async function settleReserve(no, outcome, by, note){
     r.actual=0;
     r.status="Cancelled";
     var everyNotBought=linked.length>0&&linked.every(function(v){ return v.status==="Not bought"; });
-    r.cancelOutcome=(outcome==="not-bought"||(outcome!=="cancelled"&&everyNotBought))?"not-bought":"cancelled";
+    if(outcome==="duplicate"||r.duplicateOf) r.cancelOutcome="duplicate";
+    else r.cancelOutcome=(outcome==="not-bought"||(outcome!=="cancelled"&&everyNotBought))?"not-bought":"cancelled";
     r.cancelledAt=r.liquidatedAt;
     r.cancelledBy=by||r.cancelledBy||"";
     r.cancelNote=note||r.cancelNote||"";
+    if(r.cancelOutcome==="duplicate"){
+      r.audit=(r.audit||[]).concat([{at:r.cancelledAt, by:by||"", field:"duplicate",
+        from:String(r.vrfNo||""), to:note||("Duplicate of VRF "+(r.duplicateOf||""))}]);
+    }
     (r.draftLines||[]).forEach(function(l){
       if(!l) return;
       l.qty=0; l.price=0; l.notBought=true;
@@ -3900,6 +4039,35 @@ async function copyPhotos(from,to){
   }
   return n;
 }
+/* Copy only files the kept VRF does not already have. Same bytes stay once. */
+async function copyMissingPhotos(from, to){
+  if(!from||!to||String(from)===String(to)) return 0;
+  var src=await listPhotos(from);
+  var dest=await listPhotos(to);
+  var have={};
+  dest.forEach(function(x){
+    var fp=photoFingerprint(x);
+    if(fp) have[fp]=1;
+    if(x&&x.id) have["id:"+x.id]=1;
+  });
+  var n=0;
+  for(var i=0;i<src.length;i++){
+    var x=src[i];
+    var fp2=photoFingerprint(x);
+    if((fp2&&have[fp2])||(x&&x.id&&have["id:"+x.id])) continue;
+    try{
+      if(x.kind==="link"){
+        await addLink(to,{url:x.url,linkKind:x.linkKind,caption:x.caption,by:x.by});
+      }else if(x.data){
+        await addPhoto(to,{data:x.data,w:x.w,h:x.h,bytes:x.bytes,caption:x.caption,by:x.by,
+          kind:x.kind,mime:x.mime});
+      }else continue;
+      if(fp2) have[fp2]=1;
+      n++;
+    }catch(e){}
+  }
+  return n;
+}
 async function removePhoto(vrf,id){
   if(!S.db){
     var loc=lsGet("photos/"+vrf,{items:[]});
@@ -4661,7 +4829,12 @@ function vrfChip(v){
     "Closed":["ok","Liquidated"],"Legacy":["mute","From the old workbooks"],
     "Requested":["warn","Requested — FOR APPROVAL"],
     "Not bought":["mute","Not bought"],
+    "Duplicate":["mute","Duplicate"],
     "Cancelled":["mute","Cancelled"]};
+  if(v.status==="Duplicate"){
+    var of=v.duplicateOf||(v.liq&&v.liq.duplicateOf)||"";
+    return el("span","chip mute", of?("Duplicate of VRF "+of):"Duplicate");
+  }
   var x=m[v.status]||["mute",v.status];
   return el("span","chip "+x[0],x[1]);
 }
@@ -4675,6 +4848,7 @@ function vrfPrintWatermark(entry){
     return "FOR APPROVAL";
   var ended=spendEndStatus(st);
   if(ended==="Not bought") return "NOT BOUGHT";
+  if(ended==="Duplicate") return "DUPLICATE";
   if(ended==="Cancelled") return "CANCELLED";
   if(/^rejected$/i.test(st)||/^disapproved$/i.test(st)) return "FOR APPROVAL";
   /* held means the number is not in the ledger yet. Approved Open holds print APPROVED. */
@@ -7054,12 +7228,14 @@ function openReserve(no,asApprover){
     }
     [aw,an,ab2].forEach(function(x){ x.addEventListener("input",syncDecision); });
     okb.addEventListener("click",async function(){
+      if(S._approvingRsv) return;
       if(!aw.value.trim()){ toast("The approval has to carry a name."); return; }
       var amt=parseFloat(ab2.value);
       if(!(amt>0)){ toast("Put an approved budget on it."); return; }
       var backup={status:r.status, approvedBudget:r.approvedBudget, approvedBy:r.approvedBy,
         approvedAt:r.approvedAt, decisionNote:r.decisionNote, vrfs:(r.vrfs||[]).slice(), vrfNo:r.vrfNo};
       okb.disabled=true; nob.disabled=true; okb.textContent="Approving…";
+      S._approvingRsv=String(r.no);
       r._approving=true;
       var tag=document.querySelector('[data-approve-rsv="'+r.no+'"]');
       if(tag) tag.textContent="Approving…";
@@ -7077,9 +7253,11 @@ function openReserve(no,asApprover){
         okb.textContent="Approve";
         if(tag) tag.textContent="Review";
         syncDecision();
+        S._approvingRsv="";
         toast("Could not approve it: "+(err&&err.message||"unknown error")+" Nothing was saved.");
         return;
       }
+      S._approvingRsv="";
       r._approving=false;
       toast(madeVrf
         ? "Approved at "+peso(amt)+". VRF "+madeVrf+" is live — do the work, then liquidate it."
@@ -8058,6 +8236,7 @@ function vrfLogView(){
   [["","every status"],["Open","open — awaiting liquidation"],["Closed","liquidated"],
    ["Not bought","not bought — amount zero"],
    ["Cancelled","cancelled — purchase did not go through"],
+   ["Duplicate","duplicate — kept off the open list"],
    ["Requested","requested — FOR APPROVAL"],
    ["Legacy","from the old workbooks"]].forEach(function(o){ fs2.appendChild(new Option(o[1],o[0])); });
   fs2.value=S.regStatus||"";
@@ -8176,6 +8355,15 @@ function vrfLogView(){
             askCancelVrf(v, function(){ render(); });
           });
           row.appendChild(cqb);
+        }
+        if(vrfMayMarkDuplicate(v)){
+          var dupb=el("button","btn sm","Duplicate of…");
+          dupb.title="Hide this copy from open spend and keep an audit note. Does not delete it.";
+          dupb.addEventListener("click",function(ev){
+            ev.stopPropagation();
+            askMarkDuplicate(v, function(){ render(); });
+          });
+          row.appendChild(dupb);
         }
         if(vrfMayEdit(v)){
           var edb=el("button","btn sm","Edit");
@@ -8925,6 +9113,79 @@ async function printVrfNo(entry){
   try{ ph=await listPhotosMany(photoOwnersForOpenVrf(entry)); }catch(e){}
   printVrf(entry,ph);
 }
+function askMarkDuplicate(entry, after){
+  if(!entry) return;
+  var ex=document.getElementById("dupSheet"); if(ex) ex.remove();
+  var m=el("div","modal"); m.id="dupSheet";
+  var sheet=el("div","sheet"); sheet.style.maxWidth="560px";
+  var b=el("div"); b.style.padding="var(--space-5) var(--space-6)";
+  b.appendChild(el("h3",null,"Duplicate of VRF"));
+  b.appendChild(el("div","hint",
+    "VRF "+entry.vrf+" stays on file. It leaves Open — awaiting liquidation, its amount becomes ₱0.00, and the note records which VRF to keep. Nothing is deleted."));
+  var same=findSameOpenRequests(vrfIndex(), entry, entry.vrf);
+  var earliest=earliestVrfNumber(same);
+  if(same.length){
+    b.appendChild(el("div","hint","Same unit, date, odometer, total and job: "+
+      same.map(function(v){ return "VRF "+v.vrf; }).join(", ")+
+      (earliest?" — earliest number is VRF "+earliest.vrf+".":"")));
+  }
+  var row=el("div","f3"); row.style.marginTop="var(--space-4)";
+  function fld(l,n){ var x=el("div","field"); x.appendChild(el("label",null,l)); x.appendChild(n); return x; }
+  var kept=el("input"); kept.placeholder="5855"; kept.value=earliest?String(earliest.vrf):"";
+  var who=el("input"); who.placeholder="your name"; who.value=signedInName();
+  var why=el("input"); why.placeholder="Duplicate of VRF 5855";
+  function syncNote(){
+    var n=String(kept.value||"").replace(/\D/g,"");
+    if(!why.dataset.touched) why.value=n?("Duplicate of VRF "+n):"";
+  }
+  kept.addEventListener("input",syncNote);
+  why.addEventListener("input",function(){ why.dataset.touched="1"; });
+  syncNote();
+  row.appendChild(fld("Keep VRF number",kept));
+  row.appendChild(fld("Marked by",who));
+  row.appendChild(fld("Note",why));
+  b.appendChild(row);
+  var msg=el("div","hint"); msg.style.marginTop="var(--space-2)";
+  b.appendChild(msg);
+  var acts=el("div"); acts.style.cssText="display:flex;gap:var(--space-2);justify-content:flex-end;margin-top:var(--space-5)";
+  var back=el("button","btn","Back");
+  back.addEventListener("click",function(){ m.remove(); });
+  var go=el("button","btn pri","Mark as duplicate");
+  function sync(){
+    var n=String(kept.value||"").replace(/\D/g,"");
+    var ok=!!who.value.trim()&&!!n&&n!==String(entry.vrf);
+    go.disabled=!ok;
+    msg.textContent=ok?"":(!n?"Enter the VRF number to keep.":n===String(entry.vrf)?"Pick the other VRF.":"Put your name on the note.");
+    msg.style.color=ok?"":"var(--danger)";
+  }
+  kept.addEventListener("input",sync);
+  who.addEventListener("input",sync);
+  go.addEventListener("click",async function(){
+    sync(); if(go.disabled) return;
+    go.disabled=true; go.textContent="Saving…";
+    var result=null;
+    try{ result=await markVrfDuplicate(entry, kept.value, who.value.trim(), why.value.trim()); }
+    catch(err){
+      go.disabled=false; go.textContent="Mark as duplicate";
+      toast(err&&err.message||"Could not mark VRF "+entry.vrf+" as a duplicate.");
+      return;
+    }
+    m.remove();
+    var copied=result&&result.copied||0;
+    toast("VRF "+entry.vrf+" is a duplicate of VRF "+(result&&result.kept||kept.value)+
+      " at ₱0.00."+(copied?" "+copied+" file"+(copied===1?"":"s")+" copied onto the kept VRF.":
+      " Files were left where they are."));
+    if(after) after();
+    else render();
+  });
+  acts.appendChild(back); acts.appendChild(go);
+  b.appendChild(acts);
+  sheet.appendChild(b); m.appendChild(sheet);
+  m.addEventListener("click",function(e){ if(e.target===m) m.remove(); });
+  document.body.appendChild(m);
+  sync();
+  try{ kept.focus(); }catch(e){}
+}
 function askCancelVrf(entry, after){
   if(!entry) return;
   var ex=document.getElementById("cancelVrfSheet"); if(ex) ex.remove();
@@ -9267,6 +9528,14 @@ function openVrf(entry,tab){
       askCancelVrf(entry, function(){ m.remove(); render(); });
     });
     tabs.appendChild(cxlTop);
+  }
+  if(vrfMayMarkDuplicate(entry)){
+    var dupTop=el("button","btn","Duplicate of…");
+    dupTop.title="This copy leaves open spend. The kept VRF stays. Nothing is deleted.";
+    dupTop.addEventListener("click",function(){
+      askMarkDuplicate(entry, function(){ m.remove(); render(); });
+    });
+    tabs.appendChild(dupTop);
   }
   if(vrfMayEdit(entry)){
     var edTop=el("button","btn","Edit");
@@ -9831,7 +10100,7 @@ function blankVrfDraft(){
   return {date:iso(),veh:"",project:"",projectOverridden:false,vehicleSiteDefault:"",
     purpose:"",odo:"",work:"",
     requestedBy:signedInName(),lines:[blankLine(),blankLine(),blankLine()],
-    photos:[],gateOverride:null,reserve:"",jo:"",vrfNo:""};
+    photos:[],gateOverride:null,reserve:"",jo:"",vrfNo:"",submissionId:newSubmissionId()};
 }
 /* A work-type picker, grouped by family so the list stays readable at 39 entries. */
 function workSelect(value,blankLabel){
@@ -10312,6 +10581,7 @@ function vrfView(){
       try{ rIn.scrollIntoView({block:"center",behavior:"smooth"}); }catch(e){ rIn.scrollIntoView(); }
       return;
     }
+    if(send.disabled||S._sendingVrf) return;
     sendForApproval(d,send);
   });
   foot.appendChild(send);
@@ -10384,7 +10654,40 @@ function vrfView(){
 
 /* Everything typed on the form becomes the reserve, so nobody re-keys a job
    they have already itemised. The lines ride along and come back on approval. */
-async function sendForApproval(d,btn){
+function askSendDespiteMatch(d, btn, matches){
+  var ex=document.getElementById("dupSendSheet"); if(ex) ex.remove();
+  var m=el("div","modal"); m.id="dupSendSheet";
+  var sheet=el("div","sheet"); sheet.style.maxWidth="560px";
+  var b=el("div"); b.style.padding="var(--space-5) var(--space-6)";
+  b.appendChild(el("h3",null,"This request is already open"));
+  b.appendChild(el("div","hint",
+    "An open VRF already has this unit, date, odometer, total and job. Sending again would create another number."));
+  (matches||[]).forEach(function(v){
+    var row=el("div","row"); row.style.marginTop="var(--space-2)";
+    row.appendChild(el("span","mono","VRF "+v.vrf));
+    row.appendChild(el("span","hint",peso(v.total)+" · "+(v.veh||"")));
+    var open=el("button","btn sm","Open");
+    open.addEventListener("click",function(){ m.remove(); openVrf(v); });
+    row.appendChild(open);
+    b.appendChild(row);
+  });
+  var acts=el("div"); acts.style.cssText="display:flex;gap:var(--space-2);justify-content:flex-end;margin-top:var(--space-5)";
+  var back=el("button","btn","Back");
+  back.addEventListener("click",function(){ m.remove(); });
+  var go=el("button","btn","Send another anyway");
+  go.addEventListener("click",function(){
+    m.remove();
+    sendForApproval(d, btn, {confirmDuplicate:true});
+  });
+  acts.appendChild(back); acts.appendChild(go);
+  b.appendChild(acts);
+  sheet.appendChild(b); m.appendChild(sheet);
+  m.addEventListener("click",function(e){ if(e.target===m) m.remove(); });
+  document.body.appendChild(m);
+}
+async function sendForApproval(d,btn,opts){
+  opts=opts||{};
+  if(S._sendingVrf) return;
   if(!d.veh){ toast("Pick a unit first."); return; }
   if(!d.work){ toast("Pick the type of job — the approver decides on that."); return; }
   var rows=d.lines.filter(function(l){ return l.cat&&(moneyNum(l.qty)||moneyNum(l.price)); });
@@ -10400,6 +10703,30 @@ async function sendForApproval(d,btn){
     toast("Put your name in “Requested by” at the top — the request has to carry one.");
     return false;
   }
+  if(!d.submissionId) d.submissionId=newSubmissionId();
+  var prior=reserveBySubmission(d.submissionId);
+  if(prior){
+    S._sendingVrf=true;
+    if(btn){ btn.disabled=true; btn.textContent="Sending…"; }
+    try{
+      await saveReserves(prior.no);
+      toast("This form was already sent as VRF "+prior.vrfNo+". Not creating another number.");
+      S.draft=null; _vrfs=null; S.view="vrflog"; S.logQ=String(prior.vrfNo); render();
+      var priorHit=vrfByNo(prior.vrfNo);
+      if(priorHit) openVrf(priorHit); else openReserve(prior.no);
+    }catch(err){
+      if(btn){ btn.disabled=false; btn.textContent="Send for approval"; }
+      toast("VRF "+prior.vrfNo+" kept its number. Not creating another. "+((err&&err.message)||""));
+    }finally{
+      S._sendingVrf=false;
+    }
+    return;
+  }
+  if(!opts.confirmDuplicate){
+    var matches=findSameOpenRequests(vrfIndex(), draftRequestRec(d), "");
+    if(matches.length){ askSendDespiteMatch(d, btn, matches); return; }
+  }
+  S._sendingVrf=true;
   btn.disabled=true; btn.textContent="Sending…";
   try{
     var no=await claimReserveNo();
@@ -10423,7 +10750,8 @@ async function sendForApproval(d,btn){
       draftOdo:d.odo||"", odoAtRequest:parseOdo(d.odo), draftPurpose:d.purpose||"",
       preparedSig:(function(){ var s=draftPreparedSig(d); return s.data||""; })(),
       preparedSigName:(function(){ var s=draftPreparedSig(d); return s.data?s.name:""; })(),
-      justification:"",justifiedBy:"",varianceBy:"",varianceAt:"",varianceNote:""};
+      justification:"",justifiedBy:"",varianceBy:"",varianceAt:"",varianceNote:"",
+      submissionId:d.submissionId};
     var auto=applyVrfAutoApproval(hold, total, iso());
     var liveNo=String(vno);
     S.reserves.push(hold);
@@ -10460,8 +10788,16 @@ async function sendForApproval(d,btn){
       },0);
     }
   }catch(e){
+    var saved=reserveBySubmission(d.submissionId);
+    if(saved){
+      if(btn){ btn.disabled=false; btn.textContent="Send for approval"; }
+      toast("VRF "+saved.vrfNo+" kept its number. Not creating another. "+((e&&e.message)||""));
+      return;
+    }
     btn.disabled=false; btn.textContent="Send for approval";
     toast((e&&e.message)||"Could not send it. Nothing was saved — try again.");
+  }finally{
+    S._sendingVrf=false;
   }
 }
 

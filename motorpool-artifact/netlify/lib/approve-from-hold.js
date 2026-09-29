@@ -6,8 +6,8 @@
  * then post its draft lines with vstatus Open. This module is the server copy
  * so Noah/Builder can call it without a browser session.
  *
- * Does not invent a VRF number. Uniqueness remint (PR #54) still runs when
- * the hold being approved collides with an already-posted number.
+ * Does not invent a VRF number. If that number is already on the ledger,
+ * approval finishes the same hold or refuses. It does not mint a second VRF.
  */
 
 const { manilaDate, manilaYear } = require("./manila");
@@ -365,25 +365,38 @@ function applyApproveFromHold(snapshot, hold, opts) {
     );
   }
 
-  if (shouldRemintHeldVrf(hold, snapshot.ledgerRows, snapshot.reserves)) {
-    const used = usedVrfNumbers(snapshot.ledgerRows, snapshot.reserves, {
-      exceptReserve: hold.no,
-    });
-    const startFrom = Math.max(
-      parseInt(snapshot.cfg.nextVrf, 10) || 1,
-      parseInt(vrfNo, 10) || 1
-    );
-    const next = nextFreeVrf(startFrom, used);
-    hold.vrfNo = String(next);
-    vrfNo = String(next);
-    if (next + 1 > (snapshot.cfg.nextVrf || 0)) {
-      snapshot.cfg.nextVrf = next + 1;
-      snapshot.cfgDirty = true;
-    }
-  }
-
   if (postedVrfNumbers(snapshot.ledgerRows)[String(vrfNo)]) {
-    throw approveError(409, "already_posted", `VRF ${vrfNo} is already posted`);
+    const others = otherReservesClaiming(snapshot.reserves, hold, vrfNo);
+    if (others.length) {
+      throw approveError(
+        409,
+        "already_posted",
+        `VRF ${vrfNo} is already on the ledger. Not creating another number.`
+      );
+    }
+    hold.status = "Approved";
+    hold.approvedBudget = hold.approvedBudget != null ? hold.approvedBudget : hold.budget;
+    hold.approvedBy = String(opts.approvedBy || "").trim() || hold.approvedBy || "api";
+    hold.approvedAt = hold.approvedAt || opts.now || manilaDate();
+    if ((hold.vrfs || []).indexOf(String(vrfNo)) < 0) {
+      hold.vrfs = (hold.vrfs || []).concat([String(vrfNo)]);
+    }
+    return {
+      already: true,
+      month: monthKey(hold.date) || String(opts.now || manilaDate()).slice(0, 7),
+      rows: [],
+      hold,
+      payload: {
+        ok: true,
+        already: true,
+        vrf: String(vrfNo),
+        reserve: String(hold.no),
+        status: "Open",
+        approvedVia: hold.approvedVia || "api",
+        approvedAt: hold.approvedAt,
+        approvedBudget: hold.approvedBudget,
+      },
+    };
   }
 
   const others = otherReservesClaiming(snapshot.reserves, hold, vrfNo);
@@ -692,6 +705,22 @@ async function approvePendingVrf(store, body, options) {
     approvedBy: body && body.approvedBy,
     now: options && options.now,
   });
+  if (result.already) {
+    const year = yearOf(result.hold.date);
+    const yearDoc = (snapshot.reserveDocs && snapshot.reserveDocs[year]) || { rows: [], updated_at: null };
+    await writeVersioned(
+      store,
+      "reserves",
+      year,
+      { year, rows: mergeReserveRows(yearDoc.rows || [], result.hold) },
+      yearDoc.updated_at,
+      (fresh) => ({
+        year,
+        rows: mergeReserveRows(fresh && Array.isArray(fresh.rows) ? fresh.rows : [], result.hold),
+      })
+    );
+    return result.payload;
+  }
   await persistApprove(store, snapshot, result);
   return result.payload;
 }
