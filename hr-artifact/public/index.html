@@ -149,6 +149,11 @@ td.mono{font-family:var(--f-mono);font-size:11.5px}
 .f input,.f select,.f textarea{padding:6px 8px;border:1px solid var(--line2);border-radius:5px;background:var(--surface);font-size:13px;width:100%;min-width:0}
 .f textarea{resize:vertical;min-height:64px;line-height:1.5}
 .f input:disabled{background:var(--surface2);color:var(--ink2)}
+/* Company-figure hints on Contributions are placeholders, so they stay gray
+   and italic. A typed standing figure is the input's own dark text. */
+input[data-cf]{color:var(--ink);background:var(--surface);position:relative;z-index:1}
+input[data-cf]::placeholder{color:var(--ink3);font-style:italic}
+input[data-cf]:focus{border-color:var(--accent);outline:2px solid var(--accent);outline-offset:1px}
 .f .hint{font-size:10.5px;color:var(--ink3)}
 .f.mono input{font-family:var(--f-mono);font-size:12.5px}
 
@@ -954,6 +959,9 @@ function employeePersist(emp){
     if(settingsHasImage(emp[k]) || (link && !/^data:/i.test(String(link)))) drop(k);
   });
   if(isHeavyImage(emp.photo) && emp.photoLink && !/^data:/i.test(String(emp.photoLink))) drop("photo");
+  /* The hold is only so a stale snapshot cannot wipe a figure just typed.
+     It is not part of the 201. */
+  if(emp._contribHold) drop("_contribHold");
   return copy||emp;
 }
 let EMP_SAVE_T=null;
@@ -1139,6 +1147,42 @@ async function connect(){
     }, ()=>{}));
   });
 }
+/* A contribution just typed is held on the employee until the shared copy
+   shows the same SSS / PhilHealth / Pag-IBIG. A snapshot that left a moment
+   earlier must not put the company figure back. */
+function contribHoldMatches(hold, ded){
+  if(!hold) return true;
+  const keys=["sss","phic","hdmf"];
+  if(hold._cleared){
+    const d=ded||{};
+    return keys.every(k=>d[k]==null || d[k]==="");
+  }
+  return keys.every(k=>{
+    const a=hold[k]==null || hold[k]==="" ? null : Number(hold[k]);
+    const b=!ded || ded[k]==null || ded[k]==="" ? null : Number(ded[k]);
+    if(a==null && b==null) return true;
+    return a===b;
+  });
+}
+function keepContribHold(merged, local){
+  const hold=local && local._contribHold;
+  if(!hold) return merged;
+  const base=merged || {};
+  if(contribHoldMatches(hold, base.ded)){
+    if(base._contribHold) delete base._contribHold;
+    return base;
+  }
+  const next=Object.assign({}, base);
+  if(hold._cleared){
+    delete next.ded;
+  }else{
+    next.ded={sss:hold.sss, phic:hold.phic, hdmf:hold.hdmf};
+    ["sss","phic","hdmf"].forEach(k=>{ if(next.ded[k]==null || next.ded[k]==="") delete next.ded[k]; });
+    if(!Object.keys(next.ded).length) delete next.ded;
+  }
+  next._contribHold=hold;
+  return next;
+}
 function mergeIncomingDoc(coll, incoming, local){
   if(!incoming || !local) return incoming;
   if(coll==="daily"){
@@ -1199,28 +1243,29 @@ function mergeIncomingDoc(coll, incoming, local){
     const incomingLive=empStatusIsLive(incoming);
     const localSep=empStatusIsSeparated(local);
     const hrMarked=/marked separated/i.test(String((local&&local.statusBasis)||""));
+    let merged;
     if(localSep && incomingLive && hrMarked){
-      return Object.assign({}, incoming, {
+      merged=Object.assign({}, incoming, {
         status:"Separated",
         separatedOn:local.separatedOn||incoming.separatedOn||"",
         separationReason:local.separationReason||incoming.separationReason||"",
         statusBasis:local.statusBasis
       });
-    }
-    if(employeeLiveBeatsSeparatedSnap(local, incoming)){
-      return Object.assign({}, incoming, {
+    }else if(employeeLiveBeatsSeparatedSnap(local, incoming)){
+      merged=Object.assign({}, incoming, {
         status:local.status,
         statusBasis:local.statusBasis||incoming.statusBasis||""
       });
-    }
-    if(incomingLive) return incoming;
-    if(localSep && !empStatusIsSeparated(incoming)){
-      return Object.assign({}, incoming, {
+    }else if(incomingLive){
+      merged=incoming;
+    }else if(localSep && !empStatusIsSeparated(incoming)){
+      merged=Object.assign({}, incoming, {
         status:"Separated",
         separatedOn:local.separatedOn||incoming.separatedOn||"",
         separationReason:local.separationReason||incoming.separationReason||""
       });
-    }
+    }else merged=incoming;
+    return keepContribHold(merged, local);
   }
   return incoming;
 }
@@ -1330,7 +1375,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-09-28b";
+const BUILD = "2026-09-29a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -18924,6 +18969,34 @@ function contribSource(e){
   if(own.length) return "part";
   return "company";
 }
+function contribSourceLabel(src){
+  if(src==="refused") return "refused (Kasabutan)";
+  if(src==="own") return "manual — standing";
+  if(src==="part") return "part manual";
+  return "company figure";
+}
+function contribSourceClass(src){
+  if(src==="refused" || src==="part") return "pill warn";
+  if(src==="own") return "pill acc";
+  return "pill mut";
+}
+/* What the three boxes mean for the 201. Empty + never set stays unset.
+   Empty after a figure was there, or a typed 0, stores an explicit 0. */
+function contribDedFromBoxes(prev, fields){
+  const was=prev||{};
+  const next={};
+  ["sss","phic","hdmf"].forEach(k=>{
+    if(!Object.prototype.hasOwnProperty.call(fields||{}, k)){
+      if(was[k]!=null && was[k]!=="") next[k]=Number(was[k]);
+      return;
+    }
+    const f=fields[k]||{};
+    const wasSet=!!f.wasSet || (was[k]!=null && was[k]!=="");
+    const now=contribSaveValue(f.value, wasSet);
+    if(now!=null) next[k]=now;
+  });
+  return next;
+}
 function payStat(kind, which, e){
   const d=S.settings.ded||{};
   const full = e ? empStat(e, which) : (Number(d[which])||0);
@@ -19394,14 +19467,17 @@ function viewContrib(){
     + refusedN+" refused · the rest on the company default");
 
   let h='<div class="note" style="margin-bottom:12px">'
-   + 'These are the <b>SSS, PhilHealth and Pag-IBIG amounts deducted from the employee</b>, '
-   + 'per semi-monthly period. A weekly run takes half of each, and drops the leftover centavo. '
+   + 'These boxes are each employee\'s <b>standing</b> SSS, PhilHealth and Pag-IBIG, saved on their 201. '
+   + 'Payroll uses them on later runs. A number already typed in <b>Payroll Maker</b> stays on that run only and is not changed here. '
+   + 'The gray italic amount is the company figure, not a saved value — click the box and type. '
+   + 'The row then reads <b>manual — standing</b> and shows the number you typed. '
+   + 'Type <b>0</b> to store an explicit 0. Clearing a box that already has a figure also stores 0. '
+   + 'An empty box that was never filled is still "not set". '
    + 'Only people who are <b>currently active</b> are listed. A signed Kasabutan or a decline of '
-   + 'government-mandated benefits sets all three to <b>0</b> and the row reads refused. '
-   + 'Otherwise the figures on the 201 are used, and the company figure — <b>SSS '+peso(d.sss||0)
-   + ', PhilHealth '+peso(d.phic||0)+', Pag-IBIG '+peso(d.hdmf||0)+'</b> — applies only when nothing is on file. '
-   + 'Type <b>0</b> or clear a box that already has a figure and Save: that stores an explicit 0 on the 201. '
-   + 'An empty box that was never filled is still "not set".</div>';
+   + 'government-mandated benefits still sets all three to <b>0</b> until you type something else. '
+   + 'Company defaults: <b>SSS '+peso(d.sss||0)+', PhilHealth '+peso(d.phic||0)+', Pag-IBIG '+peso(d.hdmf||0)
+   + '</b> per semi-monthly period. A week is half, and the leftover centavo is dropped. '
+   + 'Each box saves on its own. The button below saves the whole list.</div>';
 
   h+='<div class="row" style="margin-bottom:10px"><div class="seg">'
    + [["","Everyone"],["weekly","Site — weekly"],["semi","Admin — semi-monthly"]]
@@ -19412,7 +19488,7 @@ function viewContrib(){
    + '<div class="f" style="margin-left:auto;width:220px"><input id="c-q" placeholder="Find someone" autocomplete="off" value="'+esc(S.ui.contribQ||"")+'"></div>'
    + '</div>';
 
-  const money='width:100%;padding:3px 6px;border:1px solid var(--line2);border-radius:4px;background:var(--surface);font-size:12px;text-align:right;font-family:var(--f-mono)';
+  const money='width:100%;padding:3px 6px;border:1px solid var(--line2);border-radius:4px;background:var(--surface);font-size:12px;text-align:right;font-family:var(--f-mono);color:var(--ink)';
   h+='<div class="tw" style="max-height:62vh;overflow:auto"><table><thead><tr>'
    + '<th style="width:52px">ID</th><th style="width:200px">Employee</th>'
    + '<th style="width:110px">Paid</th><th class="num" style="width:104px">Monthly basis</th>'
@@ -19429,27 +19505,36 @@ function viewContrib(){
     const own =["sss","phic","hdmf"].filter(k=>empStatSet(e,k));
     const src=contribSource(e);
     const phOf=k=> src==="refused" && !empStatSet(e,k) ? "0.00" : num((S.settings.ded||{})[k]||0,2);
-    const box=k=>'<td><input data-cf="'+esc(e.id)+'|'+k+'" data-set="'+(empStatSet(e,k)?"1":"0")+'" type="number" step="0.01" min="0" '
-      + 'value="'+(empStatSet(e,k)?esc(String(e.ded[k])):"")+'" placeholder="'+phOf(k)+'" style="'+money+'"></td>';
-    const pill = src==="refused"
-      ? '<span class="pill warn">refused (Kasabutan)</span>'
+    const box=k=>{
+      const set=empStatSet(e,k);
+      const ph=phOf(k);
+      const title=set
+        ? "Standing figure on this employee's 201. Payroll uses it unless this run already has its own amount in Payroll Maker. Clear the box to store 0."
+        : "Company figure "+ph+" is only a hint. Click and type this employee's standing amount. Type 0 for an explicit 0. Payroll Maker can still override one run.";
+      return '<td><input data-cf="'+esc(e.id)+'|'+k+'" data-set="'+(set?"1":"0")+'" type="number" step="0.01" min="0" inputmode="decimal" autocomplete="off" '
+        + 'value="'+(set?esc(String(e.ded[k])):"")+'" placeholder="'+esc(ph)+'" title="'+esc(title)+'" style="'+money+'"></td>';
+    };
+    const pillTitle = src==="part"
+      ? own.map(k=>STAT_N[k]).join(", ")+" set on the 201; the rest still follow the company figure or a refusal"
       : src==="own"
-        ? '<span class="pill acc">their own</span>'
-        : src==="part"
-          ? '<span class="pill warn" title="'+esc(own.map(k=>STAT_N[k]).join(", ")+" set; the rest follow the 201")+'">part own</span>'
-          : '<span class="pill mut">company figure</span>';
+        ? "Typed on this employee's 201. Used by payroll unless a run has its own override."
+        : src==="refused"
+          ? "Kasabutan or a decline of government benefits. Type a figure here if this person should pay something."
+          : "Nothing stored on the 201 yet. The gray amounts are the company figure.";
+    const pill = '<span data-csrc="'+esc(e.id)+'" class="'+contribSourceClass(src)+'" title="'+esc(pillTitle)+'">'+esc(contribSourceLabel(src))+'</span>';
     h+='<tr data-crow="1" data-hay="'+esc((e.name+" "+flipName(e.name)+" "+(e.empNo||"")+" "+(e.position||"")+" "+(e.project||"")).toLowerCase())+'">'
      + '<td class="mono">'+esc(e.empNo||"—")+'</td>'
      + '<td><b>'+esc(flipName(e.name))+'</b><div class="lbl" style="text-transform:none;letter-spacing:0;font-family:var(--f-ui)">'+esc(e.position||"")+'</div></td>'
      + '<td style="font-size:11.5px">'+(kind==="semi"?"Semi-monthly":"Weekly")+'</td>'
      + '<td class="num mono" title="'+esc(r.basis||"")+'">'+num(r.monthly ? (Number(e.dailyRate)||0) : r.daily*26, 2)+'</td>'
      + box("sss")+box("phic")+box("hdmf")
-     + '<td class="num mono">'+num(wk,2)+'</td>'
+     + '<td class="num mono" data-cweek="'+esc(e.id)+'">'+num(wk,2)+'</td>'
      + '<td>'+pill+'</td></tr>';
   });
   h+='</tbody></table></div>'
-   + '<div class="row" style="margin-top:10px"><button class="btn pri" id="c-save">Save</button>'
-   + '<span class="lbl" id="c-count"></span></div>';
+   + '<div class="row" style="margin-top:10px"><button class="btn pri" id="c-save">Save standing figures</button>'
+   + '<span class="lbl" id="c-count"></span>'
+   + '<span id="c-save-msg" style="font-size:12.5px"></span></div>';
 
   h+='<div class="note" style="margin-top:14px;border-left-color:var(--warn)">'
    + '<b>"Fill the blanks from each rate" is a starting point, not an authority.</b> It works the '
@@ -19459,6 +19544,113 @@ function viewContrib(){
    + 'agency bills. Check a filled figure against the last remittance before a run goes out. '
    + 'It only fills boxes that are empty; anything already typed is left alone.</div>';
   return h;
+}
+
+/* Standing SSS / PhilHealth / Pag-IBIG. Typed into the box, kept on the 201,
+   including an explicit 0. A payroll run that already has its own amount is
+   left alone. */
+let CONTRIB_SAVE_T=null;
+const CONTRIB_DIRTY={};
+function contribByAttr(attr, val){
+  if(typeof document==="undefined" || !document.querySelectorAll) return null;
+  const all=document.querySelectorAll("["+attr+"]");
+  for(let i=0;i<all.length;i++) if(all[i].getAttribute(attr)===val) return all[i];
+  return null;
+}
+function contribBoxesFor(id){
+  return ["sss","phic","hdmf"].map(function(k){ return {k:k, el:contribByAttr("data-cf", id+"|"+k)}; });
+}
+function contribSyncBoxes(id){
+  const e=S.employees&&S.employees[id]; if(!e) return;
+  contribBoxesFor(id).forEach(function(box){
+    if(!box.el) return;
+    const set=empStatSet(e, box.k);
+    box.el.dataset.set=set?"1":"0";
+    if(typeof document!=="undefined" && document.activeElement===box.el) return;
+    box.el.value=set?String(e.ded[box.k]):"";
+  });
+}
+function contribRemember(id){
+  const e=S.employees&&S.employees[id]; if(!e) return false;
+  const fields={};
+  let any=false;
+  contribBoxesFor(id).forEach(function(box){
+    if(!box.el) return;
+    any=true;
+    fields[box.k]={value:box.el.value, wasSet:box.el.dataset.set==="1"};
+  });
+  if(!any) return false;
+  const next=contribDedFromBoxes(e.ded, fields);
+  const prev=e.ded||{};
+  const same=["sss","phic","hdmf"].every(function(k){
+    const a=prev[k]==null||prev[k]===""?null:Number(prev[k]);
+    const b=Object.prototype.hasOwnProperty.call(next,k)?Number(next[k]):null;
+    if(a==null && b==null) return true;
+    return a===b;
+  });
+  if(!same){
+    if(Object.keys(next).length) e.ded=next;
+    else delete e.ded;
+    e._contribHold=Object.keys(next).length ? Object.assign({}, next) : {_cleared:1};
+  }
+  contribSyncBoxes(id);
+  contribPaintRow(id);
+  return !same;
+}
+function contribPaintRow(id){
+  const e=S.employees&&S.employees[id]; if(!e || typeof document==="undefined") return;
+  const src=contribSource(e);
+  const pill=contribByAttr("data-csrc", id);
+  if(pill){
+    pill.className=contribSourceClass(src);
+    pill.textContent=contribSourceLabel(src);
+  }
+  const wk=contribByAttr("data-cweek", id);
+  if(wk) wk.textContent=num(["sss","phic","hdmf"].reduce(function(a,k){ return a+payStat("weekly",k,e); },0),2);
+}
+function contribNoteFailure(name){
+  const text=(name||"This employee")+" — contributions were not saved. The figure is still in the box. Press Save standing figures.";
+  toast(text,"err");
+  const msg=typeof document!=="undefined" && document.getElementById && document.getElementById("c-save-msg");
+  if(msg){ msg.style.color="var(--crit)"; msg.textContent=text; }
+}
+function queueContribSave(id){
+  if(!contribRemember(id)) return;
+  CONTRIB_DIRTY[id]=1;
+  const msg=typeof document!=="undefined" && document.getElementById && document.getElementById("c-save-msg");
+  if(msg){ msg.style.color=""; msg.textContent="Saving standing figures…"; }
+  if(CONTRIB_SAVE_T) clearTimeout(CONTRIB_SAVE_T);
+  CONTRIB_SAVE_T=setTimeout(function(){ CONTRIB_SAVE_T=null; flushContribSaves(false); }, 350);
+}
+async function flushContribSaves(announce){
+  if(CONTRIB_SAVE_T){ clearTimeout(CONTRIB_SAVE_T); CONTRIB_SAVE_T=null; }
+  const ids=Object.keys(CONTRIB_DIRTY);
+  ids.forEach(function(id){ delete CONTRIB_DIRTY[id]; });
+  let failed=0, saved=0;
+  for(let i=0;i<ids.length;i++){
+    const id=ids[i];
+    const e=S.employees&&S.employees[id];
+    if(!e) continue;
+    let ok=false;
+    try{ ok=await put("employees", id, e); }
+    catch(err){ ok=false; }
+    if(ok===false){
+      failed++;
+      CONTRIB_DIRTY[id]=1;
+      contribNoteFailure(e.name?flipName(e.name):id);
+    }else saved++;
+  }
+  const msg=typeof document!=="undefined" && document.getElementById && document.getElementById("c-save-msg");
+  if(failed){
+    if(msg && !msg.textContent) msg.textContent=failed+" figure"+(failed===1?"":"s")+" did not save.";
+    return false;
+  }
+  if(msg && saved){
+    msg.style.color="var(--ok)";
+    msg.textContent="Standing figures saved on each employee.";
+  }
+  if(announce && saved) toast("Standing figures saved.","ok");
+  return true;
 }
 
 /* The calendar itself, opened from wherever HR happens to be standing. */
@@ -20786,6 +20978,12 @@ function render(){
   const typing=typeof document!=="undefined" && document.activeElement && document.activeElement.closest
     && document.activeElement.closest("#view [data-dmot], #view [data-dmday], #view [data-dmin], #view [data-dmout], #view [data-dmr], #view [data-dms]");
   if(typing && S.ui && S.ui.view==="daily") return;
+  /* Same guard for Contributions. A live employee snapshot used to rebuild
+     the SSS / PhilHealth / Pag-IBIG boxes mid-keystroke and put the gray
+     company figure back. */
+  const typingContrib=typeof document!=="undefined" && document.activeElement && document.activeElement.closest
+    && document.activeElement.closest("#view [data-cf]");
+  if(typingContrib && S.ui && S.ui.view==="contrib") return;
   renderNav();
   const v=S.ui.view;
   const fn = {dash:viewDash, employees:viewEmployees, contracts:viewContracts, memos:viewMemos,
@@ -21232,30 +21430,27 @@ function wire(){
   /* ---- contributions ---- */
   on("[data-ckind]","click",e=>{ S.ui.contribKind=e.currentTarget.dataset.ckind; render(); });
   wireListFilter("c-q","[data-crow]","c-count",()=>{ S.ui.contribQ=($("#c-q")||{}).value||""; });
+  on("[data-cf]","input",e=>{ queueContribSave(e.currentTarget.dataset.cf.split("|")[0]); });
+  on("[data-cf]","change",e=>{ queueContribSave(e.currentTarget.dataset.cf.split("|")[0]); });
+  on("[data-cf]","blur",e=>{ queueContribSave(e.currentTarget.dataset.cf.split("|")[0]); });
   const cSave=$("#c-save",v); if(cSave) cSave.onclick=async()=>{
-    const by={};
+    const seen={};
     $$("[data-cf]").forEach(el=>{
-      const [id,k]=el.dataset.cf.split("|");
-      (by[id]=by[id]||{})[k] = contribSaveValue(el.value, el.dataset.set==="1");
+      const id=el.dataset.cf.split("|")[0];
+      if(seen[id]) return;
+      seen[id]=1;
+      if(contribRemember(id)) CONTRIB_DIRTY[id]=1;
     });
-    let n=0;
-    for(const id in by){
-      const e=S.employees[id]; if(!e) continue;
-      const next={};
-      let changed=false;
-      ["sss","phic","hdmf"].forEach(k=>{
-        const was=((e.ded||{})[k]);
-        const now=by[id][k];
-        if(now!=null) next[k]=now;
-        if((was==null?"":String(was)) !== (now==null?"":String(now))) changed=true;
-      });
-      if(!changed) continue;
-      e.ded = Object.keys(next).length ? next : undefined;
-      if(!e.ded) delete e.ded;
-      await put("employees", id, e); n++;
+    if(!Object.keys(CONTRIB_DIRTY).length){
+      toast("Nothing changed.");
+      const quiet=$("#c-save-msg");
+      if(quiet){ quiet.style.color=""; quiet.textContent="Nothing changed."; }
+      return;
     }
-    toast(n ? n+" record"+(n===1?"":"s")+" updated." : "Nothing changed.", n?"ok":"");
-    render();
+    const ok=await flushContribSaves(true);
+    if(!ok) return;
+    const typing=document.activeElement && document.activeElement.closest && document.activeElement.closest("[data-cf]");
+    if(!typing) render();
   };
   const cFill=$("#c-fill",v); if(cFill) cFill.onclick=()=>{
     let n=0;
@@ -21274,9 +21469,19 @@ function wire(){
       [{k:"ok", label:'Type CLEAR to confirm', placeholder:"CLEAR",
         hint:"Every per-person SSS, PhilHealth and Pag-IBIG figure is removed. The company figures in Settings apply again, except a signed Kasabutan or benefits refusal, which stays at 0."}]);
     if(!r || String(r.ok||"").toUpperCase()!=="CLEAR") return;
-    let n=0;
-    for(const e of activeEmps()){ if(!e.ded) continue; delete e.ded; await put("employees", e.id, e); n++; }
-    toast(n+" record"+(n===1?"":"s")+" put back on the company figure.","ok");
+    let n=0, failed=0;
+    for(const e of activeEmps()){
+      if(!e.ded && !e._contribHold) continue;
+      delete e.ded;
+      e._contribHold={_cleared:1};
+      let ok=false;
+      try{ ok=await put("employees", e.id, e); }
+      catch(err){ ok=false; }
+      if(ok===false){ failed++; contribNoteFailure(flipName(e.name)); }
+      else n++;
+    }
+    if(failed) toast(failed+" record"+(failed===1?"":"s")+" did not save.","err");
+    else toast(n+" record"+(n===1?"":"s")+" put back on the company figure.","ok");
     render();
   };
 
