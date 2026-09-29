@@ -149,8 +149,8 @@ function loadPay() {
 }
 
 describe("2026-09-28b payroll — monitoring week equals payroll", () => {
-  it("is build 2026-09-29b and offers recompute", () => {
-    assert.match(html, /const BUILD = "2026-09-29b"/);
+  it("is build 2026-09-29c and offers recompute", () => {
+    assert.match(html, /const BUILD = "2026-09-29c"/);
     assert.match(html, /id="pay-recompute"/);
     assert.match(html, /Recompute from attendance/);
     assert.match(extractFunction(html, "viewPayrollRun"), /data-payf/);

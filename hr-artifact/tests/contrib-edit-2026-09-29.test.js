@@ -218,8 +218,8 @@ function mount(ctx, id, values) {
 }
 
 describe("2026-09-29b contributions — standing figures can be typed", () => {
-  it("is build 2026-09-29b and the boxes are editable standing figures", () => {
-    assert.match(html, /const BUILD = "2026-09-29b"/);
+  it("is build 2026-09-29c and the boxes are editable standing figures", () => {
+    assert.match(html, /const BUILD = "2026-09-29c"/);
     const view = extractFunction(html, "viewContrib");
     assert.match(view, /data-cf=/);
     assert.match(view, /type="number"/);
@@ -228,8 +228,10 @@ describe("2026-09-29b contributions — standing figures can be typed", () => {
     assert.match(view, /Save standing figures/);
     assert.match(view, /Payroll Maker/);
     assert.match(view, /standing/);
-    assert.match(view, /activeEmps\(\)/);
-    assert.match(view, /payRosterInclude/);
+    assert.match(view, /contribEngaged/);
+    assert.match(view, /engaged/);
+    assert.doesNotMatch(view, /activeEmps\(\)/);
+    assert.doesNotMatch(view, /payRosterInclude/);
     assert.match(view, /id="c-save-msg"/);
     assert.doesNotMatch(view, /disabled/);
     assert.doesNotMatch(view, /readonly/);
