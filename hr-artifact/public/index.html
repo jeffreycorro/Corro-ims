@@ -468,6 +468,37 @@ try{
 const isoDate = t => t.getFullYear()+"-"+String(t.getMonth()+1).padStart(2,"0")
                    +"-"+String(t.getDate()).padStart(2,"0");
 const TODAY = isoDate(new Date());
+/* What a date box can hold. YYYY-MM-DD is kept as written — parsing that
+   string with Date treats it as UTC and, west of Greenwich, moves it to the
+   day before. A timestamp is read on the Manila calendar so midnight in Cebu
+   does not come back as yesterday. Anything else that is not a real day
+   becomes blank, which is what the control would show anyway. */
+function dateInputValue(v){
+  if(v==null || v==="") return "";
+  const s=String(v).trim();
+  if(/^\d{4}-\d{2}-\d{2}$/.test(s)){
+    const p=s.split("-"), y=+p[0], m=+p[1], d=+p[2];
+    if(m<1||m>12||d<1||d>31) return "";
+    const t=new Date(y, m-1, d);
+    if(t.getFullYear()!==y || t.getMonth()!==m-1 || t.getDate()!==d) return "";
+    return s;
+  }
+  const iso=s.match(/^(\d{4})-(\d{2})-(\d{2})[T\s]/);
+  if(iso){
+    const t=new Date(s);
+    if(isNaN(t.getTime())) return "";
+    try{
+      const fmt=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Manila",year:"numeric",month:"2-digit",day:"2-digit"});
+      const parts={};
+      fmt.formatToParts(t).forEach(p=>{ if(p.type!=="literal") parts[p.type]=p.value; });
+      if(parts.year && parts.month && parts.day) return parts.year+"-"+parts.month+"-"+parts.day;
+    }catch(err){}
+    return "";
+  }
+  const t=new Date(s);
+  if(isNaN(t.getTime())) return "";
+  return isoDate(t);
+}
 
 const DEPTS = ["Admin","Technical","Finance","Procurement","Motorpool","Safety","Site","Unassigned"];
 const ESTAT = ["Probationary","Regular","Project-based","Fixed-term","Consultant","Separated"];
@@ -1265,9 +1296,24 @@ function mergeIncomingDoc(coll, incoming, local){
         separationReason:local.separationReason||incoming.separationReason||""
       });
     }else merged=incoming;
-    return keepContribHold(merged, local);
+    return keepContribHold(keepEmpDateEdits(merged, local), local);
   }
   return incoming;
+}
+/* A hire date just typed must survive the snapshot that left a moment
+   earlier. Putting that stale row back into the date box makes the browser
+   fire change again, and the register redraws until the page freezes. */
+function keepEmpDateEdits(merged, local){
+  const dirty=typeof EMP_DIRTY==="object" && EMP_DIRTY ? EMP_DIRTY : null;
+  if(!dirty || !local || !merged) return merged;
+  const id=local.id||merged.id;
+  if(!id || !dirty[id]) return merged;
+  const next=Object.assign({}, merged);
+  ["dateHired","birthdate","contractStart","contractEnd","regularizedOn","separatedOn"].forEach(k=>{
+    if(dateInputValue(local[k])===dateInputValue(merged[k])) return;
+    next[k]=local[k];
+  });
+  return next;
 }
 
 /* ============ record factories + seed ============ */
@@ -1375,7 +1421,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-09-29c";
+const BUILD = "2026-09-30a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -9957,6 +10003,7 @@ function fld(lbl,key,val,type,opts,extra){
   let ctl;
   if(type==="select") ctl='<select id="'+id+'" data-ef="'+key+'">'+opts.map(o=>'<option'+(o===val?" selected":"")+'>'+esc(o)+'</option>').join("")+'</select>';
   else if(type==="textarea") ctl='<textarea id="'+id+'" data-ef="'+key+'">'+esc(val||"")+'</textarea>';
+  else if(type==="date") ctl='<input id="'+id+'" data-ef="'+key+'" type="date" value="'+esc(dateInputValue(val))+'">';
   else ctl='<input id="'+id+'" data-ef="'+key+'" type="'+(type||"text")+'" value="'+esc(val==null?"":val)+'"'+(extra||"")+'>';
   return '<div class="f'+(type==="mono"?" mono":"")+'"><label for="'+id+'">'+esc(lbl)+'</label>'+ctl+'</div>';
 }
@@ -10109,7 +10156,7 @@ function empInfo(e,cs){
    + empPicker("f-supervisorId", supervisorIdOf(e), "Type a name or employee number", ' data-ef="supervisorId"')
    + '<span class="hint">picked from the roster, so the name always matches a real record</span></div>'
    + fld("Date hired","dateHired",e.dateHired,"date")
-   + '<div class="f"><label>Probation ends (computed)</label><input value="'+esc(probationEnd(e.dateHired)||"—")+'" disabled><span class="hint">Six months from date hired, Art. 296</span></div>'
+   + '<div class="f"><label>Probation ends (computed)</label><input id="f-probationEnd" value="'+esc(probationEnd(dateInputValue(e.dateHired))||"—")+'" disabled><span class="hint">Six months from date hired, Art. 296</span></div>'
    + fld("Regularized on","regularizedOn",e.regularizedOn,"date")
    + fld("Contract start","contractStart",e.contractStart,"date")
    + fld("Contract end","contractEnd",e.contractEnd,"date")
@@ -18939,7 +18986,7 @@ function manpowerPayTally(empId, from, to){
   };
 }
 /* What the run pays this person before HR touches anything. */
-function payLine(e, kind, dates, saved){
+function payLine(e, kind, dates, saved, per){
   const rate=payRate(e,kind);
   const days=payDaysFor(e.id,dates);
   const auto={
@@ -18967,7 +19014,14 @@ function payLine(e, kind, dates, saved){
     allowance: sv.allowance!=null ? Number(sv.allowance) : (rate.monthly ? (Number(e.allowance)||0) : 0),
     incentive: Number(sv.incentive)||0,
     late:      Number(sv.late)||0,
-    ca:        sv.ca!=null ? Number(sv.ca) : payCaDue(e.id),
+    /* A figure Cassie typed on this run stays. A stored 0 that nobody touched
+       was the old "nothing assumed" and must not block an approved advance. */
+    ca: (function(){
+      const auto=payCaDue(e.id, per, kind);
+      if(sv.caTouched) return Number(sv.ca)||0;
+      if(sv.ca!=null && sv.ca!=="" && Number(sv.ca)!==0 && Math.abs(Number(sv.ca)-auto)>0.005) return Number(sv.ca);
+      return auto;
+    })(),
     uniform:   Number(sv.uniform)||0,
     sssLoan:   Number(sv.sssLoan)||0,
     hdmfLoan:  Number(sv.hdmfLoan)||0,
@@ -19090,18 +19144,85 @@ function payStat(kind, which, e){
      dropped, not rounded. Match the paper. */
   return kind==="weekly" ? Math.floor(full/2*100)/100 : full;
 }
-/* An advance still outstanding is offered as a deduction — at the plan rate
-   where a plan was set, otherwise nothing is assumed. */
-function payCaDue(empId){
+/* Closed advances never hit a run. Approved / Released / Partially liquidated
+   with no repayment rate still do — the outstanding balance, not a figure
+   Cassie has to type. A plan rate is taken only on the periods the schedule
+   lands in. */
+const CA_PAY_CLOSED=["Cancelled","Disapproved","Liquidated","Recovered","Recovered from pay"];
+function payCaClosed(a){ return CA_PAY_CLOSED.indexOf(String(a&&a.status||""))>=0; }
+function payCaApproved(a){
+  const s=String(a&&a.status||"");
+  return s==="Approved" || s==="Released" || s==="Partially liquidated";
+}
+function payCaStep(every){
+  if(every==="Weekly") return d=>addDays(d,7);
+  if(every==="Monthly") return d=>addMonths(d,1);
+  if(every==="Semi-monthly") return d=>addDays(d,15);
+  return null;
+}
+/* How many scheduled deductions fall inside this pay window. No schedule
+   means one deduction per period once the advance has started, which is
+   what a plan rate with a blank "starting" date already did. */
+function payCaInstallments(a, period){
+  const plan=Number(a&&a.deductPerPeriod)||0;
+  if(!(plan>0)) return 0;
+  const anchor=dateInputValue(a.planFrom||a.releasedOn||a.date||"");
+  if(period && period.to && anchor && anchor>period.to) return 0;
+  if(!period || !period.from || !period.to) return 1;
+  const step=payCaStep(String(a.planEvery||""));
+  if(!step || !anchor) return 1;
+  let d=anchor, n=0, guard=0;
+  while(d && d<=period.to && guard<600){
+    if(d>=period.from) n++;
+    const next=step(d);
+    if(!next || next<=d) break;
+    d=next; guard++;
+  }
+  return n;
+}
+/* Cash already saved on an earlier run for this person. The current period
+   is not included, so reopening it does not cancel its own deduction. */
+function payCaTakenBefore(empId, period, kind){
   let n=0;
-  caList().forEach(a=>{
-    if(a.empId!==empId) return;
-    if(["Cancelled","Disapproved","Liquidated","Recovered from pay"].indexOf(a.status)>=0) return;
-    if(caBalance(a)<=0.005) return;
-    const per=Number(a.deductPerPeriod)||0;
-    if(per>0) n+=Math.min(per, caBalance(a));
+  Object.keys(S.payruns||{}).forEach(k=>{
+    const run=S.payruns[k];
+    if(!run) return;
+    if(kind && run.kind && run.kind!==kind) return;
+    const end=String(run.to||"").slice(0,10);
+    if(period && period.from && end && end>=period.from) return;
+    const line=run.lines && run.lines[empId];
+    n+=Number(line&&line.ca)||0;
   });
-  return Math.round(n*100)/100;
+  return n;
+}
+function payCaDue(empId, period, kind){
+  const hasPeriod=!!(period && period.from && period.to);
+  let planDue=0, lump=0;
+  caList().forEach(a=>{
+    if(!a || a.empId!==empId) return;
+    if(payCaClosed(a)) return;
+    const bal=caBalance(a);
+    if(!(bal>0.005)) return;
+    const anchor=dateInputValue(a.planFrom||a.releasedOn||a.date||"");
+    if(hasPeriod && anchor && anchor>period.to) return;
+    const plan=Number(a.deductPerPeriod)||0;
+    if(plan>0){
+      const hits=payCaInstallments(a, hasPeriod?period:null);
+      if(hits>0) planDue+=Math.min(plan*hits, bal);
+      return;
+    }
+    /* No plan rate. Only an approved outstanding balance, and only for the
+       period that contains it — or the first later run if payroll has never
+       deducted anything for this person yet. */
+    if(!hasPeriod || !payCaApproved(a)) return;
+    /* A date inside this cut-off is due now. A missing date, or a date from
+       an earlier cut-off, is due only on the first run that has not already
+       saved a cash-advance deduction for this person — otherwise the same
+       balance would come off every week. */
+    if(anchor && anchor>=period.from && anchor<=period.to){ lump+=bal; return; }
+    if((!anchor || anchor<period.from) && payCaTakenBefore(empId, period, kind)<0.005) lump+=bal;
+  });
+  return Math.round((planDue+lump)*100)/100;
 }
 function payTotals(L){
   L.basic   = L.days * L.daily;
@@ -19222,7 +19343,7 @@ function payFutureHireNotes(kind, per, dates){
 }
 function payRunLines(kind, per, dates, saved){
   const people=payPeople(kind, per);
-  const lines=people.map(e=>payLine(e, kind, dates, (saved&&saved.lines&&saved.lines[e.id])||null));
+  const lines=people.map(e=>payLine(e, kind, dates, (saved&&saved.lines&&saved.lines[e.id])||null, per));
   return lines.concat(payUnmatchedLines(kind, dates));
 }
 function paySiteName(L){
@@ -19372,7 +19493,8 @@ function viewPayrollRun(){
    + '<div class="note" style="margin-bottom:12px">'+esc(payKind(kind).note)
    + ' <b>Days, overtime and the holiday premium are read off the daily manpower reports and cannot be typed here</b> — '
    + 'if one of them is wrong, the day itself is wrong, so fix it on the Daily Manpower screen and come back. '
-   + 'Everything else on this run — allowance, cash advance, loans, contributions — is typed here and kept with the run.'
+   + 'Allowance, loans and contributions are typed here and kept with the run. '
+   + '<b>Cash advance fills from approved balances</b> for this period (a repayment plan uses its rate; otherwise the outstanding amount). Edit the box to override.'
    + ' <button class="btn sm" id="pay-toattend">Open Daily Manpower</button>'
    + ' <button class="btn sm" id="pay-tocontrib">Contributions per head</button>'
    + ' <button class="btn sm" id="pay-paste">Paste manpower JSON</button></div>';
@@ -21320,6 +21442,7 @@ function newFromScan(coll){
 }
 
 /* ============ router ============ */
+let RENDER_DEPTH=0;
 function render(){
   try{ captureDailyForm(); }catch(e){}
   /* A snapshot or any other redraw used to rebuild this sheet while OT was
@@ -21333,6 +21456,15 @@ function render(){
   const typingContrib=typeof document!=="undefined" && document.activeElement && document.activeElement.closest
     && document.activeElement.closest("#view [data-cf]");
   if(typingContrib && S.ui && S.ui.view==="contrib") return;
+  /* Replacing the 201 form while a date box is focused makes the browser
+     fire change on the new box, which draws the form again. That loop is
+     what froze Date hired. */
+  const typingEmpDate=typeof document!=="undefined" && document.activeElement && document.activeElement.matches
+    && document.activeElement.matches("input[type='date'][data-ef]");
+  if(typingEmpDate && S.ui && S.ui.view==="employees") return;
+  if(RENDER_DEPTH) return;
+  RENDER_DEPTH++;
+  try{
   renderNav();
   const v=S.ui.view;
   const fn = {dash:viewDash, employees:viewEmployees, contracts:viewContracts, memos:viewMemos,
@@ -21347,6 +21479,7 @@ function render(){
   wire();
   /* Leaving the sheet must still upload hours captured from the boxes. */
   if(!S.ui || S.ui.view!=="daily") enqueueDailySave("");
+  } finally { RENDER_DEPTH--; }
 }
 function bootErrorCard(){
   return '<div class="card" style="border-color:var(--crit);margin-bottom:16px"><div class="card-b">'
@@ -21684,6 +21817,13 @@ function wire(){
       run.lines[id]=run.lines[id]||{};
       run.lines[id][f]=val;
       if(stat) run.lines[id].statTouched=true;
+      /* The box shows the auto deduction. Matching it is not an override.
+         Clearing it, or typing another figure, is — including an explicit 0. */
+      if(f==="ca"){
+        const auto=payCaDue(id, per, kind);
+        const typed=val==null ? 0 : (Number(val)||0);
+        if(run.lines[id].caTouched || Math.abs(typed-auto)>0.005) run.lines[id].caTouched=true;
+      }
     });
     S.payruns=S.payruns||{}; S.payruns[key]=run;
     if(commit){ run.savedOn=TODAY; await put("payruns",key,run); toast("Run saved.","ok"); }
@@ -21703,6 +21843,7 @@ function wire(){
         if(e && govDeductionRefused(e) && !line.statTouched){
           delete line.sss; delete line.phic; delete line.hdmf;
         }
+        if(!line.caTouched) delete line.ca;
       });
     }
     toast("Days and overtime recomputed from Daily Manpower.","ok");
@@ -22411,7 +22552,19 @@ function wire(){
   function applyEmpField(el){
     const emp=S.employees[S.ui.emp]; if(!emp || !el) return null;
     const k=el.dataset.ef; if(!k) return null;
-    emp[k] = el.type==="number" ? (parseFloat(el.value)||0) : el.value;
+    /* A date control reports YYYY-MM-DD, or nothing while the day is still
+       being chosen. Writing the partial value, or redrawing on it, is what
+       froze Date hired. An unchanged day must not count as an edit — the
+       browser fires change again when a redraw puts the same day back. */
+    if(el.type==="date"){
+      const next=dateInputValue(el.value);
+      const prev=dateInputValue(emp[k]);
+      if(next===prev && String(emp[k]==null?"":emp[k])===next) return null;
+      emp[k]=next;
+      if(el.value!==next) el.value=next;
+    }else{
+      emp[k] = el.type==="number" ? (parseFloat(el.value)||0) : el.value;
+    }
     /* the picker stores an id; keep the readable name in step so contracts and
        reports that print "supervisor" still read */
     if(k==="supervisorId"){
@@ -22421,18 +22574,46 @@ function wire(){
     if(k==="status") emp.statusBasis="Set on the 201 file";
     return k;
   }
+  function paintProbationEnd(){
+    const emp=S.employees && S.ui && S.employees[S.ui.emp];
+    const el=typeof document!=="undefined" && document.getElementById && document.getElementById("f-probationEnd");
+    if(!el || !emp) return;
+    el.value=probationEnd(dateInputValue(emp.dateHired))||"—";
+  }
+  /* Draw the register only after the date box has given up focus, so a click
+     on the next date is not eaten by a rebuild of the form. */
+  function renderEmpAfterDate(){
+    setTimeout(()=>{
+      if(typeof document!=="undefined" && document.activeElement && document.activeElement.matches
+        && document.activeElement.matches("input[type='date'][data-ef]")
+        && S.ui && S.ui.view==="employees") return;
+      render();
+    }, 0);
+  }
   /* Typing stays in the box. The write waits, and it does not redraw the roster. */
   on("[data-ef]","input", e=>{
     if(e.target.tagName==="SELECT") return;
+    if(e.target.type==="date") return;
     applyEmpField(e.target);
     queueEmpSave(S.ui.emp);
     paintOpenCompliance();
   });
   on("[data-ef]","change", e=>{
     const k=applyEmpField(e.target);
+    if(e.target.type==="date"){
+      if(!k) return;
+      queueEmpSave(S.ui.emp);
+      if(k==="dateHired") paintProbationEnd();
+      renderEmpAfterDate();
+      return;
+    }
     queueEmpSave(S.ui.emp);
     if(k && EMP_RENDER_FIELDS[k]) render();
     else paintOpenCompliance();
+  });
+  on("[data-ef]","blur", e=>{
+    if(!e.target || e.target.type!=="date") return;
+    renderEmpAfterDate();
   });
   function copyEmp(emp){
     const c=Object.assign({}, emp);

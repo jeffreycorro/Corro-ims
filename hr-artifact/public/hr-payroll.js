@@ -625,19 +625,103 @@
     return (Number(a && a.amount) || 0) - liq - (Number(a && a.deducted) || 0);
   }
 
-  function caDueForPeriod(advances, empId) {
-    var due = 0;
+  function caAnchor(a) {
+    return isoDate((a && (a.planFrom || a.releasedOn || a.date)) || "");
+  }
+
+  function caAddMonths(d, n) {
+    if (!d) return "";
+    var t = new Date(isoDate(d) + "T00:00:00");
+    var day = t.getDate();
+    t.setMonth(t.getMonth() + n);
+    if (t.getDate() < day) t.setDate(0);
+    return isoDate(t);
+  }
+
+  function caStep(every) {
+    if (every === "Weekly") return function (d) { return addDays(d, 7); };
+    if (every === "Monthly") return function (d) { return caAddMonths(d, 1); };
+    if (every === "Semi-monthly") return function (d) { return addDays(d, 15); };
+    return null;
+  }
+
+  function caPayApproved(a) {
+    var s = String((a && a.status) || "");
+    return s === "Approved" || s === "Released" || s === "Partially liquidated";
+  }
+
+  /* How many plan hits land in this window. No window means one installment,
+     which is what callers that only pass advances + empId already expected. */
+  function caInstallments(a, period) {
+    var plan = Number(a && a.deductPerPeriod) || 0;
+    if (!(plan > 0)) return 0;
+    var anchor = caAnchor(a);
+    if (period && period.to && anchor && anchor > period.to) return 0;
+    if (!period || !period.from || !period.to) return 1;
+    var step = caStep(String(a.planEvery || ""));
+    if (!step || !anchor) return 1;
+    var d = anchor, n = 0, guard = 0;
+    while (d && d <= period.to && guard < 600) {
+      if (d >= period.from) n += 1;
+      var next = step(d);
+      if (!next || next <= d) break;
+      d = next;
+      guard += 1;
+    }
+    return n;
+  }
+
+  function caDueForPeriod(advances, empId, period, alreadyTaken) {
+    var hasPeriod = !!(period && period.from && period.to);
+    if (!hasPeriod) {
+      var due = 0;
+      Object.keys(advances || {}).forEach(function (id) {
+        var a = advances[id];
+        if (!a || a.empId !== empId) return;
+        if (CA_SKIP[a.status]) return;
+        var perPeriod = Number(a.deductPerPeriod) || 0;
+        if (perPeriod <= 0) return;
+        var bal = caBalance(a);
+        if (bal <= 0) return;
+        due += Math.min(perPeriod, bal);
+      });
+      return due;
+    }
+    var planDue = 0, lump = 0;
+    var taken = Number(alreadyTaken) || 0;
     Object.keys(advances || {}).forEach(function (id) {
       var a = advances[id];
       if (!a || a.empId !== empId) return;
       if (CA_SKIP[a.status]) return;
-      var perPeriod = Number(a.deductPerPeriod) || 0;
-      if (perPeriod <= 0) return;
       var bal = caBalance(a);
-      if (bal <= 0) return;
-      due += Math.min(perPeriod, bal);
+      if (!(bal > 0.005)) return;
+      var anchor = caAnchor(a);
+      if (anchor && anchor > period.to) return;
+      var plan = Number(a.deductPerPeriod) || 0;
+      if (plan > 0) {
+        var hits = caInstallments(a, period);
+        if (hits > 0) planDue += Math.min(plan * hits, bal);
+        return;
+      }
+      if (!caPayApproved(a)) return;
+      if (anchor && anchor >= period.from && anchor <= period.to) { lump += bal; return; }
+      if ((!anchor || anchor < period.from) && taken < 0.005) lump += bal;
     });
-    return due;
+    return Math.round((planDue + lump) * 100) / 100;
+  }
+
+  function caTakenBefore(empId, from, kind, runs) {
+    var n = 0;
+    Object.keys(runs || {}).forEach(function (k) {
+      var run = runs[k];
+      if (!run) return;
+      if (kind && run.kind && run.kind !== kind) return;
+      var end = String(run.to || "").slice(0, 10);
+      if (from && end && end >= from) return;
+      var line = run.lines && run.lines[empId];
+      n += Number(line && line.ca) || 0;
+    });
+    return n;
   }
 
   function money(n) {
@@ -1177,6 +1261,7 @@
       settings: S.settings || {},
       holidays: (S.settings && S.settings.holidays) || [],
       advances: S.advances || {},
+      payRuns: (S.periods && S.periods.paymaker && S.periods.paymaker.runs) || {},
       effectiveStatus:
         (root.hrAttendance && root.hrAttendance.effectiveStatus) ||
         (typeof root.effectiveStatus === "function" ? root.effectiveStatus : null),
@@ -1394,7 +1479,18 @@
       allowance: prev.allowance != null && prev.allowance !== "" ? Number(prev.allowance) : defaultAllowance(e),
       incentive: Number(prev.incentive) || 0,
       late: Number(prev.late) || 0,
-      ca: prev.ca != null && prev.ca !== "" ? Number(prev.ca) : caDueForPeriod(ctx.advances, e.id),
+      ca: (function () {
+        var auto = caDueForPeriod(
+          ctx.advances,
+          e.id,
+          { from: from, to: to },
+          caTakenBefore(e.id, from, kind, ctx && ctx.payRuns)
+        );
+        if (prev.caTouched) return Number(prev.ca) || 0;
+        if (prev.ca != null && prev.ca !== "" && Number(prev.ca) !== 0 && Math.abs(Number(prev.ca) - auto) > 0.005)
+          return Number(prev.ca);
+        return auto;
+      })(),
       uniform: Number(prev.uniform) || 0,
       sssLoan: Number(prev.sssLoan) || 0,
       hdmfLoan: Number(prev.hdmfLoan) || 0,
