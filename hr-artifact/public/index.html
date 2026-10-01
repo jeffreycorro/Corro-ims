@@ -1137,7 +1137,7 @@ async function connect(){
       const merged=local?mergeIncomingDoc(c, incoming, local):incoming;
       if(c==="daily" && slimDailyRecord(merged)) merged._dmShed=1;
       S[c][d.id]=merged;
-      if(c==="employees" && employeeLiveBeatsSeparatedSnap(local, incoming))
+      if(c==="employees" && employeeSnapNeedsRepair(local, incoming))
         put("employees", d.id, merged);
       any=true;
     }); });
@@ -1166,13 +1166,14 @@ async function connect(){
         const local=S[c]&&S[c][d.id];
         next[d.id]=local?mergeIncomingDoc(c, incoming, local):incoming;
         if(c==="daily" && slimDailyRecord(next[d.id])) next[d.id]._dmShed=1;
-        if(c==="employees" && employeeLiveBeatsSeparatedSnap(local, incoming))
+        if(c==="employees" && employeeSnapNeedsRepair(local, incoming))
           repair.push([d.id, next[d.id]]);
       });
       /* A just-saved Daily Manpower or signed memo can lose fields when a
          stale collection snapshot replaces the whole map. Merge, don't swap.
-         A live 201 status that beat a stale Separated row is written back so
-         the shared store stops serving the roster snap. */
+         A live 201 status that beat a stale Separated row, or a 201 value
+         the snapshot left blank, is written back so the shared store keeps
+         what HR already entered. */
       S[c]=next; lsSave(); if(c==="daily") queueDailyShrink(); if(S.ready) render();
       repair.forEach(([id,obj])=>{ put("employees", id, obj); });
     }, ()=>{}));
@@ -1296,7 +1297,7 @@ function mergeIncomingDoc(coll, incoming, local){
         separationReason:local.separationReason||incoming.separationReason||""
       });
     }else merged=incoming;
-    return keepContribHold(keepEmpDateEdits(merged, local), local);
+    return keepContribHold(keepEmpDateEdits(keepEmpEnteredFields(merged, local), local), local);
   }
   return incoming;
 }
@@ -1313,6 +1314,36 @@ function keepEmpDateEdits(merged, local){
     if(dateInputValue(local[k])===dateInputValue(merged[k])) return;
     next[k]=local[k];
   });
+  return next;
+}
+/* A 201 value already on this device stays when a shared snapshot left that
+   box empty. An employment status HR cleared on the 201 file stays cleared.
+   An edit still open in the form wins over the snapshot that left earlier. */
+function keepEmpEnteredFields(merged, local){
+  if(!merged || !local) return merged;
+  const next=Object.assign({}, merged);
+  const dirty=typeof EMP_DIRTY==="object" && EMP_DIRTY ? EMP_DIRTY : null;
+  const id=local.id||merged.id;
+  const editing=!!(dirty && id && dirty[id]);
+  const fields=empEnteredFieldNames();
+  if(editing){
+    fields.forEach(k=>{ next[k]=local[k]; });
+    ["status","statusBasis","separatedOn","separationReason"].forEach(k=>{ next[k]=local[k]; });
+    return next;
+  }
+  fields.forEach(k=>{
+    if((next[k]==null || next[k]==="") && !(local[k]==null || local[k]==="")) next[k]=local[k];
+  });
+  if(empStatusIsSeparated(next)){
+    ["separatedOn","separationReason","statusBasis"].forEach(k=>{
+      if((next[k]==null || next[k]==="") && !(local[k]==null || local[k]==="")) next[k]=local[k];
+    });
+  }
+  const locStatus=String(local.status||"").trim();
+  if(!String(next.status||"").trim() && locStatus && !blankStatusIsIntentional(next)){
+    next.status=local.status;
+    if(local.statusBasis) next.statusBasis=local.statusBasis;
+  }
   return next;
 }
 
@@ -1421,7 +1452,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-09-30a";
+const BUILD = "2026-10-01a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -1913,6 +1944,39 @@ function separatedSnapIsStale(e){
 }
 function employeeLiveBeatsSeparatedSnap(local, incoming){
   return empStatusIsLive(local) && separatedSnapIsStale(incoming);
+}
+/* A blank status is a choice HR made on the 201 file when the basis says so.
+   A snapshot that is simply missing the status is not that choice. */
+function blankStatusIsIntentional(e){
+  if(!e || String(e.status||"").trim()) return false;
+  return /set on the 201 file|cleared on the 201 file/i.test(String(e.statusBasis||""));
+}
+function empEnteredFieldNames(){
+  return ["name","nickname","empNo","birthdate","sex","civil","address","mobile","email",
+    "emergName","emergRel","emergNo","sssNo","tinNo","philhealthNo","pagibigNo","bankAcct",
+    "dept","position","project","supervisor","supervisorId","dateHired","contractStart","contractEnd",
+    "regularizedOn","dailyRate","rateType","allowance","projectLocation","priorContractNo",
+    "photoLink","folderLink","folderId","notes"];
+}
+function employeeFilledBeatsBlankSnap(local, incoming){
+  if(!local || !incoming) return false;
+  const loc=String(local.status||"").trim();
+  const inc=String(incoming.status||"").trim();
+  if(!loc || inc) return false;
+  if(blankStatusIsIntentional(incoming)) return false;
+  return true;
+}
+function employeeSnapNeedsRepair(local, incoming){
+  if(!local || !incoming) return false;
+  if(employeeLiveBeatsSeparatedSnap(local, incoming)) return true;
+  if(employeeFilledBeatsBlankSnap(local, incoming)) return true;
+  const fields=empEnteredFieldNames();
+  for(let i=0;i<fields.length;i++){
+    const k=fields[i];
+    const inc=incoming[k], loc=local[k];
+    if((inc==null || inc==="") && !(loc==null || loc==="")) return true;
+  }
+  return false;
 }
 /* Non-active employment. Blank, Probationary, Regular, Project-based,
    Fixed-term, Consultant and Active stay off this list. */
@@ -10001,7 +10065,11 @@ function viewEmployees(){
 function fld(lbl,key,val,type,opts,extra){
   const id='f-'+key;
   let ctl;
-  if(type==="select") ctl='<select id="'+id+'" data-ef="'+key+'">'+opts.map(o=>'<option'+(o===val?" selected":"")+'>'+esc(o)+'</option>').join("")+'</select>';
+  if(type==="select"){
+    const list=(opts||[]).slice();
+    if(val!=null && val!=="" && list.indexOf(val)<0) list.push(val);
+    ctl='<select id="'+id+'" data-ef="'+key+'">'+list.map(o=>'<option'+(o===val?" selected":"")+'>'+esc(o)+'</option>').join("")+'</select>';
+  }
   else if(type==="textarea") ctl='<textarea id="'+id+'" data-ef="'+key+'">'+esc(val||"")+'</textarea>';
   else if(type==="date") ctl='<input id="'+id+'" data-ef="'+key+'" type="date" value="'+esc(dateInputValue(val))+'">';
   else ctl='<input id="'+id+'" data-ef="'+key+'" type="'+(type||"text")+'" value="'+esc(val==null?"":val)+'"'+(extra||"")+'>';
@@ -22562,6 +22630,19 @@ function wire(){
       if(next===prev && String(emp[k]==null?"":emp[k])===next) return null;
       emp[k]=next;
       if(el.value!==next) el.value=next;
+    }else if(el.tagName==="SELECT"){
+      /* A stored status that is not in the option list shows as the blank
+         first choice. That redraw must not save an empty status. Picking the
+         same value again is not an edit. */
+      const next=el.value;
+      const prev=emp[k]==null?"":String(emp[k]);
+      if(next==="" && prev!==""){
+        const opts=el.options?[].slice.call(el.options):[];
+        const known=opts.some(o=>o.value===prev || o.text===prev);
+        if(!known) return null;
+      }
+      if(next===prev) return null;
+      emp[k]=next;
     }else{
       emp[k] = el.type==="number" ? (parseFloat(el.value)||0) : el.value;
     }
@@ -22571,7 +22652,7 @@ function wire(){
       const sup=S.employees[emp.supervisorId];
       emp.supervisor = sup ? flipName(sup.name) : "";
     }
-    if(k==="status") emp.statusBasis="Set on the 201 file";
+    if(k==="status") emp.statusBasis=emp.status ? "Set on the 201 file" : "Cleared on the 201 file";
     return k;
   }
   function paintProbationEnd(){
@@ -22600,6 +22681,7 @@ function wire(){
   });
   on("[data-ef]","change", e=>{
     const k=applyEmpField(e.target);
+    if(!k) return;
     if(e.target.type==="date"){
       if(!k) return;
       queueEmpSave(S.ui.emp);
