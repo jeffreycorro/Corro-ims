@@ -16,7 +16,11 @@ const FOLDER_MIME = "application/vnd.google-apps.folder";
 const FILE_FIELDS = "id,name,mimeType,webViewLink,parents,modifiedTime";
 const MAX_READ_BYTES = 12 * 1024 * 1024;
 
-let tokenCache = null;
+/* One token per subject. "" is the service account itself (no sub). */
+const tokenCaches = new Map();
+/* Read-only Drive calls remember a delegation refusal for this process so
+   listing a 201 folder does not pay a failed impersonation on every file. */
+let readDelegationBlocked = false;
 
 /* Canonical Netlify Functions name. The other two are aliases so a value
    already stored under an impersonation name is not ignored. */
@@ -54,7 +58,7 @@ function b64url(obj) {
   return Buffer.from(JSON.stringify(obj), "utf8").toString("base64url");
 }
 
-function signServiceJwt(account) {
+function signServiceJwt(account, subject) {
   const now = Math.floor(Date.now() / 1000);
   const header = { alg: "RS256", typ: "JWT" };
   const payload = {
@@ -64,11 +68,11 @@ function signServiceJwt(account) {
     iat: now,
     exp: now + 3600,
   };
-  /* Without sub, Drive creates the file as the service account. A My Drive
-     folder shared with the service account still bills the service account,
-     which has no usable quota. sub impersonates a Workspace user. */
-  const subject = delegatedUser();
-  if (subject) payload.sub = subject;
+  /* Without sub, Drive acts as the service account. A folder shared with that
+     account can be listed. sub impersonates a Workspace user, which uploads
+     need so the file is billed to a mailbox that has quota. */
+  const sub = arguments.length < 2 ? delegatedUser() : String(subject || "");
+  if (sub) payload.sub = sub;
   const unsigned = `${b64url(header)}.${b64url(payload)}`;
   const signer = crypto.createSign("RSA-SHA256");
   signer.update(unsigned);
@@ -95,16 +99,31 @@ function mapTokenHttpError(status, json) {
   return codedError("server_not_connected", msg);
 }
 
-async function getAccessToken({ force = false } = {}) {
-  const subject = delegatedUser();
-  if (!force && tokenCache && tokenCache.subject === subject && tokenCache.expiresAt > Date.now() + 60_000) {
-    return tokenCache.token;
+function tokenSubject(opts) {
+  if (opts && Object.prototype.hasOwnProperty.call(opts, "subject")) return String(opts.subject || "");
+  return delegatedUser();
+}
+
+function delegationRefused(err) {
+  const msg = String((err && (err.message || err.code)) || err || "");
+  return /domain-wide delegation|unauthorized_client|invalid_grant|access_denied|not authorized|Invalid email or User ID/i.test(
+    msg
+  );
+}
+
+async function getAccessToken({ force = false, ...rest } = {}) {
+  const explicit = Object.prototype.hasOwnProperty.call(rest, "subject");
+  const subject = tokenSubject(explicit ? rest : {});
+  if (force) tokenCaches.delete(subject);
+  const cached = tokenCaches.get(subject);
+  if (!force && cached && cached.expiresAt > Date.now() + 60_000) {
+    return cached.token;
   }
   const account = await loadServiceAccount();
   if (!account) {
     throw codedError("server_not_connected", "Google Drive is not configured on this site.");
   }
-  const assertion = signServiceJwt(account);
+  const assertion = explicit ? signServiceJwt(account, subject) : signServiceJwt(account);
   let res;
   try {
     res = await fetch(TOKEN_URL, {
@@ -123,16 +142,33 @@ async function getAccessToken({ force = false } = {}) {
     throw mapTokenHttpError(res.status, json);
   }
   const expiresIn = Number(json.expires_in) || 3600;
-  tokenCache = {
+  tokenCaches.set(subject, {
     token: json.access_token,
     expiresAt: Date.now() + expiresIn * 1000,
-    subject,
-  };
-  return tokenCache.token;
+  });
+  return tokenCaches.get(subject).token;
+}
+
+/* Listing and searching a folder shared with the service account does not
+   need the delegated mailbox. When Google refuses domain-wide delegation,
+   retry that read as the service account. Uploads keep the delegated user. */
+async function getReadAccessToken() {
+  if (!delegatedUser() || readDelegationBlocked) {
+    if (readDelegationBlocked) return getAccessToken({ subject: "" });
+    return getAccessToken();
+  }
+  try {
+    return await getAccessToken();
+  } catch (err) {
+    if (!delegationRefused(err)) throw err;
+    readDelegationBlocked = true;
+    return getAccessToken({ subject: "" });
+  }
 }
 
 function resetTokenCache() {
-  tokenCache = null;
+  tokenCaches.clear();
+  readDelegationBlocked = false;
   resetServiceAccountCache();
 }
 
@@ -315,8 +351,8 @@ function mapDriveHttpError(status, json) {
   return codedError("tool_error", String(msg));
 }
 
-async function driveFetch(path, { method = "GET", query, body, headers, raw = false, token } = {}) {
-  const access = token || (await getAccessToken());
+async function driveFetch(path, { method = "GET", query, body, headers, raw = false, token, read = false } = {}) {
+  const access = token || (read ? await getReadAccessToken() : await getAccessToken());
   const qs = query ? `?${query}` : "";
   const url = path.startsWith("http") ? path : `${DRIVE_API}${path}${qs}`;
   let res;
@@ -360,7 +396,7 @@ async function searchFiles(args = {}) {
     spaces: "drive",
   });
   if (args.pageToken) params.set("pageToken", String(args.pageToken));
-  const json = await driveFetch("/files", { query: params.toString() });
+  const json = await driveFetch("/files", { query: params.toString(), read: true });
   const files = (json.files || []).map(mapFile).filter(Boolean);
   const next = json.nextPageToken || "";
   return {
@@ -426,7 +462,7 @@ function isImageMime(mimeType) {
 }
 
 async function downloadMedia(fileId, { exportMime } = {}) {
-  const access = await getAccessToken();
+  const access = await getReadAccessToken();
   const path = exportMime
     ? `${DRIVE_API}/files/${encodeURIComponent(fileId)}/export?mimeType=${encodeURIComponent(exportMime)}`
     : `${DRIVE_API}/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`;
@@ -491,6 +527,7 @@ async function downloadFile(args = {}) {
       fields: FILE_FIELDS,
       supportsAllDrives: "true",
     }).toString(),
+    read: true,
   });
   if (meta.mimeType === FOLDER_MIME) {
     throw codedError("bad_request", "That id is a folder, not a file.");
@@ -517,6 +554,7 @@ async function readFileContent(args = {}) {
       fields: FILE_FIELDS,
       supportsAllDrives: "true",
     }).toString(),
+    read: true,
   });
   if (meta.mimeType === FOLDER_MIME) {
     throw codedError("bad_request", "That id is a folder, not a file.");
@@ -755,8 +793,10 @@ module.exports = {
   createFileInit,
   downloadFile,
   delegatedUser,
+  delegationRefused,
   extractPdfText,
   getAccessToken,
+  getReadAccessToken,
   mapFile,
   mapDriveHttpError,
   mapTokenHttpError,

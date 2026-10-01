@@ -7,6 +7,7 @@ const { handler: authHandler } = require("../netlify/functions/auth");
 const { handler: dbHandler } = require("../netlify/functions/db");
 const { handler: sampleHandler } = require("../netlify/functions/sample");
 const { handler: driveHandler } = require("../netlify/functions/drive");
+const { handler: driveWhoHandler } = require("../netlify/functions/drive-who");
 const { handler: transcribeHandler } = require("../netlify/functions/transcribe");
 const { handler: ttsHandler } = require("../netlify/functions/tts");
 const { COOKIE_NAME, signSession } = require("../netlify/lib/session");
@@ -169,6 +170,30 @@ describe("netlify functions", () => {
     const body = JSON.parse(res.body);
     assert.equal(body.capabilities.mcp, true);
     assert.equal(body.mcp, true);
+  });
+
+  it("returns only the service account email and numeric client id", async () => {
+    const account = JSON.parse(testServiceAccountJson());
+    account.client_id = "108934827364510293847";
+    account.private_key_id = "do-not-leak";
+    process.env.GOOGLE_SERVICE_ACCOUNT_JSON = JSON.stringify(account);
+    const token = signSession({ sub: "gate", method: "password" }, SECRET);
+    const res = await driveWhoHandler({
+      httpMethod: "GET",
+      headers: { cookie: `${COOKIE_NAME}=${encodeURIComponent(token)}` },
+    });
+    assert.equal(res.statusCode, 200);
+    const body = JSON.parse(res.body);
+    assert.deepEqual(Object.keys(body).sort(), ["client_email", "client_id"]);
+    assert.equal(body.client_email, "sa@example.com");
+    assert.equal(body.client_id, "108934827364510293847");
+    assert.equal(Object.prototype.hasOwnProperty.call(body, "private_key"), false);
+    assert.doesNotMatch(res.body, /BEGIN PRIVATE KEY|do-not-leak/);
+  });
+
+  it("rejects the service-account identity page without a session", async () => {
+    const res = await driveWhoHandler({ httpMethod: "GET", headers: {} });
+    assert.equal(res.statusCode, 401);
   });
 
   it("rejects sample, drive, and transcribe without a session", async () => {
