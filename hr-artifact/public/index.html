@@ -919,16 +919,97 @@ const S = {
 };
 
 const LSKEY = "corro201.v1";
+/* blob: dies with the tab. A Drive file id in the URL does not. data: images
+   are kept on the shared record and in memory; this browser copy drops them
+   so a full localStorage cannot throw away the checklist with them. */
+function isEphemeralUrl(url){
+  return /^blob:/i.test(String(url||"").trim());
+}
+function isHeavyDataUrl(url){
+  const s=String(url||"");
+  return /^data:/i.test(s) && s.length>2048;
+}
+function durableDriveUrl(url){
+  const s=String(url||"").trim();
+  if(!s || isEphemeralUrl(s)) return "";
+  const file=/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/.exec(s);
+  if(file) return "https://drive.google.com/file/d/"+file[1]+"/view";
+  const folder=/drive\.google\.com\/(?:drive\/)?folders\/([a-zA-Z0-9_-]+)/.exec(s);
+  if(folder) return "https://drive.google.com/drive/folders/"+folder[1];
+  const id=/[?&]id=([a-zA-Z0-9_-]{10,})/.exec(s);
+  if(id && /drive\.google\.com|docs\.google\.com/.test(s))
+    return "https://drive.google.com/file/d/"+id[1]+"/view";
+  return s;
+}
+function settingsForLocal(st){
+  const copy=Object.assign({}, st||{});
+  if(copy.hrSigData && String(copy.hrSigData).length>8192 && copy.hrSigLink) delete copy.hrSigData;
+  if(copy.hrSigs){
+    const map={};
+    Object.keys(copy.hrSigs).forEach(k=>{
+      const p=copy.hrSigs[k];
+      if(!p || typeof p!=="object"){ map[k]=p; return; }
+      const n=Object.assign({}, p);
+      if(n.data && String(n.data).length>8192 && n.link) delete n.data;
+      map[k]=n;
+    });
+    copy.hrSigs=map;
+  }
+  return copy;
+}
+function shedDocSlotLocal(v){
+  if(!v || typeof v!=="object") return v;
+  const slot=Object.assign({}, v);
+  const files=docFiles(slot).map(x=>{
+    const url=durableDriveUrl(x.url);
+    if(!url || isEphemeralUrl(url) || isHeavyDataUrl(url)) return null;
+    return {url:url, title:x.title||"", on:x.on||""};
+  }).filter(Boolean);
+  docSetFiles(slot, files);
+  return slot;
+}
+function shedLocalEmployee(emp){
+  if(!emp || typeof emp!=="object") return emp;
+  const copy=Object.assign({}, employeePersist(emp));
+  ["photo","photoData","sigData","esigData","eSig"].forEach(k=>{
+    if(typeof copy[k]==="string" && (isHeavyImage(copy[k]) || copy[k].length>8192)) delete copy[k];
+  });
+  if(copy.docs && typeof copy.docs==="object"){
+    const docs={};
+    Object.keys(copy.docs).forEach(k=>{ docs[k]=shedDocSlotLocal(copy.docs[k]); });
+    copy.docs=docs;
+  }
+  return copy;
+}
+function lsPayload(){
+  const d={settings:settingsForLocal(S.settings)};
+  COLLS.forEach(c=>{
+    if(c!=="employees"){ d[c]=S[c]; return; }
+    const map={};
+    Object.keys(S.employees||{}).forEach(id=>{ map[id]=shedLocalEmployee(S.employees[id]); });
+    d.employees=map;
+  });
+  return d;
+}
 function lsSave(){
   try{
-    const d={settings:S.settings};
-    COLLS.forEach(c=>{
-      if(c!=="employees"){ d[c]=S[c]; return; }
-      const map={};
-      Object.keys(S.employees||{}).forEach(id=>{ map[id]=employeePersist(S.employees[id]); });
-      d.employees=map;
-    });
-    localStorage.setItem(LSKEY, JSON.stringify(d));
+    const d=lsPayload();
+    try{
+      localStorage.setItem(LSKEY, JSON.stringify(d));
+    }catch(err){
+      /* QuotaExceededError used to fail the whole save, so the next refresh
+         looked like the checklist had vanished. Drop signature bytes and try
+         once more. The checklist links stay in this copy. */
+      d.settings=settingsForLocal(d.settings);
+      if(d.settings) delete d.settings.hrSigData;
+      if(d.settings && d.settings.hrSigs){
+        Object.keys(d.settings.hrSigs).forEach(k=>{
+          const p=d.settings.hrSigs[k];
+          if(p && p.data) delete p.data;
+        });
+      }
+      try{ localStorage.setItem(LSKEY, JSON.stringify(d)); }catch(e2){}
+    }
   }catch(e){}
 }
 function lsLoad(){
@@ -1154,11 +1235,16 @@ async function connect(){
     Object.keys(S.daily||{}).forEach(id=>{
       if(S.daily[id] && slimDailyRecord(S.daily[id])) S.daily[id]._dmShed=1;
     });
-    if(any) lsSave();
+    if(any) lsSaveSoon();
     queueDailyShrink();
   }catch(e){}
+  /* The get() above already merged this generation. The first listener event
+     is that same snapshot again — applying it redraws every screen once per
+     collection (employees, daily, payroll, …) and freezes the first load. */
+  const liveEcho=new Set(COLLS);
   COLLS.forEach(c=>{
     S.subs.push(db.collection(c).onSnapshot(snap=>{
+      if(liveEcho.has(c)){ liveEcho.delete(c); return; }
       const next={};
       const repair=[];
       snap.docs.forEach(d=>{
@@ -1171,13 +1257,33 @@ async function connect(){
       });
       /* A just-saved Daily Manpower or signed memo can lose fields when a
          stale collection snapshot replaces the whole map. Merge, don't swap.
-         A live 201 status that beat a stale Separated row, or a 201 value
-         the snapshot left blank, is written back so the shared store keeps
-         what HR already entered. */
-      S[c]=next; lsSave(); if(c==="daily") queueDailyShrink(); if(S.ready) render();
-      repair.forEach(([id,obj])=>{ put("employees", id, obj); });
+         A live 201 status that beat a stale Separated row, a 201 value the
+         snapshot left blank, or a checklist file it dropped, is written back
+         so the shared store keeps what HR already entered. One redraw covers
+         every collection that arrived in the same burst. */
+      queueLiveSnapshot(c, next, repair);
     }, ()=>{}));
   });
+}
+let LIVE_Q=[];
+let LIVE_T=null;
+function queueLiveSnapshot(coll, next, repair){
+  LIVE_Q.push({coll:coll, next:next, repair:repair||[]});
+  if(LIVE_T) return;
+  LIVE_T=setTimeout(flushLiveSnapshots, 40);
+}
+function flushLiveSnapshots(){
+  LIVE_T=null;
+  const batch=LIVE_Q.splice(0, LIVE_Q.length);
+  if(!batch.length) return;
+  batch.forEach(item=>{
+    S[item.coll]=item.next;
+    if(item.coll==="daily") queueDailyShrink();
+    item.repair.forEach(([id,obj])=>{ put("employees", id, obj); });
+  });
+  SNAP_GEN++;
+  lsSaveSoon();
+  if(S.ready) render();
 }
 /* A contribution just typed is held on the employee until the shared copy
    shows the same SSS / PhilHealth / Pag-IBIG. A snapshot that left a moment
@@ -1297,7 +1403,9 @@ function mergeIncomingDoc(coll, incoming, local){
         separationReason:local.separationReason||incoming.separationReason||""
       });
     }else merged=incoming;
-    return keepContribHold(keepEmpDateEdits(keepEmpEnteredFields(merged, local), local), local);
+    merged=keepContribHold(keepEmpDateEdits(keepEmpEnteredFields(merged, local), local), local);
+    if(typeof keepChecklistDocs==="function") merged=keepChecklistDocs(merged, local);
+    return merged;
   }
   return incoming;
 }
@@ -1346,6 +1454,156 @@ function keepEmpEnteredFields(merged, local){
   }
   return next;
 }
+/* One checklist row. A blank or older snapshot must not drop a file, a
+   filed date, or a status HR already set (On file / N/A / For renewal).
+   Links are unioned. The later non-empty filed date wins, and so does the
+   status that belongs to it. Blob URLs are not kept — they die with the tab. */
+function copyDocMap(docs){
+  const out={};
+  Object.keys(docs||{}).forEach(k=>{
+    const v=docs[k];
+    if(!v || typeof v!=="object"){ out[k]=v; return; }
+    const slot=Object.assign({}, v);
+    if(Array.isArray(v.links)) slot.links=v.links.map(x=>typeof x==="string"?x:Object.assign({}, x));
+    out[k]=slot;
+  });
+  return out;
+}
+function docSlotBlank(v){
+  if(!v || typeof v!=="object") return true;
+  const files=docFiles(v).filter(x=>durableDriveUrl(x.url));
+  const s=String(v.s||"").trim().toLowerCase();
+  if(files.length) return false;
+  if(String(v.filed||"").trim() || String(v.expiry||"").trim()) return false;
+  if(s && s!=="miss") return false;
+  return true;
+}
+function docSlotStamp(v){
+  const filed=String((v&&v.filed)||"").slice(0,10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(filed) ? filed : "";
+}
+function docSlotScore(v){
+  if(!v || typeof v!=="object") return 0;
+  let n=docFiles(v).filter(x=>durableDriveUrl(x.url)).length*4;
+  const s=String(v.s||"").trim().toLowerCase();
+  if(s==="on"||s==="exp"||s==="na") n+=2;
+  if(docSlotStamp(v)) n+=1;
+  if(String(v.expiry||"").trim()) n+=1;
+  return n;
+}
+function mergeDocLinks(local, incoming){
+  const out=[]; const seen=new Map();
+  function push(x){
+    const url=durableDriveUrl(x&&x.url);
+    if(!url) return;
+    const title=(x&&x.title)||"", on=(x&&x.on)||"";
+    const prev=seen.get(url);
+    if(prev){
+      if(!prev.title && title) prev.title=title;
+      if(!prev.on && on) prev.on=on;
+      return;
+    }
+    const row={url:url, title:title, on:on};
+    seen.set(url, row); out.push(row);
+  }
+  docFiles(incoming).forEach(push);
+  docFiles(local).forEach(push);
+  return out;
+}
+function laterIso(a, b){
+  const x=String(a||"").slice(0,10), y=String(b||"").slice(0,10);
+  const xok=/^\d{4}-\d{2}-\d{2}$/.test(x), yok=/^\d{4}-\d{2}-\d{2}$/.test(y);
+  if(xok && yok) return x>=y ? x : y;
+  if(xok) return x;
+  if(yok) return y;
+  return String(a||b||"");
+}
+function mergeDocSlot(local, incoming){
+  const lBlank=docSlotBlank(local), iBlank=docSlotBlank(incoming);
+  if(lBlank && iBlank){
+    const slot=Object.assign({s:"miss",link:"",links:[],filed:"",expiry:""}, incoming||local||{});
+    const links=mergeDocLinks(local, incoming);
+    if(links.length) docSetFiles(slot, links);
+    return slot;
+  }
+  if(iBlank){
+    const slot=copyDocMap({only:local}).only;
+    docSetFiles(slot, mergeDocLinks(local, incoming));
+    return slot;
+  }
+  if(lBlank){
+    const slot=copyDocMap({only:incoming}).only;
+    const links=mergeDocLinks(local, incoming);
+    if(links.length) docSetFiles(slot, links);
+    return slot;
+  }
+  const lt=docSlotStamp(local), it=docSlotStamp(incoming);
+  let winner, other;
+  if(lt && it && lt>it){ winner=local; other=incoming; }
+  else if(lt && it && it>lt){ winner=incoming; other=local; }
+  else if(lt && !it){ winner=local; other=incoming; }
+  else if(it && !lt){ winner=incoming; other=local; }
+  else if(docSlotScore(local)>docSlotScore(incoming)){ winner=local; other=incoming; }
+  else { winner=incoming; other=local; }
+  const slot=copyDocMap({only:winner}).only;
+  const links=mergeDocLinks(local, incoming);
+  if(links.length) docSetFiles(slot, links);
+  const filed=laterIso(local&&local.filed, incoming&&incoming.filed);
+  if(filed) slot.filed=filed;
+  if(!String(slot.expiry||"").trim() && other && other.expiry) slot.expiry=other.expiry;
+  else slot.expiry=laterIso(local&&local.expiry, incoming&&incoming.expiry)||slot.expiry||"";
+  return slot;
+}
+function mergeChecklistDocs(localDocs, incomingDocs){
+  const keys={};
+  Object.keys(localDocs||{}).forEach(k=>{ keys[k]=1; });
+  Object.keys(incomingDocs||{}).forEach(k=>{ keys[k]=1; });
+  const docs={};
+  Object.keys(keys).forEach(k=>{
+    docs[k]=mergeDocSlot(localDocs&&localDocs[k], incomingDocs&&incomingDocs[k]);
+  });
+  return {docs:docs};
+}
+function docSlotKey(v){
+  if(docSlotBlank(v)) return "miss";
+  const s=String((v&&v.s)||"miss").trim().toLowerCase();
+  const filed=String((v&&v.filed)||"");
+  const expiry=String((v&&v.expiry)||"");
+  const urls=docFiles(v).map(x=>durableDriveUrl(x.url)).filter(Boolean).sort().join("|");
+  return s+"|"+filed+"|"+expiry+"|"+urls;
+}
+function docMapSame(a, b){
+  const keys={};
+  Object.keys(a||{}).forEach(k=>{ keys[k]=1; });
+  Object.keys(b||{}).forEach(k=>{ keys[k]=1; });
+  const names=Object.keys(keys);
+  for(let i=0;i<names.length;i++){
+    if(docSlotKey(a&&a[names[i]])!==docSlotKey(b&&b[names[i]])) return false;
+  }
+  return true;
+}
+function keepChecklistDocs(merged, local){
+  if(!merged || !local) return merged;
+  const dirty=typeof EMP_DIRTY==="object" && EMP_DIRTY ? EMP_DIRTY : null;
+  const id=local.id||merged.id;
+  if(dirty && id && dirty[id] && local.docs){
+    const next=Object.assign({}, merged);
+    next.docs=copyDocMap(local.docs);
+    return next;
+  }
+  if(!local.docs && !merged.docs) return merged;
+  const next=Object.assign({}, merged);
+  next.docs=mergeChecklistDocs(local.docs, merged.docs).docs;
+  return next;
+}
+function checklistSnapNeedsRepair(local, incoming){
+  if(!local || !incoming) return false;
+  const dirty=typeof EMP_DIRTY==="object" && EMP_DIRTY ? EMP_DIRTY : null;
+  const id=local.id||incoming.id;
+  if(dirty && id && dirty[id]) return !docMapSame(local.docs, incoming.docs);
+  const merged=mergeChecklistDocs(local.docs, incoming.docs);
+  return !docMapSame(merged.docs, incoming.docs||{});
+}
 
 /* ============ record factories + seed ============ */
 /* One checklist row, several files. A person can have three cash advances,
@@ -1356,10 +1614,21 @@ function keepEmpEnteredFields(merged, local){
    working, and older records with only `link` read correctly too. */
 function docFiles(v){
   if(!v) return [];
-  const out=[], seen=new Set();
+  const out=[], seen=new Map();
   const push=(url,title,on)=>{
-    url=String(url||"").trim(); if(!url || seen.has(url)) return;
-    seen.add(url); out.push({url, title:title||"", on:on||""});
+    url=String(url||"").trim(); if(!url) return;
+    title=title||""; on=on||"";
+    const prev=seen.get(url);
+    /* `link` is stored again as the first of `links`. Keep the name and date
+       from whichever copy has them, so a blank primary link cannot erase
+       "File 1" on the way into a merge. */
+    if(prev){
+      if(!prev.title && title) prev.title=title;
+      if(!prev.on && on) prev.on=on;
+      return;
+    }
+    const row={url, title, on};
+    seen.set(url, row); out.push(row);
   };
   push(v.link, v.title, v.filed);
   (v.links||[]).forEach(x=>{
@@ -1452,7 +1721,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-10-01a";
+const BUILD = "2026-10-01b";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -1970,6 +2239,7 @@ function employeeSnapNeedsRepair(local, incoming){
   if(!local || !incoming) return false;
   if(employeeLiveBeatsSeparatedSnap(local, incoming)) return true;
   if(employeeFilledBeatsBlankSnap(local, incoming)) return true;
+  if(typeof checklistSnapNeedsRepair==="function" && checklistSnapNeedsRepair(local, incoming)) return true;
   const fields=empEnteredFieldNames();
   for(let i=0;i<fields.length;i++){
     const k=fields[i];
@@ -2257,7 +2527,7 @@ function sanctionFor(cat,step){
   return o.l[Math.min(step,o.l.length-1)];
 }
 
-let ALERTS_GEN=0, ALERTS_MEM=null;
+let ALERTS_GEN=0, ALERTS_MEM=null, SNAP_GEN=0, NAV_MEM=null;
 function alerts(){
   if(ALERTS_MEM && ALERTS_MEM.gen===ALERTS_GEN) return ALERTS_MEM.out;
   const out=_alertsBuild();
@@ -3525,10 +3795,17 @@ const VIEWS = [
 function navCounts(){
   /* Rebuilding every dashboard finding on each 201 click was the freeze.
      The 201 badge below still reads the open roster through compliance(),
-     which only recomputes the record that changed. */
+     which only recomputes the record that changed. The whole badge set is
+     reused until an employee save or a live snapshot actually changes data,
+     so typing in the register does not walk all 240 files again. */
+  if(!S.ready){
+    return {dash:0,employees:0,contracts:0,nte:0,memos:0,cashadv:0,leave:0,incidents:0,recruit:0,onboarding:0,tasks:0};
+  }
+  const gen=ALERTS_GEN+":"+SNAP_GEN;
+  if(NAV_MEM && NAV_MEM.gen===gen) return NAV_MEM.out;
   const al=(S.ui && S.ui.view==="employees" && ALERTS_MEM && ALERTS_MEM.out)
     ? ALERTS_MEM.out : alerts();
-  return {
+  const out={
     dash: al.filter(a=>a.sev==="crit").length,
     employees: activeEmps().filter(e=>compliance(e).missing.length).length,
     contracts: activeEmps().filter(e=>{const c=contractState(e);return c.sev==="crit"||c.sev==="warn";}).length,
@@ -3541,6 +3818,8 @@ function navCounts(){
     onboarding: activeEmps().filter(e=>obProgress(e).pct<100).length,
     tasks: Object.values(S.tasks).filter(t=>t.status!=="Done").length
   };
+  NAV_MEM={gen:gen, out:out};
+  return out;
 }
 function renderNav(){
   const c=navCounts(); let h=""; let lastG="";
@@ -3696,6 +3975,13 @@ function sevPill(sev,txt){ return '<span class="pill '+sev+'">'+esc(txt)+'</span
 
 /* ============ dashboard ============ */
 function viewDash(){
+  /* The finding scan walks every 201 file. Doing it before the shared
+     snapshot is in makes the first paint wait, then does the scan again
+     when the snapshot lands. Show the shell first. */
+  if(!S.ready){
+    setCrumb("Dashboard","Loading records…");
+    return '<div class="card"><div class="card-b"><div class="empty">Loading the shared employee records…</div></div></div>';
+  }
   setCrumb("Dashboard","Corro Construction Development and Trade Corporation · "+TODAY);
   const emps=activeEmps(), al=alerts();
   const crit=al.filter(a=>a.sev==="crit"), warn=al.filter(a=>a.sev==="warn");
@@ -6925,20 +7211,7 @@ function attendancePattern(months){
    knowing before anybody scans another two hundred files. */
 const READABLE_IMG = /^image\/(jpe?g|png|webp|heic)$/i;
 function docKindOf(title){
-  const t=String(title||"").toLowerCase();
-  if(/\btin\b|bureau of internal|\bbir\b/.test(t)) return "tin";
-  if(/\bsss\b|social security/.test(t)) return "sss";
-  if(/philhealth|\bphic\b/.test(t)) return "phil";
-  if(/pag-?ibig|\bhdmf\b/.test(t)) return "hdmf";
-  if(/\bnbi\b/.test(t)) return "nbi";
-  if(/barangay|police|clearance/.test(t)) return "brgy";
-  if(/birth|\bpsa\b|nso/.test(t)) return "psa";
-  if(/resume|biodata|\bcv\b/.test(t)) return "resume";
-  if(/diploma|transcript|\btor\b/.test(t)) return "tor";
-  if(/med|physical|x-?ray|drug/.test(t)) return "med";
-  if(/\bid\b|licen[cs]e|passport|umid|postal/.test(t)) return "govid";
-  if(/contract/.test(t)) return "contract";
-  return "";
+  return guessDoc(title)||"";
 }
 async function readEmpDocs(empId){
   const e=S.employees[empId]; if(!e) return;
@@ -14787,7 +15060,7 @@ function waiveGate(appId){
 }
 
 /* --------- sitting the test --------- */
-let SITTING=null;
+let SITTING=null, SIT_CLOCK=null;
 function shuffled(n, seed){
   const a=Array.from({length:n},(_,i)=>i);
   let s=seed||1;
@@ -14887,17 +15160,20 @@ function drawSitting(){
       SITTING=null; closeModal(); render();
     }
   };
+  if(SIT_CLOCK) clearInterval(SIT_CLOCK);
   if(SITTING._t) clearInterval(SITTING._t);
-  SITTING._t=setInterval(()=>{
-    const c=$("#sit-clock"); if(!c || !SITTING){ return; }
+  SIT_CLOCK=setInterval(()=>{
+    const c=$("#sit-clock");
+    if(!c || !SITTING){ clearInterval(SIT_CLOCK); SIT_CLOCK=null; return; }
     const l=sittingTimeLeft();
     c.textContent=fmtClock(l);
     if(l<300000) c.style.color="var(--danger)";
-    if(l<=0){ clearInterval(SITTING._t); finishSitting(true); }
+    if(l<=0){ clearInterval(SIT_CLOCK); SIT_CLOCK=null; finishSitting(true); }
   },1000);
 }
 async function finishSitting(timedOut){
   const S1=SITTING; if(!S1) return;
+  if(SIT_CLOCK){ clearInterval(SIT_CLOCK); SIT_CLOCK=null; }
   if(S1._t) clearInterval(S1._t);
   const x=S.exams[S1.examId];
   const items=examItems(x);
@@ -18010,15 +18286,15 @@ const GUESS = [
   [/\biq\s*test\b|aptitude/i,              "iqtest"],
   [/employee\s*data\s*sheet|personal\s*info\w*\s*(checklist|sheet)?|\bpds\b/i,"datasheet"],
   [/residential\s*sketch|sketch\s*of|location\s*sketch/i,"sketch"],
-  [/resume|biodata|bio[\s-]?data|curriculum|application\s*letter/i,"resume"],
-  [/transcript|\btor\b/i,                  "tor"],
+  [/resume|biodata|bio\s*data|curriculum(\s*vitae)?|application\s*letter|\bcv\b/i,"resume"],
+  [/transcript(\s*of\s*records)?|\btor\b/i, "tor"],
   [/\bcosh\b|\bbosh\b|\bosh\b|\bohs\b|\boshs\b|\bso1\b|\bso2\b|safety\s*(orientation|protocol|training|officer)|toolbox/i,"safety"],
   [/diploma|\bcoc\b|\bojt\b|certificate\s*of\s*(completion|training)|\bcpr\b/i,"certs"],
   /* identification */
   [/driver'?s?\s*licen[cs]e|drivers?[\s_-]*licen/i,"license"],
   [/\bumid\b|\bpostal\s*id\b|\bvoter'?s?\s*id\b|gov.*\bid\b|valid\s*id|\bcedula\b|passport|national\s*id|\bphil\s*sys\b/i,"govid"],
   [/\b(prc|ptr)\b|master\s*plumber|professional.*\bid\b/i,"certs"],
-  [/birth\s*cert|\bpsa\b|\bnso\b/i,       "psa"],
+  [/birth\s*cert(ificate)?|\bpsa\b|\bnso\b/i, "psa"],
   [/\bid\s*picture\b|photo|2\s*x\s*2|1\s*x\s*1/i,"photo"],
   /* clearances */
   [/\bnbi\b|nbi\s*clearance/i,             "nbi"],
@@ -18027,15 +18303,15 @@ const GUESS = [
   [/med(ical)?\s*cert|\bmedcert\b|medical\s*exam|annual\s*physical/i,"med"],
   [/vaccin|\bvax\b|booster/i,               "vax"],
   /* statutory */
-  [/\bsss\b/i,                             "sss"],
-  [/pag[\s-]?ibig|pagibig|\bhdmf\b/i,      "hdmf"],
-  [/philhealth|\bphic\b/i,                  "phic"],
+  [/\bsss\b|social\s*security/i,           "sss"],
+  [/pag\s*ibig|pagibig|\bhdmf\b/i,         "hdmf"],
+  [/phil\s*health|philhealth|\bphic\b/i,   "phic"],
   [/\btin\b|\bbir\b|\b2316\b|\b1902\b/i,"tin"],
   /* employment */
   [/probationary\s*contract|contract.*probation/i,"contractprob"],
   [/kasabutan|dili\s*pagperma|refusal.*(?:gov|benefit|deduct)|gov(?:ernment)?[\s-]*man(?:dated)?/i,"govrefuse"],
-  [/contract|employment\s*agreement/i,"contract"],
-  [/job\s*desc|\bjd\b/i,                   "jd"],
+  [/\bcontracts?\b|employment\s*agreement/i,"contract"],
+  [/job\s*desc(ription)?|\bjd\b/i,         "jd"],
   [/training\s*record|\btraining\b|\btesda\b|\bnc\s*ii\b|first\s*aid/i,"training"],
   [/handbook|code\s*of\s*(discipline|conduct)|\bcod\b|\bqmpp\b|quality\s*manual/i,"handbook"],
   [/coe\s*\(?\s*from\s*employee|previous\s*employer.*coe|coe.*previous/i,"coeemp"],
@@ -18060,24 +18336,87 @@ const GUESS = [
   [/notice\s*of\s*termination/i,            "notterm"]
 ];
 
-/* Underscores are word characters, so "Luzano_Carmel_-_COSH.pdf" never matched
-   \bCOSH\b. Names arrive both ways — spaces from HR, underscores from a
-   download — so they are flattened before anything is tested. */
-const guessDoc = name => {
-  const t=String(name||"").replace(/[_\-.]+/g," ");
+/* Underscores, dashes, and accents are flattened before a keyword is tested,
+   so "1250_Ababon_Résumé.pdf" and "Phil-Health ID" still hit the row.
+   A file that also carries the employee number or name is the same match —
+   the number is not required, and it does not hide the keyword. */
+function foldFileName(name){
+  return String(name||"")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+    .toLowerCase()
+    .replace(/[_\-–—./\\,;:+]+/g," ")
+    .replace(/[^a-z0-9\s]/g," ")
+    .replace(/\s+/g," ")
+    .trim();
+}
+function fileMentionsEmployee(name, emp){
+  if(!emp) return false;
+  const t=foldFileName(name);
+  const no=String(emp.empNo||"").trim();
+  if(no && new RegExp("\\b"+no+"\\b").test(t)) return true;
+  const tokens=foldFileName(emp.name).split(" ").filter(w=>w.length>=4);
+  return tokens.some(w=>t.indexOf(w)>=0);
+}
+function guessDoc(name, emp){
+  const t=foldFileName(name);
+  if(!t) return "";
   for(const [re,k] of GUESS) if(re.test(t)) return k;
+  /* "PhilHealthID" and "JobDescription" have no separator left to split on. */
+  const z=t.replace(/\s+/g,"");
+  const packed=[
+    [/philhealth/, "phic"],
+    [/pagibig/, "hdmf"],
+    [/birthcertificate|birthcert/, "psa"],
+    [/jobdescription/, "jd"],
+    [/transcriptofrecords/, "tor"],
+    [/socialsecurity/, "sss"],
+    [/employmentcontract/, "contract"],
+    [/curriculumvitae/, "resume"],
+    [/nbiclearance/, "nbi"]
+  ];
+  for(const [re,k] of packed) if(re.test(z)) return k;
   return "";
-};
+}
+function driveFileDate(f){
+  const raw=String((f&&(f.modifiedTime||f.createdTime))||"");
+  if(!raw) return "";
+  const ms=Date.parse(raw);
+  if(!isFinite(ms)) return /^\d{4}-\d{2}-\d{2}/.test(raw) ? raw.slice(0,10) : "";
+  return new Date(ms+8*60*60*1000).toISOString().slice(0,10);
+}
+function linkDriveFile(slot, f){
+  if(!slot || !f) return false;
+  const url=durableDriveUrl(f.viewUrl||"");
+  if(!url) return false;
+  const added=docAddLink(slot, url, f.title||"", driveFileDate(f)||TODAY);
+  if(!added && !docFiles(slot).some(x=>durableDriveUrl(x.url)===url)) return false;
+  if(slot.s!=="exp") slot.s="on";
+  if(!slot.filed) slot.filed=driveFileDate(f)||TODAY;
+  return added;
+}
 
 async function listFolderFiles(emp){
   const mcp=await getMcp(); if(!mcp) throw {code:"not_granted"};
   const fid = emp.folderId || await resolveFolder(emp);
   if(!fid) throw {code:"bad_request", message:"this employee has no 201 folder yet"};
-  const r = await mcp.callTool(DRIVE_SERVER,"search_files",
-    { query:"parentId = '"+fid+"'", pageSize:100, excludeContentSnippets:true });
-  return ((r && r.payload && r.payload.files) || [])
-    .filter(f=>f.mimeType!=="application/vnd.google-apps.folder")
-    .sort((a,b)=>String(a.title).localeCompare(String(b.title)));
+  const out=[]; let token="", guard=0;
+  do{
+    const req={ query:"parentId = '"+fid+"'", pageSize:100, excludeContentSnippets:true };
+    if(token) req.pageToken=token;
+    const r = await mcp.callTool(DRIVE_SERVER,"search_files", req);
+    const pl=(r && r.payload) || {};
+    (pl.files||[]).forEach(f=>{
+      if(f && f.mimeType!=="application/vnd.google-apps.folder") out.push(f);
+    });
+    token=pl.nextPageToken||pl.next_page_token||"";
+  }while(token && ++guard<8);
+  const seen=new Set();
+  return out.filter(f=>{
+    const id=f.id||f.viewUrl||f.title;
+    if(seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  }).sort((a,b)=>String(a.title).localeCompare(String(b.title)));
 }
 
 /* One employee at a time is the right tool for correcting a guess; it is the
@@ -18108,10 +18447,13 @@ async function matchAllFolders(){
     let list=[];
     try{ list=await listFolderFiles(e); }catch(err){ continue; }
     folders++; files+=list.length;
-    const already={}; DOCS.forEach(d=>docFiles((e.docs||{})[d.k]).forEach(x=>{ already[x.url]=d.k; }));
+    const already={}; DOCS.forEach(d=>docFiles((e.docs||{})[d.k]).forEach(x=>{
+      const u=durableDriveUrl(x.url); if(u) already[u]=d.k;
+    }));
     list.forEach(f=>{
-      if(already[f.viewUrl]) return;                 /* this file is already on a row */
-      const k=guessDoc(f.title); if(!k) return;
+      const u=durableDriveUrl(f.viewUrl);
+      if(u && already[u]) return;                    /* this file is already on a row */
+      const k=guessDoc(f.title, e); if(!k) return;
       const v=(e.docs||{})[k]||{};
       found.push({ e, f, k, hadFiles:docFiles(v).length, status:v.s||"miss" });
     });
@@ -18177,9 +18519,7 @@ function matchAllReport(found, t){
       const c=clone(S.employees[id]); c.docs=c.docs||blankDocs();
       byEmp[id].forEach(x=>{
         c.docs[x.k]=c.docs[x.k]||{s:"miss",link:"",links:[],filed:"",expiry:""};
-        if(!docAddLink(c.docs[x.k], x.f.viewUrl, x.f.title)) return;
-        if(c.docs[x.k].s==="miss"||c.docs[x.k].s==="na") c.docs[x.k].s="on";
-        if(!c.docs[x.k].filed) c.docs[x.k].filed=TODAY;
+        if(!linkDriveFile(c.docs[x.k], x.f)) return;
         n++;
       });
       S.employees[id]=c; entries.push([id,c]);
@@ -18199,50 +18539,65 @@ async function matchFilesToRows(){
   catch(e){ const m=driveMessage(e); if(m) toast(m,"err"); return; }
   if(!files.length){ toast("That 201 folder is empty in Drive.","err"); return; }
 
-  const used={};
-  DOCS.forEach(d=>{ docFiles((emp.docs||{})[d.k]).forEach(x=>{ used[x.url]=d.k; }); });
+  const c=clone(S.employees[emp.id]);
+  c.docs=c.docs||blankDocs();
+  let linked=0, already=0;
+  const unmatched=[];
+  files.forEach(f=>{
+    const k=guessDoc(f.title, emp);
+    if(!k){ unmatched.push(f); return; }
+    c.docs[k]=c.docs[k]||{s:"miss",link:"",links:[],filed:"",expiry:""};
+    const url=durableDriveUrl(f.viewUrl||"");
+    const had=url && docFiles(c.docs[k]).some(x=>durableDriveUrl(x.url)===url);
+    if(had){ already++; return; }
+    if(!linkDriveFile(c.docs[k], f)){ unmatched.push(f); return; }
+    linked++;
+  });
+  if(linked){ await put("employees", c.id, c); render(); }
+
   const opts=(sel)=>'<option value="">— not on the checklist —</option>'
     + DOCG.map(g=>'<optgroup label="'+esc(g)+'">'
         + DOCS.filter(d=>d.g===g).map(d=>'<option value="'+d.k+'"'+(sel===d.k?" selected":"")+'>'+esc(d.n)+'</option>').join("")
         + '</optgroup>').join("");
 
+  if(!unmatched.length){
+    toast((linked?linked+" file"+(linked===1?"":"s")+" linked":"Nothing new to link")
+      +(already?" · "+already+" already on the checklist":""),
+      linked||already?"ok":undefined);
+    render();
+    return;
+  }
+
   openModal({ title:"Match files to the checklist — "+emp.name, wide:true,
     body:'<div class="stack">'
-      + '<div class="note">These are the '+files.length+' files sitting in this employee\'s 201 folder in Drive. '
-      + 'Pick which checklist row each one belongs to. A row already holding a file is left alone unless you change it. '
-      + 'The guesses come from the file name — check them.</div>'
+      + '<div class="note">'+(linked?linked+" file"+(linked===1?"":"s")+" already linked from the file name. ":"")
+      + unmatched.length+" file"+(unmatched.length===1?" does":"s do")+" not have a checklist keyword yet. "
+      + 'Pick a row for each one, or leave it blank. A keyword such as Resume, CV, TOR, NBI, PSA, SSS, '
+      + 'PhilHealth, Pag-IBIG, TIN, Contract, or Job Description is enough — the employee name or number '
+      + 'in the file name does not block it.</div>'
       + '<div class="tw"><table><thead><tr><th>File in Drive</th><th style="width:300px">Checklist row</th><th style="width:70px"></th></tr></thead><tbody>'
-      + files.map((f,i)=>{
-          const already=used[f.viewUrl];
-          const g=already||guessDoc(f.title);
-          return '<tr><td class="nm">'+esc(f.title)
-            + (already?' <span class="pill ok">already linked</span>':"")
-            + '</td>'
-            + '<td><select data-mf="'+i+'">'+opts(g)+'</select></td>'
-            + '<td><a class="btn sm" href="'+esc(f.viewUrl)+'" target="_blank" rel="noopener noreferrer">Open</a></td></tr>';
-        }).join("")
+      + unmatched.map((f,i)=>'<tr><td class="nm">'+esc(f.title)+'</td>'
+          + '<td><select data-mf="'+i+'">'+opts("")+'</select></td>'
+          + '<td><a class="btn sm" href="'+esc(f.viewUrl)+'" target="_blank" rel="noopener noreferrer">Open</a></td></tr>').join("")
       + '</tbody></table></div></div>',
     foot:'<button class="btn" id="mf-none">Clear all</button>'
-      + '<button class="btn pri" id="mf-apply">Apply to the checklist</button>'});
+      + '<button class="btn pri" id="mf-apply">Link the ones I picked</button>'});
 
   $("#mf-none").onclick=()=>{ $$("[data-mf]").forEach(s=>s.value=""); };
   $("#mf-apply").onclick=async()=>{
-    const c=clone(S.employees[emp.id]);
-    c.docs=c.docs||blankDocs();
+    const cur=clone(S.employees[emp.id]);
+    cur.docs=cur.docs||blankDocs();
     let n=0;
     $$("[data-mf]").forEach(sel=>{
       const k=sel.value; if(!k) return;
-      const f=files[+sel.dataset.mf]; if(!f) return;
-      c.docs[k]=c.docs[k]||{s:"miss",link:"",links:[],filed:"",expiry:""};
-      /* two files matched to one row are two documents, not a correction of
-         the first — the second used to overwrite it */
-      if(!docAddLink(c.docs[k], f.viewUrl, f.title)) return;
-      if(c.docs[k].s==="miss"||c.docs[k].s==="na") c.docs[k].s="on";
-      if(!c.docs[k].filed) c.docs[k].filed=TODAY;
+      const f=unmatched[+sel.dataset.mf]; if(!f) return;
+      cur.docs[k]=cur.docs[k]||{s:"miss",link:"",links:[],filed:"",expiry:""};
+      if(!linkDriveFile(cur.docs[k], f)) return;
       n++;
     });
-    await put("employees",c.id,c);
-    closeModal(); toast(n?(n+" file"+(n===1?"":"s")+" linked to the checklist"):"Nothing changed", n?"ok":undefined);
+    if(n) await put("employees",cur.id,cur);
+    closeModal();
+    toast(n?(n+" more file"+(n===1?"":"s")+" linked"):"Nothing else changed", n?"ok":undefined);
     render();
   };
 }
@@ -21543,11 +21898,51 @@ function render(){
     compliance:viewCompliance, gaps:viewGaps, reminders:viewReminders, assistant:viewAssistant,
     payrun:viewPayrollRun, contrib:viewContrib,
     settings:viewSettings}[v] || viewDash;
-  $("#view").innerHTML = (S.bootError ? bootErrorCard() : "") + fn();
+  const viewEl=$("#view");
+  if(!viewEl) return;
+  viewEl.innerHTML = (S.bootError ? bootErrorCard() : "") + fn();
   wire();
   /* Leaving the sheet must still upload hours captured from the boxes. */
   if(!S.ui || S.ui.view!=="daily") enqueueDailySave("");
+  }catch(err){
+    console.error(err);
+    paintCrash(err);
   } finally { RENDER_DEPTH--; }
+}
+let CRASH_LOCK=false;
+function paintCrash(err){
+  if(CRASH_LOCK || typeof document==="undefined" || !document.body) return;
+  CRASH_LOCK=true;
+  try{
+  const msg=String((err && (err.message || err)) || "Something went wrong").slice(0, 500);
+  let bar=document.getElementById("app-crash");
+  if(!bar){
+    bar=document.createElement("div");
+    bar.id="app-crash";
+    bar.setAttribute("role","alert");
+    bar.style.cssText="position:sticky;top:0;z-index:400;background:#fbeceb;color:#9c3131;padding:12px 16px;border-bottom:1px solid #9c3131;font:14px/1.45 sans-serif";
+    document.body.insertBefore(bar, document.body.firstChild);
+  }
+  const safe=(typeof esc==="function") ? esc(msg) : msg.replace(/[&<>]/g,"");
+  bar.innerHTML='<b>This screen hit a problem.</b> The page stayed open so the records on this device are not lost. '
+    + safe
+    + ' <button type="button" id="app-crash-reload" style="margin-left:8px">Reload</button>'
+    + ' <button type="button" id="app-crash-hide" style="margin-left:6px">Continue</button>';
+  const reload=document.getElementById("app-crash-reload");
+  if(reload) reload.onclick=function(){ location.reload(); };
+  const hide=document.getElementById("app-crash-hide");
+  if(hide) hide.onclick=function(){ if(bar.parentNode) bar.parentNode.removeChild(bar); };
+  const view=document.getElementById("view");
+  if(view && !String(view.textContent||"").trim()){
+    view.innerHTML='<div class="card"><div class="card-b"><h3>This screen did not finish drawing</h3>'
+      + '<p>Reload the page. What was already saved is still stored.</p>'
+      + '<p>'+safe+'</p>'
+      + '<button class="btn pri" type="button" id="app-crash-reload2">Reload</button></div></div>';
+    const reload2=document.getElementById("app-crash-reload2");
+    if(reload2) reload2.onclick=function(){ location.reload(); };
+  }
+  }catch(e){}
+  finally{ setTimeout(function(){ CRASH_LOCK=false; }, 400); }
 }
 function bootErrorCard(){
   return '<div class="card" style="border-color:var(--crit);margin-bottom:16px"><div class="card-b">'
@@ -22827,6 +23222,16 @@ $("#q").addEventListener("input",e=>{
   else if(S.ui.q){ S.ui.emp=null; go("employees"); setTimeout(()=>{ const q=$("#q"); q.focus(); q.setSelectionRange(q.value.length,q.value.length); },0); }
 });
 
+window.addEventListener("error", function(ev){
+  const view=document.getElementById("view");
+  const blank=!view || !String(view.textContent||"").trim();
+  if(RENDER_DEPTH || blank) paintCrash((ev && ev.error) || (ev && ev.message) || "Something went wrong");
+});
+window.addEventListener("unhandledrejection", function(ev){
+  const view=document.getElementById("view");
+  const blank=!view || !String(view.textContent||"").trim();
+  if(RENDER_DEPTH || blank) paintCrash((ev && ev.reason) || "Something went wrong");
+});
 (async function boot(){
   try{
     wireDocument();          /* bound once; modal buttons depend on it */

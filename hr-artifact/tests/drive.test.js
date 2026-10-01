@@ -14,6 +14,7 @@ const {
   mapFile,
   parseServiceAccount,
   resetTokenCache,
+  searchFiles,
   signServiceJwt,
   translateDriveQuery,
   viewUrlFor,
@@ -264,6 +265,90 @@ describe("drive delegation and quota", () => {
     });
     assert.match(delegated.message, /hr@example\.com/);
     assert.match(delegated.message, /GOOGLE_DRIVE_DELEGATED_USER/);
+  });
+
+  it("lists files as the service account when domain-wide delegation is refused", async () => {
+    process.env.GOOGLE_SERVICE_ACCOUNT_JSON = JSON.stringify(testAccount());
+    process.env.GOOGLE_DRIVE_DELEGATED_USER = "hr@example.com";
+    const assertions = [];
+    global.fetch = async (url, opts) => {
+      const href = String(url);
+      if (href.includes("oauth2.googleapis.com/token")) {
+        const assertion = new URLSearchParams(opts.body).get("assertion");
+        assertions.push(assertion);
+        if (decodeJwtPayload(assertion).sub) {
+          return {
+            ok: false,
+            status: 401,
+            json: async () => ({
+              error: "unauthorized_client",
+              error_description: "Client is unauthorized to retrieve access tokens using this method",
+            }),
+          };
+        }
+        return { ok: true, json: async () => ({ access_token: "ya29.sa", expires_in: 3600 }) };
+      }
+      if (href.includes("/drive/v3/files") && (!opts || !opts.method || opts.method === "GET")) {
+        const auth = (opts.headers && opts.headers.authorization) || "";
+        assert.equal(auth, "Bearer ya29.sa");
+        return {
+          ok: true,
+          status: 200,
+          text: async () =>
+            JSON.stringify({
+              files: [
+                {
+                  id: "f1",
+                  name: "1250 Resume.pdf",
+                  mimeType: "application/pdf",
+                  webViewLink: "https://drive.google.com/file/d/f1/view",
+                },
+              ],
+            }),
+        };
+      }
+      throw new Error("unexpected fetch " + href);
+    };
+    const listed = await searchFiles({ query: "parentId = 'folder1'", pageSize: 10 });
+    assert.equal(listed.payload.files[0].title, "1250 Resume.pdf");
+    assert.equal(decodeJwtPayload(assertions[0]).sub, "hr@example.com");
+    assert.equal(decodeJwtPayload(assertions[1]).sub, undefined);
+    assert.equal(assertions.length, 2);
+    const again = await searchFiles({ query: "parentId = 'folder1'", pageSize: 10 });
+    assert.equal(again.payload.files.length, 1);
+    assert.equal(assertions.length, 2);
+  });
+
+  it("does not retry an upload without the delegated user", async () => {
+    process.env.GOOGLE_SERVICE_ACCOUNT_JSON = JSON.stringify(testAccount());
+    process.env.GOOGLE_DRIVE_DELEGATED_USER = "hr@example.com";
+    let tokenCalls = 0;
+    global.fetch = async (url) => {
+      const href = String(url);
+      if (href.includes("oauth2.googleapis.com/token")) {
+        tokenCalls += 1;
+        return {
+          ok: false,
+          status: 401,
+          json: async () => ({
+            error: "unauthorized_client",
+            error_description: "Client is unauthorized to retrieve access tokens using this method",
+          }),
+        };
+      }
+      throw new Error("upload should not run " + href);
+    };
+    await assert.rejects(
+      () =>
+        createFile({
+          title: "1001-LEAVE SIGNED.pdf",
+          parentId: "inbox",
+          base64Content: Buffer.from("%PDF").toString("base64"),
+          contentMimeType: "application/pdf",
+        }),
+      /domain-wide delegation/
+    );
+    assert.equal(tokenCalls, 1);
   });
 
   it("names domain-wide delegation when Google rejects the impersonated token", () => {
