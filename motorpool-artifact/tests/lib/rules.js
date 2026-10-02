@@ -948,6 +948,112 @@
     return next;
   }
 
+  function auditMoney(n) {
+    var v = moneyNum(n);
+    return (Math.round(v * 100) / 100).toFixed(2);
+  }
+
+  function reopenAuditNote(by, at, oldAmount, prevLiq) {
+    var note = "";
+    if (prevLiq && (prevLiq.at || prevLiq.by)) {
+      note = "Was liquidated" + (prevLiq.at ? " on " + prevLiq.at : "") + (prevLiq.by ? " by " + prevLiq.by : "");
+    }
+    return {
+      at: at || "",
+      by: String(by || "").trim(),
+      field: "reopen",
+      from: auditMoney(oldAmount),
+      to: "awaiting liquidation",
+      note: note,
+    };
+  }
+
+  /** Clear liq and keep the closed amounts. A leftover liq stamp stays Closed. */
+  function reopenClosedLedgerRow(row, by, at, oldAmount, prevLiq) {
+    var next = Object.assign({}, row || {});
+    next.vrf = String(next.vrf || "").trim();
+    next.vstatus = "Open";
+    next.notBought = false;
+    delete next.liq;
+    if (next.src === "reserve-hold") delete next.src;
+    next.audit = ((row && row.audit) || []).concat([
+      reopenAuditNote(by, at, oldAmount, prevLiq || (row && row.liq)),
+    ]);
+    return next;
+  }
+
+  function reserveNeedsReopen(reserve) {
+    if (!reserve || reserveSpendClosed(reserve)) return false;
+    if (reserve.status === "Closed" || reserve.status === "Flagged") return true;
+    return !!reserve.liquidatedAt;
+  }
+
+  /** Same VRF number stays sealed via vrfs so a reload does not mint another. */
+  function applyReserveReopen(reserve, by, at, oldAmount, prevLiq) {
+    if (!reserveNeedsReopen(reserve)) return false;
+    var no = String(reserve.vrfNo || "").trim();
+    reserve.status = "Approved";
+    reserve.liquidatedAt = "";
+    reserve.actual = null;
+    if (no) {
+      var list = (reserve.vrfs || []).map(function (x) {
+        return String(x);
+      });
+      if (list.indexOf(no) < 0) reserve.vrfs = list.concat([no]);
+    }
+    reserve.audit = (reserve.audit || []).concat([reopenAuditNote(by, at, oldAmount, prevLiq)]);
+    return true;
+  }
+
+  function priorReopenNote(rows, reserve) {
+    var prior = null;
+    function scan(list) {
+      (list || []).forEach(function (n) {
+        if (n && n.field === "reopen") prior = n;
+      });
+    }
+    (rows || []).forEach(function (r) {
+      scan(r && r.audit);
+    });
+    scan(reserve && reserve.audit);
+    return prior;
+  }
+
+  function recloseAmountAudit(rows, reserve, newTotal, by, at) {
+    var prior = priorReopenNote(rows, reserve);
+    if (!prior) return null;
+    var who = String(prior.by || "").trim();
+    var when = String(prior.at || "").trim();
+    var extra = "";
+    if (who || when) extra = "Reopened by " + (who || "—") + (when ? " on " + when : "");
+    return {
+      at: at || "",
+      by: String(by || "").trim() || who,
+      field: "amount",
+      from: prior.from || auditMoney(0),
+      to: auditMoney(newTotal),
+      note: extra,
+    };
+  }
+
+  function liquidationNewTotal(entry, edits, added, outcome) {
+    if (outcome === "not-bought" || outcome === "cancelled" || outcome === "duplicate") return 0;
+    var t = 0;
+    ((entry && entry.rows) || []).forEach(function (r, i) {
+      var e = edits && edits[i];
+      if (e && e.remove) return;
+      var q = e && e.qty != null ? e.qty : r && r.qty;
+      var p = e && e.price != null ? e.price : r && r.price;
+      if (q != null && p != null && (moneyNum(q) || moneyNum(p))) t += moneyNum(q) * moneyNum(p);
+      else t += moneyNum(r && r.total);
+    });
+    (added || []).forEach(function (a) {
+      if (!a || !a.cat) return;
+      t += (parseFloat(a.qty) || 0) * (parseFloat(a.price) || 0);
+    });
+    return t;
+  }
+
   /**
    * An approved VRF that is still open may be written onto the ledger at
    * liquidation even when approval never posted it. A draft still for approval
@@ -2094,6 +2200,13 @@
     vrfStatusForOutcome: vrfStatusForOutcome,
     lineWasNotPurchased: lineWasNotPurchased,
     applyLiquidationLine: applyLiquidationLine,
+    auditMoney: auditMoney,
+    reopenAuditNote: reopenAuditNote,
+    reopenClosedLedgerRow: reopenClosedLedgerRow,
+    reserveNeedsReopen: reserveNeedsReopen,
+    applyReserveReopen: applyReserveReopen,
+    recloseAmountAudit: recloseAmountAudit,
+    liquidationNewTotal: liquidationNewTotal,
     approvedVrfMayJoinLedger: approvedVrfMayJoinLedger,
     planLiquidationLedgerWrite: planLiquidationLedgerWrite,
     ledgerLineFromHoldRow: ledgerLineFromHoldRow,
