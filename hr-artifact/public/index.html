@@ -889,6 +889,7 @@ const S = {
   memos:{}, resources:{}, onboarding:{}, series:{}, docreg:{}, applicants:{}, exams:{}, roles:{},
   advances:{}, leaves:{}, projects:{}, incidents:{}, genfiles:{}, decisions:{}, daily:{},
   payruns:{},                       // a saved payroll run, keyed kind|from
+  otreqs:{},                        // overtime requests: who may have OT, and the signed form
   filed:{},                         // forms issued on paper before the portal, read back off Drive
   compliance:{},                    // statutory filings recorded, keyed obligation|period
   forms:{},                         // controlled-form master list (ISO 9001 cl. 7.5)
@@ -984,10 +985,14 @@ function shedLocalEmployee(emp){
 function lsPayload(){
   const d={settings:settingsForLocal(S.settings)};
   COLLS.forEach(c=>{
-    if(c!=="employees"){ d[c]=S[c]; return; }
-    const map={};
-    Object.keys(S.employees||{}).forEach(id=>{ map[id]=shedLocalEmployee(S.employees[id]); });
-    d.employees=map;
+    if(c==="employees"){
+      const map={};
+      Object.keys(S.employees||{}).forEach(id=>{ map[id]=shedLocalEmployee(S.employees[id]); });
+      d.employees=map;
+      return;
+    }
+    if(c==="otreqs" && typeof shedOtMap==="function"){ d[c]=shedOtMap(S[c]); return; }
+    d[c]=S[c];
   });
   return d;
 }
@@ -1030,7 +1035,7 @@ const clone = typeof structuredClone==="function"
 const COLLS = ["employees","nte","writeups","tasks","templates","periods",
                "memos","resources","onboarding","series","docreg","applicants","exams","roles",
                "advances","leaves","projects","incidents","genfiles","decisions","daily",
-               "payruns","reminders","filed","compliance","forms"];
+               "payruns","otreqs","reminders","filed","compliance","forms"];
 
 /* lsSave stringifies every collection, so calling it once per write turned a
    300-record seed into 300 full serialisations of a growing megabyte. */
@@ -1220,6 +1225,8 @@ async function connect(){
       S[c][d.id]=merged;
       if(c==="employees" && employeeSnapNeedsRepair(local, incoming))
         put("employees", d.id, merged);
+      if(c==="otreqs" && typeof otReqNeedsRepair==="function" && otReqNeedsRepair(local, incoming))
+        put("otreqs", d.id, merged);
       any=true;
     }); });
     const st = await db.doc("meta/settings").get();
@@ -1254,6 +1261,8 @@ async function connect(){
         if(c==="daily" && slimDailyRecord(next[d.id])) next[d.id]._dmShed=1;
         if(c==="employees" && employeeSnapNeedsRepair(local, incoming))
           repair.push([d.id, next[d.id]]);
+        if(c==="otreqs" && typeof otReqNeedsRepair==="function" && otReqNeedsRepair(local, incoming))
+          repair.push([d.id, next[d.id], "otreqs"]);
       });
       /* A just-saved Daily Manpower or signed memo can lose fields when a
          stale collection snapshot replaces the whole map. Merge, don't swap.
@@ -1279,7 +1288,7 @@ function flushLiveSnapshots(){
   batch.forEach(item=>{
     S[item.coll]=item.next;
     if(item.coll==="daily") queueDailyShrink();
-    item.repair.forEach(([id,obj])=>{ put("employees", id, obj); });
+    item.repair.forEach((row)=>{ put(row[2]||"employees", row[0], row[1]); });
   });
   SNAP_GEN++;
   lsSaveSoon();
@@ -1407,6 +1416,7 @@ function mergeIncomingDoc(coll, incoming, local){
     if(typeof keepChecklistDocs==="function") merged=keepChecklistDocs(merged, local);
     return merged;
   }
+  if(coll==="otreqs" && typeof mergeOtRequest==="function") return mergeOtRequest(local, incoming);
   return incoming;
 }
 /* A hire date just typed must survive the snapshot that left a moment
@@ -1721,7 +1731,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-10-01b";
+const BUILD = "2026-10-02a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -3782,6 +3792,7 @@ const VIEWS = [
   {k:"writeups", n:"Write-ups",       i:"i-gavel",  g:"Discipline"},
   {k:"incidents",n:"Incident Reports",i:"i-warn",   g:"Discipline"},
   {k:"daily",    n:"Daily Manpower",   i:"i-check",  g:"Payroll"},
+  {k:"otreq",    n:"OT Requests",     i:"i-clock",  g:"Payroll"},
   {k:"attendance",n:"Attendance",     i:"i-clock",  g:"Payroll"},
   {k:"salaries", n:"People & Pay",     i:"i-peso",   g:"Payroll"},
   {k:"payrun",   n:"Payroll Maker",   i:"i-peso",   g:"Payroll"},
@@ -9212,6 +9223,472 @@ function commitLeaverStrip(before, rec){
   Promise.resolve(put("daily", rec.id, rec)).then(()=>{},()=>{}).then(()=>{ commitLeaverStrip.busy[key]=false; });
 }
 commitLeaverStrip.busy={};
+
+/* An overtime request is the signed form that lets a person or a whole site
+   have OT entered for a date. Approved, with a file that is still a real
+   link, is what unlocks the box. Hours already saved stay either way. */
+function otSiteKey(s){ return String(s||"").trim().toLowerCase().replace(/\s+/g," "); }
+function otFormUrl(req){
+  if(!req) return "";
+  const raw=String(req.formUrl||req.link||"").trim();
+  if(!raw || (typeof isEphemeralUrl==="function" && isEphemeralUrl(raw))) return "";
+  if(typeof durableDriveUrl==="function") return durableDriveUrl(raw)||"";
+  return raw;
+}
+function shedOtRequest(req){
+  if(!req || typeof req!=="object") return req;
+  const copy=Object.assign({}, req);
+  if(Array.isArray(req.empIds)) copy.empIds=req.empIds.slice();
+  if(typeof isHeavyDataUrl==="function" && isHeavyDataUrl(copy.formUrl)) copy.formUrl="";
+  return copy;
+}
+function shedOtMap(map){
+  const out={};
+  Object.keys(map||{}).forEach(id=>{ out[id]=shedOtRequest(map[id]); });
+  return out;
+}
+function mergeOtRequest(local, incoming){
+  const next=Object.assign({}, incoming||{});
+  const l=local||{};
+  if(!otFormUrl(next) && otFormUrl(l)){
+    next.formUrl=otFormUrl(l);
+    if(l.formTitle) next.formTitle=l.formTitle;
+  }
+  ["from","to","site","reason","status"].forEach(k=>{
+    if(!String(next[k]||"").trim() && String(l[k]||"").trim()) next[k]=l[k];
+  });
+  if((!next.empIds || !next.empIds.length) && (l.empIds||[]).length) next.empIds=l.empIds.slice();
+  if(l.wholeSite && !next.wholeSite && !(next.empIds||[]).length) next.wholeSite=true;
+  if((next.hoursEach==null || next.hoursEach==="") && l.hoursEach!=null && l.hoursEach!=="")
+    next.hoursEach=l.hoursEach;
+  return next;
+}
+function otReqNeedsRepair(local, incoming){
+  if(!local || !incoming) return false;
+  const merged=mergeOtRequest(local, incoming);
+  if(otFormUrl(merged) && !otFormUrl(incoming)) return true;
+  if(String(merged.status||"").trim() && !String(incoming.status||"").trim()) return true;
+  if((merged.empIds||[]).length && !(incoming.empIds||[]).length && !incoming.wholeSite) return true;
+  if(String(merged.from||"") && !String(incoming.from||"")) return true;
+  return false;
+}
+function otRequestCovers(req, empId, date, site){
+  if(!req || req.status!=="Approved" || !otFormUrl(req)) return false;
+  const d=String(date||"").slice(0,10);
+  const from=String(req.from||"").slice(0,10);
+  const to=String(req.to||from).slice(0,10);
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(d) || !from || d<from || d>to) return false;
+  if(req.wholeSite){
+    const want=otSiteKey(req.site);
+    return !!want && want===otSiteKey(site);
+  }
+  return (req.empIds||[]).indexOf(empId)>=0;
+}
+function otCovered(empId, date, site){
+  return Object.values((S&&S.otreqs)||{}).some(r=>otRequestCovers(r, empId, date, site));
+}
+function otApprovedHours(empId, date, site){
+  let n=null;
+  Object.values((S&&S.otreqs)||{}).forEach(r=>{
+    if(!otRequestCovers(r, empId, date, site)) return;
+    if(r.hoursEach==null || r.hoursEach==="") return;
+    const h=Number(r.hoursEach);
+    if(!Number.isFinite(h)) return;
+    n=n==null?h:Math.max(n,h);
+  });
+  return n;
+}
+function otSameHours(a, b){
+  const empty=v=>v==null || String(v).trim()==="";
+  if(empty(a) && empty(b)) return true;
+  if(empty(a) || empty(b)) return false;
+  return Number(a)===Number(b);
+}
+/* A new figure needs an approved request. The number already on the day stays,
+   including when this build is the first one that asked for a form. */
+function otHoursAllowed(empId, date, site, prev, typed){
+  if(otCovered(empId, date, site)) return typed;
+  if(otSameHours(prev, typed)) return (prev==null || String(prev).trim()==="") ? typed : prev;
+  if(prev==null || String(prev).trim()==="") return null;
+  return prev;
+}
+function otEntryBox(empId, date, site, value, sty, attr){
+  const covered=otCovered(empId, date, site);
+  const shown=value!=null && String(value).trim()!=="" ? value : "";
+  const legacy=shown!=="" && Number(shown)>0 && !covered;
+  const approved=covered ? otApprovedHours(empId, date, site) : null;
+  const title=covered
+    ? ("Approved OT request on file"+(approved!=null?" · approved for "+approved+" h":""))
+    : "No OT request on file for this date/site";
+  let h='<input '+attr+' type="number" step="0.5" min="0" value="'+esc(shown)+'" placeholder="0" '
+    +(covered?"":"disabled ")
+    +'title="'+esc(title)+'" style="'+sty+';text-align:right'+(covered?"":";opacity:.72")+'">';
+  if(!covered){
+    h+='<div class="lbl" style="text-transform:none;letter-spacing:0;font-weight:500;white-space:normal;line-height:1.35;margin-top:3px">'
+      + 'No OT request on file for this date/site'
+      + (legacy?' <span class="pill warn">no OT form</span>':"")
+      + '<div style="margin-top:3px"><button type="button" class="btn sm" data-otfile="'+esc(empId)+'" data-otdate="'+esc(date)+'" data-otsite="'+esc(site)+'">File one</button></div></div>';
+  }
+  return h;
+}
+function otEachDate(from, to){
+  const out=[];
+  let d=String(from||"").slice(0,10);
+  const end=String(to||from||"").slice(0,10);
+  if(!d || !end || d>end) return out;
+  let guard=0;
+  while(d<=end && guard<400){ out.push(d); d=addDays(d,1); guard++; }
+  return out;
+}
+function otHourlyOf(emp){
+  if(!emp) return 0;
+  if(typeof payRate==="function"){
+    const rate=payRate(emp, "weekly");
+    if(rate && Number(rate.hourly)>0) return Number(rate.hourly);
+  }
+  const daily=Number(emp.dailyRate)||0;
+  return daily>0 ? daily/8 : 0;
+}
+/* Hours actually on Daily Manpower, plus how many OT requests overlap the
+   window. Week buckets start Thursday, the same week payroll uses. */
+function otTrack(opts){
+  opts=opts||{};
+  const from=String(opts.from||"").slice(0,10);
+  const to=String(opts.to||from).slice(0,10);
+  const siteWant=otSiteKey(opts.site);
+  const empWant=String(opts.empId||"");
+  const mode=opts.mode==="week" || opts.mode==="month" ? opts.mode : "range";
+  const policy=Number(S.settings&&S.settings.otPolicy)||1;
+  const buckets={};
+  function bucketKey(d){
+    if(mode==="week") return weekStart(d);
+    if(mode==="month") return String(d).slice(0,7);
+    return (from||"")+"|"+(to||"");
+  }
+  function bucketLabel(k){
+    if(mode==="week") return "Week of "+k;
+    if(mode==="month") return (typeof monthLabel==="function" ? monthLabel(k) : k);
+    return (from||"—")+" → "+(to||"—");
+  }
+  function bucket(d){
+    const k=bucketKey(d);
+    return buckets[k]||(buckets[k]={key:k, label:bucketLabel(k), requests:0, hours:0, pay:0, noFormHours:0, emp:{}, site:{}, _reqs:{}});
+  }
+  let requests=0;
+  Object.values(S.otreqs||{}).forEach(r=>{
+    if(!r) return;
+    const rf=String(r.from||"").slice(0,10);
+    const rt=String(r.to||rf).slice(0,10);
+    if(!rf) return;
+    if(from && rt && rt<from) return;
+    if(to && rf>to) return;
+    if(siteWant && r.site && otSiteKey(r.site)!==siteWant) return;
+    if(empWant && !r.wholeSite && (r.empIds||[]).indexOf(empWant)<0) return;
+    requests++;
+    const span=otEachDate(from && rf<from ? from : rf, to && rt>to ? to : rt);
+    const days=span.length ? span : [rf];
+    days.forEach(d=>{
+      const b=bucket(d);
+      if(!b._reqs[r.id||rf]){ b._reqs[r.id||rf]=1; b.requests++; }
+    });
+  });
+  if(mode==="range" && !buckets[(from||"")+"|"+(to||"")]) bucket(from||to||TODAY);
+  Object.values(S.daily||{}).forEach(rec=>{
+    const d=String((rec&&rec.date)||"").slice(0,10);
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(d)) return;
+    if(from && d<from) return;
+    if(to && d>to) return;
+    Object.keys((rec&&rec.rows)||{}).forEach(key=>{
+      const row=rec.rows[key];
+      if(!row || typeof row!=="object") return;
+      let empId=key;
+      if(!(S.employees&&S.employees[empId]) && typeof summaryPersonId==="function")
+        empId=summaryPersonId(key, row)||key;
+      if(empWant && empId!==empWant) return;
+      const site=row.site||(S.employees&&S.employees[empId]&&S.employees[empId].project)||"";
+      if(siteWant && otSiteKey(site)!==siteWant) return;
+      const ot=typeof payrollOtHours==="function" ? Number(payrollOtHours(rec, empId, row))||0 : (Number(row.ot)||0);
+      if(!(ot>0)) return;
+      const e=S.employees&&S.employees[empId];
+      const pay=ot * otHourlyOf(e) * policy;
+      const covered=otCovered(empId, d, site);
+      const b=bucket(d);
+      b.hours+=ot; b.pay+=pay;
+      if(!covered) b.noFormHours+=ot;
+      const name=e ? (e.name||empId) : (row.name||empId);
+      const er=b.emp[empId]||(b.emp[empId]={id:empId, name:name, empNo:(e&&e.empNo)||"", hours:0, pay:0, days:0, noFormHours:0});
+      er.hours+=ot; er.pay+=pay; er.days++;
+      if(!covered) er.noFormHours+=ot;
+      const sk=otSiteKey(site)||"(no area)";
+      const sr=b.site[sk]||(b.site[sk]={site:site||"(no area)", hours:0, pay:0, days:0, noFormHours:0});
+      sr.hours+=ot; sr.pay+=pay; sr.days++;
+      if(!covered) sr.noFormHours+=ot;
+    });
+  });
+  const list=Object.keys(buckets).sort().map(k=>{
+    const b=buckets[k];
+    b.employees=Object.values(b.emp).sort((a,c)=>c.hours-a.hours || String(a.name).localeCompare(String(c.name)));
+    b.sites=Object.values(b.site).sort((a,c)=>c.hours-a.hours || String(a.site).localeCompare(String(c.site)));
+    delete b.emp; delete b.site; delete b._reqs;
+    return b;
+  });
+  return {requests:requests, buckets:list, mode:mode, from:from, to:to};
+}
+function otCsv(report){
+  const n=(v,d)=>(Number(v)||0).toFixed(d==null?2:d);
+  const rows=[["Period","Kind","Name","ID","OT hours","OT pay","Days with OT","Hours with no OT form","OT requests"]];
+  (report.buckets||[]).forEach(b=>{
+    rows.push([b.label,"Period total","", "", n(b.hours,1), n(b.pay,2), "", n(b.noFormHours,1), b.requests]);
+    (b.employees||[]).forEach(e=>{
+      rows.push([b.label,"Employee", e.name, e.empNo||"", n(e.hours,1), n(e.pay,2), e.days, n(e.noFormHours,1), ""]);
+    });
+    (b.sites||[]).forEach(s=>{
+      rows.push([b.label,"Site", s.site, "", n(s.hours,1), n(s.pay,2), s.days, n(s.noFormHours,1), ""]);
+    });
+  });
+  return rows;
+}
+function viewOtRequests(){
+  const ui=S.ui||{};
+  const week=weekStart(ui.otFrom||TODAY);
+  const from=ui.otFrom||week;
+  const to=ui.otTo||addDays(week,6);
+  const mode=ui.otMode||"week";
+  const site=ui.otSite||"";
+  const empId=ui.otEmp||"";
+  const report=otTrack({from:from, to:to, site:site, empId:empId, mode:mode});
+  const sites=typeof dailySites==="function" ? dailySites() : [];
+  const people=typeof empSorted==="function" ? empSorted() : [];
+  const reqs=Object.values(S.otreqs||{}).slice().sort((a,b)=>String(b.from||"").localeCompare(String(a.from||""))||String(b.id||"").localeCompare(String(a.id||"")));
+  setCrumb("OT Requests", "Payroll · signed forms, then the hours");
+  let h='<div class="row" style="margin-bottom:12px">'
+    + '<button class="btn pri" id="ot-new">New OT request</button>'
+    + '<button class="btn" id="ot-print">Print the report</button>'
+    + '<button class="btn" id="ot-csv"><svg><use href="#i-dl"/></svg> CSV</button>'
+    + '</div>'
+    + '<div class="note" style="margin-bottom:12px">File the signed overtime request here. '
+    + '<b>Approved</b>, with the form attached, is what lets Daily Manpower and the payroll day editor accept OT for those people or that site on those dates. '
+    + 'Hours already saved before a form existed stay on the payroll and are marked <b>no OT form</b>.</div>';
+  h+='<div class="card" style="margin-bottom:14px"><div class="card-h"><h3>Requests</h3>'
+    + '<span class="lbl">'+reqs.length+' on file</span></div><div class="card-b">';
+  if(!reqs.length){
+    h+='<div class="empty">No OT request yet. New OT request files one for a date, a site, and the people it covers.</div>';
+  }else{
+    h+='<div class="tw"><table><thead><tr><th>Dates</th><th>Site</th><th>Who</th><th>Approved h</th><th>Status</th><th>Form</th><th>Reason</th><th></th></tr></thead><tbody>';
+    reqs.forEach(r=>{
+      const who=r.wholeSite ? "Whole site" : ((r.empIds||[]).map(id=>{
+        const e=S.employees&&S.employees[id];
+        return e ? flipName(e.name) : id;
+      }).join(", ") || "—");
+      const pill=r.status==="Approved"?"ok":r.status==="Rejected"?"crit":"warn";
+      const url=otFormUrl(r);
+      h+='<tr><td class="mono">'+esc(r.from||"")+(r.to&&r.to!==r.from?" → "+esc(r.to):"")+'</td>'
+        + '<td>'+esc(r.site||"—")+'</td>'
+        + '<td>'+esc(who)+'</td>'
+        + '<td class="num">'+(r.hoursEach!=null && r.hoursEach!=="" ? esc(String(r.hoursEach)) : "—")+'</td>'
+        + '<td><span class="pill '+pill+'">'+esc(r.status||"Filed")+'</span></td>'
+        + '<td>'+(url && !/^data:/i.test(url)
+            ? '<a href="'+esc(url)+'" target="_blank" rel="noopener noreferrer">'+esc(r.formTitle||"Open form")+'</a>'
+            : (url ? esc(r.formTitle||"Attached") : '<span class="lbl">not attached</span>'))+'</td>'
+        + '<td>'+esc(r.reason||"")+'</td>'
+        + '<td style="white-space:nowrap"><button class="btn sm" data-otedit="'+esc(r.id)+'">Edit</button> '
+        + '<button class="btn sm danger" data-otdel="'+esc(r.id)+'">Delete</button></td></tr>';
+    });
+    h+='</tbody></table></div>';
+  }
+  h+='</div></div>';
+  h+='<div class="card"><div class="card-h"><h3>Overtime tracking</h3>'
+    + '<span class="lbl">'+report.requests+' request'+(report.requests===1?"":"s")+' in this window</span></div><div class="card-b">';
+  h+='<div class="row" style="margin-bottom:10px">'
+    + '<div class="seg">'
+    + '<button type="button" class="'+(mode==="week"?"on":"")+'" data-otmode="week">By week</button>'
+    + '<button type="button" class="'+(mode==="month"?"on":"")+'" data-otmode="month">By month</button>'
+    + '<button type="button" class="'+(mode==="range"?"on":"")+'" data-otmode="range">This range</button>'
+    + '</div>'
+    + '<div class="f" style="width:150px"><label>From</label><input id="ot-from" type="date" value="'+esc(from)+'"></div>'
+    + '<div class="f" style="width:150px"><label>To</label><input id="ot-to" type="date" value="'+esc(to)+'"></div>'
+    + '<div class="f" style="width:200px"><label>Site</label><select id="ot-site"><option value="">All sites</option>'
+    + sites.map(s=>'<option'+(site===s?" selected":"")+'>'+esc(s)+'</option>').join("")
+    + '</select></div>'
+    + '<div class="f" style="width:240px"><label>Employee</label><select id="ot-emp"><option value="">Everyone</option>'
+    + people.map(e=>'<option value="'+esc(e.id)+'"'+(empId===e.id?" selected":"")+'>'+esc((e.empNo?e.empNo+" · ":"")+flipName(e.name))+'</option>').join("")
+    + '</select></div></div>';
+  if(!report.buckets.length){
+    h+='<div class="empty">No overtime hours in this window.</div>';
+  }
+  report.buckets.forEach(b=>{
+    h+='<h3 style="margin:12px 0 6px">'+esc(b.label)+'</h3>'
+      + '<div class="strip">'
+      + tile(num(b.hours,1),"OT hours",num(b.pay,2)+" OT pay","acc")
+      + tile(String(b.requests),"OT requests","overlapping this "+(mode==="month"?"month":mode==="week"?"week":"range"),"")
+      + tile(num(b.noFormHours,1),"No OT form",b.noFormHours?"hours still missing a request":"every hour has a form", b.noFormHours?"warn":"ok")
+      + '</div>';
+    h+='<div class="tw" style="margin-top:8px"><table><thead><tr><th>Employee</th><th>ID</th><th class="num">OT hours</th><th class="num">OT pay</th><th class="num">Days</th><th>Form</th></tr></thead><tbody>';
+    if(!(b.employees||[]).length) h+='<tr><td colspan="6"><span class="lbl">No OT hours for an employee in this bucket.</span></td></tr>';
+    (b.employees||[]).forEach(e=>{
+      h+='<tr><td><b>'+esc(flipName(e.name)||e.name)+'</b></td><td class="mono">'+esc(e.empNo||"—")+'</td>'
+        + '<td class="num">'+num(e.hours,1)+'</td><td class="num">'+num(e.pay,2)+'</td><td class="num">'+e.days+'</td>'
+        + '<td>'+(e.noFormHours>0?'<span class="pill warn">no OT form</span> '+esc(num(e.noFormHours,1))+" h":'<span class="pill ok">on file</span>')+'</td></tr>';
+    });
+    h+='</tbody></table></div>';
+    h+='<div class="tw" style="margin-top:8px"><table><thead><tr><th>Site</th><th class="num">OT hours</th><th class="num">OT pay</th><th class="num">Days</th><th>Form</th></tr></thead><tbody>';
+    if(!(b.sites||[]).length) h+='<tr><td colspan="5"><span class="lbl">No site hours in this bucket.</span></td></tr>';
+    (b.sites||[]).forEach(s=>{
+      h+='<tr><td><b>'+esc(s.site)+'</b></td><td class="num">'+num(s.hours,1)+'</td><td class="num">'+num(s.pay,2)+'</td>'
+        + '<td class="num">'+s.days+'</td>'
+        + '<td>'+(s.noFormHours>0?'<span class="pill warn">no OT form</span>':'<span class="pill ok">on file</span>')+'</td></tr>';
+    });
+    h+='</tbody></table></div>';
+  });
+  h+='</div></div>';
+  return h;
+}
+function openOtEditor(pre){
+  const existing=pre && pre.id && S.otreqs && S.otreqs[pre.id] ? S.otreqs[pre.id] : null;
+  const rec=existing ? clone(existing) : {
+    id: uid("ot"),
+    from: (pre&&pre.date)||((S.ui&&S.ui.dailyDate)||TODAY),
+    to: (pre&&pre.date)||((S.ui&&S.ui.dailyDate)||TODAY),
+    site: (pre&&pre.site)||"",
+    wholeSite: !(pre&&pre.empId),
+    empIds: (pre&&pre.empId)?[pre.empId]:[],
+    hoursEach: "",
+    reason: "",
+    status: "Filed",
+    formUrl: "",
+    formTitle: ""
+  };
+  const picked=new Set(rec.empIds||[]);
+  const sites=typeof dailySites==="function" ? dailySites() : [];
+  function peopleHtml(){
+    const q=String(($("#ot-q")||{}).value||"").trim().toLowerCase();
+    const rows=(typeof empSorted==="function"?empSorted():[]).filter(e=>{
+      if(!q) return true;
+      return ((e.name||"")+" "+(e.empNo||"")+" "+(e.project||"")).toLowerCase().indexOf(q)>=0;
+    }).slice(0, 60);
+    if(!rows.length) return '<div class="lbl">Nobody matches that search.</div>';
+    return rows.map(e=>'<label style="display:flex;gap:8px;align-items:center;padding:3px 0">'
+      + '<input type="checkbox" data-otemp="'+esc(e.id)+'"'+(picked.has(e.id)?" checked":"")+'>'
+      + '<span>'+esc((e.empNo?e.empNo+" · ":"")+flipName(e.name))
+      + (e.project?' <span class="lbl">'+esc(e.project)+'</span>':"")+'</span></label>').join("");
+  }
+  openModal({ title: existing ? "Edit OT request" : "New OT request", wide:true,
+    body:'<div class="stack">'
+      + '<div class="row">'
+      + '<div class="f" style="width:160px"><label>From</label><input id="ot-d1" type="date" value="'+esc(rec.from||"")+'"></div>'
+      + '<div class="f" style="width:160px"><label>To</label><input id="ot-d2" type="date" value="'+esc(rec.to||rec.from||"")+'"></div>'
+      + '<div class="f" style="width:220px"><label>Site</label><select id="ot-esite"><option value=""></option>'
+      + sites.map(s=>'<option'+(rec.site===s?" selected":"")+'>'+esc(s)+'</option>').join("")
+      + '</select></div>'
+      + '<div class="f" style="width:140px"><label>Status</label><select id="ot-status">'
+      + ["Filed","Approved","Rejected"].map(s=>'<option'+(rec.status===s?" selected":"")+'>'+s+'</option>').join("")
+      + '</select></div></div>'
+      + '<label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="ot-whole"'+(rec.wholeSite?" checked":"")+'> Whole site on those dates</label>'
+      + '<div class="f"><label>Approved hours per person per day <span class="lbl">optional</span></label>'
+      + '<input id="ot-hours" type="number" step="0.5" min="0" value="'+esc(rec.hoursEach!=null?rec.hoursEach:"")+'" placeholder="left blank if the form does not state hours" style="max-width:280px"></div>'
+      + '<div class="f"><label>Reason</label><input id="ot-why" value="'+esc(rec.reason||"")+'" placeholder="Why the overtime was requested"></div>'
+      + '<div id="ot-people-wrap"><div class="f"><label>People covered</label><input id="ot-q" placeholder="Find a name or number"></div>'
+      + '<div id="ot-people" style="max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px"></div></div>'
+      + '<div class="f"><label>Signed OT request form</label>'
+      + '<input id="ot-file" type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,.heic,.doc,.docx">'
+      + '<input id="ot-link" type="url" value="'+esc(/^data:/i.test(rec.formUrl||"")?"":(rec.formUrl||""))+'" placeholder="or paste a Google Drive link">'
+      + (otFormUrl(rec)?'<div class="lbl" style="text-transform:none;letter-spacing:0">Attached: '+esc(rec.formTitle||"form on file")+'</div>':"")
+      + '</div>'
+      + '<div class="note">The file is stored as a Drive link when Drive accepts the upload. If domain-wide delegation is refused, a smaller file is kept on the shared OT request itself, the same way a 201 attachment survives. A temporary browser address is not kept.</div>'
+      + '<div class="note" id="ot-err" style="border-left-color:var(--crit)" hidden></div>'
+      + '</div>',
+    foot:'<button class="btn" id="ot-cancel">Cancel</button><button class="btn pri" id="ot-save">Save request</button>' });
+  const paint=()=>{
+    const whole=$("#ot-whole")&&$("#ot-whole").checked;
+    const wrap=$("#ot-people-wrap"); if(wrap) wrap.style.display=whole?"none":"";
+    const box=$("#ot-people"); if(box && !whole) box.innerHTML=peopleHtml();
+  };
+  paint();
+  $("#ot-whole").onchange=paint;
+  $("#ot-q").oninput=paint;
+  $("#ot-people").onchange=e=>{
+    const el=e.target.closest("[data-otemp]"); if(!el) return;
+    if(el.checked) picked.add(el.dataset.otemp); else picked.delete(el.dataset.otemp);
+  };
+  $("#ot-cancel").onclick=closeModal;
+  $("#ot-save").onclick=async()=>{
+    const err=$("#ot-err");
+    const fail=m=>{ err.hidden=false; err.textContent=m; toast(m,"err"); };
+    const from=$("#ot-d1").value, to=$("#ot-d2").value||from;
+    if(!from){ fail("Choose the date the overtime is for."); return; }
+    if(to<from){ fail("The end date is before the start date."); return; }
+    const whole=!!$("#ot-whole").checked;
+    const site=$("#ot-esite").value||"";
+    if(whole && !site){ fail("Choose the site this request covers."); return; }
+    if(!whole && !picked.size){ fail("Choose at least one employee, or mark the whole site."); return; }
+    let status=$("#ot-status").value||"Filed";
+    if(["Filed","Approved","Rejected"].indexOf(status)<0) status="Filed";
+    const hoursRaw=String($("#ot-hours").value||"").trim();
+    let formUrl=otFormUrl(rec);
+    let formTitle=rec.formTitle||"";
+    const link=String($("#ot-link").value||"").trim();
+    if(link){
+      const durable=typeof durableDriveUrl==="function" ? durableDriveUrl(link) : link;
+      if(!durable || (typeof isEphemeralUrl==="function" && isEphemeralUrl(durable))){
+        fail("That link will not last. Paste the Google Drive file link."); return;
+      }
+      formUrl=durable; formTitle=formTitle||"Drive link";
+    }
+    const fileEl=$("#ot-file");
+    const file=fileEl && fileEl.files && fileEl.files[0];
+    if(file){
+      try{
+        const stored=await storeOtFile(file);
+        if(stored && stored.url){ formUrl=stored.url; formTitle=stored.title||file.name; }
+      }catch(ex){ fail(ex && ex.message ? ex.message : "The form could not be stored."); return; }
+    }
+    if(status==="Approved" && !formUrl){
+      fail("Attach the signed form before marking this Approved. It is saved as Filed until then.");
+      status="Filed";
+    }
+    const next={
+      id:rec.id, from:from, to:to, site:site, wholeSite:whole,
+      empIds: whole ? [] : Array.from(picked),
+      hoursEach: hoursRaw==="" ? "" : (Number(hoursRaw)||0),
+      reason: String($("#ot-why").value||"").trim(),
+      status: status, formUrl: formUrl, formTitle: formTitle,
+      on: rec.on||TODAY
+    };
+    S.otreqs=S.otreqs||{};
+    S.otreqs[next.id]=next;
+    await put("otreqs", next.id, next);
+    closeModal();
+    toast(status==="Approved" && formUrl ? "OT request approved. Those OT boxes are open." : "OT request saved.","ok");
+    render();
+  };
+}
+async function storeOtFile(file){
+  if(!file) return null;
+  const parent=String((S.settings&&(S.settings.otFolder||S.settings.hr201Inbox))||"");
+  try{
+    const mcp=await getMcp();
+    if(mcp && parent && file.size <= MAX_UPLOAD_MB*1024*1024){
+      const r=await mcp.callTool(DRIVE_SERVER,"create_file",{
+        title: file.name||"OT request",
+        parentId: parent,
+        base64Content: await fileToBase64(file),
+        contentMimeType: file.type||"application/octet-stream",
+        disableConversionToGoogleType: true
+      });
+      const p=(r&&r.payload)||{};
+      if(p.viewUrl) return {url: durableDriveUrl(p.viewUrl)||p.viewUrl, title: p.title||file.name};
+    }
+  }catch(e){}
+  if(file.size>1500000) throw new Error("Drive did not take that file. Paste a Drive link, or choose a file under 1.5 MB.");
+  const url=await new Promise((resolve,reject)=>{
+    const fr=new FileReader();
+    fr.onload=()=>resolve(String(fr.result||""));
+    fr.onerror=()=>reject(fr.error||new Error("Could not read the file"));
+    fr.readAsDataURL(file);
+  });
+  if(!url || (typeof isEphemeralUrl==="function" && isEphemeralUrl(url))) throw new Error("That file could not be stored.");
+  return {url:url, title:file.name||"OT request"};
+}
 function viewDaily(){
   DAILY_SITES_CACHE=null;
   const d=S.ui.dailyDate||TODAY;
@@ -9292,6 +9769,8 @@ function viewDaily(){
   }
 
   h+='<div class="note" style="margin:14px 0"><b>OT hours save on their own</b> a moment after you type them — a slow page does not mean the number was lost. '
+   + '<b>An approved OT request with the signed form</b> has to cover this person or this site on this date before the OT box opens. '
+   + '<button class="btn sm" type="button" data-goto="otreq">OT requests</button> '
    + 'Everyone starts as <b>Present</b> — mark <b>Has not yet arrived</b> for anyone still on the way, then change the other exceptions. '
    + 'then Save. <b>Drag a name</b> onto another area, or use the Area column, when someone works somewhere '
    + 'else for the day; that changes this report only. <b>Make areas permanent</b> copies the day’s areas onto '
@@ -9439,7 +9918,7 @@ function viewDaily(){
        +   ((r.s==="Present/Late" && !String(r.in||"").trim())?';border-color:var(--crit)':'')+'"></td>'
        + '<td><input data-dmout="'+esc(e.id)+'" value="'+esc(r.out||"")+'" placeholder="5:00 PM" title="Required for Undertime" style="'+sty
        +   ((r.s==="Undertime" && !String(r.out||"").trim())?';border-color:var(--crit)':'')+'"></td>'
-       + '<td><input data-dmot="'+esc(e.id)+'" type="number" step="0.5" min="0" value="'+esc(r.ot!=null?r.ot:"")+'" placeholder="0" style="'+sty+';text-align:right"></td>'
+       + '<td>'+otEntryBox(e.id, rec.date, dailySiteOf(rec,e), r.ot, sty, 'data-dmot="'+esc(e.id)+'"')+'</td>'
        + '<td><input data-dmday="'+esc(e.id)+'" type="number" step="0.5" min="0" max="1" value="'+esc(r.day!=null?r.day:"")+'" placeholder="'+dayCredit(r)+'" style="'+sty+';text-align:right"></td>'
        + '<td'+(holEligible(rec.date,r)?' style="background:var(--warn-soft)"':'')+'>'
        + ((holEligible(rec.date,r) || holCode(r))
@@ -9505,7 +9984,11 @@ function dailyCollect(){
     }
     rec.rows[id]={ s:sel.value||"Present", r:reason, site,
       in:g("data-dmin"), out:g("data-dmout"),
-      ot:parseOtHours(g("data-dmot")), day:num(g("data-dmday")),
+      ot:(function(){
+        const typed=parseOtHours(g("data-dmot"));
+        if(typeof otHoursAllowed!=="function") return typed;
+        return otHoursAllowed(id, d, site, prevRow.ot, typed);
+      })(), day:num(g("data-dmday")),
       hol:(function(){ const el=document.querySelector('[data-dmhol="'+id+'"]');
         if(el) return Number(el.value)||0;
         return prevRow.hol!=null ? holCode(prevRow) : null; })(),
@@ -19451,7 +19934,11 @@ function payLine(e, kind, dates, saved, per){
     sss:       payStatForLine(kind, "sss", e, sv),
     phic:      payStatForLine(kind, "phic", e, sv),
     hdmf:      payStatForLine(kind, "hdmf", e, sv),
-    rows:days, auto
+    rows:days, auto,
+    otNoForm: (function(){
+      if(typeof otCovered!=="function") return 0;
+      return days.reduce((n,x)=>n+(Number(x.ot)>0 && !otCovered(e.id, x.date, x.site) ? Number(x.ot) : 0), 0);
+    })()
   };
   if(!(Number(rate.daily)>0) && ((Number(L.days)||0)>0 || (Number(L.ot)||0)>0))
     L.payWarn="No daily rate on the 201 file, so this attendance pays 0 until a rate is set.";
@@ -19916,6 +20403,8 @@ function viewPayrollRun(){
    + '<div class="note" style="margin-bottom:12px">'+esc(payKind(kind).note)
    + ' <b>Days, overtime and the holiday premium are read off the daily manpower reports and cannot be typed here</b> — '
    + 'if one of them is wrong, the day itself is wrong, so fix it on the Daily Manpower screen and come back. '
+   + 'OT on a day needs an <b>approved OT request</b> with the signed form. Hours already saved stay and are marked <b>no OT form</b> until a request covers that day. '
+   + '<button class="btn sm" type="button" data-goto="otreq">OT requests</button> '
    + 'Allowance, loans and contributions are typed here and kept with the run. '
    + '<b>Cash advance fills from approved balances</b> for this period (a repayment plan uses its rate; otherwise the outstanding amount). Edit the box to override.'
    + ' <button class="btn sm" id="pay-toattend">Open Daily Manpower</button>'
@@ -20062,7 +20551,8 @@ function viewPayrollRun(){
      + '<td style="font-size:11px">'+esc(L.site||"—")+'</td>'
      + '<td class="num mono">'+num(L.daily,2)+'</td><td class="num mono">'+num(L.hourly,2)+'</td>'
      + '<td class="num mono" title="'+esc(payDayHint(L,"day"))+'">'+num(L.days,1)+'</td>'
-     + '<td class="num mono" title="'+esc(payDayHint(L,"ot"))+'">'+(L.ot?num(L.ot,1):'<span class="lbl">—</span>')+'</td>'
+     + '<td class="num mono" title="'+esc(payDayHint(L,"ot"))+'">'+(L.ot?num(L.ot,1):'<span class="lbl">—</span>')
+     + (Number(L.otNoForm)>0?'<div class="pill warn" title="'+esc(num(L.otNoForm,1)+" h on file without an approved OT request")+'">no OT form</div>':"")+'</td>'
      + '<td class="num mono" title="'+esc(payDayHint(L,"hol")+(L.holPay?" — adds "+peso(L.holPay)+" to gross":""))+'">'
      +   (L.hol?esc(holMix(L)):'<span class="lbl">—</span>')+'</td>'
      + (kind==="semi" ? '<td>'+inp(L,"allowance",L.allowance)+'</td>' : '')
@@ -20147,7 +20637,7 @@ function payPaper(kind, per, lines, T, groups){
      + '<td>'+esc(L.position||"")+'</td>'
      + '<td>'+esc(L.site||"")+'</td>'
      + '<td class="n">'+num(L.days,1)+'</td>'
-     + '<td class="n">'+(L.ot?num(L.ot,1):"")+'</td>'
+     + '<td class="n">'+(L.ot?num(L.ot,1):"")+(Number(L.otNoForm)>0?'<br><span style="font-size:7pt">no OT form</span>':"")+'</td>'
      + '<td class="n" style="font-size:7.4pt">'+(L.hol30?L.hol30+"×30%":"")+(L.hol30&&L.hol100?"<br>":"")+(L.hol100?L.hol100+"×100%":"")+'</td>'
      + '<td class="n">'+num(L.daily,2)+'</td>'
      + '<td class="n">'+num(L.hourly,2)+'</td>'
@@ -21494,7 +21984,7 @@ function payPersonDays(empId){
       + '<td><select data-pd="s" style="'+sty+'">'+DAY_STATUS.map(x=>'<option'+(r.s===x?" selected":"")+'>'+x+'</option>').join("")+'</select></td>'
       + '<td><input data-pd="in" value="'+esc(r.in||"")+'" placeholder="8:00 AM" style="'+sty+'"></td>'
       + '<td><input data-pd="out" value="'+esc(r.out||"")+'" placeholder="5:00 PM" style="'+sty+'"></td>'
-      + '<td><input data-pd="ot" type="number" step="0.5" min="0" value="'+esc(r.ot!=null?r.ot:"")+'" placeholder="0" style="'+sty+';text-align:right"></td>'
+      + '<td>'+otEntryBox(empId, d, (r.site||""), r.ot, sty, 'data-pd="ot"')+'</td>'
       + '<td>'+(elig ? holSelect("data-pd", "hol", holCode(r)) : '<span class="lbl">—</span>')+'</td>'
       + '<td><input data-pd="r" value="'+esc(r.r||"")+'" style="'+sty+'"></td></tr>';
   }).join("");
@@ -21512,8 +22002,13 @@ function payPersonDays(empId){
     const bad=[], edits=[];
     $$("[data-pdrow]").forEach(tr=>{
       const d=tr.dataset.pdrow, g=k=>{ const el=tr.querySelector('[data-pd="'+k+'"]'); return el ? el.value : null; };
+      const typedOt=g("ot")==="" ? null : (parseFloat(g("ot"))||0);
+      const prevRec=typeof dailyGet==="function" ? dailyGet(d) : null;
+      const prevRow=prevRec && prevRec.rows ? prevRec.rows[empId] : null;
       const next={ s:g("s"), in:g("in")||"", out:g("out")||"", r:g("r")||"",
-        ot: g("ot")==="" ? null : (parseFloat(g("ot"))||0) };
+        ot: typeof otHoursAllowed==="function"
+          ? otHoursAllowed(empId, d, (prevRow&&prevRow.site)||"", prevRow?prevRow.ot:null, typedOt)
+          : typedOt };
       const hv=g("hol"); if(hv!=null) next.hol=Number(hv)||0;
       timeProblems(next).forEach(m=>bad.push(longDate(d)+": "+m));
       edits.push([d,next]);
@@ -21896,7 +22391,7 @@ function render(){
     attendance:viewAttendance, payroll:viewPayroll, tasks:viewTasks, general:viewGeneral, daily:viewDaily,
     salaries:viewSalaries, insights:viewInsights, filed:viewFiled, training:viewTraining,
     compliance:viewCompliance, gaps:viewGaps, reminders:viewReminders, assistant:viewAssistant,
-    payrun:viewPayrollRun, contrib:viewContrib,
+    payrun:viewPayrollRun, contrib:viewContrib, otreq:viewOtRequests,
     settings:viewSettings}[v] || viewDash;
   const viewEl=$("#view");
   if(!viewEl) return;
@@ -22074,6 +22569,18 @@ const DOC_ACTIONS = {
 };
 function wireDocument(){
   document.addEventListener("click", ev=>{
+    const otBtn=ev.target && ev.target.closest && ev.target.closest("[data-otfile]");
+    if(otBtn){
+      ev.preventDefault();
+      S.ui.otDraft={
+        date: otBtn.dataset.otdate||TODAY,
+        site: otBtn.dataset.otsite||"",
+        empId: otBtn.dataset.otfile||""
+      };
+      closeModal();
+      go("otreq");
+      return;
+    }
     for(const attr in DOC_ACTIONS){
       const el = ev.target.closest && ev.target.closest("["+attr+"]");
       if(el){ ev.preventDefault(); DOC_ACTIONS[attr](el); return; }
@@ -22084,6 +22591,59 @@ function wireDocument(){
 function wire(){
   const v=$("#view");
   const on=(sel,ev,fn)=>$$(sel,v).forEach(el=>el.addEventListener(ev,fn));
+  if(S.ui && S.ui.view==="otreq" && S.ui.otDraft){
+    const draft=S.ui.otDraft; S.ui.otDraft=null;
+    openOtEditor(draft);
+  }
+  const otNew=$("#ot-new",v); if(otNew) otNew.onclick=()=>openOtEditor(null);
+  on("[data-otedit]","click",e=>openOtEditor({id:e.currentTarget.dataset.otedit}));
+  on("[data-otdel]","click",async e=>{
+    const id=e.currentTarget.dataset.otdel;
+    if(!await askConfirm("Delete this OT request? Hours already typed on Daily Manpower stay.")) return;
+    await drop("otreqs", id); render();
+  });
+  on("[data-otmode]","click",e=>{ S.ui.otMode=e.currentTarget.dataset.otmode; render(); });
+  const otApply=()=>{
+    const f=$("#ot-from",v), t=$("#ot-to",v), s=$("#ot-site",v), emp=$("#ot-emp",v);
+    if(f && f.value) S.ui.otFrom=f.value;
+    if(t && t.value) S.ui.otTo=t.value;
+    if(s) S.ui.otSite=s.value||"";
+    if(emp) S.ui.otEmp=emp.value||"";
+    render();
+  };
+  ["#ot-from","#ot-to","#ot-site","#ot-emp"].forEach(sel=>{
+    const el=$(sel,v); if(el) el.onchange=otApply;
+  });
+  const otCsvBtn=$("#ot-csv",v); if(otCsvBtn) otCsvBtn.onclick=()=>{
+    const ui=S.ui||{};
+    const week=weekStart(ui.otFrom||TODAY);
+    const report=otTrack({from:ui.otFrom||week, to:ui.otTo||addDays(week,6), site:ui.otSite||"", empId:ui.otEmp||"", mode:ui.otMode||"week"});
+    saveFile("ot-tracking-"+TODAY+".csv", toCSV(otCsv(report)));
+  };
+  const otPrintBtn=$("#ot-print",v); if(otPrintBtn) otPrintBtn.onclick=()=>{
+    const ui=S.ui||{};
+    const week=weekStart(ui.otFrom||TODAY);
+    const report=otTrack({from:ui.otFrom||week, to:ui.otTo||addDays(week,6), site:ui.otSite||"", empId:ui.otEmp||"", mode:ui.otMode||"week"});
+    let body='<h1 style="font-size:16px">Overtime tracking</h1><p>'+esc((report.from||"")+" to "+(report.to||""))
+      +' · '+report.requests+' OT request'+(report.requests===1?"":"s")+'</p>';
+    (report.buckets||[]).forEach(b=>{
+      body+='<h2 style="font-size:13px">'+esc(b.label)+'</h2><p>OT hours '+esc(num(b.hours,1))
+        +' · OT pay '+esc(num(b.pay,2))
+        +(b.noFormHours?' · no OT form '+esc(num(b.noFormHours,1))+' h':'')+'</p>';
+      body+='<table class="pf-t reg"><tr><td class="hd">Employee</td><td class="hd">OT hours</td><td class="hd">OT pay</td><td class="hd">Form</td></tr>';
+      (b.employees||[]).forEach(e=>{
+        body+='<tr><td>'+esc(flipName(e.name)||e.name)+'</td><td class="n">'+esc(num(e.hours,1))+'</td><td class="n">'+esc(num(e.pay,2))+'</td><td>'+(e.noFormHours?'no OT form':'on file')+'</td></tr>';
+      });
+      (b.sites||[]).forEach(s=>{
+        body+='<tr><td><b>'+esc(s.site)+'</b></td><td class="n">'+esc(num(s.hours,1))+'</td><td class="n">'+esc(num(s.pay,2))+'</td><td>'+(s.noFormHours?'no OT form':'on file')+'</td></tr>';
+      });
+      body+='</table>';
+    });
+    openModal({ title:"Overtime tracking", wide:true, body:pfWrap(body,{land:true}),
+      foot:'<button class="btn" id="otp-back">Back</button><button class="btn pri" id="otp-print">Print</button>'});
+    $("#otp-back").onclick=closeModal;
+    $("#otp-print").onclick=()=>printDoc("Overtime tracking", body);
+  };
 
   const hb=$("#dm-histbar"), ht=$("#dm-histtoggle");
   const flip=()=>{ S.ui.dailyHist=!S.ui.dailyHist; render(); };
@@ -22366,13 +22926,13 @@ function wire(){
   const payCsvBtn=$("#pay-csv",v); if(payCsvBtn) payCsvBtn.onclick=()=>{
     const b=payBuild();
     const semi=b.kind==="semi";
-    const head=["ID","Name","Position","Area","Daily","Hourly","Days","OT hrs"]
+    const head=["ID","Name","Position","Area","Daily","Hourly","Days","OT hrs","OT form"]
       .concat(["Premium days +30%","Premium days +100%","Holiday premium"])
       .concat(semi?["Allowance"]:[])
       .concat(["Gross","Late/Undertime","Cash advance","Uniform/Others","SSS loan","Pag-IBIG loan",
                "SSS","PhilHealth",semi?"HMIC":"Pag-IBIG","Total deductions","NET PAY"]);
     const rowOf=L=>[L.empNo,flipName(L.name),L.position,L.site,
-      L.daily.toFixed(2),L.hourly.toFixed(2),L.days,L.ot]
+      L.daily.toFixed(2),L.hourly.toFixed(2),L.days,L.ot,(Number(L.otNoForm)>0?"no OT form":"")]
       .concat([L.hol30||0, L.hol100||0, (L.holPay||0).toFixed(2)])
       .concat(semi?[Number(L.allowance||0).toFixed(2)]:[])
       .concat([L.gross.toFixed(2),L.late,L.ca,L.uniform,L.sssLoan,L.hdmfLoan,
@@ -22383,7 +22943,7 @@ function wire(){
       b.groups.forEach(g=>{
         g.lines.forEach(pushLine);
         pushLine({empNo:"", name:g.site+" subtotal", position:"", site:g.site,
-          daily:0, hourly:0, days:g.T.days, ot:g.T.ot, hol30:0, hol100:0, holPay:0,
+          daily:0, hourly:0, days:g.T.days, ot:g.T.ot, otNoForm:0, hol30:0, hol100:0, holPay:0,
           allowance:0, gross:g.T.gross, late:0, ca:0, uniform:0, sssLoan:0, hdmfLoan:0,
           sss:0, phic:0, hdmf:0, ded:g.T.ded, net:g.T.net});
       });
