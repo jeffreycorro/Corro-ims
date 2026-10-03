@@ -67,8 +67,8 @@ function loadOt() {
 const FORM = "https://drive.google.com/file/d/OTFORM1/view?usp=sharing";
 
 describe("2026-10-02a overtime requests", () => {
-  it("is build 2026-10-03a and still files an OT request", () => {
-    assert.match(html, /const BUILD = "2026-10-03a"/);
+  it("is build 2026-10-03b and still files an OT request", () => {
+    assert.match(html, /const BUILD = "2026-10-03b"/);
     assert.match(html, /\{k:"otreq",\s*n:"OT Requests"/);
     assert.match(html, /function viewOtRequests\(/);
     assert.match(html, /function otHoursAllowed\(/);

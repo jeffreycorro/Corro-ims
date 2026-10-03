@@ -201,8 +201,8 @@ function legacyContribInclude(ctx, e) {
 }
 
 describe("2026-09-29c payroll roster, sites, and contributions", () => {
-  it("is build 2026-10-03a and the run can filter or group by site", () => {
-    assert.match(html, /const BUILD = "2026-10-03a"/);
+  it("is build 2026-10-03b and the run can filter or group by site", () => {
+    assert.match(html, /const BUILD = "2026-10-03b"/);
     const view = extractFunction(html, "viewPayrollRun");
     assert.match(view, /id="pay-site"/);
     assert.match(view, /id="pay-group"/);
@@ -271,7 +271,7 @@ describe("2026-09-29c payroll roster, sites, and contributions", () => {
     assert.equal(ctx.payPeople("weekly", WEEK).some((e) => e.id === "bev"), false);
   });
 
-  it("counts days worked before a mid-period resignation and drops the resignation date onward", () => {
+  it("counts days worked through the last day of engagement and drops the days after", () => {
     const ctx = loadPay();
     ctx.S.employees.left = {
       id: "left",
@@ -289,8 +289,8 @@ describe("2026-09-29c payroll roster, sites, and contributions", () => {
     assert.equal(ctx.payRosterInclude(ctx.S.employees.left, WEEK), true);
     const dates = ctx.payDates(WEEK.from, WEEK.to);
     const line = ctx.payLine(ctx.S.employees.left, "weekly", dates, null);
-    assert.equal(line.days, 2);
-    assert.equal(line.ot, 3);
+    assert.equal(line.days, 3);
+    assert.equal(line.ot, 7);
     const later = { from: "2026-08-27", to: "2026-09-02" };
     assert.equal(ctx.payRosterInclude(ctx.S.employees.left, later), false);
 

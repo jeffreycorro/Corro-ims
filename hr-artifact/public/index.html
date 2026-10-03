@@ -1359,7 +1359,7 @@ function mergeIncomingDoc(coll, incoming, local){
     if(dayIsOpen(next)){
       const drop=id=>{
         const e=S.employees&&S.employees[id];
-        return !!(e && empSeparatedAsOf(e, next.date) && !openDayKeepsLeaver(next, id));
+        return !!(e && (empSeparatedAsOf(e, next.date) || (typeof empPastLastDay==="function" && empPastLastDay(e, next.date))) && !openDayKeepsLeaver(next, id));
       };
       Object.keys(next.rows||{}).forEach(id=>{ if(drop(id)) delete next.rows[id]; });
       next.extra=(next.extra||[]).filter(id=>!drop(id));
@@ -1391,7 +1391,25 @@ function mergeIncomingDoc(coll, incoming, local){
     const localSep=empStatusIsSeparated(local);
     const hrMarked=/marked separated/i.test(String((local&&local.statusBasis)||""));
     let merged;
-    if(localSep && incomingLive && hrMarked){
+    /* When both sides dated a status decision, the newer one wins. A live
+       201 status set after an older last-day edit stays live. A last day
+       entered after that status is the decision that stands. */
+    const localStatusAt=String((local&&local.statusEditedOn)||"");
+    const incomingStatusAt=String((incoming&&incoming.statusEditedOn)||"");
+    if(localStatusAt && incomingStatusAt && localStatusAt!==incomingStatusAt && localStatusAt>incomingStatusAt){
+      merged=Object.assign({}, incoming, {
+        status:local.status,
+        statusBasis:local.statusBasis!=null?local.statusBasis:(incoming.statusBasis||""),
+        statusEditedOn:local.statusEditedOn
+      });
+      ["separatedOn","separatedOnEditedOn","separatedOnBy","separationAudit","separationReason"].forEach(k=>{
+        if(local[k]!=null && local[k]!=="") merged[k]=local[k];
+      });
+      if(local.lastDayCleared){
+        merged.separatedOn="";
+        merged.lastDayCleared=true;
+      }
+    }else if(localSep && incomingLive && hrMarked){
       merged=Object.assign({}, incoming, {
         status:"Separated",
         separatedOn:local.separatedOn||incoming.separatedOn||"",
@@ -1447,6 +1465,10 @@ function keepEmpEnteredFields(merged, local){
   if(editing){
     fields.forEach(k=>{ next[k]=local[k]; });
     ["status","statusBasis","separatedOn","separationReason"].forEach(k=>{ next[k]=local[k]; });
+    ["statusEditedOn","separatedOnEditedOn","separatedOnBy","separationAudit"].forEach(k=>{
+      if(local[k]!=null && local[k]!=="") next[k]=local[k];
+    });
+    if(local.lastDayCleared) next.lastDayCleared=true;
     return next;
   }
   fields.forEach(k=>{
@@ -1457,6 +1479,10 @@ function keepEmpEnteredFields(merged, local){
       if((next[k]==null || next[k]==="") && !(local[k]==null || local[k]==="")) next[k]=local[k];
     });
   }
+  ["statusEditedOn","separatedOnEditedOn","separatedOnBy","separationAudit"].forEach(k=>{
+    if((next[k]==null || next[k]==="") && local && !(local[k]==null || local[k]==="")) next[k]=local[k];
+  });
+  if(local.lastDayCleared && !next.lastDayCleared) next.lastDayCleared=true;
   const locStatus=String(local.status||"").trim();
   if(!String(next.status||"").trim() && locStatus && !blankStatusIsIntentional(next)){
     next.status=local.status;
@@ -1731,7 +1757,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-10-03a";
+const BUILD = "2026-10-03b";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -2190,8 +2216,7 @@ async function seedIfEmpty(){
 
 /* ============ derived ============ */
 function empList(){
-  return Object.values(S.employees).sort((a,b)=>
-    (a.dept||"").localeCompare(b.dept||"") || (a.name||"").localeCompare(b.name||""));
+  return Object.values(S.employees).sort(cmpEmpAlpha);
 }
 /* empNo → {separatedOn, separationReason} from /separated-roster.json.
    Netlify 201 rows were never marked Separated; the Claude DB was. */
@@ -2292,7 +2317,7 @@ function stripOpenDayLeavers(rec){
   let changed=false;
   const hide=id=>{
     const e=S.employees&&S.employees[id];
-    return !!(e && empSeparatedAsOf(e, rec.date) && !cb.has(id));
+    return !!(e && (empSeparatedAsOf(e, rec.date) || (typeof empPastLastDay==="function" && empPastLastDay(e, rec.date))) && !cb.has(id));
   };
   Object.keys(rec.rows||{}).forEach(id=>{
     if(!hide(id)) return;
@@ -2322,7 +2347,9 @@ function empSeparatedAsOf(e, date){
   const on=String((e.separatedOn||(known&&known.separatedOn)||"")).slice(0,10);
   const day=String(date||"").slice(0,10);
   if(!on) return true;
-  return !day || on<=day;
+  /* Last day of engagement is still a working day. The next day is off. */
+  if(!day) return true;
+  return day>on;
 }
 /* dateHired on the 201 file. Blank means "do not hide" — a missing hire date
    keeps the old roster behaviour. contractStart is a contract, not the hire. */
@@ -3873,16 +3900,17 @@ function supervisorIdOf(e){
 }
 
 function empSorted(){
-  return activeEmps().slice().sort((a,b)=>String(a.name||"").localeCompare(String(b.name||"")));
+  return activeEmps().slice().sort(typeof cmpEmpAlpha==="function" ? cmpEmpAlpha : (a,b)=>String(a.name||"").localeCompare(String(b.name||"")));
 }
 function empOpts(sel){
   return '<option value="">— select employee —</option>'+empSorted().map(e=>
     '<option value="'+e.id+'"'+(sel===e.id?" selected":"")+'>'
-    + esc(e.name)+(e.empNo?"  ("+esc(e.empNo)+")":"")+'</option>').join("");
+    + esc((typeof empRosterName==="function"?empRosterName(e):e.name))+(e.empNo?"  ("+esc(e.empNo)+")":"")+'</option>').join("");
 }
 function empLabel(id){
   const e=S.employees[id]; if(!e) return "";
-  return e.name+(e.empNo?"  ("+e.empNo+")":"");
+  const nm=typeof empRosterName==="function"?empRosterName(e):e.name;
+  return nm+(e.empNo?"  ("+e.empNo+")":"");
 }
 function empPicker(id, sel, ph, attrs){
   return '<div class="epick" data-ep="'+esc(id)+'">'
@@ -4465,6 +4493,7 @@ function attendanceClassify(){
       const c=clone(r.e);
       c.status=r.to;
       c.rosterConfirmed=TODAY;
+      c.statusEditedOn=new Date().toISOString();
       c.statusBasis="From the August 2026 manpower reports — "+r.why;
       S.employees[c.id]=c; return [c.id,c];
     });
@@ -4589,7 +4618,7 @@ function bulkStatus(){
       const keep=new Set(bsPicked());
       const take=match.filter(e=>keep.has(e.id));
       if(!take.length){ toast("Nothing is ticked.","err"); return; }
-      const entries=take.map(e=>{ const c=clone(e); c.status=st.value; S.employees[c.id]=c; return [c.id,c]; });
+      const entries=take.map(e=>{ const c=clone(e); c.status=st.value; c.statusEditedOn=new Date().toISOString(); S.employees[c.id]=c; return [c.id,c]; });
       const r=await putMany("employees", entries, (d,t)=>seedStatus("saving "+d+" / "+t));
       S.ui.bs=null; closeModal();
       toast(r.done+" record(s) set to "+st.value+(r.failed?" — "+r.failed+" failed":""), r.failed?"err":"ok");
@@ -8901,6 +8930,7 @@ function dailyPeople(rec){
   };
   atWork().forEach(e=>{
     if(empSeparatedAsOf(e, rec.date)) return;
+    if(typeof empPastLastDay==="function" && empPastLastDay(e, rec.date)) return;
     add(e);
   });
   /* Save writes the whole standing list into extra. That is not a callback.
@@ -8909,7 +8939,7 @@ function dailyPeople(rec){
   (rec.extra||[]).forEach(id=>{
     const e=S.employees[id];
     if(!e) return;
-    if(empSeparatedAsOf(e, rec.date) && open && !openDayKeepsLeaver(rec, id)) return;
+    if((empSeparatedAsOf(e, rec.date) || (typeof empPastLastDay==="function" && empPastLastDay(e, rec.date))) && open && !openDayKeepsLeaver(rec, id)) return;
     add(e);
   });
   if(!open){
@@ -8924,6 +8954,7 @@ function dailyPeople(rec){
       if(first[id]>rec.date) return;
       const e=S.employees[id];
       if(!e || empSeparatedAsOf(e, rec.date)) return;
+      if(typeof empPastLastDay==="function" && empPastLastDay(e, rec.date)) return;
       add(e);
     });
   }
@@ -9033,6 +9064,138 @@ function nameLastFirst(n){
   if(parts.length<=1) return {last:s, first:""};
   return {last:parts[parts.length-1], first:parts.slice(0,-1).join(" ")};
 }
+/* A–Z by surname, then given name. Case and accents do not change the place.
+   The id keeps two identical names from swapping when a live update arrives. */
+function cmpEmpAlpha(a, b){
+  const pa=nameLastFirst(a&&a.name), pb=nameLastFirst(b&&b.name);
+  const opt={sensitivity:"base"};
+  let c=String(pa.last||"").localeCompare(String(pb.last||""), "en", opt);
+  if(c) return c;
+  c=String(pa.first||"").localeCompare(String(pb.first||""), "en", opt);
+  if(c) return c;
+  c=String((a&&a.empNo)||"").localeCompare(String((b&&b.empNo)||""), "en", opt);
+  if(c) return c;
+  return String((a&&a.id)||"").localeCompare(String((b&&b.id)||""));
+}
+function empRosterName(e){
+  const p=nameLastFirst(e&&e.name);
+  if(!p.last && !p.first) return "(unnamed)";
+  if(!p.first) return p.last;
+  return p.last+", "+p.first;
+}
+function empAlpha(list, sepBottom){
+  const rows=(list||[]).slice();
+  if(!sepBottom) return rows.sort(cmpEmpAlpha);
+  const live=[], gone=[];
+  rows.forEach(e=>((typeof empStatusIsSeparated==="function" && empStatusIsSeparated(e))?gone:live).push(e));
+  live.sort(cmpEmpAlpha); gone.sort(cmpEmpAlpha);
+  return live.concat(gone);
+}
+/* The date HR typed on this 201 file. The static separated roster is not this. */
+function ownLastDay(e){
+  const on=String((e&&e.separatedOn)||"").slice(0,10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(on) ? on : "";
+}
+/* A live status wins when it was set after the last-day edit, or when the
+   date was never entered through this field (a leftover separatedOn). A
+   last-day edit with no later status edit is the decision that stands. */
+function liveStatusBeatsLastDay(e){
+  if(!e || typeof empStatusIsLive!=="function" || !empStatusIsLive(e)) return false;
+  const statusAt=String(e.statusEditedOn||"");
+  const dateAt=String(e.separatedOnEditedOn||"");
+  if(statusAt && dateAt) return statusAt>dateAt;
+  if(dateAt && !statusAt) return false;
+  return true;
+}
+/* Off attendance and unpaid only after the last day. The last day itself stays. */
+function empPastLastDay(e, date){
+  if(!e) return false;
+  if(typeof liveStatusBeatsLastDay==="function" && liveStatusBeatsLastDay(e)) return false;
+  const on=typeof ownLastDay==="function" ? ownLastDay(e) : "";
+  if(!on) return false;
+  const day=String(date||"").slice(0,10);
+  if(!day) return false;
+  return day>on;
+}
+function manilaToday(){
+  try{
+    const s=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Manila",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
+    if(/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  }catch(err){}
+  return typeof TODAY==="string" ? TODAY : "";
+}
+/* Flip only after the last day, and only when this field was actually entered.
+   A leftover separatedOn on a Project-based or Regular file does not. */
+function shouldAutoSeparate(e, today){
+  if(!e || typeof empStatusIsSeparated!=="function" || empStatusIsSeparated(e)) return false;
+  if(!String(e.separatedOnEditedOn||"")) return false;
+  if(typeof liveStatusBeatsLastDay==="function" && liveStatusBeatsLastDay(e)) return false;
+  const on=typeof ownLastDay==="function" ? ownLastDay(e) : "";
+  if(!on) return false;
+  const day=String(today||(typeof manilaToday==="function"?manilaToday():"")||"").slice(0,10);
+  if(!day) return false;
+  return on<day;
+}
+function leavingBadge(e){
+  if(!e || (typeof empStatusIsSeparated==="function" && empStatusIsSeparated(e))) return "";
+  if(typeof liveStatusBeatsLastDay==="function" && liveStatusBeatsLastDay(e)) return "";
+  const on=typeof ownLastDay==="function" ? ownLastDay(e) : "";
+  if(!on) return "";
+  const day=typeof manilaToday==="function" ? manilaToday() : "";
+  if(!day || on<day) return "";
+  return "Leaving on "+on;
+}
+function lastDayHint(e){
+  if(!e) return "";
+  if(e.lastDayCleared && !(typeof ownLastDay==="function" && ownLastDay(e))){
+    const st=String(e.status||"").trim() || "not set";
+    return "Last day of engagement was cleared. Employment status stays "+st+" until you change it.";
+  }
+  const on=typeof ownLastDay==="function" ? ownLastDay(e) : "";
+  if(!on) return "They stay on attendance through this day. From the next day they are off attendance. Payroll pays this day and not the days after.";
+  const badge=typeof leavingBadge==="function" ? leavingBadge(e) : "";
+  if(badge) return badge+". Attendance and payroll include this day. The next day they are off, and the status becomes Separated.";
+  if(typeof empStatusIsSeparated==="function" && empStatusIsSeparated(e)) return "Included on attendance and payroll through "+on+". Off from the next day.";
+  return "They stay on attendance through "+on+". The next day they are off, and payroll pays this day only.";
+}
+let ENGAGEMENT_CHECKED="";
+function applyEngagementStatus(list){
+  const entries=[];
+  const day=manilaToday();
+  (list||[]).forEach(e=>{
+    if(!shouldAutoSeparate(e, day)) return;
+    const n=clone(e);
+    const on=ownLastDay(n);
+    const by=String(n.separatedOnBy||"").trim() || String((S.settings&&S.settings.hrStaff)||"").trim() || "HR";
+    n.status="Separated";
+    n.statusBasis="Marked separated automatically the day after the last day of engagement";
+    n.statusEditedOn=new Date().toISOString();
+    const note="Marked Separated on "+day+" because the last day of engagement ("+on+") had passed. The date was entered by "+by+".";
+    n.separationAudit=note;
+    if(!n.separationReason) n.separationReason="Last day of engagement "+on;
+    const prev=String(n.notes||"");
+    if(prev.indexOf(note)<0) n.notes=(prev?prev+"\n":"")+note;
+    S.employees[n.id]=n;
+    entries.push([n.id, n]);
+  });
+  const finish=()=>entries.length;
+  if(entries.length && typeof putMany==="function")
+    return Promise.resolve(putMany("employees", entries)).then(finish);
+  return Promise.resolve(entries.length);
+}
+function ensureEngagementStatus(){
+  if(!S || !S.ready || !S.employees) return;
+  const day=manilaToday();
+  if(!day || ENGAGEMENT_CHECKED===day) return;
+  const due=[];
+  Object.keys(S.employees).forEach(id=>{
+    const e=S.employees[id];
+    if(shouldAutoSeparate(e, day)) due.push(e);
+  });
+  ENGAGEMENT_CHECKED=day;
+  if(!due.length) return;
+  applyEngagementStatus(due).then(n=>{ if(n && typeof render==="function") render(); }).catch(()=>{});
+}
 function applyHrSigsToRec(rec){
   /* Print already reads company e-signatures from settings (hrSigSrc).
      Copying those image blobs onto the day made every OT save a multi-megabyte
@@ -9066,7 +9229,7 @@ function persistRosterOnDay(rec){
   rec.extra=[...extra].filter(id=>{
     if(!id || omit.has(id)) return false;
     const e=S.employees[id];
-    return !(e && dayIsOpen(rec) && empSeparatedAsOf(e, rec.date) && !openDayKeepsLeaver(rec, id));
+    return !(e && dayIsOpen(rec) && (empSeparatedAsOf(e, rec.date) || (typeof empPastLastDay==="function" && empPastLastDay(e, rec.date))) && !openDayKeepsLeaver(rec, id));
   });
   rec.order=people.map(e=>e.id);
   rec.siteOrder=dailyGroups(rec).map(g=>g.site);
@@ -9093,7 +9256,8 @@ function dailyGroups(rec){
     if(a==="ADMINS") return 1; if(b==="ADMINS") return -1;
     return a.localeCompare(b);
   });
-  return keys.map(k=>({site:k, people:g.get(k)}));
+  const byName=typeof cmpEmpAlpha==="function" ? cmpEmpAlpha : (a,b)=>String((a&&a.empNo)||"").localeCompare(String((b&&b.empNo)||""));
+  return keys.map(k=>({site:k, people:g.get(k).slice().sort(byName)}));
 }
 /* What a day counts as for pay, read off the status the timekeeper set.
    HR can type over any of it on the Daily Manpower screen — the typed value
@@ -10247,11 +10411,7 @@ function seedRates(){
 function viewSalaries(){
   const q=(S.ui.q||"").toLowerCase();
   const list=atWork().filter(e=>!q || empMatch(e,q))
-    .sort((a,b)=>{
-      const an=normNo(a.empNo), bn=normNo(b.empNo);
-      if(!!an!==!!bn) return an?-1:1;          /* numbered staff first */
-      return an ? an.localeCompare(bn) : String(a.name).localeCompare(String(b.name));
-    });
+    .sort(typeof cmpEmpAlpha==="function" ? cmpEmpAlpha : (a,b)=>String(a.name||"").localeCompare(String(b.name||"")));
   const withRate=list.filter(e=>currentRate(e));
   const monthly=withRate.filter(e=>currentRate(e).rateType==="Monthly");
   const daily=withRate.filter(e=>currentRate(e).rateType!=="Monthly");
@@ -10283,7 +10443,7 @@ function viewSalaries(){
   list.forEach(e=>{
     const r=currentRate(e), n=rateHistory(e).length;
     h+='<tr><td class="mono">'+esc(e.empNo||"—")+'</td>'
-     + '<td><b>'+esc(flipName(e.name))+'</b></td>'
+     + '<td><b>'+esc(typeof empRosterName==="function"?empRosterName(e):flipName(e.name))+'</b></td>'
      + '<td><input data-setpos="'+esc(e.id)+'" value="'+esc(empPosition(e)||"")+'" placeholder="not set" style="'+fld2+'"></td>'
      + '<td><select data-setarea="'+esc(e.id)+'" style="'+fld2+'">'
      + '<option value="">— none —</option>'
@@ -10629,6 +10789,7 @@ async function markSeparated(id, on, why){
   const n=clone(e);
   n.status="Separated";
   n.statusBasis="Marked separated on the Daily Manpower screen"+(why?" — "+why:"");
+  n.statusEditedOn=new Date().toISOString();
   if(!n.separatedOn) n.separatedOn=on||TODAY;
   if(!n.separationReason) n.separationReason=why||"Separation paperwork on file";
   await put("employees", id, n);
@@ -10724,10 +10885,12 @@ async function rosterDecide(keep){
     if(keep){
       if(c.status==="Separated") c.status="";
       const sel=$("#rr-status"); if(sel && sel.value) c.status=sel.value;
+      c.statusEditedOn=new Date().toISOString();
       r.yes++;
     }
     else{
       c.status="Separated";
+      c.statusEditedOn=new Date().toISOString();
       if(!c.separatedOn) c.separatedOn=MANPOWER_DATE;
       if(!c.separationReason) c.separationReason="Not on the "+MANPOWER_DATE+" manpower report; confirmed by HR";
       r.no++;
@@ -10758,10 +10921,11 @@ function rosterDone(){
 
 /* ============ 201 file register ============ */
 function viewEmployees(){
-  const list=empList().filter(e=>{
+  let list=empList().filter(e=>{
     const q=S.ui.q.toLowerCase(); if(!q) return true;
     return empMatch(e,q) || String(e.project||"").toLowerCase().includes(q);
   });
+  if(S.ui.rosterSepBottom && typeof empAlpha==="function") list=empAlpha(list, true);
   /* If the person on screen is not in the filtered list, the roster and the
      panel are showing two different people. Follow the search. */
   if(list.length && !list.some(x=>x.id===S.ui.emp)) S.ui.emp=list[0].id;
@@ -10774,14 +10938,17 @@ function viewEmployees(){
        ? '<button class="btn sm pri" id="from-attendance" title="Set status from the attendance record">Status</button> ' : "")
    + (empList().filter(e=>!e.status).length
        ? '<button class="btn sm" id="bulk-status" title="Set employment status in bulk">Bulk</button> ' : "")
+   + '<button class="btn sm'+(S.ui.rosterSepBottom?" pri":"")+'" id="roster-sep-bottom" title="A–Z for everyone, or put Separated names after the people still at work">'+(S.ui.rosterSepBottom?"Separated last":"A–Z")+'</button> '
    + '<button class="btn sm pri" id="add-emp"><svg><use href="#i-plus"/></svg> New</button></div></div>';
   if(!list.length) h+='<div class="empty">No records match.</div>';
   list.forEach(x=>{
     const c=compliance(x);
     const col = c.pct===100?"var(--ok)":c.pct>=60?"var(--warn)":"var(--crit)";
+    const rn=typeof empRosterName==="function"?empRosterName(x):(x.name||"(unnamed)");
+    const leave=typeof leavingBadge==="function"?leavingBadge(x):"";
     h+='<button class="remp'+(x.id===S.ui.emp?" on":"")+'" data-emp-open="'+x.id+'">'
      + '<span class="av">'+esc(initials(x.name))+'</span>'
-     + '<span class="t"><b>'+esc(x.name||"(unnamed)")+'</b><span>'+esc(x.position||x.dept||"—")+(x.status?" · "+esc(x.status):"")+'</span></span>'
+     + '<span class="t"><b>'+esc(rn)+'</b><span>'+esc(x.position||x.dept||"—")+(x.status?" · "+esc(x.status):"")+(leave?" · "+esc(leave):"")+'</span></span>'
      + (x.folderLink?'<a href="'+esc(x.folderLink)+'" target="_blank" rel="noopener noreferrer" title="Open the 201 folder in Drive" style="color:var(--brass);line-height:0;padding:2px" onclick="event.stopPropagation()"><svg style="width:13px;height:13px"><use href="#i-folder"/></svg></a>':"")
    + '<span class="pc" style="color:'+col+'">'+c.pct+'%</span></button>';
   });
@@ -10794,12 +10961,13 @@ function viewEmployees(){
   h+='<div class="folder"><div class="folder-top">'
    + '<div class="av">'+esc(initials(e.name))+'</div>'
    + '<div style="flex:1;min-width:0">'
-   + '<h2 style="font-size:17px">'+esc(e.name||"(unnamed)")+'</h2>'
+   + '<h2 style="font-size:17px">'+esc(typeof empRosterName==="function"?empRosterName(e):(e.name||"(unnamed)"))+'</h2>'
    + '<div class="row" style="margin-top:5px">'
    + (e.empNo?'<span class="pill brass">No. '+esc(e.empNo)+'</span>':"")
    + '<span class="pill mut">'+esc(e.dept||"—")+'</span>'
    + (e.position?'<span class="pill mut">'+esc(e.position)+'</span>':"")
    + '<span class="pill '+(e.status?"acc":"warn")+'">'+esc(e.status||"status not set")+'</span>'
+   + (typeof leavingBadge==="function" && leavingBadge(e)?'<span class="pill warn">'+esc(leavingBadge(e))+'</span>':"")
    + (e.project?'<span class="pill mut">'+esc(e.project)+'</span>':"")
    + '</div>'
    + '<div class="row" style="margin-top:7px">'
@@ -11002,6 +11170,9 @@ function empInfo(e,cs){
    + fld("Date hired","dateHired",e.dateHired,"date")
    + '<div class="f"><label>Probation ends (computed)</label><input id="f-probationEnd" value="'+esc(probationEnd(dateInputValue(e.dateHired))||"—")+'" disabled><span class="hint">Six months from date hired, Art. 296</span></div>'
    + fld("Regularized on","regularizedOn",e.regularizedOn,"date")
+   + '<div class="f"><label for="f-separatedOn">Last day of engagement</label>'
+   + '<input id="f-separatedOn" data-ef="separatedOn" type="date" value="'+esc(dateInputValue(e.separatedOn))+'">'
+   + '<span class="hint" id="last-day-hint">'+esc(typeof lastDayHint==="function"?lastDayHint(e):"")+'</span></div>'
    + fld("Contract start","contractStart",e.contractStart,"date")
    + fld("Contract end","contractEnd",e.contractEnd,"date")
    + fld("Daily rate","dailyRate",e.dailyRate,"number",null,' step="0.01" min="0"')
@@ -11019,8 +11190,10 @@ function empInfo(e,cs){
    + contractHistory(e)
    + trainingBlock(e)
    + recruitmentBlock(e);
-  if(e.status==="Separated"){
-    h+='<div class="grid2">'+fld("Separated on","separatedOn",e.separatedOn,"date")+fld("Reason","separationReason",e.separationReason)+'</div>';
+  if(e.status==="Separated" || e.separationReason || e.separationAudit){
+    h+='<div class="grid2">'+fld("Reason","separationReason",e.separationReason)
+     + (e.separationAudit?'<div class="f"><label>Audit note</label><input value="'+esc(e.separationAudit)+'" disabled></div>':"")
+     + '</div>';
   }
   h+='<div class="sect-h" style="margin:6px 0 0"><h2 style="font-size:13px">Drive links</h2><span class="rule"></span></div><div class="grid2">'
    + fld("2×2 photo (Drive link)","photoLink",e.photoLink,"url")
@@ -19665,25 +19838,28 @@ function empSeparationDate(e){
   const k=String((known&&known.separatedOn)||"").slice(0,10);
   return /^\d{4}-\d{2}-\d{2}$/.test(k) ? k : "";
 }
-/* Engaged during this period. Already gone when the period opens is off.
-   A resignation dated inside the period stays on, and days on or after that
-   date pay 0. Hired after the period ends is off. A blank hire date is not
-   a future start. */
+/* Engaged during this period. Already gone before the period opens is off.
+   A last day inside the period stays on, and that day itself is payable.
+   Days after the last day pay 0. Hired after the period ends is off. A blank
+   hire date is not a future start. */
 function payRosterInclude(e, per){
   if(!payPersonListed(e)) return false;
   const start=(per&&per.from)||TODAY;
   const end=String((per&&per.to)||start).slice(0,10);
   const hired=empHireDate(e);
   if(hired && end && hired>end) return false;
-  /* Separated as of the first day, including a leaver status with no date. */
+  if(typeof empPastLastDay==="function" && empPastLastDay(e, start)) return false;
+  /* Separated after the last day, including a leaver status with no date.
+     The last day itself still belongs on a period that includes it. */
   if(empSeparatedAsOf(e, start)) return false;
+  if(typeof liveStatusBeatsLastDay==="function" && liveStatusBeatsLastDay(e)) return true;
   const on=empSeparationDate(e);
-  if(on && on<=start) return false;
+  if(on && on<start) return false;
   return true;
 }
 function payPeople(kind, per){
   return empList().filter(e=>payKindOf(e)===kind && payRosterInclude(e, per))
-    .sort((a,b)=>String(a.name||"").localeCompare(String(b.name||"")));
+    .sort(typeof cmpEmpAlpha==="function" ? cmpEmpAlpha : (a,b)=>String(a.name||"").localeCompare(String(b.name||"")));
 }
 
 /* Manila calendar dates are YYYY-MM-DD strings. A day saved under any
@@ -19873,8 +20049,12 @@ function payDayAmount(r, empId, date){
 function payDayAfterSeparation(e, date){
   if(!e || !date) return false;
   const day=String(date).slice(0,10);
+  if(typeof empPastLastDay==="function" && empPastLastDay(e, day)) return true;
+  /* A live status set after an older separation date keeps paying. */
+  if(typeof liveStatusBeatsLastDay==="function" && liveStatusBeatsLastDay(e)) return false;
   const on=empSeparationDate(e);
-  if(on && day>=on) return true;
+  /* The last day of engagement is payable. The next day is not. */
+  if(on && day>on) return true;
   if(!on && !empStatusIsLive(e) && empSeparatedAsOf(e, day)) return true;
   return false;
 }
@@ -20383,7 +20563,8 @@ function leaverStatusWithPastDate(e, asOf){
   const on=empSeparationDate(e);
   if(!on) return false;
   const day=String(asOf||TODAY).slice(0,10);
-  return !day || on<=day;
+  /* The last day is still engaged. The next day is past. */
+  return !day || on<day;
 }
 /* Employee ids with a saved Daily Manpower row in the last `days` days. */
 function recentManpowerIds(days){
@@ -20639,7 +20820,7 @@ function viewPayrollRun(){
     const rateMissing=!(Number(L.daily)>0);
     h+='<tr data-payrow="1" data-hay="'+esc(contribHay(L).toLowerCase())+'">'
      + '<td class="mono">'+esc(L.empNo||"—")+'</td>'
-     + '<td><b>'+esc(flipName(L.name))+'</b>'
+     + '<td><b>'+esc(typeof empRosterName==="function"?empRosterName({name:L.name}):flipName(L.name))+'</b>'
      + (L.refusedContrib?' <span class="pill mut" title="Kasabutan or a decline of government benefits. The three contribution boxes start at 0 and stay editable.">refused</span>':"")
      + (rateMissing?' <span class="pill warn" title="No daily rate on the 201 file, so gross stays 0 until a rate is set.">no rate</span>':"")
      + (L.payWarn?' <span class="pill warn" title="'+esc(L.payWarn)+'">check 201</span>':"")
@@ -20938,7 +21119,7 @@ function viewContrib(){
   const only=S.ui.contribKind||"";
   const recent=recentManpowerIds(30);
   let people=empList().filter(e=>contribEngaged(e, recent))
-    .slice().sort((a,b)=>flipName(a.name).localeCompare(flipName(b.name)));
+    .slice().sort(typeof cmpEmpAlpha==="function" ? cmpEmpAlpha : (a,b)=>flipName(a.name).localeCompare(flipName(b.name)));
   if(only) people=people.filter(e=>payKindOf(e)===only);
   const set=people.filter(e=>["sss","phic","hdmf"].some(k=>empStatSet(e,k))).length;
   const refusedN=people.filter(e=>contribSource(e)==="refused").length;
@@ -20957,7 +21138,7 @@ function viewContrib(){
    + 'The list is everyone <b>engaged</b>: Active, Regular, Probationary, Project-based, '
    + 'Contractual, Seasonal, Fixed-term, Consultant, a blank status, and anyone with Daily Manpower '
    + 'attendance in the last 30 days. A Separated, Resigned, Terminated, AWOL, Inactive, Retired, '
-   + 'Deceased, or end-of-contract status is left off only when the separation date is already past. '
+   + 'Deceased, or end-of-contract status is left off only when the last day of engagement is already past. That day itself still counts. '
    + 'A note that a resignation letter is unsigned does not remove anyone. '
    + 'A signed Kasabutan or a decline of '
    + 'government-mandated benefits still sets all three to <b>0</b> until you type something else. '
@@ -21010,7 +21191,7 @@ function viewContrib(){
     const pill = '<span data-csrc="'+esc(e.id)+'" class="'+contribSourceClass(src)+'" title="'+esc(pillTitle)+'">'+esc(contribSourceLabel(src))+'</span>';
     h+='<tr data-crow="1" data-hay="'+esc(contribHay(e).toLowerCase())+'">'
      + '<td class="mono">'+esc(e.empNo||"—")+'</td>'
-     + '<td><b>'+esc(flipName(e.name))+'</b><div class="lbl" style="text-transform:none;letter-spacing:0;font-family:var(--f-ui)">'+esc(e.position||"")+'</div></td>'
+     + '<td><b>'+esc(typeof empRosterName==="function"?empRosterName(e):flipName(e.name))+'</b><div class="lbl" style="text-transform:none;letter-spacing:0;font-family:var(--f-ui)">'+esc(e.position||"")+'</div></td>'
      + '<td style="font-size:11.5px">'+(kind==="semi"?"Semi-monthly":"Weekly")+'</td>'
      + '<td class="num mono" title="'+esc(r.basis||"")+'">'+num(r.monthly ? (Number(e.dailyRate)||0) : r.daily*26, 2)+'</td>'
      + box("sss")+box("phic")+box("hdmf")
@@ -22049,7 +22230,7 @@ function payAttendanceCard(kind, per, lines){
          + (sun?'<div class="lbl">Sun</div>':'')+'</th>'; }).join("")
    + '<th style="width:70px"></th></tr></thead><tbody>';
   lines.forEach(L=>{
-    h+='<tr><td><b>'+esc(flipName(L.name))+'</b></td>'
+    h+='<tr><td><b>'+esc(typeof empRosterName==="function"?empRosterName({name:L.name}):flipName(L.name))+'</b></td>'
       + dates.map(d=>{
           const rec=dailyRecordFor(d), r=rec ? dailyRowForEmp(rec, L.empId) : null;
           if(!rec) return '<td class="num" style="color:var(--ink3)" title="No report filed">·</td>';
@@ -22527,6 +22708,7 @@ function render(){
   wire();
   /* Leaving the sheet must still upload hours captured from the boxes. */
   if(!S.ui || S.ui.view!=="daily") enqueueDailySave("");
+  if(S.ready) ensureEngagementStatus();
   }catch(err){
     console.error(err);
     paintCrash(err);
@@ -23180,9 +23362,10 @@ function wire(){
   const decide=async(id,keep)=>{
     const e=S.employees[id]; if(!e) return;
     const c=clone(e); c.rosterConfirmed=TODAY;
-    if(keep){ if(c.status==="Separated") c.status=""; }
+    if(keep){ if(c.status==="Separated") c.status=""; c.statusEditedOn=new Date().toISOString(); }
     else{
       c.status="Separated";
+      c.statusEditedOn=new Date().toISOString();
       if(!c.separatedOn) c.separatedOn=MANPOWER_DATE;
       if(!c.separationReason) c.separationReason="Not on the "+MANPOWER_DATE+" manpower report; confirmed by HR";
     }
@@ -23414,6 +23597,9 @@ function wire(){
   const sc=$("#scan-contracts",v); if(sc) sc.onclick=scanContracts;
   const fa=$("#from-attendance",v); if(fa) fa.onclick=attendanceClassify;
   const bs=$("#bulk-status",v); if(bs) bs.onclick=bulkStatus;
+  const rsb=$("#roster-sep-bottom",v); if(rsb) rsb.onclick=()=>{
+    S.ui.rosterSepBottom=!S.ui.rosterSepBottom; render();
+  };
   const ae=$("#add-emp",v); if(ae) ae.onclick=async()=>{
     const e=newEmp({}); await put("employees",e.id,e); S.ui.emp=e.id; S.ui.tab="info"; render();
     setTimeout(()=>{ const f=$("#f-name"); if(f){ f.focus(); } },40);
@@ -23748,7 +23934,20 @@ function wire(){
       const sup=S.employees[emp.supervisorId];
       emp.supervisor = sup ? flipName(sup.name) : "";
     }
-    if(k==="status") emp.statusBasis=emp.status ? "Set on the 201 file" : "Cleared on the 201 file";
+    if(k==="status"){
+      emp.statusBasis=emp.status ? "Set on the 201 file" : "Cleared on the 201 file";
+      emp.statusEditedOn=new Date().toISOString();
+    }
+    if(k==="separatedOn"){
+      if(!String(emp.separatedOn||"").trim()){
+        emp.lastDayCleared=true;
+      }else{
+        emp.lastDayCleared=false;
+        emp.separatedOnEditedOn=new Date().toISOString();
+        emp.separatedOnBy=String((S.settings&&S.settings.hrStaff)||"");
+        if(typeof ENGAGEMENT_CHECKED!=="undefined") ENGAGEMENT_CHECKED="";
+      }
+    }
     return k;
   }
   function paintProbationEnd(){
