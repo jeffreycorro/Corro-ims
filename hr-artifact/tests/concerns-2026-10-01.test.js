@@ -59,8 +59,8 @@ function loadMerge() {
 }
 
 describe("2026-10-01a 201 fields stay until HR changes them", () => {
-  it("is build 2026-10-02a and still defers a focused Date hired redraw", () => {
-    assert.match(html, /const BUILD = "2026-10-02a"/);
+  it("is build 2026-10-03a and still defers a focused Date hired redraw", () => {
+    assert.match(html, /const BUILD = "2026-10-03a"/);
     assert.match(html, /function keepEmpEnteredFields\(/);
     assert.match(html, /function employeeFilledBeatsBlankSnap\(/);
     assert.match(html, /function employeeSnapNeedsRepair\(/);

@@ -1731,7 +1731,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-10-02a";
+const BUILD = "2026-10-03a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -9304,29 +9304,44 @@ function otSameHours(a, b){
   if(empty(a) || empty(b)) return false;
   return Number(a)===Number(b);
 }
-/* A new figure needs an approved request. The number already on the day stays,
-   including when this build is the first one that asked for a form. */
+/* Hours are always stored. Pay waits for an approved form. There is no
+   finalized-run flag, so that wait applies only when the period ends on or
+   after 2026-10-01. Earlier periods still pay every saved hour. */
 function otHoursAllowed(empId, date, site, prev, typed){
-  if(otCovered(empId, date, site)) return typed;
-  if(otSameHours(prev, typed)) return (prev==null || String(prev).trim()==="") ? typed : prev;
-  if(prev==null || String(prev).trim()==="") return null;
-  return prev;
+  return typed;
+}
+function otPendingApplies(periodEnd){
+  const end=String(periodEnd||"").slice(0,10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(end) && end>="2026-10-01";
+}
+function otPaidHours(empId, date, site, ot, periodEnd){
+  const h=Number(ot)||0;
+  if(!(h>0)) return 0;
+  if(typeof otPendingApplies!=="function" || !otPendingApplies(periodEnd)) return h;
+  if(typeof otCovered==="function" && otCovered(empId, date, site)) return h;
+  return 0;
+}
+function otPendingText(hours){
+  const n=Number(hours)||0;
+  if(!(n>0)) return "";
+  return "OT pending: "+num(n,1)+" h";
 }
 function otEntryBox(empId, date, site, value, sty, attr){
   const covered=otCovered(empId, date, site);
   const shown=value!=null && String(value).trim()!=="" ? value : "";
-  const legacy=shown!=="" && Number(shown)>0 && !covered;
+  const pending=shown!=="" && Number(shown)>0 && !covered;
   const approved=covered ? otApprovedHours(empId, date, site) : null;
   const title=covered
     ? ("Approved OT request on file"+(approved!=null?" · approved for "+approved+" h":""))
-    : "No OT request on file for this date/site";
+    : (pending
+        ? "Pending OT form — saved, and not paid until an approved request with a form covers this date"
+        : "No OT request on file for this date/site. Hours can still be typed; they stay pending until a form is approved.");
   let h='<input '+attr+' type="number" step="0.5" min="0" value="'+esc(shown)+'" placeholder="0" '
-    +(covered?"":"disabled ")
-    +'title="'+esc(title)+'" style="'+sty+';text-align:right'+(covered?"":";opacity:.72")+'">';
+    +'title="'+esc(title)+'" style="'+sty+';text-align:right">';
+  if(pending) h+='<div style="margin-top:3px"><span class="pill warn">Pending OT form</span></div>';
   if(!covered){
     h+='<div class="lbl" style="text-transform:none;letter-spacing:0;font-weight:500;white-space:normal;line-height:1.35;margin-top:3px">'
-      + 'No OT request on file for this date/site'
-      + (legacy?' <span class="pill warn">no OT form</span>':"")
+      + (pending ? "Not paid until an approved form is on file." : "No OT request on file for this date/site")
       + '<div style="margin-top:3px"><button type="button" class="btn sm" data-otfile="'+esc(empId)+'" data-otdate="'+esc(date)+'" data-otsite="'+esc(site)+'">File one</button></div></div>';
   }
   return h;
@@ -9372,7 +9387,7 @@ function otTrack(opts){
   }
   function bucket(d){
     const k=bucketKey(d);
-    return buckets[k]||(buckets[k]={key:k, label:bucketLabel(k), requests:0, hours:0, pay:0, noFormHours:0, emp:{}, site:{}, _reqs:{}});
+    return buckets[k]||(buckets[k]={key:k, label:bucketLabel(k), requests:0, hours:0, approvedHours:0, pendingHours:0, pay:0, pendingPay:0, noFormHours:0, emp:{}, site:{}, _reqs:{}});
   }
   let requests=0;
   Object.values(S.otreqs||{}).forEach(r=>{
@@ -9410,18 +9425,23 @@ function otTrack(opts){
       const ot=typeof payrollOtHours==="function" ? Number(payrollOtHours(rec, empId, row))||0 : (Number(row.ot)||0);
       if(!(ot>0)) return;
       const e=S.employees&&S.employees[empId];
-      const pay=ot * otHourlyOf(e) * policy;
       const covered=otCovered(empId, d, site);
+      const approvedH=covered?ot:0, pendingH=covered?0:ot;
+      const hourly=otHourlyOf(e)*policy;
+      const approvedPay=approvedH*hourly, pendingPay=pendingH*hourly;
       const b=bucket(d);
-      b.hours+=ot; b.pay+=pay;
+      b.hours+=ot; b.approvedHours+=approvedH; b.pendingHours+=pendingH;
+      b.pay+=approvedPay; b.pendingPay+=pendingPay;
       if(!covered) b.noFormHours+=ot;
       const name=e ? (e.name||empId) : (row.name||empId);
-      const er=b.emp[empId]||(b.emp[empId]={id:empId, name:name, empNo:(e&&e.empNo)||"", hours:0, pay:0, days:0, noFormHours:0});
-      er.hours+=ot; er.pay+=pay; er.days++;
+      const er=b.emp[empId]||(b.emp[empId]={id:empId, name:name, empNo:(e&&e.empNo)||"", hours:0, approvedHours:0, pendingHours:0, pay:0, pendingPay:0, days:0, noFormHours:0});
+      er.hours+=ot; er.approvedHours+=approvedH; er.pendingHours+=pendingH;
+      er.pay+=approvedPay; er.pendingPay+=pendingPay; er.days++;
       if(!covered) er.noFormHours+=ot;
       const sk=otSiteKey(site)||"(no area)";
-      const sr=b.site[sk]||(b.site[sk]={site:site||"(no area)", hours:0, pay:0, days:0, noFormHours:0});
-      sr.hours+=ot; sr.pay+=pay; sr.days++;
+      const sr=b.site[sk]||(b.site[sk]={site:site||"(no area)", hours:0, approvedHours:0, pendingHours:0, pay:0, pendingPay:0, days:0, noFormHours:0});
+      sr.hours+=ot; sr.approvedHours+=approvedH; sr.pendingHours+=pendingH;
+      sr.pay+=approvedPay; sr.pendingPay+=pendingPay; sr.days++;
       if(!covered) sr.noFormHours+=ot;
     });
   });
@@ -9436,14 +9456,14 @@ function otTrack(opts){
 }
 function otCsv(report){
   const n=(v,d)=>(Number(v)||0).toFixed(d==null?2:d);
-  const rows=[["Period","Kind","Name","ID","OT hours","OT pay","Days with OT","Hours with no OT form","OT requests"]];
+  const rows=[["Period","Kind","Name","ID","Approved OT hours","Approved OT pay","Pending OT hours","Pending OT pay","Days with OT","OT requests"]];
   (report.buckets||[]).forEach(b=>{
-    rows.push([b.label,"Period total","", "", n(b.hours,1), n(b.pay,2), "", n(b.noFormHours,1), b.requests]);
+    rows.push([b.label,"Period total","", "", n(b.approvedHours,1), n(b.pay,2), n(b.pendingHours,1), n(b.pendingPay,2), "", b.requests]);
     (b.employees||[]).forEach(e=>{
-      rows.push([b.label,"Employee", e.name, e.empNo||"", n(e.hours,1), n(e.pay,2), e.days, n(e.noFormHours,1), ""]);
+      rows.push([b.label,"Employee", e.name, e.empNo||"", n(e.approvedHours,1), n(e.pay,2), n(e.pendingHours,1), n(e.pendingPay,2), e.days, ""]);
     });
     (b.sites||[]).forEach(s=>{
-      rows.push([b.label,"Site", s.site, "", n(s.hours,1), n(s.pay,2), s.days, n(s.noFormHours,1), ""]);
+      rows.push([b.label,"Site", s.site, "", n(s.approvedHours,1), n(s.pay,2), n(s.pendingHours,1), n(s.pendingPay,2), s.days, ""]);
     });
   });
   return rows;
@@ -9467,8 +9487,8 @@ function viewOtRequests(){
     + '<button class="btn" id="ot-csv"><svg><use href="#i-dl"/></svg> CSV</button>'
     + '</div>'
     + '<div class="note" style="margin-bottom:12px">File the signed overtime request here. '
-    + '<b>Approved</b>, with the form attached, is what lets Daily Manpower and the payroll day editor accept OT for those people or that site on those dates. '
-    + 'Hours already saved before a form existed stay on the payroll and are marked <b>no OT form</b>.</div>';
+    + 'OT hours can be typed with no request on file. They show <b>Pending OT form</b> and are not paid until <b>Approved</b> with the form attached covers that person or that site on that date. '
+    + 'The next time payroll opens, those hours count. No retyping.</div>';
   h+='<div class="card" style="margin-bottom:14px"><div class="card-h"><h3>Requests</h3>'
     + '<span class="lbl">'+reqs.length+' on file</span></div><div class="card-b">';
   if(!reqs.length){
@@ -9519,24 +9539,24 @@ function viewOtRequests(){
   report.buckets.forEach(b=>{
     h+='<h3 style="margin:12px 0 6px">'+esc(b.label)+'</h3>'
       + '<div class="strip">'
-      + tile(num(b.hours,1),"OT hours",num(b.pay,2)+" OT pay","acc")
+      + tile(num(b.approvedHours,1),"Approved OT",num(b.pay,2)+" OT pay","acc")
+      + tile(num(b.pendingHours,1),"Pending OT",b.pendingHours?"not paid until a form is approved":"none waiting", b.pendingHours?"warn":"ok")
       + tile(String(b.requests),"OT requests","overlapping this "+(mode==="month"?"month":mode==="week"?"week":"range"),"")
-      + tile(num(b.noFormHours,1),"No OT form",b.noFormHours?"hours still missing a request":"every hour has a form", b.noFormHours?"warn":"ok")
       + '</div>';
-    h+='<div class="tw" style="margin-top:8px"><table><thead><tr><th>Employee</th><th>ID</th><th class="num">OT hours</th><th class="num">OT pay</th><th class="num">Days</th><th>Form</th></tr></thead><tbody>';
-    if(!(b.employees||[]).length) h+='<tr><td colspan="6"><span class="lbl">No OT hours for an employee in this bucket.</span></td></tr>';
+    h+='<div class="tw" style="margin-top:8px"><table><thead><tr><th>Employee</th><th>ID</th><th class="num">Approved h</th><th class="num">Pending h</th><th class="num">OT pay</th><th class="num">Days</th><th>Form</th></tr></thead><tbody>';
+    if(!(b.employees||[]).length) h+='<tr><td colspan="7"><span class="lbl">No OT hours for an employee in this bucket.</span></td></tr>';
     (b.employees||[]).forEach(e=>{
       h+='<tr><td><b>'+esc(flipName(e.name)||e.name)+'</b></td><td class="mono">'+esc(e.empNo||"—")+'</td>'
-        + '<td class="num">'+num(e.hours,1)+'</td><td class="num">'+num(e.pay,2)+'</td><td class="num">'+e.days+'</td>'
-        + '<td>'+(e.noFormHours>0?'<span class="pill warn">no OT form</span> '+esc(num(e.noFormHours,1))+" h":'<span class="pill ok">on file</span>')+'</td></tr>';
+        + '<td class="num">'+num(e.approvedHours,1)+'</td><td class="num">'+num(e.pendingHours,1)+'</td><td class="num">'+num(e.pay,2)+'</td><td class="num">'+e.days+'</td>'
+        + '<td>'+(e.pendingHours>0?'<span class="pill warn">Pending OT form</span> '+esc(num(e.pendingHours,1))+" h":'<span class="pill ok">approved</span>')+'</td></tr>';
     });
     h+='</tbody></table></div>';
-    h+='<div class="tw" style="margin-top:8px"><table><thead><tr><th>Site</th><th class="num">OT hours</th><th class="num">OT pay</th><th class="num">Days</th><th>Form</th></tr></thead><tbody>';
-    if(!(b.sites||[]).length) h+='<tr><td colspan="5"><span class="lbl">No site hours in this bucket.</span></td></tr>';
+    h+='<div class="tw" style="margin-top:8px"><table><thead><tr><th>Site</th><th class="num">Approved h</th><th class="num">Pending h</th><th class="num">OT pay</th><th class="num">Days</th><th>Form</th></tr></thead><tbody>';
+    if(!(b.sites||[]).length) h+='<tr><td colspan="6"><span class="lbl">No site hours in this bucket.</span></td></tr>';
     (b.sites||[]).forEach(s=>{
-      h+='<tr><td><b>'+esc(s.site)+'</b></td><td class="num">'+num(s.hours,1)+'</td><td class="num">'+num(s.pay,2)+'</td>'
+      h+='<tr><td><b>'+esc(s.site)+'</b></td><td class="num">'+num(s.approvedHours,1)+'</td><td class="num">'+num(s.pendingHours,1)+'</td><td class="num">'+num(s.pay,2)+'</td>'
         + '<td class="num">'+s.days+'</td>'
-        + '<td>'+(s.noFormHours>0?'<span class="pill warn">no OT form</span>':'<span class="pill ok">on file</span>')+'</td></tr>';
+        + '<td>'+(s.pendingHours>0?'<span class="pill warn">Pending OT form</span>':'<span class="pill ok">approved</span>')+'</td></tr>';
     });
     h+='</tbody></table></div>';
   });
@@ -9658,7 +9678,7 @@ function openOtEditor(pre){
     S.otreqs[next.id]=next;
     await put("otreqs", next.id, next);
     closeModal();
-    toast(status==="Approved" && formUrl ? "OT request approved. Those OT boxes are open." : "OT request saved.","ok");
+    toast(status==="Approved" && formUrl ? "OT request approved. Pending hours for those dates count the next time payroll opens." : "OT request saved.","ok");
     render();
   };
 }
@@ -9769,7 +9789,7 @@ function viewDaily(){
   }
 
   h+='<div class="note" style="margin:14px 0"><b>OT hours save on their own</b> a moment after you type them — a slow page does not mean the number was lost. '
-   + '<b>An approved OT request with the signed form</b> has to cover this person or this site on this date before the OT box opens. '
+   + 'The OT box stays open with or without a request. Hours with no <b>approved OT request</b> and signed form show <b>Pending OT form</b> and are not paid until one covers this person or this site on this date. '
    + '<button class="btn sm" type="button" data-goto="otreq">OT requests</button> '
    + 'Everyone starts as <b>Present</b> — mark <b>Has not yet arrived</b> for anyone still on the way, then change the other exceptions. '
    + 'then Save. <b>Drag a name</b> onto another area, or use the Area column, when someone works somewhere '
@@ -19858,6 +19878,56 @@ function payDayAfterSeparation(e, date){
   if(!on && !empStatusIsLive(e) && empSeparatedAsOf(e, day)) return true;
   return false;
 }
+/* Time in at or after noon uses the afternoon start. No grace period is
+   coded, so none is applied. Blank or unreadable time in is not late. */
+function lateStartMinutes(timeIn){
+  const inn=typeof clockMinutes==="function" ? clockMinutes(timeIn) : null;
+  if(inn!=null && inn>=12*60) return 13*60;
+  return 8*60;
+}
+function lateStartLabel(timeIn){
+  return lateStartMinutes(timeIn)===13*60 ? "1:00 PM" : "8:00 AM";
+}
+function lateMinutesOf(timeIn){
+  const inn=typeof clockMinutes==="function" ? clockMinutes(timeIn) : null;
+  if(inn==null) return 0;
+  return Math.max(0, inn-lateStartMinutes(timeIn));
+}
+/* Absent, leave, rest, and not-yet-arrived are not a late clock-in.
+   A worked status, or a positive day credit with a time in, is. */
+function dayCountsLate(row){
+  if(!row) return false;
+  const st=String(row.s||"");
+  const off=st==="Absent" || st==="Leave" || st==="Leave with Pay" || st==="Rest Day"
+    || st==="Has not yet arrived";
+  if(!off && st!=="Regular Holiday" && st!=="Special Holiday") return true;
+  const credit=row.day!=null && String(row.day).trim()!=="" ? Number(row.day) : 0;
+  return credit>0 && !!String(row.in||"").trim();
+}
+function payLateAmount(dailyRate, minutes){
+  const daily=Number(dailyRate)||0;
+  const m=Number(minutes)||0;
+  if(!(daily>0) || !(m>0)) return 0;
+  return Math.round((m * (daily/8/60)) * 100) / 100;
+}
+function payLateForDays(dailyRate, days){
+  let minutes=0, amount=0;
+  (days||[]).forEach(x=>{
+    if(typeof dayCountsLate==="function" && !dayCountsLate(x)) return;
+    const m=typeof lateMinutesOf==="function" ? lateMinutesOf(x.in) : 0;
+    if(!(m>0)) return;
+    minutes+=m;
+    amount+=payLateAmount(dailyRate, m);
+  });
+  return {minutes:minutes, amount:Math.round(amount*100)/100};
+}
+function payLateHint(L){
+  const hit=(L&&L.rows||[]).filter(r=>(Number(r.lateMin)||0)>0);
+  const rule="Late is time in minus 8:00 AM, or minus 1:00 PM when time in is at or after noon. No grace. Minutes × (daily rate ÷ 8 ÷ 60). A number typed here, including 0, stays.";
+  if(!hit.length) return rule;
+  const mins=hit.reduce((n,r)=>n+(Number(r.lateMin)||0),0);
+  return mins+" min · "+hit.map(r=>String(r.date||"").slice(5)+" "+(r.in||"")+" ("+r.lateMin+" min)").join(", ")+" · "+rule;
+}
 /* One person's days over the period, straight off the manpower reports.
    The same rows, window and status map the Attendance screen reads. */
 function payDaysFor(empId, dates){
@@ -19872,9 +19942,11 @@ function payDaysFor(empId, dates){
     const part=typeof summaryDayOt==="function" ? summaryDayOt(rec, empId, r) : null;
     const day=part ? part.day : (blocked ? 0 : payDayAmount(r, empId, d));
     const ot=part ? part.ot : (blocked ? 0 : dayVal(r,"ot", 0));
+    const lateMin=blocked || typeof lateMinutesOf!=="function" ? 0
+      : ((typeof dayCountsLate==="function" && !dayCountsLate(r)) ? 0 : lateMinutesOf(r.in||""));
     out.push({ date:d, s:r.s||"", reason:r.r||"", site:r.site||"",
                in:r.in||"", out:r.out||"",
-               day, ot,
+               day, ot, lateMin,
                hol: blocked ? 0 : holCode(r),
                holRate: blocked ? 0 : holRate(r),
                elig: blocked ? false : holEligible(d, r) });
@@ -19911,15 +19983,28 @@ function payLine(e, kind, dates, saved, per){
     daily:rate.daily, hourly:rate.hourly, basis:rate.basis, monthly:rate.monthly,
     /* Days and overtime are recomputed from Daily Manpower every time the
        run is opened. A saved line may still hold days or ot from before
-       they were typed — those stored numbers are not used. */
+       they were typed — those stored numbers are not used. Paid OT drops
+       hours that are still waiting on an approved form, for periods ending
+       on or after 2026-10-01. */
     days:  auto.days,
-    ot:    auto.ot,
+    ot:    (function(){
+      if(typeof otPaidHours!=="function") return auto.ot;
+      return days.reduce((n,x)=>n+otPaidHours(e.id, x.date, x.site, x.ot, per&&per.to), 0);
+    })(),
     refusedContrib: govDeductionRefused(e),
     hol:   auto.hol,
     holFactor: auto.holFactor, hol30: auto.hol30, hol100: auto.hol100, eligible: auto.eligible,
     allowance: sv.allowance!=null ? Number(sv.allowance) : (rate.monthly ? (Number(e.allowance)||0) : 0),
     incentive: Number(sv.incentive)||0,
-    late:      Number(sv.late)||0,
+    /* Same rule as cash advance. A typed figure, including 0, stays.
+       An untouched stored 0 does not block the minutes from time in. */
+    late: (function(){
+      const auto=(typeof payLateForDays==="function") ? payLateForDays(rate.daily, days).amount : 0;
+      if(sv.lateTouched) return Number(sv.late)||0;
+      if(sv.late!=null && sv.late!=="" && Number(sv.late)!==0 && Math.abs(Number(sv.late)-auto)>0.005) return Number(sv.late);
+      return auto;
+    })(),
+    lateMin: (typeof payLateForDays==="function") ? payLateForDays(rate.daily, days).minutes : 0,
     /* A figure Cassie typed on this run stays. A stored 0 that nobody touched
        was the old "nothing assumed" and must not block an approved advance. */
     ca: (function(){
@@ -19936,10 +20021,15 @@ function payLine(e, kind, dates, saved, per){
     hdmf:      payStatForLine(kind, "hdmf", e, sv),
     rows:days, auto,
     otNoForm: (function(){
-      if(typeof otCovered!=="function") return 0;
-      return days.reduce((n,x)=>n+(Number(x.ot)>0 && !otCovered(e.id, x.date, x.site) ? Number(x.ot) : 0), 0);
+      if(typeof otPaidHours!=="function"){
+        if(typeof otCovered!=="function") return 0;
+        return days.reduce((n,x)=>n+(Number(x.ot)>0 && !otCovered(e.id, x.date, x.site) ? Number(x.ot) : 0), 0);
+      }
+      const paid=days.reduce((n,x)=>n+otPaidHours(e.id, x.date, x.site, x.ot, per&&per.to), 0);
+      return Math.max(0, auto.ot-paid);
     })()
   };
+  L.otPending=L.otNoForm;
   if(!(Number(rate.daily)>0) && ((Number(L.days)||0)>0 || (Number(L.ot)||0)>0))
     L.payWarn="No daily rate on the 201 file, so this attendance pays 0 until a rate is set.";
   return payTotals(L);
@@ -20265,11 +20355,16 @@ function payFilterLines(lines, site){
   if(!want) return (lines||[]).slice();
   return (lines||[]).filter(L=>paySiteName(L)===want);
 }
+function payHasTime(L){
+  return (Number(L&&L.days)||0)>0 || (Number(L&&L.ot)||0)>0
+    || (Number(L&&L.otPending)||0)>0 || (Number(L&&L.otNoForm)||0)>0;
+}
 function payLineSum(lines){
   return (lines||[]).reduce((a,L)=>({
     gross:a.gross+(Number(L.gross)||0), ded:a.ded+(Number(L.ded)||0), net:a.net+(Number(L.net)||0),
-    ot:a.ot+(Number(L.ot)||0), days:a.days+(Number(L.days)||0), n:a.n+1
-  }),{gross:0,ded:0,net:0,ot:0,days:0,n:0});
+    ot:a.ot+(Number(L.ot)||0), otPending:a.otPending+(Number(L.otPending)||Number(L.otNoForm)||0),
+    days:a.days+(Number(L.days)||0), n:a.n+1
+  }),{gross:0,ded:0,net:0,ot:0,otPending:0,days:0,n:0});
 }
 function paySiteGroups(lines){
   const map={};
@@ -20376,7 +20471,7 @@ function viewPayrollRun(){
   const dates=payDates(per.from,per.to);
   const saved=payRunGet(kind,per.from,per.to);
   const lines=payRunLines(kind, per, dates, saved);
-  const allWorked=lines.filter(L=>L.days>0 || L.ot>0);
+  const allWorked=lines.filter(payHasTime);
   const idle=lines.length-allWorked.length;
   const siteWant=String((S.ui&&S.ui.paySite)||"");
   const grouped=!!(S.ui&&S.ui.payGroupSite);
@@ -20403,10 +20498,12 @@ function viewPayrollRun(){
    + '<div class="note" style="margin-bottom:12px">'+esc(payKind(kind).note)
    + ' <b>Days, overtime and the holiday premium are read off the daily manpower reports and cannot be typed here</b> — '
    + 'if one of them is wrong, the day itself is wrong, so fix it on the Daily Manpower screen and come back. '
-   + 'OT on a day needs an <b>approved OT request</b> with the signed form. Hours already saved stay and are marked <b>no OT form</b> until a request covers that day. '
+   + 'OT hours can be typed with no request. They show <b>OT pending</b> and are left out of OT pay, gross, and net until an <b>approved OT request</b> with the signed form covers that day. They then count on the next open, with no retyping. '
+   + 'A run is not locked when it is printed, so this wait applies to periods ending on or after October 1, 2026. Earlier periods still pay every saved hour. '
    + '<button class="btn sm" type="button" data-goto="otreq">OT requests</button> '
    + 'Allowance, loans and contributions are typed here and kept with the run. '
-   + '<b>Cash advance fills from approved balances</b> for this period (a repayment plan uses its rate; otherwise the outstanding amount). Edit the box to override.'
+   + '<b>Late fills from Daily Manpower time in</b> (minutes after 8:00 AM, or after 1:00 PM when time in is noon or later, times the daily rate divided by 8 divided by 60; no grace). '
+   + '<b>Cash advance fills from approved balances</b> for this period (a repayment plan uses its rate; otherwise the outstanding amount). A number you type in Late or Cash adv., including 0, stays.'
    + ' <button class="btn sm" id="pay-toattend">Open Daily Manpower</button>'
    + ' <button class="btn sm" id="pay-tocontrib">Contributions per head</button>'
    + ' <button class="btn sm" id="pay-paste">Paste manpower JSON</button></div>';
@@ -20485,7 +20582,8 @@ function viewPayrollRun(){
     .concat(kind==="semi" ? [{n:"Allowance",w:100,r:1,f:"allowance"}] : [])
     .concat([{n:"Gross",w:106,r:1}]);
   const DED = [
-    {k:"late",     n:"Late",        w:92, always:1},
+    {k:"late",     n:"Late",        w:92, always:1,
+      t:"From Daily Manpower time in. Minutes after 8:00 AM, or after 1:00 PM when time in is noon or later, × daily rate ÷ 8 ÷ 60. No grace. A number you type, including 0, stays."},
     {k:"ca",       n:"Cash adv.",   w:98, always:1},
     {k:"uniform",  n:"Uniform",     w:92},
     {k:"sssLoan",  n:"SSS loan",    w:94},
@@ -20522,7 +20620,7 @@ function viewPayrollRun(){
   h+='<div class="tw" style="max-height:58vh;overflow:auto">'
    + '<table style="min-width:'+MINW+'px"><thead><tr>'
    + LEAD.map(th).join("")
-   + used.map(c=>th({n:c.n,w:c.w,r:1})).join("")
+   + used.map(c=>th({n:c.n,w:c.w,r:1,t:c.t})).join("")
    + TAIL.map(th).join("")
    + '</tr></thead><tbody>';
 
@@ -20534,7 +20632,8 @@ function viewPayrollRun(){
     return String(v);
   };
   const inp=(L,k,v)=>'<input data-payf="'+esc(L.empId)+'|'+k+'" type="number" step="0.01" '
-    + ((k==="sss"||k==="phic"||k==="hdmf")?' title="Editable on this run, including a refusal. Clear the box or type 0 and it prints as 0."':'')
+    + ((k==="sss"||k==="phic"||k==="hdmf")?' title="Editable on this run, including a refusal. Clear the box or type 0 and it prints as 0."'
+      : (k==="late"&&typeof payLateHint==="function")?' title="'+esc(payLateHint(L))+'"':'')
     + ' placeholder="0.00" value="'+esc(payFieldShown(k,v))+'" style="'+money+'">';
   const paintPayRow=L=>{
     const rateMissing=!(Number(L.daily)>0);
@@ -20552,7 +20651,7 @@ function viewPayrollRun(){
      + '<td class="num mono">'+num(L.daily,2)+'</td><td class="num mono">'+num(L.hourly,2)+'</td>'
      + '<td class="num mono" title="'+esc(payDayHint(L,"day"))+'">'+num(L.days,1)+'</td>'
      + '<td class="num mono" title="'+esc(payDayHint(L,"ot"))+'">'+(L.ot?num(L.ot,1):'<span class="lbl">—</span>')
-     + (Number(L.otNoForm)>0?'<div class="pill warn" title="'+esc(num(L.otNoForm,1)+" h on file without an approved OT request")+'">no OT form</div>':"")+'</td>'
+     + (Number(L.otPending||L.otNoForm)>0?'<div class="pill warn" title="Saved on Daily Manpower. Not in OT pay, gross, or net until an approved request with a form covers them.">'+esc(otPendingText(L.otPending||L.otNoForm))+'</div>':"")+'</td>'
      + '<td class="num mono" title="'+esc(payDayHint(L,"hol")+(L.holPay?" — adds "+peso(L.holPay)+" to gross":""))+'">'
      +   (L.hol?esc(holMix(L)):'<span class="lbl">—</span>')+'</td>'
      + (kind==="semi" ? '<td>'+inp(L,"allowance",L.allowance)+'</td>' : '')
@@ -20637,7 +20736,7 @@ function payPaper(kind, per, lines, T, groups){
      + '<td>'+esc(L.position||"")+'</td>'
      + '<td>'+esc(L.site||"")+'</td>'
      + '<td class="n">'+num(L.days,1)+'</td>'
-     + '<td class="n">'+(L.ot?num(L.ot,1):"")+(Number(L.otNoForm)>0?'<br><span style="font-size:7pt">no OT form</span>':"")+'</td>'
+     + '<td class="n">'+(L.ot?num(L.ot,1):"")+(Number(L.otPending||L.otNoForm)>0?'<br><span style="font-size:7pt">'+esc(otPendingText(L.otPending||L.otNoForm))+'</span>':"")+'</td>'
      + '<td class="n" style="font-size:7.4pt">'+(L.hol30?L.hol30+"×30%":"")+(L.hol30&&L.hol100?"<br>":"")+(L.hol100?L.hol100+"×100%":"")+'</td>'
      + '<td class="n">'+num(L.daily,2)+'</td>'
      + '<td class="n">'+num(L.hourly,2)+'</td>'
@@ -20764,6 +20863,9 @@ function payslipBody(L, kind, per){
      left of it rather than only what was taken. */
   const bal=payslipCaNote(L);
   if(bal) h+='<div style="font-size:9px;color:#555;margin:2px 0 4px">'+esc(bal)+'</div>';
+  const pendOt=Number(L.otPending||L.otNoForm)||0;
+  if(pendOt>0 && typeof otPendingText==="function")
+    h+='<div style="font-size:9px;color:#555;margin:2px 0 4px">'+esc(otPendingText(pendOt))+' — not included in overtime pay until an approved OT request with a form covers those hours.</div>';
 
   h+=pfSign([
     {who:"Prepared by", name:st.payrollBy||st.hrHead||"", role:st.payrollBy?(st.payrollTitle||"Safety Officer"):(st.hrTitle||"HR Officer"),
@@ -21955,7 +22057,8 @@ function payAttendanceCard(kind, per, lines){
           const st=effectiveStatus(L.empId, d, r.s, r.r);
           const sev = st==="Absent" ? "crit" : (st==="Present/Late"||st==="Undertime") ? "warn" : "";
           const ot=payrollOtHours(rec, L.empId, r), hc=holCode(r);
-          const tip=[st, r.in?"in "+r.in:"", r.out?"out "+r.out:"", ot?"OT "+ot+" h":"", hc?holLabel(hc):"", r.r||""].filter(Boolean).join(" · ");
+          const lateMin=(typeof lateMinutesOf==="function" && (typeof dayCountsLate!=="function" || dayCountsLate(r))) ? lateMinutesOf(r.in) : 0;
+          const tip=[st, r.in?"in "+r.in:"", r.out?"out "+r.out:"", lateMin?lateMin+" min late":"", ot?"OT "+ot+" h":"", hc?holLabel(hc):"", r.r||""].filter(Boolean).join(" · ");
           return '<td class="num mono" style="padding:4px 2px'+(sev?';color:var(--'+sev+');font-weight:600':'')+'" title="'+esc(tip)+'">'
             + esc(abbr(st)) + (ot?'<sup style="font-size:8px">'+esc(String(ot))+'</sup>':'')
             + (hc?'<sup style="font-size:8px;color:var(--ok)">'+(hc===2?"100":"30")+'</sup>':'')+'</td>';
@@ -21977,27 +22080,52 @@ function payPersonDays(empId){
     const rec=dailyGet(d), r0=rec&&rec.rows?rec.rows[empId]:null;
     const r=r0 && dailyRowShown(empId, d, r0) ? r0 : null;
     const day='<td class="mono" style="white-space:nowrap">'+esc(longDate(d))+'</td>';
-    if(!rec) return '<tr>'+day+'<td colspan="6"><span class="lbl">No report filed for this day</span></td></tr>';
-    if(!r) return '<tr>'+day+'<td colspan="6"><span class="lbl">Not on this day’s report — add them on Daily Manpower</span></td></tr>';
+    if(!rec) return '<tr>'+day+'<td colspan="7"><span class="lbl">No report filed for this day</span></td></tr>';
+    if(!r) return '<tr>'+day+'<td colspan="7"><span class="lbl">Not on this day’s report — add them on Daily Manpower</span></td></tr>';
     const elig=holEligible(d, r) || holCode(r);
+    const lateMin=(typeof lateMinutesOf==="function" && (typeof dayCountsLate!=="function" || dayCountsLate(r))) ? lateMinutesOf(r.in) : 0;
+    const lateTip=lateMin
+      ? (lateMin+" min after "+lateStartLabel(r.in)+" · deduction is minutes × (daily rate ÷ 8 ÷ 60)")
+      : "On time, or no time in. Start is 8:00 AM, or 1:00 PM when time in is at or after noon. No grace.";
     return '<tr data-pdrow="'+esc(d)+'">'+day
       + '<td><select data-pd="s" style="'+sty+'">'+DAY_STATUS.map(x=>'<option'+(r.s===x?" selected":"")+'>'+x+'</option>').join("")+'</select></td>'
-      + '<td><input data-pd="in" value="'+esc(r.in||"")+'" placeholder="8:00 AM" style="'+sty+'"></td>'
+      + '<td><input data-pd="in" value="'+esc(r.in||"")+'" placeholder="8:00 AM" title="'+esc(lateTip)+'" style="'+sty+'"></td>'
       + '<td><input data-pd="out" value="'+esc(r.out||"")+'" placeholder="5:00 PM" style="'+sty+'"></td>'
+      + '<td class="num mono" data-latemin="1" title="'+esc(lateTip)+'">'+(lateMin?lateMin+" min":"—")+'</td>'
       + '<td>'+otEntryBox(empId, d, (r.site||""), r.ot, sty, 'data-pd="ot"')+'</td>'
       + '<td>'+(elig ? holSelect("data-pd", "hol", holCode(r)) : '<span class="lbl">—</span>')+'</td>'
       + '<td><input data-pd="r" value="'+esc(r.r||"")+'" style="'+sty+'"></td></tr>';
   }).join("");
   openModal({ title:flipName(e.name)+" — "+payLabel(per.from, per.to), wide:true,
     body:'<div class="stack"><div class="note">Present/Late needs <b>Time In</b>. Undertime needs <b>Time Out</b>. '
+      + 'Late minutes are time in versus <b>8:00 AM</b>, or <b>1:00 PM</b> when time in is at or after noon. No grace. '
+      + 'They fill the Late column on the run (minutes × daily rate ÷ 8 ÷ 60) unless you type over that box. '
       + 'Holiday is per day: <b>+30%</b>, <b>+100%</b> or <b>As is</b>. Each change is written onto that day’s '
       + 'manpower report with its change history.</div>'
       + '<div class="tw"><table><thead><tr><th style="width:150px">Day</th><th style="width:130px">Status</th>'
-      + '<th style="width:92px">Time in</th><th style="width:92px">Time out</th><th style="width:74px">OT hrs</th>'
+      + '<th style="width:92px">Time in</th><th style="width:92px">Time out</th><th style="width:72px">Late</th><th style="width:74px">OT hrs</th>'
       + '<th style="width:90px">Holiday</th><th>Reason</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
       + '<div class="note" id="pd-err" style="border-left-color:var(--crit)" hidden></div></div>',
     foot:'<button class="btn" id="pd-cancel">Cancel</button><button class="btn pri" id="pd-save">Save days</button>'});
   $("#pd-cancel").onclick=closeModal;
+  $$("[data-pdrow]").forEach(tr=>{
+    const inn=tr.querySelector('[data-pd="in"]');
+    const cell=tr.querySelector("[data-latemin]");
+    if(!inn || !cell || typeof lateMinutesOf!=="function") return;
+    const paint=()=>{
+      const st=(tr.querySelector('[data-pd="s"]')||{}).value||"";
+      const row={s:st, in:inn.value};
+      const m=(typeof dayCountsLate!=="function" || dayCountsLate(row)) ? lateMinutesOf(inn.value) : 0;
+      cell.textContent=m ? m+" min" : "—";
+      const tip=m
+        ? (m+" min after "+lateStartLabel(inn.value)+" · deduction is minutes × (daily rate ÷ 8 ÷ 60)")
+        : "On time, or no time in. Start is 8:00 AM, or 1:00 PM when time in is at or after noon. No grace.";
+      inn.title=tip; cell.title=tip;
+    };
+    inn.addEventListener("input", paint);
+    const sel=tr.querySelector('[data-pd="s"]');
+    if(sel) sel.addEventListener("change", paint);
+  });
   $("#pd-save").onclick=async()=>{
     const bad=[], edits=[];
     $$("[data-pdrow]").forEach(tr=>{
@@ -22627,15 +22755,15 @@ function wire(){
     let body='<h1 style="font-size:16px">Overtime tracking</h1><p>'+esc((report.from||"")+" to "+(report.to||""))
       +' · '+report.requests+' OT request'+(report.requests===1?"":"s")+'</p>';
     (report.buckets||[]).forEach(b=>{
-      body+='<h2 style="font-size:13px">'+esc(b.label)+'</h2><p>OT hours '+esc(num(b.hours,1))
-        +' · OT pay '+esc(num(b.pay,2))
-        +(b.noFormHours?' · no OT form '+esc(num(b.noFormHours,1))+' h':'')+'</p>';
-      body+='<table class="pf-t reg"><tr><td class="hd">Employee</td><td class="hd">OT hours</td><td class="hd">OT pay</td><td class="hd">Form</td></tr>';
+      body+='<h2 style="font-size:13px">'+esc(b.label)+'</h2><p>Approved '+esc(num(b.approvedHours,1))
+        +' h · OT pay '+esc(num(b.pay,2))
+        +(b.pendingHours?' · '+esc(otPendingText(b.pendingHours)):'')+'</p>';
+      body+='<table class="pf-t reg"><tr><td class="hd">Employee</td><td class="hd">Approved h</td><td class="hd">Pending h</td><td class="hd">OT pay</td><td class="hd">Form</td></tr>';
       (b.employees||[]).forEach(e=>{
-        body+='<tr><td>'+esc(flipName(e.name)||e.name)+'</td><td class="n">'+esc(num(e.hours,1))+'</td><td class="n">'+esc(num(e.pay,2))+'</td><td>'+(e.noFormHours?'no OT form':'on file')+'</td></tr>';
+        body+='<tr><td>'+esc(flipName(e.name)||e.name)+'</td><td class="n">'+esc(num(e.approvedHours,1))+'</td><td class="n">'+esc(num(e.pendingHours,1))+'</td><td class="n">'+esc(num(e.pay,2))+'</td><td>'+(e.pendingHours?'Pending OT form':'approved')+'</td></tr>';
       });
       (b.sites||[]).forEach(s=>{
-        body+='<tr><td><b>'+esc(s.site)+'</b></td><td class="n">'+esc(num(s.hours,1))+'</td><td class="n">'+esc(num(s.pay,2))+'</td><td>'+(s.noFormHours?'no OT form':'on file')+'</td></tr>';
+        body+='<tr><td><b>'+esc(s.site)+'</b></td><td class="n">'+esc(num(s.approvedHours,1))+'</td><td class="n">'+esc(num(s.pendingHours,1))+'</td><td class="n">'+esc(num(s.pay,2))+'</td><td>'+(s.pendingHours?'Pending OT form':'approved')+'</td></tr>';
       });
       body+='</table>';
     });
@@ -22847,6 +22975,18 @@ function wire(){
         const typed=val==null ? 0 : (Number(val)||0);
         if(run.lines[id].caTouched || Math.abs(typed-auto)>0.005) run.lines[id].caTouched=true;
       }
+      /* Matching the minutes from time in is not an override. Typing another
+         figure, including 0, is. An untouched match is not stored, so a later
+         time in still fills the box. */
+      if(f==="late"){
+        const emp=S.employees&&S.employees[id];
+        const dates=payDates(per.from, per.to);
+        const auto=(emp && typeof payLateForDays==="function" && typeof payDaysFor==="function" && typeof payRate==="function")
+          ? payLateForDays(payRate(emp, kind).daily, payDaysFor(id, dates)).amount : 0;
+        const typed=val==null ? 0 : (Number(val)||0);
+        if(run.lines[id].lateTouched || Math.abs(typed-auto)>0.005) run.lines[id].lateTouched=true;
+        else delete run.lines[id].late;
+      }
     });
     S.payruns=S.payruns||{}; S.payruns[key]=run;
     if(commit){ run.savedOn=TODAY; await put("payruns",key,run); toast("Run saved.","ok"); }
@@ -22867,9 +23007,10 @@ function wire(){
           delete line.sss; delete line.phic; delete line.hdmf;
         }
         if(!line.caTouched) delete line.ca;
+        if(!line.lateTouched) delete line.late;
       });
     }
-    toast("Days and overtime recomputed from Daily Manpower.","ok");
+    toast("Days and overtime recomputed from Daily Manpower. Late is included when it was not typed over.","ok");
     render();
   };
 
@@ -22879,7 +23020,7 @@ function wire(){
     const dates=payDates(per.from,per.to);
     const saved=payRunGet(kind,per.from,per.to);
     const ui=S.ui||{};
-    const all=payRunLines(kind, per, dates, saved).filter(L=>L.days>0||L.ot>0);
+    const all=payRunLines(kind, per, dates, saved).filter(payHasTime);
     const lines=payFilterLines(all, ui.paySite);
     const grouped=!!ui.payGroupSite;
     const T=payLineSum(lines);
@@ -22926,13 +23067,13 @@ function wire(){
   const payCsvBtn=$("#pay-csv",v); if(payCsvBtn) payCsvBtn.onclick=()=>{
     const b=payBuild();
     const semi=b.kind==="semi";
-    const head=["ID","Name","Position","Area","Daily","Hourly","Days","OT hrs","OT form"]
+    const head=["ID","Name","Position","Area","Daily","Hourly","Days","OT hrs","OT pending"]
       .concat(["Premium days +30%","Premium days +100%","Holiday premium"])
       .concat(semi?["Allowance"]:[])
       .concat(["Gross","Late/Undertime","Cash advance","Uniform/Others","SSS loan","Pag-IBIG loan",
                "SSS","PhilHealth",semi?"HMIC":"Pag-IBIG","Total deductions","NET PAY"]);
     const rowOf=L=>[L.empNo,flipName(L.name),L.position,L.site,
-      L.daily.toFixed(2),L.hourly.toFixed(2),L.days,L.ot,(Number(L.otNoForm)>0?"no OT form":"")]
+      L.daily.toFixed(2),L.hourly.toFixed(2),L.days,L.ot,(Number(L.otPending||L.otNoForm)>0?otPendingText(L.otPending||L.otNoForm):"")]
       .concat([L.hol30||0, L.hol100||0, (L.holPay||0).toFixed(2)])
       .concat(semi?[Number(L.allowance||0).toFixed(2)]:[])
       .concat([L.gross.toFixed(2),L.late,L.ca,L.uniform,L.sssLoan,L.hdmfLoan,
