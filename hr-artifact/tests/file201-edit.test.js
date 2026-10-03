@@ -34,8 +34,8 @@ function loadPersist() {
 }
 
 describe("201 edit stays responsive", () => {
-  it("is build 2026-10-03a", () => {
-    assert.match(html, /const BUILD = "2026-10-03a"/);
+  it("is build 2026-10-03b", () => {
+    assert.match(html, /const BUILD = "2026-10-03b"/);
   });
 
   it("debounces 201 writes and says Saved or Not saved", () => {

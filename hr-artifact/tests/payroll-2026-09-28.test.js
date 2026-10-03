@@ -149,8 +149,8 @@ function putDay(ctx, date, rows, extra) {
 }
 
 describe("2026-09-28 payroll — active roster only", () => {
-  it("is build 2026-10-03a", () => {
-    assert.match(html, /const BUILD = "2026-10-03a"/);
+  it("is build 2026-10-03b", () => {
+    assert.match(html, /const BUILD = "2026-10-03b"/);
   });
 
   it("drops non-active statuses and a separation date on or before the period start", () => {
@@ -223,7 +223,7 @@ describe("2026-09-28 payroll — active roster only", () => {
     assert.equal(ctx.payRosterInclude(ctx.S.employees.dec, week), false);
     assert.equal(ctx.payRosterInclude(ctx.S.employees.nameless, week), false);
     assert.equal(ctx.payRosterInclude(ctx.S.employees.ytang, week), false);
-    assert.equal(ctx.payRosterInclude(ctx.S.employees.dated, custom), false);
+    assert.equal(ctx.payRosterInclude(ctx.S.employees.dated, custom), true);
     assert.equal(ctx.payRosterInclude(ctx.S.employees.live, week), true);
     assert.equal(ctx.payRosterInclude(ctx.S.employees.reg, week), true);
     assert.equal(ctx.payRosterInclude(ctx.S.employees.blank, week), true);
@@ -371,7 +371,7 @@ describe("2026-09-28 payroll — attendance days match payroll", () => {
     assert.equal(line.gross, 1200);
   });
 
-  it("does not credit days before hire or on/after separation, and does not invent a Present", () => {
+  it("does not credit a day before hire, pays a Regular record through the window, and does not invent a Present", () => {
     const ctx = loadPay();
     ctx.S.employees.e1 = {
       id: "e1",
@@ -389,8 +389,8 @@ describe("2026-09-28 payroll — attendance days match payroll", () => {
     putDay(ctx, "2026-09-18", { e1: { s: "Present", ot: 4 } });
     const att = ctx.manpowerPayTally("e1", "2026-09-14", "2026-09-18");
     const line = ctx.payLine(ctx.S.employees.e1, "weekly", ctx.payDates("2026-09-14", "2026-09-18"), null);
-    assert.equal(att.days, 1.5);
-    assert.equal(att.ot, 3);
+    assert.equal(att.days, 2.5);
+    assert.equal(att.ot, 7);
     assert.equal(line.days, att.days);
     assert.equal(line.ot, att.ot);
 
