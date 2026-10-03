@@ -67,14 +67,14 @@ function loadOt() {
 const FORM = "https://drive.google.com/file/d/OTFORM1/view?usp=sharing";
 
 describe("2026-10-02a overtime requests", () => {
-  it("is build 2026-10-02a and gates OT behind a filed request", () => {
-    assert.match(html, /const BUILD = "2026-10-02a"/);
+  it("is build 2026-10-03a and still files an OT request", () => {
+    assert.match(html, /const BUILD = "2026-10-03a"/);
     assert.match(html, /\{k:"otreq",\s*n:"OT Requests"/);
     assert.match(html, /function viewOtRequests\(/);
     assert.match(html, /function otHoursAllowed\(/);
     assert.match(html, /No OT request on file for this date\/site/);
     assert.match(html, /data-otfile=/);
-    assert.match(html, /no OT form/);
+    assert.match(html, /Pending OT form/);
     assert.match(extractFunction(html, "dailyCollect"), /otHoursAllowed/);
     assert.match(extractFunction(html, "payLine"), /otNoForm/);
     assert.match(html, /otreqs/);
@@ -120,8 +120,8 @@ describe("2026-10-02a overtime requests", () => {
     ctx.S.otreqs.ot1 = Object.assign({}, whole, { formUrl: "blob:http://localhost/abc" });
     assert.equal(ctx.otCovered("e1", "2026-10-02", "Danlag"), false);
     ctx.S.otreqs.ot1 = whole;
-    assert.equal(ctx.otHoursAllowed("e1", "2026-10-01", "Danlag", 4, 8), 4);
-    assert.equal(ctx.otHoursAllowed("e1", "2026-10-01", "Danlag", null, 3), null);
+    assert.equal(ctx.otHoursAllowed("e1", "2026-10-01", "Danlag", 4, 8), 8);
+    assert.equal(ctx.otHoursAllowed("e1", "2026-10-01", "Danlag", null, 3), 3);
     assert.equal(ctx.otHoursAllowed("e1", "2026-10-01", "Danlag", 4, 4), 4);
     assert.equal(ctx.otHoursAllowed("e1", "2026-10-02", "Danlag", 1, 3), 3);
     assert.equal(ctx.otHoursAllowed("e1", "2026-10-02", "Danlag", 2, null), null);
@@ -226,7 +226,9 @@ describe("2026-10-02a overtime requests", () => {
     const e2 = b.employees.find((e) => e.id === "e2");
     assert.equal(e1.hours, 5);
     assert.equal(e1.noFormHours, 2);
-    assert.equal(e1.pay, 5 * (520 / 8));
+    assert.equal(e1.pendingHours, 2);
+    assert.equal(e1.approvedHours, 3);
+    assert.equal(e1.pay, 3 * (520 / 8));
     assert.equal(e2.hours, 4);
     assert.equal(e2.noFormHours, 0);
     assert.equal(e2.pay, 4 * (480 / 8));

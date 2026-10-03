@@ -149,8 +149,8 @@ function putDay(ctx, date, rows, extra) {
 }
 
 describe("2026-09-28 payroll — active roster only", () => {
-  it("is build 2026-10-02a", () => {
-    assert.match(html, /const BUILD = "2026-10-02a"/);
+  it("is build 2026-10-03a", () => {
+    assert.match(html, /const BUILD = "2026-10-03a"/);
   });
 
   it("drops non-active statuses and a separation date on or before the period start", () => {
