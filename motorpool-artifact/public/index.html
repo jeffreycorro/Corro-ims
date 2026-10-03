@@ -155,6 +155,8 @@ th{font-family:var(--font-heading);font-weight:600;font-size:11px;letter-spacing
 td{padding:var(--space-3);border-bottom:1px solid var(--rule);vertical-align:top}
 tbody tr:last-child td{border-bottom:0}
 tbody tr:hover{background:color-mix(in srgb,var(--text) 3%,transparent)}
+tbody tr.vrf-dup{background:var(--grey-100);color:var(--grey-700)}
+tbody tr.vrf-dup:hover{background:var(--grey-200)}
 .num{text-align:right;white-space:nowrap}
 th.num{text-align:right}
 .scroll{overflow-x:auto}
@@ -379,7 +381,7 @@ var SIGNATORIES = [
 ];
 var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
 /* Shown on the Ask screen, so a screenshot says which version someone is on. */
-var BUILD = "2026-10-02 a";
+var BUILD = "2026-10-03 a";
 var DAY = 86400000, MO = 30.44;
 
 /* Part categories that were entered under two spellings and so split a unit's
@@ -1277,15 +1279,20 @@ function buildIndex(){
     });
     var canon=canonicalVrfStatus(st, reserve?reserveBy(reserve):null, liq, k);
     var rsvRow=reserve?reserveBy(reserve):null;
+    var dup=(rsvRow&&rsvRow.duplicateOf)||(liq&&liq.duplicateOf)||"";
+    if(!dup) rows.forEach(function(r){ if(!dup) dup=duplicateTargetFromAudit(r&&r.audit, k); });
+    if(!dup&&rsvRow) dup=duplicateTargetFromAudit(rsvRow.audit, k);
+    var sum=rows.reduce(function(a,r){ return a+lineMoney(r); },0);
+    if(canon.status==="Duplicate") sum=0;
     return {vrf:k, date:rows[0].date, month:rows[0].month, rows:rows,
       status: canon.status, legacy:canon.legacy, liq:liq, reserve:reserve,
-      duplicateOf:(rsvRow&&rsvRow.duplicateOf)||(liq&&liq.duplicateOf)||"",
+      duplicateOf:dup,
       units:Object.keys(units), veh:rows[0].veh,
       works:works, scopes:scopes, multi:works.length>1,
       confirmed:nConf===rows.length, partial:nConf>0&&nConf<rows.length,
       confidence: nConf===rows.length?"confirmed":inf.confidence,
       why: nConf===rows.length?"":inf.why,
-      total: rows.reduce(function(a,r){ return a+lineMoney(r); },0),
+      total: sum,
       project: rows[0].project, notes: rows[0].notes, src: rows[0].src||"",
       requestedBy:who};
   });
@@ -1452,20 +1459,40 @@ async function remintHeldVrfCollisions(){
   _vrfs=null;
   return changes;
 }
+function heldVrfShell(no, r){
+  var dup=(r&&r.duplicateOf)||duplicateTargetFromAudit(r&&r.audit, no)||"";
+  var st=heldVrfStatus(r,"Open");
+  if(dup && String(dup).replace(/\D/g,"")!==String(no).replace(/\D/g,"")){
+    if(st!=="Requested") st="Duplicate";
+  }
+  return {vrf:String(no), date:(r&&r.date)||"", month:monthKey(r&&r.date)||"", rows:[],
+    status:st, legacy:false, duplicateOf:dup, liq:null,
+    reserve:r?String(r.no):"", units:r&&r.veh?[r.veh]:[], veh:(r&&r.veh)||"",
+    works:[], scopes:[], multi:false, confirmed:true, partial:false,
+    confidence:"confirmed", why:"", total:0, project:(r&&r.project)||"",
+    notes:(r&&(r.draftPurpose||r.scope))||"", odo:reserveMeter(r),
+    src:"reserve-hold", requestedBy:(r&&r.requestedBy)||"", held:true};
+}
 function addHeldReserveVrfs(){
   /* An approved VRF can sit on the reserve log with a held number and never
      land in a ledger month (index miss, failed post, or year not loaded).
      Keep that number on the VRF log — do not invent pesos, only surface
-     the reserve that is already on file. */
+     the reserve that is already on file. A number that only sits in vrfs,
+     or that two reserves both claim, still gets a row so it cannot vanish. */
   if(!_vrfs) _vrfs=[];
   var have={};
   _vrfs.forEach(function(v){ if(v&&v.vrf) have[String(v.vrf)]=1; });
   (S.reserves||[]).forEach(function(r){
-    var no=String((r&&r.vrfNo)||"").trim();
+    if(!r) return;
+    var no=String(r.vrfNo||"").trim();
     if(!no||have[no]) return;
-    /* Two reserves claim this number. Do not paint the first one's unit
-       and lines onto the VRF — staff have to separate them. */
-    if(reservesOwningVrf(no).length>1) return;
+    /* Two reserves claim this number. Show it without copying one
+       reserve's lines onto the other — staff still have to separate them. */
+    if(reservesOwningVrf(no).length>1){
+      _vrfs.push(heldVrfShell(no, r));
+      have[no]=1;
+      return;
+    }
     var lines=(r.draftLines||[]).filter(function(l){ return l&&l.cat; });
     var meter=reserveMeter(r);
     var deadHold=reserveSpendClosed(r);
@@ -1503,18 +1530,31 @@ function addHeldReserveVrfs(){
         total:rs.reduce(function(a,x){ return a+lineMoney(x); },0)};
     });
     var st=heldVrfStatus(r, rows[0].vstatus);
+    var dup=(r.duplicateOf)||duplicateTargetFromAudit(r.audit, no)||"";
+    var sum=rows.reduce(function(a,x){ return a+lineMoney(x); },0);
+    if(st==="Duplicate") sum=0;
     _vrfs.push({vrf:no, date:r.date, month:rows[0].month, rows:rows,
-      status:st, legacy:false, duplicateOf:r.duplicateOf||"",
+      status:st, legacy:false, duplicateOf:dup,
       liq:(reserveSpendClosed(r)||r.liquidatedAt)?{at:r.cancelledAt||r.liquidatedAt, outcome:r.cancelOutcome||"", by:r.cancelledBy||""}:null,
       reserve:String(r.no),
       units:r.veh?[r.veh]:[], veh:r.veh, works:works, scopes:scopes,
       multi:works.length>1, confirmed:true, partial:false,
       confidence:"confirmed", why:"",
-      total:rows.reduce(function(a,x){ return a+lineMoney(x); },0),
+      total:sum,
       project:r.project, notes:r.draftPurpose||r.scope||"",
       odo:meter, preparedSig:r.preparedSig||"", preparedSigName:r.preparedSigName||"",
       src:"reserve-hold", requestedBy:r.requestedBy||"", held:true});
     have[no]=1;
+  });
+  /* A number that is only in vrfs (the reserve's vrfNo was moved on) still
+     has to appear. The reserve that actually carries it as vrfNo already won. */
+  (S.reserves||[]).forEach(function(r){
+    (r&&r.vrfs||[]).forEach(function(n){
+      n=String(n||"").trim();
+      if(!n||have[n]) return;
+      _vrfs.push(heldVrfShell(n, r));
+      have[n]=1;
+    });
   });
 }
 function vrfIndex(){ buildIndex(); return _vrfs; }
@@ -1698,6 +1738,10 @@ async function liquidateVrf(entry,edits,added,by,note,outcome){
   assertSingleVrfOwner(no, ownerNo||null);
   outcome=outcome||liquidationOutcome(entry.rows, edits, added);
   var stamp={at:iso(),by:by||"",note:note||"",outcome:outcome};
+  if(outcome==="duplicate"){
+    var dupNo=/(\d{3,})/.exec(String(stamp.note||""));
+    if(dupNo) stamp.duplicateOf=String(dupNo[1]).replace(/^0+/,"")||dupNo[1];
+  }
   var dead=outcome==="cancelled"||outcome==="not-bought"||outcome==="duplicate";
   if(dead){
     var hits=ledgerRowsForVrf(no, true);
@@ -2501,6 +2545,7 @@ function watch(){
         var others=S.reserves.filter(function(r){
           return String((parseDate(r.date)||new Date()).getFullYear())!==String(y); });
         S.reserves=others.concat(thaw(d.rows));
+        _vrfs=null;
         liveRender();
       }, function(){});
     }catch(e){}
@@ -3200,6 +3245,80 @@ async function commitVrfBundle(spec){
   else await appendLedger(month, rows);
   if(reserve) await saveReserves(reserve.no);
 }
+function otherVrfNos(rows, vrfNo){
+  var no=String(vrfNo==null?"":vrfNo).trim();
+  var seen={}, out=[], i, v;
+  for(i=0;i<(rows||[]).length;i++){
+    if(!rows[i]) continue;
+    v=String(rows[i].vrf||"").trim();
+    if(!v||v===no||seen[v]) continue;
+    seen[v]=1; out.push(v);
+  }
+  return out;
+}
+/* serverRows null means the live document did not come back. Writing that
+   empty read back is how reopening 5890 could drop 5903 and every other row. */
+function ledgerReplaceBase(serverRows, localRows, vrfNo){
+  var localOthers=otherVrfNos(localRows, vrfNo);
+  var label=String(vrfNo||"").trim()||"this VRF";
+  if(serverRows==null){
+    if(localOthers.length){
+      var missing=new Error("The shared ledger did not come back. VRF "+label+" was not saved, and no other VRF was changed.");
+      missing.code="ledger_unreadable";
+      throw missing;
+    }
+    return [];
+  }
+  if(!otherVrfNos(serverRows, vrfNo).length && localOthers.length){
+    var short=new Error("The shared ledger came back without the other VRFs. VRF "+label+" was not saved, and no other VRF was changed.");
+    short.code="ledger_unreadable";
+    throw short;
+  }
+  return serverRows;
+}
+function reserveNosOf(rows){
+  var seen={}, out=[], i, n;
+  for(i=0;i<(rows||[]).length;i++){
+    if(!rows[i]||rows[i].no==null||String(rows[i].no)==="") continue;
+    n=String(rows[i].no);
+    if(seen[n]) continue;
+    seen[n]=1; out.push(n);
+  }
+  return out;
+}
+function reserveReplaceBase(serverRows, localRows, incomingNos){
+  var incoming={};
+  (incomingNos||[]).forEach(function(n){ if(n!=null&&String(n)!=="") incoming[String(n)]=1; });
+  var localKeep=reserveNosOf(localRows).filter(function(n){ return !incoming[n]; });
+  if(serverRows==null){
+    if(localKeep.length){
+      var missing=new Error("The shared reserve year did not come back. Nothing was saved, so other VRFs were left as they are.");
+      missing.code="ledger_unreadable";
+      throw missing;
+    }
+    return [];
+  }
+  var serverSet={};
+  reserveNosOf(serverRows).forEach(function(n){ serverSet[n]=1; });
+  var gone=localKeep.filter(function(n){ return !serverSet[n]; });
+  if(gone.length){
+    var short=new Error("The shared reserve year came back without the other reserves. Nothing was saved, so other VRFs were left as they are.");
+    short.code="ledger_unreadable";
+    throw short;
+  }
+  return serverRows;
+}
+async function readLedgerRows(month, vrfNo){
+  var doc;
+  try{ doc=await readDocLive("ledger/"+month); }
+  catch(e){
+    var unread=new Error("Could not re-read "+month+". VRF "+vrfNo+" was not saved, and no other VRF was changed.");
+    unread.code="ledger_unreadable";
+    throw unread;
+  }
+  var serverRows=(doc&&Array.isArray(doc.rows))?doc.rows:null;
+  return ledgerReplaceBase(serverRows, S.ledger[month]||[], vrfNo);
+}
 async function replaceLedgerVrf(month, vrfNo, rows){
   var no=String(vrfNo||"").trim();
   if(!month||!no) throw new Error("VRF number and month are required.");
@@ -3212,8 +3331,7 @@ async function replaceLedgerVrf(month, vrfNo, rows){
     });
     if(ack){ rememberLedger(month, no, rows, "replace"); return S.ledger[month]; }
   }
-  var doc=await readDocLive("ledger/"+month);
-  var cur=(doc&&Array.isArray(doc.rows))?doc.rows:[];
+  var cur=await readLedgerRows(month, no);
   var kept=cur.filter(function(row){ return !row || String(row.vrf)!==no; });
   var next=kept.concat(rows||[]);
   S.ledger[month]=next;
@@ -3252,8 +3370,7 @@ async function appendLedger(month,rows){
     });
     if(ack){ rememberLedger(month, no, rows, "append"); return; }
   }
-  var doc=await readDocLive("ledger/"+month);
-  var cur=(doc&&Array.isArray(doc.rows))?doc.rows:[];
+  var cur=await readLedgerRows(month, no);
   var kept=cur.filter(function(row){ return !row || String(row.vrf)!==no; });
   var mine=cur.filter(function(row){ return row && String(row.vrf)===no; });
   var next=kept.concat(mine).concat(rows);
@@ -3499,8 +3616,18 @@ async function saveReserves(onlyNos){
       }
       if(remoteOk) continue;
     }
-    var doc=await readDocLive("reserves/"+y);
-    var cur=(doc&&Array.isArray(doc.rows))?doc.rows.slice():[];
+    var doc;
+    try{ doc=await readDocLive("reserves/"+y); }
+    catch(e){
+      var unread=new Error("Could not re-read reserves for "+y+". Nothing was saved, so other VRFs were left as they are.");
+      unread.code="ledger_unreadable";
+      throw unread;
+    }
+    var serverRows=(doc&&Array.isArray(doc.rows))?doc.rows:null;
+    var localYear=(S.reserves||[]).filter(function(r){
+      return r && String((parseDate(r.date)||new Date()).getFullYear())===String(y);
+    });
+    var cur=reserveReplaceBase(serverRows, localYear, incoming.map(function(r){ return r.no; })).slice();
     var index={};
     cur.forEach(function(r,idx){ if(r) index[String(r.no)]=idx; });
     for(var j=0;j<incoming.length;j++){
@@ -4990,6 +5117,51 @@ var JO_CHECKS={
   "Road test":["Route completed","Behaviour recorded"],
   "Towing":["Unit secured","Delivered to workshop"]
 };
+function duplicateTargetFromAudit(list, selfNo){
+  var self=String(selfNo||"").replace(/\D/g,"");
+  var i, n, m, got;
+  for(i=0;i<(list||[]).length;i++){
+    n=list[i];
+    if(!n||String(n.field||"")!=="duplicate") continue;
+    m=String(n.to||n.note||"").match(/(\d{3,})/);
+    if(!m) continue;
+    got=String(m[1]).replace(/^0+/,"")||m[1];
+    if(self && got===(self.replace(/^0+/,"")||self)) continue;
+    return got;
+  }
+  return "";
+}
+function duplicateOfNumber(v){
+  if(!v) return "";
+  var raw=v.duplicateOf||(v.liq&&v.liq.duplicateOf)||"";
+  var m=String(raw).match(/(\d{3,})/);
+  if(m) return String(m[1]).replace(/^0+/,"")||m[1];
+  var self=String(v.vrf||"");
+  var i, rows=v.rows||[], hit;
+  for(i=0;i<rows.length;i++){
+    hit=duplicateTargetFromAudit(rows[i]&&rows[i].audit, self);
+    if(hit) return hit;
+  }
+  return "";
+}
+/* Duplicates stay on the log at ₱0. Pending forms stay visible and out of posted spend. */
+function vrfLogAmount(v){
+  if(!v) return 0;
+  if(String(v.status||"")==="Duplicate") return 0;
+  return moneyNum(v.total);
+}
+function vrfCountsTowardPostedTotal(v){
+  if(!v) return false;
+  var st=String(v.status||"");
+  if(st==="Duplicate"||st==="Requested") return false;
+  if(vrfAwaitingApproval(v)) return false;
+  return true;
+}
+function postedLogTotal(list){
+  return (list||[]).reduce(function(a,v){
+    return a+(vrfCountsTowardPostedTotal(v)?vrfLogAmount(v):0);
+  },0);
+}
 function vrfChip(v){
   var m={"Open":["warn","Open — awaiting liquidation"],
     "Closed":["ok","Liquidated"],"Legacy":["mute","From the old workbooks"],
@@ -4998,11 +5170,17 @@ function vrfChip(v){
     "Duplicate":["mute","Duplicate"],
     "Cancelled":["mute","Cancelled"]};
   if(v.status==="Duplicate"){
-    var of=v.duplicateOf||(v.liq&&v.liq.duplicateOf)||"";
-    return el("span","chip mute", of?("Duplicate of VRF "+of):"Duplicate");
+    var of=duplicateOfNumber(v);
+    return el("span","chip mute", of?("Duplicate of "+of):"Duplicate");
   }
   var x=m[v.status]||["mute",v.status];
   return el("span","chip "+x[0],x[1]);
+}
+function vrfLogStatus(v){
+  if(v&&v.status==="Duplicate") return vrfChip(v);
+  if(v&&(v.status==="Requested"||vrfAwaitingApproval(v)))
+    return el("span","chip warn","FOR APPROVAL");
+  return vrfChip(v);
 }
 /* Printed paper must say whether Jeffrey has approved it. Holds and anything
    still waiting use the same VRF Logs wording. Posted / open / closed forms
@@ -5557,6 +5735,10 @@ function table(cols,rows,opts){
       if(v instanceof Node) d.appendChild(v); else d.textContent=(v==null?"—":v);
       x.appendChild(d);
     });
+    if(opts.rowClass){
+      var rc=opts.rowClass(r);
+      if(rc) x.className=rc;
+    }
     if(opts.onRow) { x.style.cursor="pointer"; x.addEventListener("click",function(){opts.onRow(r);}); }
     tb.appendChild(x);
   });
@@ -8367,24 +8549,18 @@ function vrfLogSortNewestFirst(list){
     return vrfNoNum(b)-vrfNoNum(a);
   });
 }
+/* Every VRF number on file. A counter window plus a 300-row cap dropped
+   posted duplicates such as 5903 once held forms filled the list. */
 function vrfLogVisible(list){
-  var cur=parseInt(S.cfg&&S.cfg.nextVrf,10)||0;
   var sorted=vrfLogSortNewestFirst(list);
   var seen={}, kept=[];
-  function take(v){
-    var k=String(v&&v.vrf||"");
+  sorted.forEach(function(v){
+    var k=String(v&&v.vrf||"").trim();
     if(!k||seen[k]) return;
-    seen[k]=1; kept.push(v);
-  }
-  sorted.forEach(function(v){
-    var n=parseInt(String(v&&v.vrf||"").replace(/\D/g,""),10);
-    if(v&&(v.held||(isFinite(n)&&cur&&n>=cur-40&&n<=cur+10))) take(v);
+    seen[k]=1;
+    kept.push(v);
   });
-  sorted.forEach(function(v){
-    if(kept.length>=300) return;
-    take(v);
-  });
-  return vrfLogSortNewestFirst(kept);
+  return kept;
 }
 function vrfLogView(){
   var w=el("div");
@@ -8447,15 +8623,20 @@ function vrfLogView(){
       host.appendChild(ban);
     }
     var term=(S.logQ||"").trim().toLowerCase();
+    var numberQuery=/^\d{3,}$/.test(term.replace(/\s+/g,""));
     var list=vrfIndex().filter(function(v){
-      if(S.regWork&&v.works.indexOf(S.regWork)<0) return false;
-      if(S.regStatus&&v.status!==S.regStatus) return false;
-      if(S.logProject&&normProj(v.project)!==S.logProject) return false;
+      var byNumber=term && vrfSearchHits(v.vrf,term);
+      if(!(numberQuery && byNumber)){
+        if(S.regWork&&(v.works||[]).indexOf(S.regWork)<0) return false;
+        if(S.regStatus&&v.status!==S.regStatus) return false;
+        if(S.logProject&&normProj(v.project)!==S.logProject) return false;
+      }
       if(!term) return true;
-      if(vrfSearchHits(v.vrf,term)) return true;
-      if(v.units.join(" ").toLowerCase().indexOf(term)>=0) return true;
+      if(byNumber) return true;
+      if(numberQuery) return false;
+      if((v.units||[]).join(" ").toLowerCase().indexOf(term)>=0) return true;
       if((v.project||"").toLowerCase().indexOf(term)>=0) return true;
-      return v.rows.some(function(r){
+      return (v.rows||[]).some(function(r){
         return ((r.item||"")+" "+(r.supplier||"")+" "+(r.cat||"")+" "+(r.sub||"")).toLowerCase().indexOf(term)>=0; });
     });
     if(!list.length && term){
@@ -8476,7 +8657,7 @@ function vrfLogView(){
       ["Forms in view", nnum(list.length), vrfIndex().length+" on file"],
       ["With a Drive link", nnum(withFile), list.length?Math.round((withFile/list.length)*100)+"% of these":"—"],
       ["Awaiting liquidation", nnum(list.filter(function(v){return v.status==="Open";}).length), "still open", true],
-      ["Value in view", pesoK(list.reduce(function(a,v){return a+v.total;},0)), "sum of these forms", true]
+      ["Value in view", pesoK(postedLogTotal(list)), "posted spend — duplicates and FOR APPROVAL excluded", true]
     ]));
     var tbl=table([
       {h:"VRF",get:function(v){ var x=el("span","mono",v.vrf); x.style.fontWeight="600"; return x; }},
@@ -8490,11 +8671,11 @@ function vrfLogView(){
           d.appendChild(el("span","chip "+(sc.confirmed?"accent":"mute"),sc.name)); });
         return d; }},
       {h:"Lines",num:true,get:function(v){return nnum(v.rows.length);}},
-      {h:"Total",num:true,get:function(v){return peso(v.total);}},
+      {h:"Total",num:true,get:function(v){return peso(vrfLogAmount(v));}},
       {h:"Files",num:true,get:function(v){
         var n=photoCount(v.vrf);
         return el("span","chip "+(n?"accent":"mute"),n?"📎 "+n:"—"); }},
-      {h:"Status",get:vrfChip},
+      {h:"Status",get:vrfLogStatus},
       {h:"",get:function(v){
         var row=el("div"); row.style.cssText="display:flex;gap:4px;flex-wrap:wrap";
         var pb=el("button","btn sm","Print");
@@ -8540,7 +8721,8 @@ function vrfLogView(){
         ob.addEventListener("click",function(ev){ ev.stopPropagation(); openVrf(v); });
         row.appendChild(ob);
         return row; }}
-    ],vrfLogVisible(list),{empty:"No form matches that."});
+    ],vrfLogVisible(list),{empty:"No form matches that.",
+      rowClass:function(v){ return v&&v.status==="Duplicate"?"vrf-dup":""; }});
     var visible=vrfLogVisible(list);
     host.appendChild(card("Forms",
       visible.length<list.length?"showing "+nnum(visible.length)+" of "+nnum(list.length):nnum(list.length)+" form"+(list.length===1?"":"s"),
