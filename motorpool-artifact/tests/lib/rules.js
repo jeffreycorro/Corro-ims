@@ -1889,11 +1889,16 @@
       if (v && v.vrf) have[String(v.vrf)] = 1;
     });
     var out = [];
-    (reserves || []).forEach(function (r) {
-      var no = String((r && r.vrfNo) || "").trim();
+    function add(no) {
+      no = String(no || "").trim();
       if (!no || have[no]) return;
       out.push(no);
       have[no] = 1;
+    }
+    (reserves || []).forEach(function (r) {
+      if (!r) return;
+      add(r.vrfNo);
+      (r.vrfs || []).forEach(add);
     });
     return out;
   }
@@ -1924,26 +1929,133 @@
     });
   }
 
-  function vrfLogVisible(list, nextVrf) {
-    var cur = parseInt(nextVrf, 10) || 0;
+  /* Every numbered VRF stays on the log. A window around the counter plus a
+     300-row cap hid posted duplicates once held forms filled the list. */
+  function vrfLogVisible(list) {
     var sorted = vrfLogSortNewestFirst(list);
     var seen = {};
     var kept = [];
-    function take(v) {
-      var k = String((v && v.vrf) || "");
+    sorted.forEach(function (v) {
+      var k = String((v && v.vrf) || "").trim();
       if (!k || seen[k]) return;
       seen[k] = 1;
       kept.push(v);
+    });
+    return kept;
+  }
+
+  function vrfLogAmount(v) {
+    if (!v) return 0;
+    if (String(v.status || "") === "Duplicate") return 0;
+    return moneyNum(v.total);
+  }
+
+  function vrfCountsTowardPostedTotal(v) {
+    if (!v) return false;
+    var st = String(v.status || "");
+    if (st === "Duplicate" || st === "Requested") return false;
+    if (vrfAwaitingApproval(v)) return false;
+    return true;
+  }
+
+  function postedLogTotal(list) {
+    return (list || []).reduce(function (a, v) {
+      return a + (vrfCountsTowardPostedTotal(v) ? vrfLogAmount(v) : 0);
+    }, 0);
+  }
+
+  function otherVrfNos(rows, vrfNo) {
+    var no = String(vrfNo == null ? "" : vrfNo).trim();
+    var seen = {};
+    var out = [];
+    (rows || []).forEach(function (row) {
+      if (!row) return;
+      var v = String(row.vrf || "").trim();
+      if (!v || v === no || seen[v]) return;
+      seen[v] = 1;
+      out.push(v);
+    });
+    return out;
+  }
+
+  /* serverRows null means the live document did not come back. An empty list
+     that is missing VRFs this device already has must not be written back —
+     that is how saving VRF 5890 could replace the month and drop 5903. */
+  function ledgerReplaceBase(serverRows, localRows, vrfNo) {
+    var localOthers = otherVrfNos(localRows, vrfNo);
+    var label = String(vrfNo || "").trim() || "this VRF";
+    if (serverRows == null) {
+      if (localOthers.length) {
+        var missing = new Error(
+          "The shared ledger did not come back. VRF " +
+            label +
+            " was not saved, and no other VRF was changed."
+        );
+        missing.code = "ledger_unreadable";
+        throw missing;
+      }
+      return [];
     }
-    sorted.forEach(function (v) {
-      var n = parseInt(String((v && v.vrf) || "").replace(/\D/g, ""), 10);
-      if (v && (v.held || (isFinite(n) && cur && n >= cur - 40 && n <= cur + 10))) take(v);
+    if (!otherVrfNos(serverRows, vrfNo).length && localOthers.length) {
+      var short = new Error(
+        "The shared ledger came back without the other VRFs. VRF " +
+          label +
+          " was not saved, and no other VRF was changed."
+      );
+      short.code = "ledger_unreadable";
+      throw short;
+    }
+    return serverRows;
+  }
+
+  function reserveNos(rows) {
+    var seen = {};
+    var out = [];
+    (rows || []).forEach(function (r) {
+      if (!r || r.no == null || String(r.no) === "") return;
+      var n = String(r.no);
+      if (seen[n]) return;
+      seen[n] = 1;
+      out.push(n);
     });
-    sorted.forEach(function (v) {
-      if (kept.length >= 300) return;
-      take(v);
+    return out;
+  }
+
+  /* Same guard for the reserve year. Reopen saves one reserve; it must not
+     publish a year file that no longer contains the other reserves. */
+  function reserveReplaceBase(serverRows, localRows, incomingNos) {
+    var incoming = {};
+    (incomingNos || []).forEach(function (n) {
+      if (n != null && String(n) !== "") incoming[String(n)] = 1;
     });
-    return vrfLogSortNewestFirst(kept);
+    var localKeep = reserveNos(localRows).filter(function (n) {
+      return !incoming[n];
+    });
+    if (serverRows == null) {
+      if (localKeep.length) {
+        var missing = new Error(
+          "The shared reserve year did not come back. Nothing was saved, so other VRFs were left as they are."
+        );
+        missing.code = "ledger_unreadable";
+        throw missing;
+      }
+      return [];
+    }
+    var serverSet = {};
+    reserveNos(serverRows).forEach(function (n) {
+      serverSet[n] = 1;
+    });
+    var gone = localKeep.filter(function (n) {
+      return !serverSet[n];
+    });
+    if (gone.length) {
+      var short = new Error(
+        "The shared reserve year came back without the other reserves. Nothing was saved, so other VRFs were left as they are."
+      );
+      short.code = "ledger_unreadable";
+      throw short;
+    }
+    return serverRows;
   }
 
   function photoFingerprint(x) {
@@ -2256,6 +2368,11 @@
     heldReserveVrfs: heldReserveVrfs,
     vrfLogVisible: vrfLogVisible,
     vrfLogSortNewestFirst: vrfLogSortNewestFirst,
+    vrfLogAmount: vrfLogAmount,
+    vrfCountsTowardPostedTotal: vrfCountsTowardPostedTotal,
+    postedLogTotal: postedLogTotal,
+    ledgerReplaceBase: ledgerReplaceBase,
+    reserveReplaceBase: reserveReplaceBase,
     mergePhotoLists: mergePhotoLists,
     missingJoCloseFields: missingJoCloseFields,
     missingList: missingList,
