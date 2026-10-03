@@ -77,7 +77,7 @@ describe("duplicate mark drops the copy out of open spend", () => {
 
 describe("artifact HTML — send once, approve the same number", () => {
   it("guards the send button and does not mint on approve", () => {
-    assert.match(html, /var BUILD = "2026-09-29 c"/);
+    assert.match(html, /var BUILD = "2026-10-02 a"/);
     assert.match(html, /S\._sendingVrf/);
     assert.match(html, /submissionId/);
     assert.match(html, /function askSendDespiteMatch/);

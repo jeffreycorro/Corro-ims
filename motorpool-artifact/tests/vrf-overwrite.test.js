@@ -269,7 +269,7 @@ describe("artifact HTML — per-VRF writes and Edit", () => {
     assert.doesNotMatch(html, /var draft=drafts\[i\]/);
     assert.match(html, /if\(vrfNumberSealed\(changes\[ci\]\.from\)\) continue/);
     assert.match(html, /Could not reserve a VRF number/);
-    assert.match(html, /var BUILD = "2026-09-29 c"/);
+    assert.match(html, /var BUILD = "2026-10-02 a"/);
   });
 
   it("offers Edit on the log and inside the open VRF, and prints the audit note", () => {

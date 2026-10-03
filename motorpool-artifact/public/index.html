@@ -379,7 +379,7 @@ var SIGNATORIES = [
 ];
 var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
 /* Shown on the Ask screen, so a screenshot says which version someone is on. */
-var BUILD = "2026-09-29 c";
+var BUILD = "2026-10-02 a";
 var DAY = 86400000, MO = 30.44;
 
 /* Part categories that were entered under two spellings and so split a unit's
@@ -541,6 +541,109 @@ function applyLiquidationLine(row, edit, stamp, outcome){
   });
   if(e.supplier!=null) next.supplier=e.supplier;
   return next;
+}
+/* Audit amounts stay plain so a later read can compare 200.00 with 150.00. */
+function auditMoney(n){
+  var v=moneyNum(n);
+  return (Math.round(v*100)/100).toFixed(2);
+}
+function reopenAuditNote(by, at, oldAmount, prevLiq){
+  var note="";
+  if(prevLiq&&(prevLiq.at||prevLiq.by)){
+    note="Was liquidated"+(prevLiq.at?" on "+prevLiq.at:"")+(prevLiq.by?" by "+prevLiq.by:"");
+  }
+  return {at:at||"", by:String(by||"").trim(), field:"reopen",
+    from:auditMoney(oldAmount), to:"awaiting liquidation", note:note};
+}
+/* Drop the liquidation stamp. Leaving liq in place keeps the VRF Closed,
+   which is why Reopen redrew the same sheet and looked like a dead button. */
+function reopenClosedLedgerRow(row, by, at, oldAmount, prevLiq){
+  var next=Object.assign({}, row||{});
+  next.vrf=String(next.vrf||"").trim();
+  next.vstatus="Open";
+  next.notBought=false;
+  delete next.liq;
+  if(next.src==="reserve-hold") delete next.src;
+  next.audit=((row&&row.audit)||[]).concat([reopenAuditNote(by, at, oldAmount, prevLiq||(row&&row.liq))]);
+  return next;
+}
+function reserveNeedsReopen(reserve){
+  if(!reserve||reserveSpendClosed(reserve)) return false;
+  if(reserve.status==="Closed"||reserve.status==="Flagged") return true;
+  return !!reserve.liquidatedAt;
+}
+/* Back to Approved, same VRF number. vrfs must still list that number or a
+   reload will treat the posted lines as a collision and mint a new one. */
+function applyReserveReopen(reserve, by, at, oldAmount, prevLiq){
+  if(!reserveNeedsReopen(reserve)) return false;
+  var no=String(reserve.vrfNo||"").trim();
+  reserve.status="Approved";
+  reserve.liquidatedAt="";
+  reserve.actual=null;
+  if(no){
+    var list=(reserve.vrfs||[]).map(function(x){ return String(x); });
+    if(list.indexOf(no)<0) reserve.vrfs=list.concat([no]);
+  }
+  reserve.audit=(reserve.audit||[]).concat([reopenAuditNote(by, at, oldAmount, prevLiq)]);
+  return true;
+}
+function priorReopenNote(rows, reserve){
+  var prior=null;
+  function scan(list){
+    (list||[]).forEach(function(n){ if(n&&n.field==="reopen") prior=n; });
+  }
+  (rows||[]).forEach(function(r){ scan(r&&r.audit); });
+  scan(reserve&&reserve.audit);
+  return prior;
+}
+function recloseAmountAudit(rows, reserve, newTotal, by, at){
+  var prior=priorReopenNote(rows, reserve);
+  if(!prior) return null;
+  var who=String(prior.by||"").trim();
+  var when=String(prior.at||"").trim();
+  var extra="";
+  if(who||when) extra="Reopened by "+(who||"—")+(when?" on "+when:"");
+  return {at:at||"", by:String(by||"").trim()||who, field:"amount",
+    from:prior.from||auditMoney(0), to:auditMoney(newTotal), note:extra};
+}
+function liquidationNewTotal(entry, edits, added, outcome){
+  if(outcome==="not-bought"||outcome==="cancelled"||outcome==="duplicate") return 0;
+  var t=0;
+  ((entry&&entry.rows)||[]).forEach(function(r,i){
+    var e=edits&&edits[i];
+    if(e&&e.remove) return;
+    var q=(e&&e.qty!=null)?e.qty:(r&&r.qty);
+    var p=(e&&e.price!=null)?e.price:(r&&r.price);
+    if(q!=null&&p!=null&&(moneyNum(q)||moneyNum(p))) t+=moneyNum(q)*moneyNum(p);
+    else t+=moneyNum(r&&r.total);
+  });
+  (added||[]).forEach(function(a){
+    if(!a||!a.cat) return;
+    t+=(parseFloat(a.qty)||0)*(parseFloat(a.price)||0);
+  });
+  return t;
+}
+function stampRecloseAudit(groups, sourceRows, reserve, newTotal, by, at){
+  var note=recloseAmountAudit(sourceRows, reserve, newTotal, by, at);
+  if(!note) return null;
+  var keys=Object.keys(groups||{});
+  var i;
+  for(i=0;i<keys.length;i++){
+    var list=groups[keys[i]];
+    if(list&&list.length){
+      list[0].audit=(list[0].audit||[]).concat([note]);
+      break;
+    }
+  }
+  if(reserve) reserve.audit=(reserve.audit||[]).concat([note]);
+  return note;
+}
+function reserveForReclose(entry){
+  var r=reserveForVrf(entry);
+  var no=String(entry&&entry.vrf||"").trim();
+  if(!r||!no||!reserveOwnsVrfNo(r, no)) return null;
+  if(reservesOwningVrf(no).length>1) return null;
+  return r;
 }
 /* local-date ISO: never build this from UTC getters, it shifts the day */
 function iso(d){ d=d||new Date();
@@ -1638,6 +1741,8 @@ async function liquidateVrf(entry,edits,added,by,note,outcome){
         row.vrf=no;
         (byMk[mk]=byMk[mk]||[]).push(row);
       });
+      stampRecloseAudit(byMk, entry.rows, reserveForReclose(entry),
+        liquidationNewTotal(entry, edits, added, outcome), by, stamp.at);
       var seedMonths=Object.keys(byMk);
       for(var si=0;si<seedMonths.length;si++){
         await appendLedger(seedMonths[si], byMk[seedMonths[si]]);
@@ -1652,6 +1757,8 @@ async function liquidateVrf(entry,edits,added,by,note,outcome){
         next.vrf=no;
         (byUp[mk]=byUp[mk]||[]).push(next);
       });
+      stampRecloseAudit(byUp, entry.rows, reserveForReclose(entry),
+        liquidationNewTotal(entry, edits, added, outcome), by, stamp.at);
       var upMonths=Object.keys(byUp);
       for(var ui=0;ui<upMonths.length;ui++){
         await replaceLedgerVrf(upMonths[ui], no, rowsConfinedToVrf(byUp[upMonths[ui]], no));
@@ -2017,6 +2124,65 @@ async function saveVrfOdo(entry, n){
   }
   if(writes.length) await Promise.all(writes);
   _vrfs=null;
+}
+
+/* Reopen a liquidated VRF onto the same number. Amounts stay so the form
+   is prefilled. The ledger rows are replaced, not appended. */
+async function reopenLiquidatedVrf(entry, by){
+  by=String(by||"").trim();
+  if(!by){
+    var need=new Error("Put your name on the reopen. Nothing was changed.");
+    need.code="reopen_name";
+    throw need;
+  }
+  var no=String(entry&&entry.vrf||"").trim();
+  if(!no) throw new Error("VRF number is required.");
+  var st=String(entry&&entry.status||"").trim();
+  if(spendEndStatus(st)){
+    throw new Error("VRF "+no+" is "+st+". Reopen is only for a liquidated VRF whose amount needs correcting.");
+  }
+  if(st!=="Closed" && !/^liquidated$/i.test(st)){
+    throw new Error("VRF "+no+" is "+(st||"not liquidated")+", so Reopen left it as it is.");
+  }
+  assertSingleVrfOwner(no, entry.reserve||null);
+  var hits=ledgerRowsForVrf(no);
+  var at=iso();
+  var oldAmount=entry.total;
+  var prevLiq=entry.liq||(hits[0]&&hits[0].row&&hits[0].row.liq)||null;
+  if(hits.length){
+    var byMk={};
+    hits.forEach(function(hit){
+      var next=reopenClosedLedgerRow(hit.row, by, at, oldAmount, prevLiq);
+      next.vrf=no;
+      (byMk[hit.mk]=byMk[hit.mk]||[]).push(next);
+    });
+    var months=Object.keys(byMk);
+    for(var i=0;i<months.length;i++){
+      await replaceLedgerVrf(months[i], no, rowsConfinedToVrf(byMk[months[i]], no));
+    }
+  }
+  var rsv=reserveForReclose(entry);
+  var reserveOpened=false;
+  if(rsv&&reserveNeedsReopen(rsv)){
+    applyReserveReopen(rsv, by, at, oldAmount, prevLiq);
+    if(!String(rsv.vrfNo||"").trim()) rsv.vrfNo=no;
+    var owned=(rsv.vrfs||[]).map(function(x){ return String(x); });
+    if(owned.indexOf(no)<0) rsv.vrfs=owned.concat([no]);
+    await saveReserves(rsv.no);
+    reserveOpened=true;
+  }
+  if(!hits.length && !reserveOpened){
+    throw new Error("VRF "+no+" has no closed lines to reopen. Nothing was changed.");
+  }
+  _vrfs=null; _lw=null; _cons=null; _inv=null;
+  var fresh=vrfByNo(no);
+  if(!fresh||String(fresh.vrf)!==no){
+    throw new Error("VRF "+no+" did not come back as itself after reopen.");
+  }
+  if(fresh.status!=="Open"||fresh.liq){
+    throw new Error("VRF "+no+" is still showing as liquidated, so the amount was not opened for editing.");
+  }
+  return fresh;
 }
 
 /* When every VRF against a reserve is closed, the reserve settles itself.
@@ -8802,7 +8968,7 @@ function buildVrfDoc(entry,photos){
     printAudits.forEach(function(n){
       var line=el("div");
       line.style.cssText="font-size:10px;padding:1px 0";
-      line.textContent=(n.at||"—")+" · "+(n.by||"—")+" · "+n.field+" · "+(n.from||"—")+" → "+(n.to||"—");
+      line.textContent=auditLineText(n);
       ah.appendChild(line);
     });
     d.appendChild(ah);
@@ -9250,6 +9416,10 @@ function vrfMayEdit(entry){
   var st=String(entry.status||"");
   return st==="Open"||st==="Requested"||st==="Closed";
 }
+function auditLineText(n){
+  if(!n) return "";
+  return (n.at||"—")+" · "+(n.by||"—")+" · "+n.field+" · "+(n.from||"—")+" → "+(n.to||"—")+(n.note?" · "+n.note:"");
+}
 function vrfAuditList(entry){
   var seen={}, out=[];
   function add(n){
@@ -9403,7 +9573,7 @@ function openVrfEdit(entry, after){
     var old=el("div"); old.style.marginTop="var(--space-3)";
     old.appendChild(el("div","hint","Corrections already on this VRF"));
     prior.forEach(function(n){
-      old.appendChild(el("div",null,(n.at||"—")+" · "+(n.by||"—")+" · "+n.field+" · "+(n.from||"—")+" → "+(n.to||"—")));
+      old.appendChild(el("div",null,auditLineText(n)));
     });
     b.appendChild(old);
   }
@@ -9495,8 +9665,7 @@ function openVrf(entry,tab){
     var hist=el("div"); hist.style.marginTop="var(--space-3)";
     hist.appendChild(el("div","hint","Corrections"));
     audits.forEach(function(n){
-      hist.appendChild(el("div",null,(n.at||"—")+" · "+(n.by||"—")+" · "+n.field+
-        " · "+(n.from||"—")+" → "+(n.to||"—")));
+      hist.appendChild(el("div",null,auditLineText(n)));
     });
     b.appendChild(hist);
   }
@@ -9702,31 +9871,52 @@ function openVrf(entry,tab){
       if(entry.status!=="Closed"){
         body.appendChild(el("div","hint","This VRF is no longer open spend."));
       }
-      var rop=el("button","btn","Reopen"); rop.style.marginTop="var(--space-4)";
-      if(entry.status!=="Closed") rop.hidden=true;
-      rop.addEventListener("click",async function(){
-        rop.disabled=true;
-        try{
-          var no=String(entry.vrf||"");
-          assertSingleVrfOwner(no, entry.reserve||null);
-          var byMk={};
-          (entry.rows||[]).forEach(function(r){
-            if(!r||String(r.vrf)!==no) return;
-            var mk=r.month||monthKey(entry.date)||iso().slice(0,7);
-            (byMk[mk]=byMk[mk]||[]).push(Object.assign({}, r, {vstatus:"Open", vrf:no}));
-          });
-          var months=Object.keys(byMk);
-          for(var ri=0;ri<months.length;ri++) await replaceLedgerVrf(months[ri], no, byMk[months[ri]]);
-        }catch(err){
-          rop.disabled=false;
-          toast(err&&err.message||"Could not reopen VRF "+entry.vrf+".");
-          return;
-        }
-        _vrfs=null; _lw=null; _cons=null;
-        toast("VRF "+entry.vrf+" reopened.");
-        render(); var e2=vrfByNo(entry.vrf); if(e2) openVrf(e2,"liq");
-      });
-      body.appendChild(rop);
+      if(entry.status==="Closed"){
+        var roWrap=el("div"); roWrap.style.marginTop="var(--space-4)";
+        roWrap.appendChild(el("div",null,
+          "Reopen keeps VRF "+entry.vrf+" and the amounts already closed, so the actual figure can be corrected and liquidated again."));
+        var roRow=el("div","row"); roRow.style.cssText="margin-top:var(--space-2);align-items:flex-end";
+        var roNameWrap=el("div","field"); roNameWrap.style.maxWidth="240px";
+        roNameWrap.appendChild(el("label",null,"Your name"));
+        var roName=el("input");
+        roName.placeholder="your name";
+        roName.value=signedInName();
+        roName.setAttribute("aria-label","Your name");
+        roNameWrap.appendChild(roName);
+        var rop=el("button","btn","Reopen");
+        var roMsg=el("div","hint"); roMsg.style.marginTop="var(--space-2)";
+        rop.addEventListener("click",async function(){
+          var who=String(roName.value||"").trim();
+          if(!who){
+            roMsg.style.color="var(--danger)";
+            roMsg.textContent="Put your name on the reopen. Nothing was changed.";
+            try{ roName.focus(); }catch(eFocus){}
+            return;
+          }
+          rop.disabled=true;
+          roMsg.style.color="";
+          roMsg.textContent="Reopening VRF "+entry.vrf+"…";
+          try{
+            await reopenLiquidatedVrf(entry, who);
+          }catch(err){
+            rop.disabled=false;
+            var msg=(err&&err.message)||("Could not reopen VRF "+entry.vrf+".");
+            roMsg.style.color="var(--danger)";
+            roMsg.textContent=msg;
+            toast(msg);
+            return;
+          }
+          toast("VRF "+entry.vrf+" is awaiting liquidation again. Change the amount, then liquidate and close.");
+          render();
+          var e2=vrfByNo(entry.vrf);
+          if(e2) openVrf(e2,"liq");
+        });
+        roRow.appendChild(roNameWrap);
+        roRow.appendChild(rop);
+        roWrap.appendChild(roRow);
+        roWrap.appendChild(roMsg);
+        body.appendChild(roWrap);
+      }
     }else{
       var stopCard=el("div","card"); stopCard.style.marginBottom="var(--space-4)";
       var stopHd=el("div","hd");
