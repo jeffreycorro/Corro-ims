@@ -72,8 +72,8 @@ function loadRoster() {
 }
 
 describe("2026-10-03b alphabetical roster and last day of engagement", () => {
-  it("is build 2026-10-03b and shows Last day of engagement on the 201 file", () => {
-    assert.match(html, /const BUILD = "2026-10-03b"/);
+  it("is build 2026-10-04a and shows Last day of engagement on the 201 file", () => {
+    assert.match(html, /const BUILD = "2026-10-04a"/);
     assert.match(html, /Last day of engagement/);
     assert.match(html, /id="roster-sep-bottom"/);
     assert.match(html, /Leaving on /);
@@ -168,6 +168,9 @@ describe("2026-10-03b alphabetical roster and last day of engagement", () => {
     };
     assert.equal(ctx.liveStatusBeatsLastDay(statusThenDate), false);
     assert.equal(ctx.shouldAutoSeparate(statusThenDate, "2026-10-03"), false);
+    /* The badge is only for a last day that is still today or ahead. Pin Manila
+       so this does not flip the day the calendar passes 2026-10-03. */
+    ctx.manilaToday = () => "2026-10-03";
     assert.equal(ctx.leavingBadge(statusThenDate), "Leaving on 2026-10-03");
     assert.equal(ctx.empPastLastDay(statusThenDate, "2026-10-03"), false);
     assert.equal(ctx.empPastLastDay(statusThenDate, "2026-10-04"), true);

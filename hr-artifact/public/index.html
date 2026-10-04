@@ -1334,10 +1334,11 @@ function mergeIncomingDoc(coll, incoming, local){
   if(!incoming || !local) return incoming;
   if(coll==="daily"){
     const next=Object.assign({}, incoming);
+    const newer=typeof dailyIncomingNewer==="function" && dailyIncomingNewer(incoming, local);
     const rows=Object.assign({}, local.rows||{}, incoming.rows||{});
     Object.keys(local.rows||{}).forEach(id=>{
       if(!rows[id]) rows[id]=local.rows[id];
-      else rows[id]=mergeDailyRowKeep(local.rows[id], rows[id]);
+      else rows[id]=mergeDailyRowKeep(local.rows[id], rows[id], {incomingNewer:!!newer});
     });
     next.rows=rows;
     const omit=new Set([].concat(incoming.omit||[], local.omit||[]));
@@ -1757,7 +1758,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-10-03b";
+const BUILD = "2026-10-04a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -2402,6 +2403,10 @@ function empPosition(e){
   return "";
 }
 function dayStatusOf(row){
+  if(typeof canonDayStatus==="function"){
+    const st=canonDayStatus(row);
+    return st || "Present";
+  }
   const s=String((row&&(row.s||row.status))||"").trim();
   return s || "Present";
 }
@@ -5929,7 +5934,7 @@ const DAY_STATUS_RX = /(Has\s+not\s+yet\s+arrived|Not\s+yet\s+arrived|Not\s+yet\
 function normStatus(t){
   const x=String(t||"").toLowerCase().replace(/\s+/g," ").trim();
   if(/has\s+not\s+yet\s+arrived|not\s+yet\s+arrived|not\s+yet\s+in|^nya\b|^nyi\b/.test(x)) return STATUS_PENDING;
-  if(/present\s*\/\s*late/.test(x)) return "Present/Late";
+  if(/present\s*\/\s*late/.test(x) || /present\s*\(\s*late\s*\)/.test(x) || x==="late" || x==="tardy") return "Present/Late";
   if(/under\s*time/.test(x)) return "Undertime";
   if(/^present/.test(x)) return "Present";
   if(/^absent/.test(x)) return "Absent";
@@ -9010,13 +9015,43 @@ function mergeIdList(a,b){
 }
 /* Incoming snapshot wins when it actually set a field; a blank/missing OT,
    time, site or holiday on a stale reload must not wipe what Cassie just typed. */
-function mergeDailyRowKeep(local, incoming){
+function mergeDailyRowKeep(local, incoming, opts){
   const loc=local||{}, inc=incoming||{};
   const next=Object.assign({}, loc, inc);
   ["site","in","out","ot","day","hol","rk","ex","r"].forEach(k=>{
     if((inc[k]==null || inc[k]==="") && loc[k]!=null && loc[k]!=="") next[k]=loc[k];
   });
+  /* A blank Present, or a snapshot that is not newer than what is already
+     saved, must not turn a late back into Present. A later shared copy wins. */
+  const statusOf=(row)=>{
+    if(typeof canonDayStatus==="function") return canonDayStatus(row);
+    const raw=String((row&&(row.s!=null && String(row.s).trim()!=="" ? row.s : row&&row.status))||"").trim();
+    const x=raw.toLowerCase().replace(/\s+/g," ");
+    if(!x) return "";
+    if(/present\s*\/\s*late/.test(x) || /present\s*\(\s*late\s*\)/.test(x) || x==="late" || x==="tardy") return "Present/Late";
+    return raw;
+  };
+  const locSt=statusOf(loc);
+  const incSt=statusOf(inc);
+  const newer=!!(opts && opts.incomingNewer);
+  if(locSt==="Present/Late" && incSt!=="Present/Late" && !newer) next.s="Present/Late";
+  else if(incSt) next.s=incSt;
+  else if(locSt) next.s=locSt;
   return next;
+}
+function dailyEditStamp(rec){
+  if(!rec) return "";
+  const on=String(rec.editedOn||"").trim();
+  if(on) return on;
+  const top=(rec.log||[])[0];
+  return String((top&&top.at)||"").trim();
+}
+function dailyIncomingNewer(incoming, local){
+  const a=dailyEditStamp(incoming);
+  const b=dailyEditStamp(local);
+  if(!a) return false;
+  if(!b) return true;
+  return a>b;
 }
 function lastRosterLayout(beforeDate){
   let best=null;
@@ -9215,13 +9250,17 @@ function persistRosterOnDay(rec){
   const people=dailyPeople(rec);
   people.forEach(e=>{
     if(!e || !e.id || omit.has(e.id)) return;
-    const prev=rec.rows[e.id]||{};
-    const existed=!!rec.rows[e.id];
+    const saved=typeof savedAttendanceRow==="function" ? savedAttendanceRow(rec, e) : null;
+    const prev=saved||rec.rows[e.id]||{};
+    const existed=!!(rec.rows[e.id] || (saved && typeof attendanceRowBlank==="function" && !attendanceRowBlank(saved)));
     const site=prev.site || dailySiteOf(rec,e) || e.project || "ADMINS";
     /* OT belongs to this document only. A row created for the day starts blank;
-       yesterday's hours are never the seed. */
+       yesterday's hours are never the seed. A saved late stays a late — the
+       standing Present default is only for a row that was not already filed. */
     const next=Object.assign({s:"Present", r:"", in:"", out:"", ot:null, day:null, hol:null}, prev, {site:site});
     if(!existed) next.ot=null;
+    const kept=typeof canonDayStatus==="function" ? canonDayStatus(next) : "";
+    if(kept) next.s=kept;
     if(!next.s) next.s="Present";
     rec.rows[e.id]=next;
     extra.add(e.id);
@@ -9350,10 +9389,85 @@ function holSelect(attr, id, code, disabled){
 }
 function dayVal(r,k,fallback){ return (r && r[k]!=null && r[k]!=="") ? Number(r[k]) : fallback; }
 
+/* "Late" and "Present (Late)" are the same mark as Present/Late. A blank
+   cell is not a status. This does not write back onto the stored row. */
+function canonDayStatus(row){
+  const raw=String((row&&(row.s!=null && String(row.s).trim()!=="" ? row.s : row&&row.status))||"").trim();
+  if(!raw) return "";
+  if(typeof normStatus==="function"){
+    const n=normStatus(raw);
+    if(n) return n;
+  }
+  const x=raw.toLowerCase().replace(/\s+/g," ");
+  if(/present\s*\/\s*late/.test(x) || /present\s*\(\s*late\s*\)/.test(x) || x==="late" || x==="tardy") return "Present/Late";
+  return raw;
+}
+/* Present with no overtime, reason, day credit or holiday is the form's
+   starting row, not something HR filed. */
+function attendanceRowBlank(row){
+  if(!row || typeof row!=="object") return true;
+  const st=canonDayStatus(row);
+  if(st && st!=="Present") return false;
+  if(typeof rowHasEnteredData==="function" && rowHasEnteredData(row)) return false;
+  if(row.otHours!=null && String(row.otHours).trim()!=="") return false;
+  if(row.overtime!=null && String(row.overtime).trim()!=="") return false;
+  return true;
+}
+/* The filed mark may sit on the employee id, the employee number, or the
+   printed name. A blank Present on the id must not hide the real row. */
+function savedAttendanceRow(rec, emp){
+  if(!rec || !emp) return null;
+  const id=typeof emp==="string" ? emp : emp.id;
+  if(!id) return null;
+  const rows=rec.rows||{};
+  const direct=rows[id];
+  let alt=null, any=null;
+  Object.keys(rows).forEach(k=>{
+    if(k===id) return;
+    if(typeof summaryPersonId!=="function" || summaryPersonId(k, rows[k])!==id) return;
+    if(!any) any=rows[k];
+    if(!alt && !attendanceRowBlank(rows[k])) alt=rows[k];
+  });
+  if(direct && !attendanceRowBlank(direct)) return direct;
+  if(alt) return alt;
+  if(direct) return direct;
+  return any;
+}
 function dailyRow(rec,e){
-  const r=(rec.rows||{})[e.id] || {s:"Present", r:"", in:"", out:"", ot:null, day:null, hol:null};
-  if(!r.s) r.s="Present";
+  const found=typeof savedAttendanceRow==="function" ? savedAttendanceRow(rec, e) : ((rec&&rec.rows||{})[e&&e.id]||null);
+  const r=found ? Object.assign({}, found) : {s:"Present", r:"", in:"", out:"", ot:null, day:null, hol:null};
+  if((r.ot==null || String(r.ot).trim()==="") && r.otHours!=null && String(r.otHours).trim()!=="") r.ot=r.otHours;
+  if((r.ot==null || String(r.ot).trim()==="") && r.overtime!=null && String(r.overtime).trim()!=="") r.ot=r.overtime;
+  const st=typeof canonDayStatus==="function" ? canonDayStatus(r) : "";
+  if(st) r.s=st;
+  else if(!r.s) r.s="Present";
   return r;
+}
+function dailyOtHoursOf(row){
+  if(!row) return 0;
+  const raw=row.ot!=null && String(row.ot).trim()!=="" ? row.ot
+    : row.otHours!=null && String(row.otHours).trim()!=="" ? row.otHours
+    : row.overtime!=null && String(row.overtime).trim()!=="" ? row.overtime
+    : "";
+  if(raw==="" || raw==null) return 0;
+  const n=Number(raw);
+  return Number.isFinite(n) && n>0 ? n : 0;
+}
+function fmtOtHrs(n){
+  const x=Math.round((Number(n)||0)*100)/100;
+  return String(x);
+}
+/* Every OT hour on the selected day, including hours still waiting on a form. */
+function dailyOtTotal(rec){
+  let n=0;
+  const seen={};
+  const groups=typeof dailyGroups==="function" ? dailyGroups(rec) : [];
+  groups.forEach(g=>(g.people||[]).forEach(e=>{
+    if(!e || !e.id || seen[e.id]) return;
+    seen[e.id]=1;
+    n+=dailyOtHoursOf(typeof dailyRow==="function" ? dailyRow(rec, e) : ((rec&&rec.rows||{})[e.id]));
+  }));
+  return Math.round(n*100)/100;
 }
 function dailyTally(rec){
   const t={present:0,late:0,absent:0,leave:0,holiday:0,pending:0,waiting:0,other:0};
@@ -9888,6 +10002,7 @@ function viewDaily(){
   const rec=dailyGet(d)||dailyBlank(d);
   const groups=dailyGroups(rec);
   const t=dailyTally(rec);
+  const otDayTotal=typeof dailyOtTotal==="function" ? dailyOtTotal(rec) : 0;
   const saved=!!dailyGet(d);
   setCrumb("Daily Manpower Report", longDate(d)+(saved?" · saved":" · not saved yet"));
 
@@ -9918,6 +10033,7 @@ function viewDaily(){
    + tile(t.absent,"Absent","",t.absent?"crit":"ok")
    + tile(t.leave,"On leave","approved leave","acc")
    + tile(t.holiday+t.other,"Holiday or rest day","","acc")
+   + tile(typeof fmtOtHrs==="function"?fmtOtHrs(otDayTotal):otDayTotal,"OT total hrs","pending hours included","acc")
    + (t.pending?tile(t.pending,STATUS_PENDING,"still to be settled before this day is filed","warn"):"")
    + '</div>';
 
@@ -10023,10 +10139,11 @@ function viewDaily(){
       const rows=byMonth[openM]||[];
       h+='<div class="tw"><table><thead><tr>'
        + '<th style="width:130px">Date</th><th style="width:80px">Present</th><th style="width:70px">Late</th>'
-       + '<th style="width:80px">Absent</th><th style="width:80px">On leave</th><th>Filed in Drive</th>'
+       + '<th style="width:80px">Absent</th><th style="width:80px">On leave</th><th style="width:110px">OT total hrs</th><th>Filed in Drive</th>'
        + '<th style="width:150px"></th></tr></thead><tbody>';
       rows.forEach(r=>{
         const t2=dailyTally(r);
+        const ot2=typeof dailyOtTotal==="function" ? dailyOtTotal(r) : 0;
         h+='<tr'+(r.date===d?' style="background:var(--accent-soft)"':'')+'>'
          + '<td><b>'+esc(longDate(r.date))+'</b>'
          + ((r.log||[]).some(L=>!L.first && L.n)
@@ -10036,6 +10153,7 @@ function viewDaily(){
          + '<td class="mono">'+(t2.late?'<span class="pill warn">'+t2.late+'</span>':'0')+'</td>'
          + '<td class="mono">'+(t2.absent?'<span class="pill crit">'+t2.absent+'</span>':'0')+'</td>'
          + '<td class="mono">'+t2.leave+'</td>'
+         + '<td class="mono">'+esc(typeof fmtOtHrs==="function"?fmtOtHrs(ot2):ot2)+'</td>'
          + '<td>'+(r.driveLink
              ? '<a href="'+esc(r.driveLink)+'" target="_blank" rel="noopener noreferrer">'+esc(dailyFileName(r.date,"html"))+'</a>'
              : '<span class="lbl">not filed yet</span>')+'</td>'
@@ -10279,11 +10397,14 @@ function printDaily(rec){
         + '<td'+(bad?' style="background:#fbeceb;color:#9c3131"':'')+'>'+esc(r.r||"")+'</td></tr>';
     });
   });
+  const otTotal=typeof fmtOtHrs==="function" ? fmtOtHrs(typeof dailyOtTotal==="function" ? dailyOtTotal(rec) : 0) : "";
+  rows+='<tr><td colspan="6" style="text-align:right;font-weight:700">OT total hrs</td>'
+    + '<td style="text-align:center;font-weight:700">'+esc(otTotal)+'</td><td></td></tr>';
   const body = pfHead()
    + '<div style="text-align:center;font-weight:700;font-size:13px;letter-spacing:.05em;padding:7px 0 1px;color:#9c3131">'
    + 'DAILY MANPOWER REPORT</div>'
    + '<div style="text-align:center;font-weight:700;font-size:12px;padding-bottom:8px">'
-   + esc(shortDate(rec.date))+'</div>'
+   + esc(shortDate(rec.date))+' · OT total hrs '+esc(otTotal)+'</div>'
    + '<table class="pf-t" style="table-layout:auto"><tr>'
    + '<td style="width:34px;font-weight:700;text-align:center;background:var(--surface3)">&nbsp;</td>'
    + ['ID NO.','LAST NAME','FIRST NAME','POSITION','STATUS','OT HRS','REASON']
@@ -19884,9 +20005,10 @@ function dailyRecordFor(date){
   const base=Object.assign({}, src, {date:day, rows:Object.assign({}, src.rows||{})});
   const rest=direct ? alts : alts.slice(1);
   rest.forEach(rec=>{
+    const newer=typeof dailyIncomingNewer==="function" && dailyIncomingNewer(rec, base);
     Object.keys(rec.rows||{}).forEach(k=>{
       const cur=base.rows[k];
-      base.rows[k]=cur ? mergeDailyRowKeep(cur, rec.rows[k]) : rec.rows[k];
+      base.rows[k]=cur ? mergeDailyRowKeep(cur, rec.rows[k], {incomingNewer:!!newer}) : rec.rows[k];
     });
     if((rec.log||[]).length>(base.log||[]).length) base.log=rec.log;
   });
@@ -19936,6 +20058,10 @@ function summaryPersonId(key, row){
 }
 function dailyRowForEmp(rec, empId){
   if(!rec || !empId) return null;
+  if(typeof savedAttendanceRow==="function"){
+    const e=(S.employees&&S.employees[empId])||{id:empId};
+    return savedAttendanceRow(rec, e);
+  }
   const rows=rec.rows||{};
   if(rows[empId]) return rows[empId];
   let hit=null;
