@@ -1820,6 +1820,51 @@
     return n;
   }
 
+  /* Digits only. "no-vrf-2026-10-03" must not become 20261003. */
+  function vrfSeq(n) {
+    var s = String(n == null ? "" : n).trim();
+    var m = /^(?:vrf[\s-]*)?(\d+)$/i.exec(s);
+    if (!m) return 0;
+    var v = parseInt(m[1], 10);
+    if (!isFinite(v) || v < 1 || String(v) !== m[1]) return 0;
+    return v;
+  }
+
+  function maxVrfSeq(used) {
+    var max = 0;
+    Object.keys(used || {}).forEach(function (k) {
+      var n = vrfSeq(k);
+      if (n > max) max = n;
+    });
+    return max;
+  }
+
+  /* Next number follows records on file. A stored 6055 with a max of 5925
+     is a runaway counter — return the first free number after the max.
+     No records loaded: keep the stored counter. */
+  function alignedNextVrf(stored, used) {
+    used = used || {};
+    var max = maxVrfSeq(used);
+    var floor = max + 1;
+    var cfg = vrfSeq(stored);
+    if (!max) return cfg || floor || 1;
+    if (!cfg || cfg <= floor) return floor;
+    var n = floor;
+    while (n < cfg && used[String(n)]) n += 1;
+    return n;
+  }
+
+  /* Give a claimed number back only when the counter still sits on the next
+     slot and the number is not on file. */
+  function releaseVrfClaimState(nextVrf, claimed, used) {
+    var n = vrfSeq(claimed);
+    var cur = vrfSeq(nextVrf);
+    if (!n) return cur || 1;
+    if (used && used[String(n)]) return cur || n + 1;
+    if (cur !== n + 1) return cur || n + 1;
+    return n;
+  }
+
   /** Staff (and admin) raise a VRF; only office approval may post it. */
   function staffMayDirectPostVrf() {
     return false;
@@ -2361,6 +2406,10 @@
     remintHeldVrf: remintHeldVrf,
     repairDuplicateHeldVrfs: repairDuplicateHeldVrfs,
     nextFreeVrf: nextFreeVrf,
+    vrfSeq: vrfSeq,
+    maxVrfSeq: maxVrfSeq,
+    alignedNextVrf: alignedNextVrf,
+    releaseVrfClaimState: releaseVrfClaimState,
     requestFingerprint: requestFingerprint,
     findSameOpenRequests: findSameOpenRequests,
     earliestVrfNumber: earliestVrfNumber,

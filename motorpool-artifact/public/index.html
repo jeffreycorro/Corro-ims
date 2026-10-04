@@ -381,7 +381,7 @@ var SIGNATORIES = [
 ];
 var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
 /* Shown on the Ask screen, so a screenshot says which version someone is on. */
-var BUILD = "2026-10-03 a";
+var BUILD = "2026-10-04 a";
 var DAY = 86400000, MO = 30.44;
 
 /* Part categories that were entered under two spellings and so split a unit's
@@ -1432,24 +1432,30 @@ function vrfCollisions(){
 }
 async function remintHeldVrfCollisions(){
   var changes=[];
-  var start=S.cfg&&S.cfg.nextVrf;
+  var undo=[];
+  var start=alignedNextVrf(S.cfg&&S.cfg.nextVrf);
   (S.reserves||[]).forEach(function(r){
     if(!shouldRemintHeldVrf(r)) return;
     var prev=String(r.vrfNo);
     var next=nextFreeVrf(start, r.no);
+    undo.push({r:r, vrfNo:r.vrfNo});
     r.vrfNo=String(next);
     start=next+1;
     changes.push({from:prev,to:String(next),reserve:String(r.no)});
   });
   if(!changes.length) return changes;
-  if(isFinite(start)&&S.cfg&&start>S.cfg.nextVrf){
-    S.cfg.nextVrf=start;
-    try{
-      await writeDoc(PATHS.cfg,{nextVrf:S.cfg.nextVrf,pass:S.cfg.pass,fuel:S.cfg.fuel||null,
-        varianceTol:S.cfg.varianceTol,nextReserve:S.cfg.nextReserve,driveFolder:S.cfg.driveFolder||""});
-    }catch(e){}
+  /* The reserve has to land before the counter moves. Writing 6055 first and
+     then failing the save is how new VRFs vanished while the next number jumped. */
+  try{
+    await saveReserves(changes.map(function(c){ return c.reserve; }));
+  }catch(e){
+    undo.forEach(function(u){ u.r.vrfNo=u.vrfNo; });
+    return [];
   }
-  await saveReserves(changes.map(function(c){ return c.reserve; }));
+  if(S.cfg&&isFinite(start)&&start>vrfSeq(S.cfg.nextVrf)){
+    S.cfg.nextVrf=start;
+    try{ await persistCfg(); }catch(e){}
+  }
   for(var ci=0;ci<changes.length;ci++){
     /* Photos on a number that is already posted, printed, or liquidated
        belong to that VRF. Do not copy them onto the reminted hold. */
@@ -2444,7 +2450,8 @@ async function loadAll(){
     S[k]=rows;
   });
   var rix = await readDoc("reserves/index");
-  var yrs = mergeIdList((rix&&rix.years)||[], await listCollectionIds("reserves",/^\d{4}$/));
+  var reserveIds = await listCollectionIds("reserves",/^\d{4}$/);
+  var yrs = mergeIdList((rix&&rix.years)||[], reserveIds||[]);
   if(!yrs.length) yrs=[String(new Date().getFullYear())];
   var rdocs = await Promise.all(yrs.map(function(y){ return readDoc("reserves/"+y); }));
   S.rsvYears=yrs;
@@ -2473,7 +2480,8 @@ async function loadAll(){
      Trust the index, but also list the collection and months named on reserves
      so an approved VRF cannot vanish because its month was never indexed. */
   var idx = await readDoc("ledger/index");
-  var mks = mergeIdList((idx&&idx.months)||[], await listCollectionIds("ledger",/^\d{4}-\d{2}$/));
+  var ledgerIds = await listCollectionIds("ledger",/^\d{4}-\d{2}$/);
+  var mks = mergeIdList((idx&&idx.months)||[], ledgerIds||[]);
   (S.reserves||[]).forEach(function(r){ var mk=monthKey(r&&r.date); if(mk&&mks.indexOf(mk)<0) mks.push(mk); });
   if(!mks.length) mks=["2026-05","2026-06","2026-07","2026-08","2026-09"];
   mks.sort();
@@ -2485,17 +2493,38 @@ async function loadAll(){
   }
   await harvestProjects(true);
   _vrfs=null; _lw=null;
+  /* null means the collection list failed. An empty list is a real answer.
+     Do not pull a high counter back when the workbook may be incomplete. */
+  S._vrfCatalogComplete=!S.db || (Array.isArray(reserveIds)&&Array.isArray(ledgerIds));
+  try{ await reconcileVrfCounter(); }catch(e){}
   /* Pending holds that share a number already on the ledger (the 58528
      Post-VRF + send-for-approval pair) get a new number. The posted row stays. */
   try{ await remintHeldVrfCollisions(); }catch(e){}
 }
+async function reconcileVrfCounter(){
+  if(!S._vrfCatalogComplete) return;
+  var stored=S.cfg&&S.cfg.nextVrf;
+  var next=alignedNextVrf(stored);
+  if(!next||vrfSeq(stored)===next) return;
+  if(!S.db){ S.cfg.nextVrf=next; await persistCfg(); return; }
+  try{
+    var lock=await S.db.doc("config/counter").acquire({holder:SID, ttlMs:6000});
+    if(!lock||!lock.acquired) return;
+    var snap=await S.db.doc(PATHS.cfg).get();
+    var cur=(snap.exists&&snap.data().nextVrf)||stored;
+    var aligned=alignedNextVrf(cur);
+    if(vrfSeq(cur)===aligned){ S.cfg.nextVrf=vrfSeq(cur)||cur; return; }
+    S.cfg.nextVrf=aligned;
+    await persistCfg();
+  }catch(e){}
+}
 async function listCollectionIds(name,ok){
-  if(!S.db||!S.db.collection) return [];
+  if(!S.db||!S.db.collection) return null;
   try{
     var snap=await S.db.collection(name).get();
     return ((snap&&snap.docs)||[]).map(function(d){ return String(d.id||""); })
       .filter(function(id){ return id&&(!ok||ok.test(id)); });
-  }catch(e){ return []; }
+  }catch(e){ return null; }
 }
 function mergeIdList(a,b){
   var out=[], seen={};
@@ -3172,18 +3201,60 @@ function openSuppliersManager(opts){
   sheet.appendChild(b); m.appendChild(sheet); document.body.appendChild(m);
 }
 
+/* A VRF sequence number is digits only (or "VRF 5925"). Stripping every
+   non-digit would turn "no-vrf-2026-10-03" into 20261003 and blow the counter. */
+function vrfSeq(n){
+  var s=String(n==null?"":n).trim();
+  var m=/^(?:vrf[\s-]*)?(\d+)$/i.exec(s);
+  if(!m) return 0;
+  var v=parseInt(m[1],10);
+  if(!isFinite(v)||v<1||String(v)!==m[1]) return 0;
+  return v;
+}
+function maxVrfSeq(used){
+  var max=0;
+  Object.keys(used||{}).forEach(function(k){
+    var n=vrfSeq(k);
+    if(n>max) max=n;
+  });
+  return max;
+}
+/* Next number follows the VRFs actually on file. A stored counter of 6055
+   while the log stops at 5925 is a runaway — do not skip the gap. With no
+   records loaded, keep the stored counter so an empty read cannot restart at 1. */
+function alignedNextVrf(stored, exceptReserve){
+  var used=usedVrfNumbers(exceptReserve);
+  var max=maxVrfSeq(used);
+  var floor=max+1;
+  var cfg=vrfSeq(stored);
+  if(!max) return cfg||floor||1;
+  if(!cfg||cfg<=floor) return floor;
+  var n=floor;
+  while(n<cfg && used[String(n)]) n+=1;
+  return n;
+}
+function persistCfg(){
+  return writeDoc(PATHS.cfg,{nextVrf:S.cfg.nextVrf,pass:S.cfg.pass,fuel:S.cfg.fuel||null,
+    varianceTol:S.cfg.varianceTol,nextReserve:S.cfg.nextReserve,driveFolder:S.cfg.driveFolder||""});
+}
+/* The number was reserved but the VRF was not stored. Put the counter back
+   only when it still points at the very next slot and nothing on file has
+   that number — never rewind past a later claim. */
+async function releaseVrfClaim(n){
+  n=vrfSeq(n);
+  if(!n||vrfNumberTaken(n)) return;
+  if(vrfSeq(S.cfg&&S.cfg.nextVrf)!==n+1) return;
+  S.cfg.nextVrf=n;
+  try{ await persistCfg(); }catch(e){}
+}
 /* VRF numbers are the spine of the paper trail, so the counter is taken under a
    short lease rather than read-modify-written by whoever is fastest. */
 async function claimVrf(){
   function take(cur){
-    var n=nextFreeVrf(cur);
+    var n=nextFreeVrf(alignedNextVrf(cur));
     if(vrfNumberTaken(n)) n=nextFreeVrf(n+1);
     S.cfg.nextVrf=n+1;
     return n;
-  }
-  function persistCfg(){
-    return writeDoc(PATHS.cfg,{nextVrf:S.cfg.nextVrf,pass:S.cfg.pass,fuel:S.cfg.fuel||null,
-      varianceTol:S.cfg.varianceTol,nextReserve:S.cfg.nextReserve,driveFolder:S.cfg.driveFolder||""});
   }
   if(!S.db){ var n=take(S.cfg.nextVrf); await persistCfg(); return n; }
   for(var i=0;i<6;i++){
@@ -7145,7 +7216,7 @@ function rsvView(){
   g.appendChild(card("Waiting for approval",req.length+" VRF"+(req.length===1?"":"s"),rtable(req,"Nothing waiting — raise spend on New VRF.")));
   g.appendChild(card("Approved — not yet liquidated",app.length+" on the log",rtable(app,"No approved VRFs waiting to be liquidated.")));
   var done=mine.filter(function(r){ return r.status==="Closed"||r.status==="Rejected"||r.status==="Cancelled"; });
-  if(done.length) g.appendChild(card("Settled",done.length+" closed, cancelled, or rejected",rtable(done.slice(0,60))));
+  if(done.length) g.appendChild(card("Settled",done.length+" closed, cancelled, or rejected",rtable(done)));
   w.appendChild(g);
   return w;
 }
@@ -11100,16 +11171,19 @@ async function sendForApproval(d,btn,opts){
   }
   S._sendingVrf=true;
   btn.disabled=true; btn.textContent="Sending…";
+  var vno="";
+  var hold=null;
+  var persisted=false;
   try{
     var no=await claimReserveNo();
-    var vno=await claimVrf();
+    vno=await claimVrf();
     if(vrfNumberTaken(vno)) vno=await claimVrf();
     var summary=rows.map(function(l){
       return (l.item||normCat(l.cat))+" ×"+(l.qty||1); }).join(", ");
     var fuelish=rows.some(function(l){ return isFuel(l.cat); });
     var litres=rows.reduce(function(a,l){
       return a+(isFuel(l.cat)?(parseFloat(l.liters)||parseFloat(l.qty)||0):0); },0);
-    var hold={no:String(no),vrfNo:String(vno),date:d.date||iso(),
+    hold={no:String(no),vrfNo:String(vno),date:d.date||iso(),
       kind:fuelSpendKind({work:d.work,lines:rows}),veh:d.veh,work:d.work,
       litres:fuelish?litres:null,
       project:d.project,budget:total,needBy:"",
@@ -11132,9 +11206,11 @@ async function sendForApproval(d,btn,opts){
          number. Does not stamp the remote Noah approval path. */
       btn.textContent="Approving…";
       var posted=await postAndSaveReserve(hold);
+      persisted=true;
       if(posted) liveNo=String(posted);
     }else{
       await saveReserves(hold.no);
+      persisted=true;
     }
     var staged=d.photos?d.photos.slice():[];
     S.draft=null;
@@ -11160,7 +11236,15 @@ async function sendForApproval(d,btn,opts){
       },0);
     }
   }catch(e){
-    var saved=reserveBySubmission(d.submissionId);
+    /* A hold that never reached the workbook must not stay on screen. That
+       in-memory row is how a VRF looked saved, then vanished on refresh,
+       while the counter had already moved on. */
+    if(hold && !persisted){
+      S.reserves=(S.reserves||[]).filter(function(r){ return r!==hold; });
+      _vrfs=null;
+      try{ await releaseVrfClaim(vno); }catch(ignore){}
+    }
+    var saved=persisted?reserveBySubmission(d.submissionId):null;
     if(saved){
       if(btn){ btn.disabled=false; btn.textContent="Send for approval"; }
       toast("VRF "+saved.vrfNo+" kept its number. Not creating another. "+((e&&e.message)||""));
@@ -11378,9 +11462,12 @@ function fuelView(){
     try{ no=await claimVrf(); }
     catch(err){ sub.disabled=false; sub.textContent="Record dispense"; toast(err&&err.message||"Could not reserve a VRF number."); return; }
     var rsvNo=rsel.value;
+    var wrote=false;
+    try{
     await appendRows("withdrawals",[{date:dt.value,vrf:String(no),vehicle:vs.getCode(),project:ps.getCode(),
       fuel:"Diesel",cont:parseFloat(cn.value)||0,liters:L,cost:null,rate:null,
       operator:op.value,override:null,reserve:rsvNo,bypass:false}]);
+    wrote=true;
     var mk=monthKey(dt.value)||iso().slice(0,7);
     var v=vehicle(vs.getCode());
     await appendLedger(mk,[{month:mk,date:dt.value,vrf:String(no),veh:vs.getCode(),name:v?v.desc:"",
@@ -11389,6 +11476,12 @@ function fuelView(){
       odo:parseFloat(String(dodo.value).replace(/,/g,""))||null,
       override:null,reserve:rsvNo,vstatus:"Open",bypass:false,
       notes:"Reserve dispense"}]);
+    }catch(err){
+      if(!wrote){ try{ await releaseVrfClaim(no); }catch(ignore){} }
+      sub.disabled=false; sub.textContent="Record dispense";
+      toast((err&&err.message)||"The dispense was not saved.");
+      return;
+    }
     for(var pi=0;pi<dphotos.length;pi++){
       try{ await addPhoto(no,{data:dphotos[pi].data,w:dphotos[pi].w,h:dphotos[pi].h,
         bytes:dphotos[pi].bytes,caption:dphotos[pi].caption,by:op.value}); }catch(e){}
@@ -11488,15 +11581,24 @@ function fuelView(){
     var no;
     try{ no=await claimVrf(); }
     catch(err){ bsv.disabled=false; bsv.textContent="Record delivery"; toast(err&&err.message||"Could not reserve a VRF number."); return; }
+    var wroteBulk=false;
+    try{
     await appendRows("purchases",[{date:bdt.value,vrf:String(no),supplier:bsup.value,
       fuel:"Diesel",cont:parseFloat(bcn.value)||0,liters:L,pricePerL:pr,total:L*pr,
       remarks:"Received by "+(brc.value||"—"),reserve:brs.value}]);
+    wroteBulk=true;
     var mk=monthKey(bdt.value)||iso().slice(0,7);
     await appendLedger(mk,[{month:mk,date:bdt.value,vrf:String(no),veh:"AV",name:"FUEL RESERVE",
       cat:"Fuel — Diesel",sub:"Fuel",grp:"Fuel",work:"FUEL-BULK",
       item:nnum(L,0)+" L bulk diesel into the reserve",qty:L,price:pr,total:L*pr,
       supplier:bsup.value,project:"",liters:L,odo:null,reserve:brs.value,vstatus:"Open",
       notes:"Bulk delivery received by "+(brc.value||"—")}]);
+    }catch(err){
+      if(!wroteBulk){ try{ await releaseVrfClaim(no); }catch(ignore){} }
+      bsv.disabled=false; bsv.textContent="Record delivery";
+      toast((err&&err.message)||"The delivery was not saved.");
+      return;
+    }
     for(var pi=0;pi<bphotos.length;pi++){
       try{ await addPhoto(no,{data:bphotos[pi].data,w:bphotos[pi].w,h:bphotos[pi].h,
         bytes:bphotos[pi].bytes,caption:bphotos[pi].caption,by:brc.value}); }catch(e){}
