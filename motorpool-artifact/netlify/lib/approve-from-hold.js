@@ -11,7 +11,7 @@
  */
 
 const { manilaDate, manilaYear } = require("./manila");
-const { mergeLedgerRows, mergeReserveRows } = require("./doc-merge");
+const { mergeIssuedNumbers, mergeLedgerRows, mergeReserveRows } = require("./doc-merge");
 
 function approveError(statusCode, code, error) {
   const err = new Error(error);
@@ -118,8 +118,16 @@ function reserveOwnsPostedVrf(r) {
 function holdIsSealed(r) {
   if (!r) return false;
   const st = String(r.status || "");
-  if (st === "Closed" || st === "Cancelled" || st === "Rejected") return true;
-  if (r.liquidatedAt || r.printedAt) return true;
+  if (
+    st === "Closed" ||
+    st === "Cancelled" ||
+    st === "Rejected" ||
+    st === "Approved" ||
+    st === "Flagged"
+  )
+    return true;
+  if (r.liquidatedAt || r.printedAt || r.approvedAt) return true;
+  if (normNo(r.vrfNo) === "6033") return true;
   if (reserveOwnsPostedVrf(r)) return true;
   return false;
 }
@@ -691,6 +699,58 @@ async function persistApprove(store, snapshot, result) {
     writes.push(store.set("config", "app", configPayload(snapshot.cfg)));
   }
   await Promise.all(writes);
+  try {
+    await sealApprovedNumber(store, result.hold, result.rows, result.month);
+  } catch (err) {
+    /* The VRF is already on the ledger. A missed seal must not undo the approval. */
+  }
+}
+
+async function sealApprovedNumber(store, hold, rows, month) {
+  if (!store || !hold || !store.set) return;
+  const no = normNo(hold.vrfNo);
+  if (!no) return;
+  const entry = {
+    no,
+    sealed: true,
+    reason: hold.printedAt ? "printed" : "approved",
+    at: hold.printedAt || hold.approvedAt || "",
+    snapshot: {
+      month: month || "",
+      rows: rows || [],
+      reserve: {
+        no: hold.no,
+        vrfNo: no,
+        vrfs: hold.vrfs || [],
+        date: hold.date,
+        status: hold.status,
+        veh: hold.veh,
+        project: hold.project,
+        work: hold.work,
+        requestedBy: hold.requestedBy,
+        approvedBy: hold.approvedBy,
+        approvedAt: hold.approvedAt,
+        printedAt: hold.printedAt || "",
+        draftPurpose: hold.draftPurpose || "",
+        draftLines: hold.draftLines || [],
+        budget: hold.budget,
+        approvedBudget: hold.approvedBudget,
+      },
+    },
+  };
+  const rec = store.getRecord
+    ? await store.getRecord("config", "issued")
+    : { data: null, updated_at: null };
+  const data = mergeIssuedNumbers(rec && rec.data, entry);
+  if (rec && rec.updated_at && store.cas) {
+    try {
+      await store.cas("config", "issued", data, rec.updated_at);
+      return;
+    } catch (err) {
+      if (!err || err.code !== "conflict") throw err;
+    }
+  }
+  await store.set("config", "issued", data);
 }
 
 /**

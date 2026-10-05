@@ -1776,6 +1776,239 @@
     return st !== "Rejected";
   }
 
+  /* Numbers that already went out on paper during the 2026-10-03 counter
+     jump. They must never be handed to a new VRF. They do not raise the
+     counter floor: the next new number still follows the highest other
+     record, and these are skipped when the count reaches them. */
+  var RUNAWAY_VRF_FROM = 5926;
+  var RUNAWAY_VRF_TO = 6055;
+
+  function paperVrfHoldNumbers() {
+    return { "6033": 1 };
+  }
+
+  function isPaperVrfHold(n) {
+    var seq = vrfSeq(n);
+    var key = seq ? String(seq) : normVrfNo(n);
+    return !!paperVrfHoldNumbers()[key];
+  }
+
+  /* The printed approved copy Finance already has. Total is exactly ₱1,000,
+     so it did not auto-approve; the sheet was approved and printed 2026-10-03. */
+  function paperVrf6033() {
+    return {
+      vrf: "6033",
+      reserveNo: "paper-6033",
+      date: "2026-10-03",
+      month: "2026-10",
+      veh: "Equipment 1",
+      name: "ONE BAGGER MIXER",
+      plate: "EQUIPMENT",
+      odo: "",
+      project: "Danao Guinacot",
+      work: "FUEL-STN",
+      job: "Fuel purchase (station)",
+      requestedBy: "Engr. Kimberly Galapin",
+      purpose: "Fuel — Gasoline ×11.53",
+      preparedBy: "Sophie V. Batas",
+      approvedBy: "Jeffrey James M. Corro",
+      approvedAt: "2026-10-03T14:05:00+08:00",
+      printedAt: "2026-10-03T14:05:00+08:00",
+      status: "Approved",
+      total: 1000,
+      lines: [
+        {
+          cat: "Fuel — Gasoline",
+          item: "Fuel",
+          supplier: "Iced Petron",
+          qty: 11.53,
+          unit: "L",
+          price: 86.73,
+          total: 1000,
+          work: "FUEL-STN",
+        },
+      ],
+      attachments: [
+        {
+          name: "831473351_1639234250909082_1652114029208334249_n.jpg",
+          by: "Sophie Batas",
+          at: "2026-10-03",
+        },
+        {
+          name: "830485432_1426425579676225_836594452554981183_n.jpg",
+          by: "Sophie Batas",
+          at: "2026-10-03",
+        },
+      ],
+    };
+  }
+
+  function paperVrfRestoreBundle(spec) {
+    spec = spec || paperVrf6033();
+    var no = normVrfNo(spec.vrf);
+    var reserveNo = normVrfNo(spec.reserveNo) || "paper-" + no;
+    var line = (spec.lines && spec.lines[0]) || {};
+    var files = (spec.attachments || []).map(function (a) {
+      return a && a.name;
+    }).filter(Boolean);
+    var note =
+      "Restored from the printed approved copy of 2026-10-03. " +
+      "Attachments on that copy, uploaded by Sophie Batas: " +
+      files.join("; ") +
+      ".";
+    var audit = [
+      {
+        at: "2026-10-05",
+        by: "Motorpool restore",
+        field: "restore",
+        from: "missing from VRF Logs",
+        to: "VRF " + no,
+        note: note,
+      },
+    ];
+    var row = {
+      month: spec.month,
+      date: spec.date,
+      vrf: no,
+      veh: spec.veh,
+      name: spec.name,
+      plate: spec.plate,
+      cat: line.cat,
+      sub: "Fuel",
+      grp: "Fuel",
+      work: spec.work,
+      item: line.item,
+      qty: line.qty,
+      price: line.price,
+      total: line.total,
+      supplier: line.supplier,
+      unit: line.unit || "L",
+      project: spec.project,
+      liters: line.qty,
+      odo: null,
+      reserve: reserveNo,
+      vstatus: "Open",
+      requestedBy: spec.requestedBy,
+      notes: spec.purpose,
+      paperAttachments: spec.attachments,
+      audit: audit,
+    };
+    var reserve = {
+      no: reserveNo,
+      vrfNo: no,
+      vrfs: [no],
+      date: spec.date,
+      kind: "job",
+      veh: spec.veh,
+      work: spec.work,
+      project: spec.project,
+      budget: spec.total,
+      approvedBudget: spec.total,
+      status: "Approved",
+      requestedBy: spec.requestedBy,
+      approvedBy: spec.approvedBy,
+      approvedAt: spec.approvedAt,
+      printedAt: spec.printedAt,
+      decisionNote: note,
+      draftPurpose: spec.purpose,
+      draftOdo: "",
+      odoAtRequest: null,
+      preparedSigName: spec.preparedBy,
+      draftLines: [
+        {
+          cat: line.cat,
+          item: line.item,
+          supplier: line.supplier,
+          qty: line.qty,
+          unit: line.unit || "L",
+          price: line.price,
+          work: spec.work,
+        },
+      ],
+      paperAttachments: spec.attachments,
+      submissionId: "paper-vrf-" + no,
+      audit: audit.slice(),
+    };
+    return {
+      month: spec.month,
+      vrf: no,
+      rows: [row],
+      mode: "replace",
+      reserve: reserve,
+      year: String(spec.date || "").slice(0, 4) || "2026",
+    };
+  }
+
+  /* Another form already carries this purchase under a different number
+     (a remint). Do not post the pesos twice unless someone asks. */
+  function matchingPaperPurchase(rows, spec) {
+    spec = spec || paperVrf6033();
+    var no = normVrfNo(spec.vrf);
+    var line = (spec.lines && spec.lines[0]) || {};
+    var hits = [];
+    var seen = {};
+    (rows || []).forEach(function (row) {
+      if (!row) return;
+      var v = normVrfNo(row.vrf);
+      if (!v || v === no || seen[v]) return;
+      if (String(row.date || "").slice(0, 10) !== spec.date) return;
+      if (String(row.veh || "") !== spec.veh) return;
+      if (String(row.supplier || "") !== String(line.supplier || "")) return;
+      var amt = moneyNum(row.total);
+      if (!amt) amt = lineMoney(row);
+      if (Math.abs(amt - moneyNum(spec.total)) > 0.05) return;
+      seen[v] = 1;
+      hits.push(v);
+    });
+    return hits;
+  }
+
+  function runawayRangeOnFile(vrfs, reserves) {
+    var used = usedVrfNumbers(vrfs, reserves, { skipHolds: true });
+    var present = [];
+    for (var n = RUNAWAY_VRF_FROM; n <= RUNAWAY_VRF_TO; n++) {
+      if (used[String(n)]) present.push(String(n));
+    }
+    return present;
+  }
+
+  function mergeIssuedNumbers(existing, entry) {
+    var numbers = {};
+    var prevDoc = existing && existing.numbers && typeof existing.numbers === "object" ? existing.numbers : {};
+    Object.keys(prevDoc).forEach(function (k) {
+      numbers[k] = prevDoc[k];
+    });
+    if (!entry) return { numbers: numbers };
+    var no = normVrfNo(entry.no || entry.vrf);
+    if (!no) {
+      var err = new Error("A sealed VRF needs a number.");
+      err.code = "vrf_mismatch";
+      throw err;
+    }
+    var prev = numbers[no] && typeof numbers[no] === "object" ? numbers[no] : {};
+    var next = {};
+    Object.keys(prev).forEach(function (k) {
+      next[k] = prev[k];
+    });
+    Object.keys(entry).forEach(function (k) {
+      if (k === "snapshot" && entry.snapshot == null && prev.snapshot) return;
+      next[k] = entry[k];
+    });
+    next.no = no;
+    next.sealed = entry.sealed === false ? false : true;
+    if (!next.snapshot && prev.snapshot) next.snapshot = prev.snapshot;
+    numbers[no] = next;
+    return { numbers: numbers };
+  }
+
+  function issuedShouldRehydrate(entry) {
+    if (!entry || entry.sealed === false) return false;
+    var reason = String(entry.reason || "");
+    if (reason === "rejected") return false;
+    if (!entry.snapshot || !entry.snapshot.reserve || !entry.snapshot.rows) return false;
+    return reason === "approved" || reason === "printed" || reason === "paper" || reason === "";
+  }
+
   /** Ledger rows plus pending/approved reserve holds. Rejected numbers may be reused. */
   function usedVrfNumbers(vrfs, reserves, opts) {
     opts = opts || {};
@@ -1794,12 +2027,21 @@
       add(r.vrfNo);
       (r.vrfs || []).forEach(add);
     });
+    if (!opts.skipHolds) {
+      Object.keys(paperVrfHoldNumbers()).forEach(add);
+    }
+    (opts.issued || []).forEach(add);
     return used;
+  }
+
+  function vrfRecorded(vrfs, reserves, no) {
+    return !!usedVrfNumbers(vrfs, reserves, { skipHolds: true })[normVrfNo(no)];
   }
 
   function vrfNumberTaken(no, vrfs, reserves, opts) {
     no = normVrfNo(no);
     if (!no) return false;
+    if (isPaperVrfHold(no)) return true;
     return !!usedVrfNumbers(vrfs, reserves, opts)[no];
   }
 
@@ -1816,7 +2058,8 @@
     var n = parseInt(from, 10);
     if (!isFinite(n) || n < 1) n = 1;
     used = used || {};
-    while (used[String(n)]) n += 1;
+    var holds = paperVrfHoldNumbers();
+    while (used[String(n)] || holds[String(n)]) n += 1;
     return n;
   }
 
@@ -1830,9 +2073,11 @@
     return v;
   }
 
-  function maxVrfSeq(used) {
+  function maxVrfSeq(used, ignore) {
+    var skip = ignore || paperVrfHoldNumbers();
     var max = 0;
     Object.keys(used || {}).forEach(function (k) {
+      if (skip[k] || skip[String(vrfSeq(k))]) return;
       var n = vrfSeq(k);
       if (n > max) max = n;
     });
@@ -1841,17 +2086,29 @@
 
   /* Next number follows records on file. A stored 6055 with a max of 5925
      is a runaway counter — return the first free number after the max.
-     No records loaded: keep the stored counter. */
-  function alignedNextVrf(stored, used) {
+     No records loaded: keep the stored counter. Paper holds such as 6033
+     are skipped and do not become the new floor. */
+  function alignedNextVrf(stored, used, ignore) {
     used = used || {};
-    var max = maxVrfSeq(used);
+    var skip = ignore || paperVrfHoldNumbers();
+    var max = maxVrfSeq(used, skip);
     var floor = max + 1;
     var cfg = vrfSeq(stored);
-    if (!max) return cfg || floor || 1;
-    if (!cfg || cfg <= floor) return floor;
-    var n = floor;
-    while (n < cfg && used[String(n)]) n += 1;
-    return n;
+    var blocked = {};
+    Object.keys(used).forEach(function (k) {
+      blocked[k] = 1;
+    });
+    Object.keys(skip).forEach(function (k) {
+      blocked[k] = 1;
+    });
+    var n;
+    if (!max) n = cfg || floor || 1;
+    else if (!cfg || cfg <= floor) n = floor;
+    else {
+      n = floor;
+      while (n < cfg && blocked[String(n)]) n += 1;
+    }
+    return nextFreeVrf(n, blocked);
   }
 
   /* Give a claimed number back only when the counter still sits on the next
@@ -1874,12 +2131,21 @@
     return false;
   }
 
-  /** Posted, printed, or liquidated holds keep their number. Do not remint them. */
+  /** Approved, printed, posted, or liquidated holds keep their number.
+      Reminting an approved form is how a printed VRF disappeared from the log. */
   function holdIsSealed(r) {
     if (!r) return false;
     var st = String(r.status || "");
-    if (st === "Closed" || st === "Cancelled" || st === "Rejected") return true;
-    if (r.liquidatedAt || r.printedAt) return true;
+    if (
+      st === "Closed" ||
+      st === "Cancelled" ||
+      st === "Rejected" ||
+      st === "Approved" ||
+      st === "Flagged"
+    )
+      return true;
+    if (r.liquidatedAt || r.printedAt || r.approvedAt) return true;
+    if (isPaperVrfHold(r.vrfNo)) return true;
     if (reserveOwnsPostedVrf(r)) return true;
     return false;
   }
@@ -2397,7 +2663,18 @@
     fuelSpendKind: fuelSpendKind,
     isFuelReserveSupplier: isFuelReserveSupplier,
     usedVrfNumbers: usedVrfNumbers,
+    vrfRecorded: vrfRecorded,
     vrfNumberTaken: vrfNumberTaken,
+    paperVrfHoldNumbers: paperVrfHoldNumbers,
+    isPaperVrfHold: isPaperVrfHold,
+    paperVrf6033: paperVrf6033,
+    paperVrfRestoreBundle: paperVrfRestoreBundle,
+    matchingPaperPurchase: matchingPaperPurchase,
+    runawayRangeOnFile: runawayRangeOnFile,
+    RUNAWAY_VRF_FROM: RUNAWAY_VRF_FROM,
+    RUNAWAY_VRF_TO: RUNAWAY_VRF_TO,
+    mergeIssuedNumbers: mergeIssuedNumbers,
+    issuedShouldRehydrate: issuedShouldRehydrate,
     postedVrfNumbers: postedVrfNumbers,
     isPostedVrfRow: isPostedVrfRow,
     staffMayDirectPostVrf: staffMayDirectPostVrf,

@@ -29,6 +29,63 @@ function rowsOf(rec) {
   return [];
 }
 
+function vrfNos(rows) {
+  const seen = {};
+  const out = [];
+  (rows || []).forEach((row) => {
+    const v = normNo(row && row.vrf);
+    if (!v || seen[v]) return;
+    seen[v] = 1;
+    out.push(v);
+  });
+  return out;
+}
+
+/* A save of one VRF must not erase every other number in the month.
+   That full-document shrink is how an approved form vanished. */
+function assertSiblingVrfsKept(before, after, vrfNo) {
+  const target = normNo(vrfNo);
+  const afterSet = {};
+  vrfNos(after).forEach((n) => {
+    afterSet[n] = 1;
+  });
+  const gone = vrfNos(before).filter((n) => n !== target && !afterSet[n]);
+  if (gone.length) {
+    throw mergeError(
+      "ledger_unreadable",
+      `Refusing to drop VRF ${gone[0]} while saving VRF ${target || "this VRF"}.`
+    );
+  }
+}
+
+function assertSiblingReservesKept(before, after) {
+  const afterSet = {};
+  (after || []).forEach((r) => {
+    if (r && r.no != null && String(r.no) !== "") afterSet[String(r.no)] = 1;
+  });
+  const gone = (before || []).filter((r) => r && r.no != null && String(r.no) !== "" && !afterSet[String(r.no)]);
+  if (gone.length) {
+    throw mergeError(
+      "ledger_unreadable",
+      `Refusing to drop RSV-${gone[0].no} while saving another reserve.`
+    );
+  }
+}
+
+function mergeIssuedNumbers(existing, entry) {
+  const prevDoc =
+    existing && existing.numbers && typeof existing.numbers === "object" ? existing.numbers : {};
+  const numbers = Object.assign({}, prevDoc);
+  if (!entry) return { numbers };
+  const no = normNo(entry.no || entry.vrf);
+  if (!no) throw mergeError("vrf_mismatch", "A sealed VRF needs a number.");
+  const prev = numbers[no] && typeof numbers[no] === "object" ? numbers[no] : {};
+  const next = Object.assign({}, prev, entry, { no, sealed: entry.sealed === false ? false : true });
+  if (entry.snapshot == null && prev.snapshot) next.snapshot = prev.snapshot;
+  numbers[no] = next;
+  return { numbers };
+}
+
 function mergeLedgerRows(existing, vrfNo, incoming, mode) {
   const no = normNo(vrfNo);
   if (!no) throw mergeError("vrf_mismatch", "VRF number is required");
@@ -188,7 +245,9 @@ async function mergeLedgerDoc(spec, io) {
   mergeLedgerRows([], vrf, spec.rows || [], mode);
   return withRetry(async (attempt, limit) => {
     const rec = await io.getRecord("ledger", month);
-    const rows = mergeLedgerRows(rowsOf(rec), vrf, spec.rows || [], mode);
+    const before = rowsOf(rec);
+    const rows = mergeLedgerRows(before, vrf, spec.rows || [], mode);
+    assertSiblingVrfsKept(before, rows, vrf);
     await casWrite(io, "ledger", month, { month, rows }, rec && rec.updated_at, attempt, limit);
     if (spec.ensureIndex) await ensureMonthIndexed(io, month);
     return { ok: true, kind: "ledger", vrf, attempts: attempt + 1, wrote: (spec.rows || []).length };
@@ -201,7 +260,9 @@ async function mergeReserveDoc(spec, io) {
   if (!year) throw mergeError("vrf_mismatch", "Reserve year is required");
   return withRetry(async (attempt, limit) => {
     const rec = await io.getRecord("reserves", year);
-    const rows = mergeReserveRows(rowsOf(rec), thaw(reserve));
+    const before = rowsOf(rec);
+    const rows = mergeReserveRows(before, thaw(reserve));
+    assertSiblingReservesKept(before, rows);
     await casWrite(io, "reserves", year, { year, rows }, rec && rec.updated_at, attempt, limit);
     return {
       ok: true,
@@ -224,8 +285,12 @@ async function mergeBundle(spec, io) {
       io.getRecord("ledger", month),
       io.getRecord("reserves", year),
     ]);
-    const ledgerRows = mergeLedgerRows(rowsOf(monthRec), vrf, spec.rows || [], mode);
-    const reserveRows = mergeReserveRows(rowsOf(yearRec), thaw(spec.reserve));
+    const ledgerBefore = rowsOf(monthRec);
+    const reserveBefore = rowsOf(yearRec);
+    const ledgerRows = mergeLedgerRows(ledgerBefore, vrf, spec.rows || [], mode);
+    const reserveRows = mergeReserveRows(reserveBefore, thaw(spec.reserve));
+    assertSiblingVrfsKept(ledgerBefore, ledgerRows, vrf);
+    assertSiblingReservesKept(reserveBefore, reserveRows);
     await Promise.all([
       casWrite(io, "ledger", month, { month, rows: ledgerRows }, monthRec && monthRec.updated_at, attempt, limit),
       casWrite(io, "reserves", year, { year, rows: reserveRows }, yearRec && yearRec.updated_at, attempt, limit),
@@ -242,18 +307,36 @@ async function mergeBundle(spec, io) {
   });
 }
 
+async function mergeIssuedDoc(spec, io) {
+  const entry = spec.entry;
+  if (!entry || typeof entry !== "object") {
+    throw mergeError("bad_request", "Issued entry is required");
+  }
+  mergeIssuedNumbers(null, entry);
+  return withRetry(async (attempt, limit) => {
+    const rec = await io.getRecord("config", "issued");
+    const data = mergeIssuedNumbers(rec && rec.data, entry);
+    await casWrite(io, "config", "issued", data, rec && rec.updated_at, attempt, limit);
+    return { ok: true, kind: "issued", no: normNo(entry.no || entry.vrf), attempts: attempt + 1 };
+  });
+}
+
 async function applyClientMerge(spec, io) {
   spec = spec || {};
   if (spec.kind === "ledger") return mergeLedgerDoc(spec, io);
   if (spec.kind === "reserve") return mergeReserveDoc(spec, io);
   if (spec.kind === "bundle") return mergeBundle(spec, io);
-  throw mergeError("bad_request", "Merge spec kind must be ledger, reserve, or bundle");
+  if (spec.kind === "issued") return mergeIssuedDoc(spec, io);
+  throw mergeError("bad_request", "Merge spec kind must be ledger, reserve, bundle, or issued");
 }
 
 module.exports = {
   applyClientMerge,
+  assertSiblingReservesKept,
+  assertSiblingVrfsKept,
   bytesOf,
   mergeBundle,
+  mergeIssuedNumbers,
   mergeLedgerRows,
   mergeReserveRows,
   officeApproveTraffic,
