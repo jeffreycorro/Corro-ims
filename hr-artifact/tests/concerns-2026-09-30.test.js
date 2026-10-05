@@ -128,8 +128,8 @@ function adv(partial) {
 }
 
 describe("2026-10-01a date hired and cash advance", () => {
-  it("is build 2026-10-04a and does not redraw a focused 201 date", () => {
-    assert.match(html, /const BUILD = "2026-10-04a"/);
+  it("is build 2026-10-05a and does not redraw a focused 201 date", () => {
+    assert.match(html, /const BUILD = "2026-10-05a"/);
     assert.match(html, /let RENDER_DEPTH=0/);
     assert.match(html, /function dateInputValue\(/);
     assert.match(html, /function keepEmpDateEdits\(/);
