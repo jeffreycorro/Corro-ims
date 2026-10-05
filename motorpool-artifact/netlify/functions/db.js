@@ -13,6 +13,7 @@ const {
   setDocIfUpdatedAt,
 } = require("../lib/supabase");
 const { applyClientMerge } = require("../lib/doc-merge");
+const { clampClientCounter, screenClientSet } = require("../lib/vrf-issue");
 const { formatManilaIso } = require("../lib/manila");
 
 function snapshotFromRow(id, row) {
@@ -36,7 +37,7 @@ exports.handler = async (event) => {
       return json(405, { error: "Method not allowed" });
     }
 
-    requireSession(event);
+    const session = requireSession(event);
 
     const body = JSON.parse(event.body || "{}");
     const op = body.op;
@@ -55,6 +56,13 @@ exports.handler = async (event) => {
       }
       if (requiresFullWrite(collection, id) && body.merge) {
         return json(400, { error: "config/app requires a full-field write" });
+      }
+      const screened = screenClientSet(collection, id);
+      if (screened) return json(screened.statusCode, { error: screened.error, code: screened.code });
+      if (collection === "config" && id === "app" && body.data && typeof body.data === "object") {
+        const existing = await getDoc(collection, id);
+        const current = existing && existing.data ? existing.data.nextVrf : null;
+        body.data.nextVrf = clampClientCounter(current, body.data.nextVrf);
       }
       const row = await setDoc(collection, id, body.data, {
         merge: Boolean(body.merge),
@@ -94,6 +102,10 @@ exports.handler = async (event) => {
       if (!spec || typeof spec !== "object" || Array.isArray(spec)) {
         return json(400, { error: "spec is required", code: "bad_request" });
       }
+      if (!spec.user) {
+        spec.user = session.name || session.full_name || session.email || session.sub || "";
+      }
+      if (!spec.at) spec.at = formatManilaIso();
       const io = {
         async getRecord(collection, id) {
           const row = await getDoc(collection, id);
@@ -106,6 +118,12 @@ exports.handler = async (event) => {
         async set(collection, id, data) {
           const row = await setDoc(collection, id, data);
           return row;
+        },
+        async listIds(collection) {
+          return listIds(collection);
+        },
+        async acquire(collection, id, holder) {
+          return acquireLock(collection, id, holder, 15);
         },
       };
       const result = await applyClientMerge(spec, io);

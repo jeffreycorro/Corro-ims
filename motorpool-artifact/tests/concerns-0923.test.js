@@ -172,7 +172,7 @@ describe("artifact HTML — 9/23 concern fixes", () => {
     assert.match(html, /shrinkSignature\(file\)/);
     assert.match(html, /LTO Registration\/Renewal\/Name Change/);
     assert.match(html, /function renameLtoJobLabel/);
-    assert.match(html, /var BUILD = "2026-10-05 a"/);
+    assert.match(html, /var BUILD = "2026-10-05 b"/);
     assert.doesNotMatch(html, /if\(entry\.held\|\|entry\.status==="Requested"\)/);
   });
 });

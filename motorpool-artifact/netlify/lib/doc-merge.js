@@ -8,6 +8,8 @@
  * the freshly re-read merge if the version column cannot be matched.
  */
 
+const { commitIssue, mergeReserveDetailed } = require("./vrf-issue");
+
 function mergeError(code, message) {
   const err = new Error(message);
   err.code = code;
@@ -132,25 +134,13 @@ function collisionsFor(rows, reserveNo) {
     .map((no) => ({ vrf: no, reserves: map[no] }));
 }
 
-function mergeReserveRows(existing, reserve) {
+function mergeReserveRows(existing, reserve, ctx) {
   if (!reserve || reserve.no == null || String(reserve.no) === "") {
     throw mergeError("vrf_mismatch", "Reserve number is required");
   }
-  const cur = (existing || []).slice();
-  const key = String(reserve.no);
-  const idx = cur.findIndex((r) => r && String(r.no) === key);
-  if (idx >= 0) cur[idx] = reserve;
-  else cur.push(reserve);
-  const clashes = collisionsFor(cur, reserve.no);
-  if (clashes.length) {
-    throw mergeError(
-      "vrf_collision",
-      `VRF ${clashes[0].vrf} is on ${clashes[0].reserves
-        .map((r) => "RSV-" + r.no)
-        .join(" and ")}. Not saving — a VRF number can belong to only one reserve.`
-    );
-  }
-  return cur;
+  /* A number the portal issued twice must not stop the save. The older or
+     real reserve keeps it; the other is archived or given a new number. */
+  return mergeReserveDetailed(existing, reserve, ctx).rows;
 }
 
 function bytesOf(value) {
@@ -261,13 +251,18 @@ async function mergeReserveDoc(spec, io) {
   return withRetry(async (attempt, limit) => {
     const rec = await io.getRecord("reserves", year);
     const before = rowsOf(rec);
-    const rows = mergeReserveRows(before, thaw(reserve));
+    const detailed = mergeReserveDetailed(before, thaw(reserve), { at: spec.at, blocked: { "6033": true } });
+    const rows = detailed.rows;
     assertSiblingReservesKept(before, rows);
     await casWrite(io, "reserves", year, { year, rows }, rec && rec.updated_at, attempt, limit);
+    const saved = detailed.saved;
     return {
       ok: true,
       kind: "reserve",
       reserveNo: String(reserve.no),
+      vrfNo: saved && saved.vrfNo ? String(saved.vrfNo) : "",
+      reserve: saved,
+      changes: detailed.changes || [],
       attempts: attempt + 1,
     };
   });
@@ -287,9 +282,20 @@ async function mergeBundle(spec, io) {
     ]);
     const ledgerBefore = rowsOf(monthRec);
     const reserveBefore = rowsOf(yearRec);
-    const ledgerRows = mergeLedgerRows(ledgerBefore, vrf, spec.rows || [], mode);
-    const reserveRows = mergeReserveRows(reserveBefore, thaw(spec.reserve));
-    assertSiblingVrfsKept(ledgerBefore, ledgerRows, vrf);
+    const detailed = mergeReserveDetailed(reserveBefore, thaw(spec.reserve), {
+      at: spec.at,
+      blocked: { "6033": true },
+    });
+    const reserveRows = detailed.rows;
+    let vrfNo = vrf;
+    let ledgerIncoming = spec.rows || [];
+    const savedNo = detailed.saved && normNo(detailed.saved.vrfNo);
+    if (savedNo && savedNo !== vrf) {
+      vrfNo = savedNo;
+      ledgerIncoming = ledgerIncoming.map((row) => Object.assign({}, row, { vrf: vrfNo }));
+    }
+    const ledgerRows = mergeLedgerRows(ledgerBefore, vrfNo, ledgerIncoming, mode);
+    assertSiblingVrfsKept(ledgerBefore, ledgerRows, vrfNo);
     assertSiblingReservesKept(reserveBefore, reserveRows);
     await Promise.all([
       casWrite(io, "ledger", month, { month, rows: ledgerRows }, monthRec && monthRec.updated_at, attempt, limit),
@@ -299,10 +305,11 @@ async function mergeBundle(spec, io) {
     return {
       ok: true,
       kind: "bundle",
-      vrf,
+      vrf: vrfNo,
       reserveNo: String(spec.reserve.no),
       attempts: attempt + 1,
       wrote: (spec.rows || []).length,
+      changes: detailed.changes || [],
     };
   });
 }
@@ -323,6 +330,9 @@ async function mergeIssuedDoc(spec, io) {
 
 async function applyClientMerge(spec, io) {
   spec = spec || {};
+  if (spec.kind === "issue" || spec.kind === "repair" || spec.kind === "issue-ledger") {
+    return commitIssue(spec, io);
+  }
   if (spec.kind === "ledger") return mergeLedgerDoc(spec, io);
   if (spec.kind === "reserve") return mergeReserveDoc(spec, io);
   if (spec.kind === "bundle") return mergeBundle(spec, io);
