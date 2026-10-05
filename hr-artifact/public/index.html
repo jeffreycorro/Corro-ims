@@ -501,7 +501,14 @@ function dateInputValue(v){
 }
 
 const DEPTS = ["Admin","Technical","Finance","Procurement","Motorpool","Safety","Site","Unassigned"];
-const ESTAT = ["Probationary","Regular","Project-based","Fixed-term","Consultant","Separated"];
+const ESTAT = ["Probationary","Regular","Project-based","Project-Based (Rehired)","Fixed-term","Consultant","Separated"];
+/* Project-based and Project-Based (Rehired) are the same kind of engagement.
+   Someone who left and came back on a project stays active. A stored
+   "Project-based" value is never rewritten to the rehired label. */
+function statusIsProjectBased(s){
+  const t=String(s||"").trim();
+  return t==="Project-based" || t==="Project-Based (Rehired)";
+}
 
 /* The 201 checklist exactly as HR MASTERLIST.xlsx keeps it — same 33 columns,
    same order, so the imported bit string maps straight across.
@@ -1758,7 +1765,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-10-04a";
+const BUILD = "2026-10-05a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -2232,8 +2239,9 @@ function empStatusIsLive(e){
   /* Blank is not "live": an unmarked 201 still takes the separated-roster date.
      Active is a real 201 status and wins over that static list, same as Regular. */
   if(/^(probationary|regular|fixed-term|fixed term|consultant|active|contractual|seasonal)$/i.test(s)) return true;
-  /* "Project-based", "project-based", and "Project-based with a definite period"
-     are active engagements. A separated-roster row must not treat them as leavers. */
+  /* "Project-based", "project-based", "Project-based with a definite period",
+     and "Project-Based (Rehired)" are active engagements. A separated-roster
+     row must not treat them as leavers, and a stored Project-based value stays. */
   if(/project[-\s]?based/i.test(s)) return true;
   return false;
 }
@@ -2686,7 +2694,7 @@ function _alertsBuild(){
       if(d!=null && d<0) A("crit","probation",nm+" — probation lapsed "+Math.abs(d)+" days ago ("+end+") and status is still Probationary",e.id,"employees");
       else if(d!=null && d<=(S.settings.probationWarnDays||30)) A("warn","probation",nm+" — probation ends "+end+" ("+fmtSpan(d)+"); decide on regularization",e.id,"employees");
     }
-    if(e.contractEnd && (e.status==="Project-based"||e.status==="Fixed-term"||e.status==="Consultant"||e.status==="Probationary")){
+    if(e.contractEnd && (statusIsProjectBased(e.status)||e.status==="Fixed-term"||e.status==="Consultant"||e.status==="Probationary")){
       const d=daysFromToday(e.contractEnd);
       if(d!=null && d<0) A("crit","contract",nm+" — contract expired "+e.contractEnd+" and no renewal is recorded",e.id,"contracts");
       else if(d!=null && d<=(S.settings.contractWarnDays||30)) A("warn","contract",nm+" — contract ends "+e.contractEnd+" ("+fmtSpan(d)+")",e.id,"contracts");
@@ -3771,7 +3779,7 @@ function mergeHTML(body,ctx){
 /* ============ contract state ============ */
 function contractState(e){
   const onFile = ((e.docs||{}).contract||{}).s === "on" || (e.contracts||[]).length>0;
-  const term = ["Project-based","Fixed-term","Consultant","Probationary"].indexOf(e.status)>=0;
+  const term = statusIsProjectBased(e.status) || ["Fixed-term","Consultant","Probationary"].indexOf(e.status)>=0;
   if(e.status==="Separated") return {k:"sep",label:"Separated",sev:"mut",days:null,note:e.separatedOn?("since "+e.separatedOn):""};
   if(!e.status){
     /* A signed contract with an end date expires whether or not anyone got
@@ -7993,7 +8001,7 @@ const FIXES = {
     title:"Set the employment status and date hired",
     fields:[
       {k:"status", n:"Employment status", t:"select", opts:()=>ESTAT,
-       help:"Probationary, Regular, Project-based, Fixed-term or Consultant. It drives the contract and probation tracking."},
+       help:"Probationary, Regular, Project-based, Project-Based (Rehired), Fixed-term or Consultant. It drives the contract and probation tracking."},
       {k:"dateHired", n:"Date hired", t:"date",
        help:"The first day actually worked. Probation is counted six months from here."},
       {k:"position", n:"Position", t:"text",
@@ -10887,8 +10895,8 @@ const SEPARATION_DOCS = [
 ];
 function leaverEvidence(e){
   if(!e || empStatusIsSeparated(e)) return "";
-  /* Project-based (including a definite-period engagement) is an active
-     status. A leftover separatedOn from the roster is not paperwork. */
+  /* Project-based, a definite-period engagement, and Project-Based (Rehired)
+     are active. A leftover separatedOn from the roster is not paperwork. */
   if(/project[-\s]?based/i.test(String(e.status||""))) return "";
   if(e.separatedOn)      return "a separation date of "+e.separatedOn+" is on the record";
   if(e.separationReason) return "a separation reason is on the record";
@@ -20714,10 +20722,10 @@ function recentManpowerIds(days){
   return ids;
 }
 /* Contributions uses the engaged list: a real name, not a leaver status whose
-   separation date is already past. Blank, Project-based, Contractual,
-   Seasonal and the other live statuses stay. Attendance in the last 30 days
-   keeps someone who is back at work. An unsigned-resignation note does not
-   remove them. */
+   separation date is already past. Blank, Project-based, Project-Based
+   (Rehired), Contractual, Seasonal and the other live statuses stay.
+   Attendance in the last 30 days keeps someone who is back at work. An
+   unsigned-resignation note does not remove them. */
 function contribEngaged(e, recent){
   if(!e) return false;
   const name=String(e.name||"").replace(/\s+/g," ").trim();
@@ -21262,7 +21270,7 @@ function viewContrib(){
    + 'Type <b>0</b> to store an explicit 0. Clearing a box that already has a figure also stores 0. '
    + 'An empty box that was never filled is still "not set". '
    + 'The list is everyone <b>engaged</b>: Active, Regular, Probationary, Project-based, '
-   + 'Contractual, Seasonal, Fixed-term, Consultant, a blank status, and anyone with Daily Manpower '
+   + 'Project-Based (Rehired), Contractual, Seasonal, Fixed-term, Consultant, a blank status, and anyone with Daily Manpower '
    + 'attendance in the last 30 days. A Separated, Resigned, Terminated, AWOL, Inactive, Retired, '
    + 'Deceased, or end-of-contract status is left off only when the last day of engagement is already past. That day itself still counts. '
    + 'A note that a resignation letter is unsigned does not remove anyone. '

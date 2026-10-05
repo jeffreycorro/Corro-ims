@@ -515,6 +515,8 @@
     var box = doc.getElementById("hr-proj-based");
     var empId = (doc.getElementById("gen-emp") || {}).value;
     var emp = S && S.employees && empId ? S.employees[empId] : null;
+    /* Project-based and Project-Based (Rehired) both open the company
+       project-based contract. A stored "Project-based" value is unchanged. */
     if (emp && /project/i.test(emp.status || "")) {
       box.checked = true;
       sel.value = TPL_ID;
