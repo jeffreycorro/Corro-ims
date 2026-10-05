@@ -86,7 +86,7 @@ describe("artifact HTML — counter follows the log, create keeps the row", () =
   const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
 
   it("aligns the counter, releases a failed claim, and still shows every VRF", () => {
-    assert.match(html, /var BUILD = "2026-10-05 a"/);
+    assert.match(html, /var BUILD = "2026-10-05 b"/);
     assert.match(html, /function alignedNextVrf/);
     assert.match(html, /function reconcileVrfCounter/);
     assert.match(html, /async function releaseVrfClaim/);
@@ -97,15 +97,13 @@ describe("artifact HTML — counter follows the log, create keeps the row", () =
     const remintStart = html.indexOf("async function remintHeldVrfCollisions");
     const remintEnd = html.indexOf("function heldVrfShell", remintStart);
     const remint = html.slice(remintStart, remintEnd);
-    const saveAt = remint.indexOf("await saveReserves");
-    const counterAt = remint.indexOf("S.cfg.nextVrf=start");
-    assert.ok(saveAt > 0 && counterAt > saveAt, "counter moves only after the reserve is saved");
-    assert.match(remint, /undo\.forEach/);
+    assert.doesNotMatch(remint, /S\.cfg\.nextVrf=start/);
+    assert.match(remint, /does not mint a VRF/);
     const sendStart = html.indexOf("async function sendForApproval");
     const sendEnd = html.indexOf("\nasync function postVrf", sendStart);
     const send = html.slice(sendStart, sendEnd);
-    assert.match(send, /releaseVrfClaim\(vno\)/);
+    assert.match(send, /issueReserveConfirmed/);
     assert.match(send, /persisted/);
-    assert.match(send, /if\(vrfNumberTaken\(vno\)\) vno=await claimVrf\(\)/);
+    assert.doesNotMatch(send, /claimVrf\(/);
   });
 });

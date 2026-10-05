@@ -114,12 +114,15 @@ describe("artifact HTML — hold print / photos / log after Send for approval", 
     assert.match(body, /_vrfs=null/);
   });
 
-  it("copies photos when a colliding hold is reminted", () => {
+  it("does not mint or copy photos when a colliding hold is healed", () => {
     const start = html.indexOf("async function remintHeldVrfCollisions");
     const end = html.indexOf("\nfunction addHeldReserveVrfs", start);
     assert.ok(start > 0 && end > start);
     const body = html.slice(start, end);
-    assert.match(body, /await copyPhotos\(changes\[ci\]\.from, changes\[ci\]\.to\)/);
+    assert.match(body, /does not mint a VRF/);
+    assert.match(body, /if\(vrfNumberSealed\(changes\[ci\]\.from\)\) continue/);
+    assert.doesNotMatch(body, /copyPhotos/);
+    assert.doesNotMatch(body, /S\.cfg\.nextVrf/);
   });
 
   it("saves send-for-approval photos on the VRF number and the reserve, then opens VRF Logs", () => {
@@ -127,7 +130,7 @@ describe("artifact HTML — hold print / photos / log after Send for approval", 
     const end = html.indexOf("\nasync function postVrf", start);
     assert.ok(start > 0 && end > start);
     const body = html.slice(start, end);
-    assert.match(body, /addPhotoToOwners\(\[liveNo, rsvOwner\(no\)\]/);
+    assert.match(body, /addPhotoToOwners\(\[liveNo, rsvOwner\(hold\.no\)\]/);
     assert.match(body, /var liveNo=String\(vno\)/);
     assert.match(body, /S\.view="vrflog"/);
     assert.match(body, /openVrf\(held,"photos"\)/);
@@ -145,7 +148,7 @@ describe("artifact HTML — hold print / photos / log after Send for approval", 
     assert.match(html, /Photos and print work now/);
     assert.match(html, /if\(!waiting\) tabDefs\.push\(\["liq"/);
     assert.match(html, /listPhotosMany\(photoOwnersForOpenVrf\(entry\)\)/);
-    assert.match(html, /var BUILD = "2026-10-05 a"/);
+    assert.match(html, /var BUILD = "2026-10-05 b"/);
     assert.match(html, /function vrfPrintWatermark/);
     assert.match(html, /function vrfMarkNode/);
     assert.match(html, /d\.appendChild\(vrfMarkNode\(mark\)\)/);

@@ -270,7 +270,7 @@ describe("artifact HTML — approve does not wait on the whole workbook", () => 
   const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
 
   it("bundles the approve write, paints Approving…, and does not await photo copies", () => {
-    assert.match(html, /var BUILD = "2026-10-05 a"/);
+    assert.match(html, /var BUILD = "2026-10-05 b"/);
     assert.match(html, /async function commitVrfBundle/);
     assert.match(html, /async function postAndSaveReserve/);
     assert.match(html, /function queuePhotoCopy/);
