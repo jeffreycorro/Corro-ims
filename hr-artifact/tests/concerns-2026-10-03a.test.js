@@ -32,6 +32,7 @@ function loadPay() {
     "isEphemeralUrl",
     "durableDriveUrl",
     "otSiteKey",
+    "otFileList",
     "otFormUrl",
     "otRequestCovers",
     "otCovered",

@@ -90,10 +90,7 @@ describe("2026-10-07a OT request recovery", () => {
     const folded = ctx.foldOtMap(local, {});
     assert.equal(folded.map.danao.formUrl, HEAVY);
     assert.equal(folded.map.danao.status, "Approved");
-    assert.deepEqual(
-      folded.repair.map((r) => r.id),
-      ["danao"]
-    );
+    assert.equal(JSON.stringify(folded.repair.map((r) => r.id)), JSON.stringify(["danao"]));
     const shed = ctx.shedOtRequest(folded.map.danao);
     assert.equal(shed.formUrl, HEAVY);
     assert.equal(ctx.otFileList(shed).length, 1);
@@ -155,9 +152,9 @@ describe("2026-10-07a OT request recovery", () => {
       formTitle: "page 2.jpg",
       files: [{ url: second, title: "page 2.jpg" }],
     });
-    assert.deepEqual(
-      ctx.otFileList(merged).map((f) => f.title),
-      ["DANAO OT REQUEST 10.05.2026.jpg", "page 2.jpg"]
+    assert.equal(
+      JSON.stringify(ctx.otFileList(merged).map((f) => f.title)),
+      JSON.stringify(["DANAO OT REQUEST 10.05.2026.jpg", "page 2.jpg"])
     );
     const htmlOut = ctx.otFormHtml(merged);
     assert.match(htmlOut, /DANAO OT REQUEST 10\.05\.2026\.jpg/);
