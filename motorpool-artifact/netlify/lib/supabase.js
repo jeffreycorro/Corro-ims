@@ -73,13 +73,360 @@ async function rest({ method, path, query, body, prefer }) {
   return json;
 }
 
-async function getDoc(collection, id) {
+const LIST_BYTE_CAP = 450000;
+let recordsPrimaryCache = false;
+
+function isMissingRelation(err) {
+  const details = err && err.details;
+  const code = details && (details.code || "");
+  const msg = String((err && err.message) || "") + " " + String((details && details.message) || "");
+  return code === "42P01" || code === "PGRST205" || /could not find the table|could not find the relation|schema cache/i.test(msg);
+}
+
+function isMissingRpc(err) {
+  const details = err && err.details;
+  const code = details && (details.code || "");
+  const msg = String((err && err.message) || "");
+  return code === "PGRST202" || (err && err.statusCode === 404) || /could not find the function|schema cache/i.test(msg);
+}
+
+function isReloadPage(err) {
+  return /Reload the page/i.test(String((err && err.message) || ""));
+}
+
+function isYearOrMonth(collection, id) {
+  if (collection === "reserves" && /^\d{4}$/.test(String(id))) return true;
+  if (collection === "ledger" && /^\d{4}-\d{2}$/.test(String(id))) return true;
+  return false;
+}
+
+function stripSigObject(row) {
+  if (!row || typeof row !== "object") return row;
+  const copy = Object.assign({}, row);
+  ["preparedSig", "checkedSig", "approvedSig"].forEach((key) => {
+    if (typeof copy[key] === "string" && copy[key].length > 80) {
+      if (!copy[key + "Ref"]) copy[key + "Ref"] = copy[key + "Name"] || key;
+      delete copy[key];
+    }
+  });
+  return copy;
+}
+
+function stripLongStrings(value) {
+  if (Array.isArray(value)) return value.map(stripLongStrings);
+  if (!value || typeof value !== "object") {
+    if (typeof value === "string" && value.length > 2000) return "";
+    return value;
+  }
+  const out = {};
+  Object.keys(value).forEach((key) => {
+    out[key] = stripLongStrings(value[key]);
+  });
+  return out;
+}
+
+function slimDocData(collection, data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return data;
+  if (collection === "photos") return data;
+  let copy;
+  try {
+    copy = JSON.parse(JSON.stringify(data));
+  } catch (e) {
+    return data;
+  }
+  if (Array.isArray(copy.rows)) copy.rows = copy.rows.map(stripSigObject);
+  if (Buffer.byteLength(JSON.stringify(copy)) > LIST_BYTE_CAP) {
+    copy = stripLongStrings(copy);
+    copy.slimmed = true;
+  }
+  return copy;
+}
+
+async function fetchDoc(collection, id) {
   const rows = await rest({
     method: "GET",
     path: "/rest/v1/motorpool_docs",
     query: `collection=eq.${encodeURIComponent(collection)}&id=eq.${encodeURIComponent(id)}&select=collection,id,data,updated_at`,
   });
   return Array.isArray(rows) && rows[0] ? rows[0] : null;
+}
+
+async function recordsProbe(query) {
+  return rest({
+    method: "GET",
+    path: "/rest/v1/motorpool_records",
+    query,
+  });
+}
+
+async function recordsAvailable() {
+  if (recordsPrimaryCache) return true;
+  try {
+    await recordsProbe("select=id&limit=1");
+    return true;
+  } catch (err) {
+    if (isMissingRelation(err)) return false;
+    throw err;
+  }
+}
+
+async function recordsPrimary() {
+  if (recordsPrimaryCache) return true;
+  try {
+    const rows = await recordsProbe("kind=eq.reserve&select=id&limit=1");
+    if (Array.isArray(rows) && rows.length) {
+      recordsPrimaryCache = true;
+      return true;
+    }
+    return false;
+  } catch (err) {
+    if (isMissingRelation(err)) return false;
+    throw err;
+  }
+}
+
+async function listRecordPage(filter) {
+  const rows = [];
+  const page = 200;
+  for (let offset = 0; offset < 20000; offset += page) {
+    const batch = await rest({
+      method: "GET",
+      path: "/rest/v1/motorpool_records",
+      query: `${filter}&select=id,kind,reserve_no,vrf_no,live,year,month,data,updated_at&order=id.asc&limit=${page}&offset=${offset}`,
+    });
+    const list = Array.isArray(batch) ? batch : [];
+    list.forEach((row) => rows.push(row));
+    if (list.length < page) break;
+  }
+  return rows;
+}
+
+function maxUpdated(rows) {
+  let max = null;
+  (rows || []).forEach((row) => {
+    const at = row && row.updated_at;
+    if (at && (!max || String(at) > String(max))) max = at;
+  });
+  return max;
+}
+
+function issuedIdentity(entry) {
+  if (!entry || typeof entry !== "object") return "";
+  if (entry.reserveNo) return String(entry.reserveNo);
+  const snap = entry.snapshot;
+  if (snap && snap.reserve && snap.reserve.no != null && String(snap.reserve.no) !== "") {
+    return String(snap.reserve.no);
+  }
+  return "";
+}
+
+async function docFromRecords(collection, id) {
+  if (collection === "reserves" && /^\d{4}$/.test(String(id))) {
+    const recs = await listRecordPage("kind=eq.reserve&year=eq." + encodeURIComponent(id));
+    return {
+      collection,
+      id,
+      data: { year: String(id), rows: recs.map((rec) => rec.data).filter(Boolean) },
+      updated_at: maxUpdated(recs),
+    };
+  }
+  if (collection === "ledger" && /^\d{4}-\d{2}$/.test(String(id))) {
+    const recs = await listRecordPage("kind=eq.ledger&month=eq." + encodeURIComponent(id));
+    const rows = [];
+    recs.forEach((rec) => {
+      const data = rec && rec.data;
+      (data && data.rows ? data.rows : []).forEach((row) => rows.push(row));
+    });
+    return { collection, id, data: { month: String(id), rows }, updated_at: maxUpdated(recs) };
+  }
+  if (collection === "config" && String(id) === "issued") {
+    const blob = await fetchDoc("config", "issued");
+    const recs = await listRecordPage("kind=eq.issued");
+    const numbers = Object.assign({}, (blob && blob.data && blob.data.numbers) || {});
+    recs.forEach((rec) => {
+      const entry = (rec && rec.data) || {};
+      const no = String(entry.no || rec.vrf_no || "").trim();
+      const reserveNo = String(entry.reserveNo || rec.reserve_no || "").trim();
+      if (!no) return;
+      const compound = reserveNo ? no + "@" + reserveNo : no;
+      const current = numbers[no];
+      const currentReserve = issuedIdentity(current);
+      if (current && currentReserve && reserveNo && currentReserve !== reserveNo) {
+        if (!numbers[compound]) numbers[compound] = entry;
+        return;
+      }
+      if (!numbers[compound]) numbers[compound] = entry;
+      if (!numbers[no]) numbers[no] = entry;
+    });
+    return {
+      collection: "config",
+      id: "issued",
+      data: { numbers },
+      updated_at: maxUpdated(recs) || (blob && blob.updated_at) || null,
+    };
+  }
+  return null;
+}
+
+async function getDoc(collection, id) {
+  if (await recordsPrimary()) {
+    const made = await docFromRecords(collection, id);
+    if (made) return made;
+  }
+  const row = await fetchDoc(collection, id);
+  if (!row) return null;
+  if (collection === "reserves" || collection === "ledger") {
+    return Object.assign({}, row, { data: slimDocData(collection, row.data) });
+  }
+  return row;
+}
+
+const PATCH_KEEP = {
+  no: true,
+  vrfNo: true,
+  preparedSig: true,
+  checkedSig: true,
+  approvedSig: true,
+  renumberNote: true,
+  printedAs: true,
+};
+
+async function readRecord(id) {
+  const rows = await rest({
+    method: "GET",
+    path: "/rest/v1/motorpool_records",
+    query: `id=eq.${encodeURIComponent(id)}&select=id,kind,reserve_no,vrf_no,live,year,month,data,updated_at`,
+  });
+  return Array.isArray(rows) && rows[0] ? rows[0] : null;
+}
+
+async function writeRecord(row, exists) {
+  if (exists) {
+    await rest({
+      method: "PATCH",
+      path: "/rest/v1/motorpool_records",
+      query: `id=eq.${encodeURIComponent(row.id)}`,
+      prefer: "return=minimal",
+      body: {
+        data: row.data,
+        live: row.live,
+        vrf_no: row.vrf_no,
+        year: row.year,
+        month: row.month,
+      },
+    });
+    return;
+  }
+  await rest({
+    method: "POST",
+    path: "/rest/v1/motorpool_records",
+    prefer: "return=minimal",
+    body: row,
+  });
+}
+
+async function upsertReserveRecord(row, year) {
+  if (!row || row.no == null || String(row.no) === "") return;
+  const id = "reserve:" + row.no;
+  const existing = await readRecord(id);
+  if (existing) {
+    const prev = existing.data || {};
+    const next = Object.assign({}, prev);
+    Object.keys(row).forEach((key) => {
+      if (PATCH_KEEP[key]) return;
+      next[key] = row[key];
+    });
+    next.no = prev.no != null ? prev.no : row.no;
+    next.vrfNo = prev.vrfNo != null && prev.vrfNo !== "" ? prev.vrfNo : existing.vrf_no || "";
+    if ((prev.audit || []).length > (next.audit || []).length) next.audit = prev.audit;
+    if (prev.renumberNote) next.renumberNote = prev.renumberNote;
+    if (prev.printedAs) next.printedAs = prev.printedAs;
+    ["preparedSig", "checkedSig", "approvedSig"].forEach((key) => {
+      if (typeof next[key] === "string" && next[key].length > 80) delete next[key];
+    });
+    const status = String(next.status || "");
+    await writeRecord(
+      {
+        id,
+        data: next,
+        live: !(status === "Rejected" || status === "Archived" || next.archived === true),
+        vrf_no: String(next.vrfNo || existing.vrf_no || ""),
+        year: year || existing.year,
+        month: existing.month,
+      },
+      true
+    );
+    return;
+  }
+  const fresh = stripSigObject(Object.assign({}, row));
+  const status = String(fresh.status || "");
+  await writeRecord(
+    {
+      id,
+      kind: "reserve",
+      reserve_no: String(fresh.no),
+      vrf_no: String(fresh.vrfNo || ""),
+      live: !(status === "Rejected" || status === "Archived" || fresh.archived === true),
+      year: String(year || ""),
+      month: null,
+      data: fresh,
+    },
+    false
+  );
+}
+
+async function upsertLedgerRecord(vrf, month, rows) {
+  const id = "ledger:" + vrf;
+  const existing = await readRecord(id);
+  const data = { month, vrf: String(vrf), rows: rows || [] };
+  if (existing) {
+    await writeRecord(
+      { id, data, live: false, vrf_no: String(vrf), year: String(month).slice(0, 4), month },
+      true
+    );
+    return;
+  }
+  await writeRecord(
+    {
+      id,
+      kind: "ledger",
+      reserve_no: null,
+      vrf_no: String(vrf),
+      live: false,
+      year: String(month).slice(0, 4),
+      month,
+      data,
+    },
+    false
+  );
+}
+
+async function upsertBlobRows(collection, id, data) {
+  const payload = data && typeof data === "object" ? data : {};
+  if (collection === "reserves") {
+    const rows = Array.isArray(payload.rows) ? payload.rows : [];
+    for (let i = 0; i < rows.length; i++) await upsertReserveRecord(rows[i], id);
+    return;
+  }
+  if (collection === "ledger") {
+    const rows = Array.isArray(payload.rows) ? payload.rows : [];
+    const groups = {};
+    rows.forEach((row) => {
+      const vrf = String((row && row.vrf) || "").trim();
+      if (!vrf) return;
+      (groups[vrf] = groups[vrf] || []).push(row);
+    });
+    const keys = Object.keys(groups);
+    for (let i = 0; i < keys.length; i++) await upsertLedgerRecord(keys[i], id, groups[keys[i]]);
+  }
+}
+
+async function issueRecord(spec, build) {
+  return rest({
+    method: "POST",
+    path: "/rest/v1/rpc/motorpool_issue_record",
+    body: { p_spec: spec || {}, p_build: build == null ? "" : String(build) },
+  });
 }
 
 async function listIds(collection) {
@@ -163,6 +510,10 @@ async function listPhotoMeta(owner) {
  * is not echoed back over the wire.
  */
 async function setDocIfUpdatedAt(collection, id, data, updatedAt) {
+  if ((await recordsPrimary()) && isYearOrMonth(collection, id)) {
+    await upsertBlobRows(collection, id, data);
+    return { updated_at: new Date().toISOString() };
+  }
   const rows = await rest({
     method: "PATCH",
     path: "/rest/v1/motorpool_docs",
@@ -184,6 +535,11 @@ async function setDocIfUpdatedAt(collection, id, data, updatedAt) {
 }
 
 async function setDoc(collection, id, data, { merge = false } = {}) {
+  if ((await recordsPrimary()) && isYearOrMonth(collection, id)) {
+    await upsertBlobRows(collection, id, data);
+    const made = await docFromRecords(collection, id);
+    return made || { collection, id, data, updated_at: new Date().toISOString() };
+  }
   let payload = data;
   if (merge) {
     const existing = await getDoc(collection, id);
@@ -226,7 +582,12 @@ async function listCollection(collection, filters) {
     query: `collection=eq.${encodeURIComponent(collection)}&select=collection,id,data,updated_at&order=id.asc${extra}`,
   });
   const list = Array.isArray(rows) ? rows : [];
-  return extra ? list.filter((row) => rowMatchesFilters(row, filters)) : list;
+  const matched = extra ? list.filter((row) => rowMatchesFilters(row, filters)) : list;
+  if (collection === "photos") return matched;
+  return matched.map((row) => {
+    if (!row || row.data == null) return row;
+    return Object.assign({}, row, { data: slimDocData(collection, row.data) });
+  });
 }
 
 async function acquireLock(collection, id, holder, ttlSeconds) {
@@ -323,16 +684,22 @@ module.exports = {
   fetchProfileWithUserJwt,
   getDoc,
   getProfile,
+  isMissingRpc,
+  isReloadPage,
+  issueRecord,
   listCollection,
   listIds,
   listPhotoMeta,
   photoMetaQuery,
   photoMetaRow,
   photoMetaSelect,
+  recordsAvailable,
+  recordsPrimary,
   rest,
   serviceRole,
   setDoc,
   setDocIfUpdatedAt,
+  slimDocData,
   supabaseUrl,
   verifySupabaseJwt,
   verifySupabasePassword,

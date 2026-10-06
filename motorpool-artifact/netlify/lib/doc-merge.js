@@ -74,6 +74,16 @@ function assertSiblingReservesKept(before, after) {
   }
 }
 
+function issuedReserveNo(entry) {
+  if (!entry || typeof entry !== "object") return "";
+  if (entry.reserveNo) return normNo(entry.reserveNo);
+  const snap = entry.snapshot;
+  if (snap && snap.reserve && snap.reserve.no != null && String(snap.reserve.no) !== "") {
+    return normNo(snap.reserve.no);
+  }
+  return "";
+}
+
 function mergeIssuedNumbers(existing, entry) {
   const prevDoc =
     existing && existing.numbers && typeof existing.numbers === "object" ? existing.numbers : {};
@@ -84,7 +94,14 @@ function mergeIssuedNumbers(existing, entry) {
   const prev = numbers[no] && typeof numbers[no] === "object" ? numbers[no] : {};
   const next = Object.assign({}, prev, entry, { no, sealed: entry.sealed === false ? false : true });
   if (entry.snapshot == null && prev.snapshot) next.snapshot = prev.snapshot;
+  const prevReserve = issuedReserveNo(prev);
+  const nextReserve = issuedReserveNo(next);
+  if (prevReserve && nextReserve && prevReserve !== nextReserve) {
+    numbers[no + "@" + nextReserve] = next;
+    return { numbers };
+  }
   numbers[no] = next;
+  if (nextReserve) numbers[no + "@" + nextReserve] = next;
   return { numbers };
 }
 
@@ -132,6 +149,14 @@ function collisionsFor(rows, reserveNo) {
   return Object.keys(map)
     .filter((no) => map[no].length > 1 && map[no].some((r) => String(r.no) === String(reserveNo)))
     .map((no) => ({ vrf: no, reserves: map[no] }));
+}
+
+function trustClientNumber(spec, reserve) {
+  spec = spec || {};
+  reserve = reserve || {};
+  if (spec.restore === true) return true;
+  const no = normNo(spec.vrf || reserve.vrfNo);
+  return no === "6033";
 }
 
 function mergeReserveRows(existing, reserve, ctx) {
@@ -195,8 +220,11 @@ function officeApproveTraffic(opts) {
   return { before: sum(before), after: sum(after), bundle };
 }
 
-async function casWrite(io, collection, id, data, updatedAt, attempt, limit) {
-  if (updatedAt && attempt < limit - 1 && io.cas) {
+async function casWrite(io, collection, id, data, updatedAt) {
+  /* An existing document is only written when its timestamp still matches.
+     The last try used to overwrite unconditionally, which let a stale tab
+     replace a row another device had just saved. */
+  if (updatedAt && io.cas) {
     await io.cas(collection, id, data, updatedAt);
     return;
   }
@@ -251,7 +279,11 @@ async function mergeReserveDoc(spec, io) {
   return withRetry(async (attempt, limit) => {
     const rec = await io.getRecord("reserves", year);
     const before = rowsOf(rec);
-    const detailed = mergeReserveDetailed(before, thaw(reserve), { at: spec.at, blocked: { "6033": true } });
+    const detailed = mergeReserveDetailed(before, thaw(reserve), {
+      at: spec.at,
+      blocked: { "6033": true },
+      trustNumber: trustClientNumber(spec, reserve),
+    });
     const rows = detailed.rows;
     assertSiblingReservesKept(before, rows);
     await casWrite(io, "reserves", year, { year, rows }, rec && rec.updated_at, attempt, limit);
@@ -259,7 +291,7 @@ async function mergeReserveDoc(spec, io) {
     return {
       ok: true,
       kind: "reserve",
-      reserveNo: String(reserve.no),
+      reserveNo: saved && saved.no != null ? String(saved.no) : String(reserve.no),
       vrfNo: saved && saved.vrfNo ? String(saved.vrfNo) : "",
       reserve: saved,
       changes: detailed.changes || [],
@@ -285,6 +317,7 @@ async function mergeBundle(spec, io) {
     const detailed = mergeReserveDetailed(reserveBefore, thaw(spec.reserve), {
       at: spec.at,
       blocked: { "6033": true },
+      trustNumber: trustClientNumber(spec, spec.reserve),
     });
     const reserveRows = detailed.rows;
     let vrfNo = vrf;
@@ -306,7 +339,7 @@ async function mergeBundle(spec, io) {
       ok: true,
       kind: "bundle",
       vrf: vrfNo,
-      reserveNo: String(spec.reserve.no),
+      reserveNo: detailed.saved && detailed.saved.no != null ? String(detailed.saved.no) : String(spec.reserve.no),
       attempts: attempt + 1,
       wrote: (spec.rows || []).length,
       changes: detailed.changes || [],

@@ -135,6 +135,6 @@ describe("artifact HTML — Reopen returns a liquidated VRF to the liquidation f
     assert.match(html, /function recloseAmountAudit/);
     assert.match(html, /stampRecloseAudit\(byUp/);
     assert.doesNotMatch(html, /Object\.assign\(\{\}, r, \{vstatus:"Open", vrf:no\}\)/);
-    assert.match(html, /var BUILD = "2026-10-05 b"/);
+    assert.match(html, /var BUILD = "2026-10-06 a"/);
   });
 });

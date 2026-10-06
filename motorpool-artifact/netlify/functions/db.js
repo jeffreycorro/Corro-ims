@@ -6,14 +6,18 @@ const {
   acquireLock,
   deleteDoc,
   getDoc,
+  isMissingRpc,
+  isReloadPage,
+  issueRecord,
   listCollection,
   listIds,
   listPhotoMeta,
+  recordsAvailable,
   setDoc,
   setDocIfUpdatedAt,
 } = require("../lib/supabase");
 const { applyClientMerge } = require("../lib/doc-merge");
-const { clampClientCounter, screenClientSet } = require("../lib/vrf-issue");
+const { gateWrite, mergeAppConfig, screenClientSet } = require("../lib/vrf-issue");
 const { formatManilaIso } = require("../lib/manila");
 
 function snapshotFromRow(id, row) {
@@ -57,12 +61,13 @@ exports.handler = async (event) => {
       if (requiresFullWrite(collection, id) && body.merge) {
         return json(400, { error: "config/app requires a full-field write" });
       }
+      const gated = gateWrite({ op: "set", collection, build: body.build });
+      if (gated) return json(gated.statusCode, { error: gated.error, code: gated.code });
       const screened = screenClientSet(collection, id);
       if (screened) return json(screened.statusCode, { error: screened.error, code: screened.code });
       if (collection === "config" && id === "app" && body.data && typeof body.data === "object") {
         const existing = await getDoc(collection, id);
-        const current = existing && existing.data ? existing.data.nextVrf : null;
-        body.data.nextVrf = clampClientCounter(current, body.data.nextVrf);
+        body.data = mergeAppConfig(existing && existing.data, body.data);
       }
       const row = await setDoc(collection, id, body.data, {
         merge: Boolean(body.merge),
@@ -72,6 +77,8 @@ exports.handler = async (event) => {
 
     if (op === "delete") {
       const { collection, id } = parsePath(body.path, body.id);
+      const gated = gateWrite({ op: "delete", collection, build: body.build });
+      if (gated) return json(gated.statusCode, { error: gated.error, code: gated.code });
       await deleteDoc(collection, id);
       return json(200, { ok: true, collection, id, exists: false, ...tz });
     }
@@ -106,6 +113,19 @@ exports.handler = async (event) => {
         spec.user = session.name || session.full_name || session.email || session.sub || "";
       }
       if (!spec.at) spec.at = formatManilaIso();
+      const gated = gateWrite({ op: "merge", build: body.build });
+      if (gated) return json(gated.statusCode, { error: gated.error, code: gated.code });
+      if (await recordsAvailable()) {
+        try {
+          const result = await issueRecord(spec, body.build);
+          return json(200, Object.assign({ ok: true }, result || {}, tz));
+        } catch (err) {
+          if (isReloadPage(err)) {
+            return json(409, { error: "Reload the page", code: "stale_client" });
+          }
+          if (!isMissingRpc(err)) throw err;
+        }
+      }
       const io = {
         async getRecord(collection, id) {
           const row = await getDoc(collection, id);
