@@ -725,7 +725,18 @@
     opts = opts || {};
     var fetched = await fetchUploadBytes(host, opts.url);
     var bytes = await drawApproverStamp(fetched, opts);
-    var title = opts.title || ((opts.rec && opts.rec.no) || "FORM") + " APPROVED.pdf";
+    var title = opts.title;
+    if (!title) {
+      var caApi =
+        (typeof globalThis !== "undefined" && globalThis.hrCaNumbers) ||
+        (host && host.hrCaNumbers) ||
+        null;
+      if (caApi && opts.rec && typeof caApi.parseCaf === "function" && caApi.parseCaf(opts.rec.no)) {
+        title = caApi.approvedFileName(opts.rec);
+      } else {
+        title = ((opts.rec && opts.rec.no) || "FORM") + " APPROVED.pdf";
+      }
+    }
     return persistStamped(host, opts.rec, title, bytes);
   }
 

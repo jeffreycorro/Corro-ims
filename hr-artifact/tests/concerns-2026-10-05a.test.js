@@ -181,7 +181,7 @@ const SEP_DOCS = [
 
 describe("2026-10-05a Project-Based (Rehired)", () => {
   it("is build 2026-10-05a and offers the rehired status beside Project-based", () => {
-    assert.match(html, /const BUILD = "2026-10-05a"/);
+    assert.match(html, /const BUILD = "2026-10-06a"/);
     const estat = Array.from(estatFromHtml());
     assert.deepEqual(estat, [
       "Probationary",

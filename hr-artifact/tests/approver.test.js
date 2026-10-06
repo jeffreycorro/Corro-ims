@@ -471,7 +471,7 @@ describe("approver tab wiring", () => {
     const shim = fs.readFileSync(path.join(__dirname, "../public/claude-shim.js"), "utf8");
     const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
     assert.match(shim, /hr-approver\.js/);
-    assert.match(html, /const BUILD = "2026-10-05a"/);
+    assert.match(html, /const BUILD = "2026-10-06a"/);
     const view = appr.approverHtml(
       {},
       {
@@ -628,7 +628,7 @@ describe("Leave and Cash Advance e-signatures", () => {
     assert.match(approverSrc, /function approveRecord/);
     assert.match(approverSrc, /pdfIncludesSignature = true/);
     assert.match(approverSrc, /signatureStamp = sig/);
-    assert.match(html, /const BUILD = "2026-10-05a"/);
+    assert.match(html, /const BUILD = "2026-10-06a"/);
     assert.match(html, /function leaveCaPrintBlocked/);
     assert.match(html, /leaveCaSig\("dept"\)/);
     assert.match(html, /leaveCaSig\("evaluated"\)/);
