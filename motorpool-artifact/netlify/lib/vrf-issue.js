@@ -11,6 +11,8 @@
 
 const RUNAWAY_FROM = 5926;
 const PAPER = { "6033": true };
+const MIN_WRITE_BUILD = "2026-10-06 a";
+const UNNUMBERED_ISSUED_KEY = "— not yet posted —";
 
 function clone(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
@@ -155,19 +157,49 @@ function numericNo(r) {
   return isFinite(n) && String(n) === String(r.no).trim() ? n : null;
 }
 
+function reserveAgeKey(r) {
+  const created = String((r && (r.createdAt || r.submittedAt || r.date)) || "9999-99-99").slice(0, 10);
+  const no = numericNo(r);
+  const noKey = no == null ? "99999999" : String(no).padStart(8, "0");
+  return created + "|" + noKey;
+}
+
 function pickKeeper(group) {
   return group.slice().sort((a, b) => {
     const as = isSealed(a) ? 2 : hasContent(a) ? 1 : 0;
     const bs = isSealed(b) ? 2 : hasContent(b) ? 1 : 0;
     if (as !== bs) return bs - as;
-    const an = numericNo(a);
-    const bn = numericNo(b);
-    if (an != null && bn != null && an !== bn) return an - bn;
-    const ad = String(a.date || "");
-    const bd = String(b.date || "");
-    if (ad !== bd) return ad < bd ? -1 : 1;
+    const ak = reserveAgeKey(a);
+    const bk = reserveAgeKey(b);
+    if (ak !== bk) return ak < bk ? -1 : 1;
     return String(a.no).localeCompare(String(b.no));
   })[0];
+}
+
+function formatPaperDay(value) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(value || ""));
+  if (!m) return "";
+  return String(Number(m[2])) + "/" + String(Number(m[3]));
+}
+
+function paperRenumberNote(from, to, printedAt) {
+  const day = formatPaperDay(printedAt);
+  const printed = day
+    ? "Printed as VRF " + from + " on " + day + "."
+    : "Printed as VRF " + from + ".";
+  return printed + " Now VRF " + to + ". Please re-mark the paper copy.";
+}
+
+function stripSigFields(row) {
+  if (!row || typeof row !== "object") return row;
+  const copy = clone(row);
+  ["preparedSig", "checkedSig", "approvedSig"].forEach((key) => {
+    if (typeof copy[key] === "string" && copy[key].length > 80) {
+      if (!copy[key + "Ref"]) copy[key + "Ref"] = copy[key + "Name"] || key;
+      delete copy[key];
+    }
+  });
+  return copy;
 }
 
 function uniqueByNo(list) {
@@ -264,14 +296,35 @@ function resolveCollisions(rows, ctx) {
       group.forEach((r) => {
         if (r === keeper) return;
         if (isSealed(r) && isSealed(keeper)) {
-          stuck[no] = true;
+          if (local.renumberSealed === false) {
+            stuck[no] = true;
+            changes.push({
+              action: "kept-sealed",
+              outcome: "kept-sealed",
+              reserveNo: String(r.no),
+              no,
+              keeper: String(keeper.no),
+            });
+            return;
+          }
+          const fresh = String(allocate(list, local));
+          const printedAt = r.printedAt || r.date || "";
+          retarget(r, no, fresh, keeper, local);
+          r.printedAs = String(no);
+          r.renumberNote = paperRenumberNote(String(no), fresh, printedAt);
+          const last = r.audit && r.audit[r.audit.length - 1];
+          if (last) last.note = r.renumberNote;
           changes.push({
-            action: "kept-sealed",
-            outcome: "kept-sealed",
+            action: "renumbered",
+            outcome: "renumbered",
             reserveNo: String(r.no),
-            no,
+            no: fresh,
+            from: no,
+            to: fresh,
             keeper: String(keeper.no),
+            note: r.renumberNote,
           });
+          moved = true;
           return;
         }
         if (!hasContent(r)) {
@@ -322,14 +375,14 @@ function numberTakenByOther(reserves, reserve) {
 
 function assignIncoming(reserve, reserves, ctx) {
   if (!reserve || typeof reserve !== "object") throw badRequest("Reserve is required");
-  const copy = clone(reserve);
-  if (copy.no == null || String(copy.no) === "") copy.no = String(nextReserveNumber(reserves));
-  const others = (reserves || []).filter((r) => String(r.no) !== String(copy.no));
-  if (!normNo(copy.vrfNo) || numberTakenByOther(reserves, copy)) {
-    const n = allocate(others, ctx);
-    copy.vrfNo = String(n);
-    copy.vrfs = (copy.vrfs || []).filter((x) => normNo(x) && normNo(x) !== normNo(reserve.vrfNo));
-  }
+  const copy = stripSigFields(clone(reserve));
+  /* A create never keeps a number the browser picked. Two stale tabs were
+     both saving 6113 because each one chose it from its own copy. */
+  delete copy.no;
+  delete copy.vrfNo;
+  copy.vrfs = [];
+  copy.no = String(nextReserveNumber(reserves));
+  copy.vrfNo = String(allocate(reserves, ctx));
   return copy;
 }
 
@@ -378,17 +431,36 @@ function diffChanges(before, after) {
 }
 
 function mergeReserveDetailed(existing, reserve, ctx) {
+  ctx = ctx || {};
   if (!reserve || reserve.no == null || String(reserve.no) === "") {
     throw badRequest("Reserve number is required");
   }
   const cur = (existing || []).map(clone);
-  const incoming = clone(reserve);
+  const incoming = stripSigFields(clone(reserve));
   const key = String(incoming.no);
   const idx = cur.findIndex((r) => r && String(r.no) === key);
-  if (idx >= 0) cur[idx] = incoming;
-  else cur.push(incoming);
-  const resolved = resolveCollisions(cur, ctx || {});
-  const saved = resolved.reserves.find((r) => r && String(r.no) === key) || null;
+  let savedKey = key;
+  if (idx >= 0) {
+    const prev = cur[idx];
+    const patched = stripSigFields(Object.assign({}, prev, incoming));
+    patched.no = prev.no;
+    patched.vrfNo = prev.vrfNo;
+    if ((prev.audit || []).length > (patched.audit || []).length) patched.audit = prev.audit;
+    if (prev.renumberNote && !incoming.renumberNote) patched.renumberNote = prev.renumberNote;
+    if (prev.printedAs && !incoming.printedAs) patched.printedAs = prev.printedAs;
+    cur[idx] = patched;
+  } else if (ctx.trustNumber && normNo(incoming.vrfNo) && !numberTakenByOther(cur, incoming)) {
+    cur.push(incoming);
+  } else {
+    const assigned = assignIncoming(incoming, cur, ctx);
+    savedKey = String(assigned.no);
+    cur.push(assigned);
+  }
+  const resolved = resolveCollisions(cur, ctx);
+  const saved =
+    resolved.reserves.find((r) => r && String(r.no) === savedKey) ||
+    resolved.reserves.find((r) => r && String(r.no) === key) ||
+    null;
   return { rows: resolved.reserves, changes: resolved.changes, saved };
 }
 
@@ -439,8 +511,36 @@ function screenClientSet(collection, id) {
 function clampClientCounter(existingNext, incomingNext) {
   const cur = vrfSeq(existingNext);
   const inc = vrfSeq(incomingNext);
-  if (cur && inc > cur) return cur;
-  return inc || cur || existingNext || 1;
+  /* The counter only moves forward on the server. A stale tab must not
+     raise it and must not roll it back. */
+  if (cur && inc && inc !== cur) return cur;
+  if (cur) return cur;
+  return inc || existingNext || incomingNext || 1;
+}
+
+function mergeAppConfig(existing, incoming) {
+  const base = existing && typeof existing === "object" ? clone(existing) : {};
+  const inc = incoming && typeof incoming === "object" ? incoming : {};
+  const merged = Object.assign({}, base, inc);
+  merged.nextVrf = clampClientCounter(base.nextVrf, inc.nextVrf);
+  if (base.orphanSignature && !inc.orphanSignature) merged.orphanSignature = base.orphanSignature;
+  return merged;
+}
+
+function buildAccepted(build) {
+  return String(build == null ? "" : build) >= MIN_WRITE_BUILD;
+}
+
+function gateWrite(body) {
+  body = body || {};
+  const op = body.op;
+  if (op !== "set" && op !== "delete" && op !== "merge") return null;
+  if (op !== "merge") {
+    const collection = body.collection;
+    if (collection !== "reserves" && collection !== "ledger" && collection !== "config") return null;
+  }
+  if (buildAccepted(body.build)) return null;
+  return { statusCode: 409, error: "Reload the page", code: "stale_client" };
 }
 
 function orphanNumbers(used, blocked, storedNext) {
@@ -590,6 +690,7 @@ async function commitIssueOnce(spec, io) {
     externalUsed: collectUsed([], picture.ledgerRows),
     at: who.at,
     storedNext: picture.nextVrfStored,
+    renumberSealed: kind !== "repair",
   };
   const before = clone(picture.reserves);
   let healed = resolveCollisions(picture.reserves, ctx);
@@ -742,32 +843,491 @@ async function commitIssue(spec, io) {
   });
 }
 
+function paperReserve6033() {
+  return {
+    no: "paper-6033",
+    vrfNo: "6033",
+    vrfs: ["6033"],
+    date: "2026-10-03",
+    kind: "job",
+    veh: "Equipment 1",
+    name: "ONE BAGGER MIXER",
+    plate: "EQUIPMENT",
+    work: "FUEL-STN",
+    project: "Danao Guinacot",
+    budget: 1000,
+    approvedBudget: 1000,
+    status: "Approved",
+    requestedBy: "Engr. Kimberly Galapin",
+    approvedBy: "Jeffrey James M. Corro",
+    approvedAt: "2026-10-03T14:05:00+08:00",
+    printedAt: "2026-10-03T14:05:00+08:00",
+    draftPurpose: "Fuel — Gasoline ×11.53",
+    preparedSigName: "Sophie V. Batas",
+    submissionId: "paper-vrf-6033",
+    draftLines: [
+      {
+        cat: "Fuel — Gasoline",
+        item: "Fuel",
+        supplier: "Iced Petron",
+        qty: 11.53,
+        unit: "L",
+        price: 86.73,
+        work: "FUEL-STN",
+      },
+    ],
+  };
+}
+
+function paperLedger6033() {
+  return {
+    month: "2026-10",
+    date: "2026-10-03",
+    vrf: "6033",
+    veh: "Equipment 1",
+    name: "ONE BAGGER MIXER",
+    plate: "EQUIPMENT",
+    cat: "Fuel — Gasoline",
+    item: "Fuel",
+    qty: 11.53,
+    price: 86.73,
+    total: 1000,
+    supplier: "Iced Petron",
+    unit: "L",
+    project: "Danao Guinacot",
+    work: "FUEL-STN",
+    reserve: "paper-6033",
+    requestedBy: "Engr. Kimberly Galapin",
+    notes: "Fuel — Gasoline ×11.53",
+  };
+}
+
+function draftFromIssued(entry) {
+  const snap = (entry && entry.snapshot) || {};
+  const reserve = snap.reserve || {};
+  const rows = Array.isArray(snap.rows) ? snap.rows : [];
+  const first = rows[0] || {};
+  const lines =
+    Array.isArray(reserve.draftLines) && reserve.draftLines.length
+      ? clone(reserve.draftLines)
+      : rows.map((row) => ({
+          cat: row.cat || "",
+          item: row.item || "",
+          supplier: row.supplier || "",
+          qty: row.qty,
+          price: row.price,
+          unit: row.unit || "",
+          work: row.work || "",
+        }));
+  return {
+    no: "draft-unnumbered",
+    vrfNo: "",
+    vrfs: [],
+    unnumbered: true,
+    draftUnnumbered: true,
+    date: reserve.date || first.date || "",
+    veh: reserve.veh || first.veh || "",
+    project: reserve.project || first.project || "",
+    work: reserve.work || first.work || "",
+    requestedBy: reserve.requestedBy || first.requestedBy || "",
+    draftPurpose: reserve.draftPurpose || first.notes || "",
+    draftOdo: reserve.draftOdo || (first.odo == null ? "" : String(first.odo)),
+    draftLines: lines,
+    status: "Requested",
+    submissionId: "draft-unnumbered-bt02",
+    renumberNote: "Printed without a number. Send this draft so it receives the next VRF number.",
+    printedAt: (entry && entry.at) || reserve.printedAt || "",
+  };
+}
+
+function holdTotal(r) {
+  let sum = 0;
+  (r && r.draftLines ? r.draftLines : []).forEach((line) => {
+    sum += (Number(line && line.qty) || 0) * (Number(line && line.price) || 0);
+  });
+  if (!sum && Number(r && r.budget)) sum = Number(r.budget);
+  return Math.round(sum * 100) / 100;
+}
+
+/* One log row per live reserve. Two reserves that share a VRF number both
+   stay on the list, with their own lines. An unnumbered printed draft stays too. */
+function visibleHolds(reserves) {
+  const out = [];
+  (reserves || []).forEach((r) => {
+    if (!r || closedOut(r)) return;
+    const numbered = vrfSeq(r.vrfNo);
+    const unnumbered =
+      !numbered &&
+      (r.unnumbered || r.draftUnnumbered || normNo(r.submissionId) === "draft-unnumbered-bt02");
+    if (!numbered && !unnumbered) return;
+    out.push({
+      vrf: numbered ? String(numbered) : UNNUMBERED_ISSUED_KEY,
+      reserve: String(r.no),
+      veh: r.veh || "",
+      total: holdTotal(r),
+      lines: (r.draftLines || []).length,
+      paperNote: r.renumberNote || "",
+      printedAs: r.printedAs || "",
+      unnumbered: !numbered,
+    });
+  });
+  return out;
+}
+
+function issuedReserveNo(entry) {
+  if (!entry || typeof entry !== "object") return "";
+  if (entry.reserveNo) return normNo(entry.reserveNo);
+  const snap = entry.snapshot;
+  if (snap && snap.reserve && snap.reserve.no != null && String(snap.reserve.no) !== "") {
+    return normNo(snap.reserve.no);
+  }
+  return "";
+}
+
+function copyIssued(entry, no, reserveNo, extra) {
+  const next = Object.assign({}, entry || {}, extra || {}, { no: String(no), sealed: true });
+  if (reserveNo) next.reserveNo = String(reserveNo);
+  return next;
+}
+
+/**
+ * Additive restore plan. Existing rows are copied, never removed.
+ * Same-day duplicates: the lower reserve number keeps the VRF.
+ * Duplicate numbers are walked from the highest down, so 6113's
+ * second copy takes the next free number before 6112's.
+ */
+function planRestore(input) {
+  input = input || {};
+  const reserves = (input.reserves || []).map((r) => stripSigFields(clone(r)));
+  const ledger = (input.ledger || []).map(clone);
+  const issued = clone(input.issued) || { numbers: {} };
+  if (!issued.numbers || typeof issued.numbers !== "object") issued.numbers = {};
+  const app = Object.assign({}, clone(input.app) || {});
+  const orphanSignature = app.orphanSignature || "";
+  const used = {};
+  function addUsed(n) {
+    const seq = vrfSeq(n);
+    if (seq) used[String(seq)] = true;
+  }
+  reserves.forEach((r) => claimsOf(r).forEach(addUsed));
+  ledger.forEach((row) => addUsed(row && row.vrf));
+  Object.keys(issued.numbers).forEach(addUsed);
+  addUsed("6033");
+  const blocked = { "6033": true };
+
+  const groups = {};
+  reserves.forEach((r) => {
+    if (closedOut(r)) return;
+    const seq = vrfSeq(r.vrfNo);
+    if (!seq) return;
+    (groups[String(seq)] = groups[String(seq)] || []).push(r);
+  });
+  const changes = [];
+  Object.keys(groups)
+    .filter((no) => groups[no].length > 1)
+    .sort((a, b) => Number(b) - Number(a))
+    .forEach((no) => {
+      const group = groups[no].slice().sort((a, b) => {
+        const ak = reserveAgeKey(a);
+        const bk = reserveAgeKey(b);
+        if (ak !== bk) return ak < bk ? -1 : 1;
+        return String(a.no).localeCompare(String(b.no));
+      });
+      const keeper = group[0];
+      const snap = issued.numbers[no] || null;
+      issued.numbers[no + "@" + keeper.no] = copyIssued(snap, no, keeper.no, {});
+      group.slice(1).forEach((r) => {
+        const fresh = String(nextFromUsed(used, blocked, null));
+        used[fresh] = true;
+        r.printedAs = String(no);
+        r.renumberNote = paperRenumberNote(String(no), fresh, r.printedAt || r.date || "");
+        if (String(r.vrfNo || "") === String(no)) r.vrfNo = fresh;
+        r.vrfs = (r.vrfs || []).map((x) => (String(x) === String(no) ? fresh : x));
+        if (!vrfSeq(r.vrfNo)) r.vrfNo = fresh;
+        changes.push({
+          reserveNo: String(r.no),
+          from: String(no),
+          to: fresh,
+          note: r.renumberNote,
+        });
+        issued.numbers[no + "@" + r.no] = copyIssued(snap, no, r.no, { printedAs: String(no) });
+        issued.numbers[fresh + "@" + r.no] = copyIssued(snap, fresh, r.no, {
+          printedAs: String(no),
+          now: fresh,
+        });
+      });
+    });
+
+  const has6033 =
+    reserves.some((r) => vrfSeq(r.vrfNo) === 6033) || ledger.some((row) => vrfSeq(row && row.vrf) === 6033);
+  if (!has6033) {
+    reserves.push(paperReserve6033());
+    ledger.push(paperLedger6033());
+    used["6033"] = true;
+  }
+
+  let draft = null;
+  const unnumbered = issued.numbers[UNNUMBERED_ISSUED_KEY];
+  const hasDraft = reserves.some((r) => normNo(r.submissionId) === "draft-unnumbered-bt02");
+  if (unnumbered && !hasDraft) {
+    draft = draftFromIssued(unnumbered);
+    reserves.push(draft);
+  }
+
+  const next = nextFromUsed(used, blocked, app.nextVrf);
+  if (!vrfSeq(app.nextVrf) || next > vrfSeq(app.nextVrf)) app.nextVrf = next;
+  app.orphanSignature = orphanSignature;
+
+  return { reserves, ledger, issued, app, changes, draft };
+}
+
+function reserveList(state) {
+  return Object.keys(state.records)
+    .map((id) => state.records[id])
+    .filter((rec) => rec && rec.kind === "reserve" && rec.data)
+    .map((rec) => rec.data);
+}
+
+function liveUsed(state) {
+  const used = { "6033": true };
+  Object.keys(state.records).forEach((id) => {
+    const rec = state.records[id];
+    if (!rec) return;
+    if (rec.kind === "reserve" && rec.live) {
+      const seq = vrfSeq(rec.vrf_no);
+      if (seq) used[String(seq)] = true;
+    }
+    if (rec.kind === "ledger") {
+      const seq = vrfSeq(rec.vrf_no);
+      if (seq) used[String(seq)] = true;
+    }
+  });
+  const numbers = (state.issued && state.issued.numbers) || {};
+  Object.keys(numbers).forEach((key) => {
+    const seq = vrfSeq(key);
+    if (seq) used[String(seq)] = true;
+  });
+  return used;
+}
+
+function bumpCounter(state, vrfNo, reserveNo) {
+  const seq = vrfSeq(vrfNo);
+  const cur = vrfSeq(state.app.nextVrf);
+  if (seq && (!cur || seq + 1 > cur)) state.app.nextVrf = seq + 1;
+  const no = parseInt(String(reserveNo), 10);
+  const nextReserve = parseInt(String(state.app.nextReserve), 10) || 1;
+  if (isFinite(no) && String(no) === String(reserveNo).trim() && no + 1 > nextReserve) {
+    state.app.nextReserve = no + 1;
+  }
+}
+
+function createRecordState(seed) {
+  seed = seed || {};
+  const records = {};
+  (seed.reserves || []).forEach((row) => {
+    const copy = stripSigFields(clone(row));
+    const id = "reserve:" + copy.no;
+    records[id] = {
+      id,
+      kind: "reserve",
+      reserve_no: String(copy.no),
+      vrf_no: normNo(copy.vrfNo),
+      live: !closedOut(copy),
+      year: yearOf(copy),
+      data: copy,
+    };
+  });
+  (seed.ledger || []).forEach((row) => {
+    const vrf = normNo(row && row.vrf);
+    if (!vrf) return;
+    const id = "ledger:" + vrf;
+    if (!records[id]) {
+      records[id] = {
+        id,
+        kind: "ledger",
+        vrf_no: vrf,
+        live: true,
+        month: row.month || "",
+        data: { month: row.month || "", vrf, rows: [clone(row)] },
+      };
+    } else {
+      records[id].data.rows.push(clone(row));
+    }
+  });
+  return {
+    records,
+    issued: clone(seed.issued) || { numbers: {} },
+    app: Object.assign({ nextVrf: 1, nextReserve: 1 }, clone(seed.app) || {}),
+    queue: Promise.resolve(),
+  };
+}
+
+function staleClientError() {
+  const err = new Error("Reload the page");
+  err.code = "stale_client";
+  err.statusCode = 409;
+  return err;
+}
+
+function findUnnumbered(state, submissionId) {
+  const sub = normNo(submissionId);
+  if (!sub) return null;
+  const ids = Object.keys(state.records);
+  for (let i = 0; i < ids.length; i++) {
+    const rec = state.records[ids[i]];
+    if (!rec || rec.kind !== "reserve" || !rec.data) continue;
+    if (normNo(rec.data.submissionId) !== sub) continue;
+    if (vrfSeq(rec.vrf_no)) continue;
+    return rec;
+  }
+  return null;
+}
+
+function issueIntoRecordsOnce(state, spec) {
+  spec = spec || {};
+  if (!buildAccepted(spec.build)) throw staleClientError();
+  const kind = spec.kind || "issue";
+  if (kind === "repair") {
+    return {
+      ok: true,
+      kind: "repair",
+      store: "records",
+      nextVrf: state.app.nextVrf,
+      nextReserve: state.app.nextReserve,
+      changes: [],
+    };
+  }
+  const used = liveUsed(state);
+  const ctx = { blocked: { "6033": true }, externalUsed: used, storedNext: state.app.nextVrf };
+  const incoming = stripSigFields(clone(spec.reserve || {}));
+  if (kind === "reserve" && normNo(incoming.no) && state.records["reserve:" + normNo(incoming.no)]) {
+    const rec = state.records["reserve:" + normNo(incoming.no)];
+    const prev = rec.data;
+    const patched = stripSigFields(Object.assign({}, prev, incoming));
+    patched.no = prev.no;
+    patched.vrfNo = prev.vrfNo;
+    if ((prev.audit || []).length > (patched.audit || []).length) patched.audit = prev.audit;
+    if (prev.renumberNote && !incoming.renumberNote) patched.renumberNote = prev.renumberNote;
+    if (prev.printedAs && !incoming.printedAs) patched.printedAs = prev.printedAs;
+    rec.data = patched;
+    rec.vrf_no = normNo(prev.vrfNo);
+    rec.live = !closedOut(patched);
+    return {
+      ok: true,
+      kind,
+      store: "records",
+      reserve: patched,
+      reserveNo: String(patched.no),
+      vrfNo: normNo(patched.vrfNo),
+      nextVrf: state.app.nextVrf,
+      nextReserve: state.app.nextReserve,
+    };
+  }
+  const draft = findUnnumbered(state, incoming.submissionId);
+  if (draft && (kind === "issue" || kind === "reserve")) {
+    const fresh = String(allocate(reserveList(state), ctx));
+    draft.data.vrfNo = fresh;
+    draft.data.vrfs = [];
+    draft.data.unnumbered = false;
+    draft.vrf_no = fresh;
+    draft.live = !closedOut(draft.data);
+    bumpCounter(state, fresh, draft.data.no);
+    return {
+      ok: true,
+      kind,
+      store: "records",
+      reserve: draft.data,
+      reserveNo: String(draft.data.no),
+      vrfNo: fresh,
+      vrf: fresh,
+      nextVrf: state.app.nextVrf,
+      nextReserve: state.app.nextReserve,
+    };
+  }
+  const trust =
+    (spec.restore === true || normNo(incoming.vrfNo) === "6033") &&
+    normNo(incoming.vrfNo) &&
+    normNo(incoming.no) &&
+    !used[String(vrfSeq(incoming.vrfNo))];
+  let assigned;
+  if (trust) {
+    assigned = incoming;
+  } else {
+    assigned = assignIncoming(incoming, reserveList(state), ctx);
+  }
+  const id = "reserve:" + assigned.no;
+  if (state.records[id]) throw badRequest("That reserve is already on file.");
+  state.records[id] = {
+    id,
+    kind: "reserve",
+    reserve_no: String(assigned.no),
+    vrf_no: normNo(assigned.vrfNo),
+    live: !closedOut(assigned),
+    year: yearOf(assigned),
+    data: assigned,
+  };
+  bumpCounter(state, assigned.vrfNo, assigned.no);
+  return {
+    ok: true,
+    kind,
+    store: "records",
+    reserve: assigned,
+    reserveNo: String(assigned.no),
+    vrfNo: normNo(assigned.vrfNo),
+    vrf: normNo(assigned.vrfNo),
+    nextVrf: state.app.nextVrf,
+    nextReserve: state.app.nextReserve,
+  };
+}
+
+function issueIntoRecords(state, spec) {
+  const run = state.queue.then(() => issueIntoRecordsOnce(state, spec));
+  state.queue = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
+}
+
 module.exports = {
+  MIN_WRITE_BUILD,
   RUNAWAY_FROM,
+  UNNUMBERED_ISSUED_KEY,
   actorFrom,
   allocate,
   assertNoReserveDropped,
   assignIncoming,
   blockedNumbers,
+  buildAccepted,
   clampClientCounter,
   clone,
   closedOut,
   collectUsed,
   commitIssue,
+  createRecordState,
   diffChanges,
+  draftFromIssued,
+  gateWrite,
   hasContent,
   highestReal,
   isBlobOverwrite,
   isSealed,
+  issueIntoRecords,
+  mergeAppConfig,
   mergeReserveDetailed,
   nextFree,
   nextFromUsed,
   nextReserveNumber,
   normNo,
   orphanNumbers,
+  paperRenumberNote,
+  paperReserve6033,
   pickKeeper,
+  planRestore,
   resolveCollisions,
   screenClientSet,
+  stripSigFields,
+  visibleHolds,
   vrfSeq,
   yearOf,
 };

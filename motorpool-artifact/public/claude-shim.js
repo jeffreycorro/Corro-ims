@@ -376,8 +376,18 @@
     });
   }
 
+  function pageBuild() {
+    try {
+      if (typeof BUILD !== "undefined" && BUILD) return String(BUILD);
+    } catch (e) {}
+    try {
+      if (typeof window !== "undefined" && window.BUILD) return String(window.BUILD);
+    } catch (e2) {}
+    return "";
+  }
+
   function dbCall(op, extra) {
-    return gatedCall("db", Object.assign({ op: op }, extra || {}));
+    return gatedCall("db", Object.assign({ op: op, build: pageBuild() }, extra || {}));
   }
 
   function capabilityOn(status, name) {
@@ -492,6 +502,11 @@
       },
       photoMeta: function (owner) {
         return dbCall("photoMeta", { owner: String(owner || "") });
+      },
+      listIds: function (name) {
+        return dbCall("listIds", { collection: String(name || "") }).then(function (row) {
+          return (row && row.ids) || [];
+        });
       },
     });
   }

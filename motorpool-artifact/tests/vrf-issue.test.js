@@ -290,7 +290,7 @@ describe("a stale client cannot overwrite the shared list", () => {
 
   it("does not let a client raise the counter past the saved value", () => {
     assert.equal(clampClientCounter(6108, 6112), 6108);
-    assert.equal(clampClientCounter(6108, 5926), 5926);
+    assert.equal(clampClientCounter(6108, 5926), 6108);
     assert.equal(clampClientCounter(5926, 5926), 5926);
   });
 

@@ -1997,7 +1997,21 @@
     next.no = no;
     next.sealed = entry.sealed === false ? false : true;
     if (!next.snapshot && prev.snapshot) next.snapshot = prev.snapshot;
+    function issuedReserveNo(row) {
+      if (!row) return "";
+      if (row.reserveNo) return String(row.reserveNo);
+      var snap = row.snapshot;
+      if (snap && snap.reserve && snap.reserve.no != null && String(snap.reserve.no) !== "") return String(snap.reserve.no);
+      return "";
+    }
+    var prevReserve = issuedReserveNo(prev);
+    var nextReserve = issuedReserveNo(next);
+    if (prevReserve && nextReserve && prevReserve !== nextReserve) {
+      numbers[no + "@" + nextReserve] = next;
+      return { numbers: numbers };
+    }
     numbers[no] = next;
+    if (nextReserve) numbers[no + "@" + nextReserve] = next;
     return { numbers: numbers };
   }
 
@@ -2248,6 +2262,7 @@
     var kept = [];
     sorted.forEach(function (v) {
       var k = String((v && v.vrf) || "").trim();
+      if (v && v.reserve) k = k + "@" + String(v.reserve);
       if (!k || seen[k]) return;
       seen[k] = 1;
       kept.push(v);
