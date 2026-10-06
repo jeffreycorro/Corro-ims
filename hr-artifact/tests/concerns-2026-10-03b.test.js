@@ -73,7 +73,7 @@ function loadRoster() {
 
 describe("2026-10-03b alphabetical roster and last day of engagement", () => {
   it("is build 2026-10-05a and shows Last day of engagement on the 201 file", () => {
-    assert.match(html, /const BUILD = "2026-10-06a"/);
+    assert.match(html, /const BUILD = "2026-10-07a"/);
     assert.match(html, /Last day of engagement/);
     assert.match(html, /id="roster-sep-bottom"/);
     assert.match(html, /Leaving on /);

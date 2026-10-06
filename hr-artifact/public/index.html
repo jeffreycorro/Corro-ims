@@ -1147,11 +1147,20 @@ async function put(coll,id,obj){
     delete obj._dmShed;
     slimDailyRecord(obj);
   }
-  const payload=coll==="employees" ? employeePersist(obj) : obj;
+  const payload=coll==="employees" ? employeePersist(obj) : (coll==="otreqs" && typeof otForStore==="function" ? otForStore(obj) : obj);
+  /* _otShared means the last accepted copy is on the server. A new inline
+     file is not that copy yet. Leave the flag off until this set returns,
+     or the local save that runs first will drop the only bytes. */
+  if(coll==="otreqs" && obj && obj._otShared && typeof otHasHeavyInline==="function" && otHasHeavyInline(obj))
+    obj._otShared=false;
   S[coll][id]=obj; lsSaveSoon();
   ALERTS_GEN++;
   if(!S.db) return true;
-  try{ await S.db.doc(coll+"/"+id).set(payload); return true; }
+  try{
+    await S.db.doc(coll+"/"+id).set(payload);
+    if(coll==="otreqs" && obj){ obj._otShared=true; lsSaveSoon(); }
+    return true;
+  }
   catch(e){
     if(coll!=="daily"){
       if(e && e.code==="quota_exceeded") toast("Storage is full — delete old records before adding more.","err");
@@ -1197,6 +1206,7 @@ function seedStatus(msg){
 }
 
 async function drop(coll,id){
+  if(coll==="otreqs" && typeof noteOtDeleted==="function") noteOtDeleted(id);
   delete S[coll][id]; lsSaveSoon();
   if(!S.db) return;
   try{ await S.db.doc(coll+"/"+id).delete(); }catch(e){}
@@ -1221,41 +1231,66 @@ async function connect(){
   dot.classList.add("live");
   dot.lastElementChild.textContent="shared · live";
   dot.title="Records are saved to the portal's shared store and visible to your HR team.";
+  const loadedCols=new Set();
+  let otRepair=[];
   try{
-    const snaps = await Promise.all(COLLS.map(c=>db.collection(c).get()));
-    let any=false;
-    snaps.forEach((snap,i)=>{ const c=COLLS[i]; snap.docs.forEach(d=>{
-      const incoming=clone(d.data());
-      const local=S[c]&&S[c][d.id];
-      const merged=local?mergeIncomingDoc(c, incoming, local):incoming;
-      if(c==="daily" && slimDailyRecord(merged)) merged._dmShed=1;
-      S[c][d.id]=merged;
-      if(c==="employees" && employeeSnapNeedsRepair(local, incoming))
-        put("employees", d.id, merged);
-      if(c==="otreqs" && typeof otReqNeedsRepair==="function" && otReqNeedsRepair(local, incoming))
-        put("otreqs", d.id, merged);
-      any=true;
-    }); });
+    /* One collection the server rejects must not throw away the read of the
+       others. otreqs used to do that: it was not an allowed collection, so
+       the whole boot load failed and the first snapshot was then ignored. */
+    await Promise.all(COLLS.map(async c=>{
+      let snap;
+      try{ snap=await db.collection(c).get(); }
+      catch(e){ return; }
+      loadedCols.add(c);
+      if(c==="otreqs" && typeof foldOtMap==="function"){
+        const incoming={};
+        snap.docs.forEach(d=>{ incoming[d.id]=clone(d.data()); });
+        const folded=foldOtMap(S.otreqs||{}, incoming);
+        S.otreqs=folded.map;
+        otRepair=folded.repair||[];
+        return;
+      }
+      snap.docs.forEach(d=>{
+        const incoming=clone(d.data());
+        const local=S[c]&&S[c][d.id];
+        const merged=local?mergeIncomingDoc(c, incoming, local):incoming;
+        if(c==="daily" && slimDailyRecord(merged)) merged._dmShed=1;
+        S[c][d.id]=merged;
+        if(c==="employees" && employeeSnapNeedsRepair(local, incoming))
+          put("employees", d.id, merged);
+      });
+    }));
     const st = await db.doc("meta/settings").get();
     if(st.exists){
       const incoming=clone(st.data());
+      const prevDeleted=Array.isArray(S.settings.otDeleted)?S.settings.otDeleted:[];
+      const nextDeleted=Array.isArray(incoming.otDeleted)?incoming.otDeleted:[];
       if(S.settings.hrSigData && !incoming.hrSigData) incoming.hrSigData=S.settings.hrSigData;
       if(S.settings.hrSigLink && !incoming.hrSigLink) incoming.hrSigLink=S.settings.hrSigLink;
       if(S.settings.hrSigs && !incoming.hrSigs) incoming.hrSigs=S.settings.hrSigs;
       else if(S.settings.hrSigs && incoming.hrSigs)
         incoming.hrSigs=Object.assign({}, S.settings.hrSigs, incoming.hrSigs);
       S.settings=Object.assign(S.settings,incoming);
+      const tomb=[].concat(prevDeleted, nextDeleted).filter((id,i,a)=>id && a.indexOf(id)===i);
+      if(tomb.length) S.settings.otDeleted=tomb.slice(-500);
     }
+    if(typeof otTombstoned==="function" && S.otreqs){
+      Object.keys(S.otreqs).forEach(id=>{ if(otTombstoned(id)) delete S.otreqs[id]; });
+    }
+    otRepair.forEach(rec=>{
+      if(rec && rec.id && S.otreqs && S.otreqs[rec.id] && typeof queueOtUpload==="function")
+        queueOtUpload(S.otreqs[rec.id]);
+    });
     Object.keys(S.daily||{}).forEach(id=>{
       if(S.daily[id] && slimDailyRecord(S.daily[id])) S.daily[id]._dmShed=1;
     });
-    if(any) lsSaveSoon();
+    lsSaveSoon();
     queueDailyShrink();
   }catch(e){}
   /* The get() above already merged this generation. The first listener event
      is that same snapshot again — applying it redraws every screen once per
      collection (employees, daily, payroll, …) and freezes the first load. */
-  const liveEcho=new Set(COLLS);
+  const liveEcho=loadedCols;
   COLLS.forEach(c=>{
     S.subs.push(db.collection(c).onSnapshot(snap=>{
       if(liveEcho.has(c)){ liveEcho.delete(c); return; }
@@ -1293,9 +1328,18 @@ function flushLiveSnapshots(){
   const batch=LIVE_Q.splice(0, LIVE_Q.length);
   if(!batch.length) return;
   batch.forEach(item=>{
-    S[item.coll]=item.next;
+    if(item.coll==="otreqs" && typeof foldOtMap==="function"){
+      const folded=foldOtMap(S.otreqs||{}, item.next||{});
+      S.otreqs=folded.map;
+      folded.repair.forEach(rec=>{ if(rec&&rec.id) queueOtUpload(rec); });
+    }else{
+      S[item.coll]=item.next;
+    }
     if(item.coll==="daily") queueDailyShrink();
-    item.repair.forEach((row)=>{ put(row[2]||"employees", row[0], row[1]); });
+    item.repair.forEach((row)=>{
+      if((row[2]||"employees")==="otreqs") return;
+      put(row[2]||"employees", row[0], row[1]);
+    });
   });
   SNAP_GEN++;
   lsSaveSoon();
@@ -1765,7 +1809,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-10-06a";
+const BUILD = "2026-10-07a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -9514,18 +9558,88 @@ commitLeaverStrip.busy={};
    have OT entered for a date. Approved, with a file that is still a real
    link, is what unlocks the box. Hours already saved stay either way. */
 function otSiteKey(s){ return String(s||"").trim().toLowerCase().replace(/\s+/g," "); }
+/* Session book for OT requests. deleted: this browser pressed Delete.
+   tried: this page already attempted the shared upload, so a snapshot
+   cannot queue the same row again on every redraw. */
+function otBook(){
+  if(!otBook.box) otBook.box={deleted:{}, tried:{}};
+  return otBook.box;
+}
+function noteOtDeleted(id){
+  id=String(id||"");
+  if(!id) return;
+  otBook().deleted[id]=true;
+  if(typeof S==="undefined" || !S) return;
+  S.settings=S.settings||{};
+  const cur=Array.isArray(S.settings.otDeleted)?S.settings.otDeleted.slice():[];
+  if(cur.indexOf(id)<0) cur.push(id);
+  S.settings.otDeleted=cur.slice(-500);
+  if(typeof putSettings==="function") putSettings();
+}
+function otTombstoned(id){
+  if(!id) return false;
+  if(otBook().deleted[id]) return true;
+  const list=(typeof S!=="undefined" && S && S.settings && S.settings.otDeleted)||[];
+  return Array.isArray(list) && list.indexOf(id)>=0;
+}
+function queueOtUpload(rec){
+  if(!rec || !rec.id || otTombstoned(rec.id)) return;
+  if(otBook().tried[rec.id]) return;
+  otBook().tried[rec.id]=true;
+  if(typeof put!=="function") return;
+  Promise.resolve(put("otreqs", rec.id, rec)).then(function(){}, function(){});
+}
+function otFileList(req){
+  const out=[], seen={};
+  function add(url, title){
+    const raw=String(url||"").trim();
+    if(!raw || (typeof isEphemeralUrl==="function" && isEphemeralUrl(raw))) return;
+    const drive=/^data:/i.test(raw) ? raw : (typeof durableDriveUrl==="function" ? (durableDriveUrl(raw)||"") : raw);
+    if(!drive || seen[drive]) return;
+    seen[drive]=1;
+    out.push({url:drive, title:String(title||"").trim()});
+  }
+  if(req && Array.isArray(req.files)) req.files.forEach(f=>add(f&&f.url, f&&(f.title||f.name)));
+  add(req&&req.formUrl, req&&req.formTitle);
+  add(req&&req.link, req&&req.formTitle);
+  return out;
+}
 function otFormUrl(req){
-  if(!req) return "";
-  const raw=String(req.formUrl||req.link||"").trim();
-  if(!raw || (typeof isEphemeralUrl==="function" && isEphemeralUrl(raw))) return "";
-  if(typeof durableDriveUrl==="function") return durableDriveUrl(raw)||"";
-  return raw;
+  const files=otFileList(req);
+  const drive=files.find(f=>f.url && !/^data:/i.test(f.url));
+  const pick=drive||files[0];
+  if(!pick) return "";
+  return pick.url;
+}
+function otHasHeavyInline(req){
+  if(!req || typeof isHeavyDataUrl!=="function") return false;
+  if(isHeavyDataUrl(req.formUrl)) return true;
+  return otFileList(req).some(f=>isHeavyDataUrl(f.url));
+}
+function otForStore(obj){
+  if(!obj || typeof obj!=="object") return obj;
+  const copy=Object.assign({}, obj);
+  delete copy._otShared;
+  delete copy._otPending;
+  if(Array.isArray(obj.empIds)) copy.empIds=obj.empIds.slice();
+  if(Array.isArray(obj.files)) copy.files=obj.files.map(f=>Object.assign({}, f||{}));
+  return copy;
 }
 function shedOtRequest(req){
   if(!req || typeof req!=="object") return req;
   const copy=Object.assign({}, req);
   if(Array.isArray(req.empIds)) copy.empIds=req.empIds.slice();
-  if(typeof isHeavyDataUrl==="function" && isHeavyDataUrl(copy.formUrl)) copy.formUrl="";
+  if(Array.isArray(req.files)) copy.files=req.files.map(f=>Object.assign({}, f||{}));
+  /* The inline file is the only copy until shared storage accepts the row.
+     Dropping it here is how a refresh lost the form. */
+  if(req._otShared && typeof isHeavyDataUrl==="function"){
+    if(isHeavyDataUrl(copy.formUrl)) copy.formUrl="";
+    if(Array.isArray(copy.files)) copy.files=copy.files.filter(f=>f && !isHeavyDataUrl(f.url));
+    if(!copy.formUrl && copy.files && copy.files.length){
+      copy.formUrl=copy.files[0].url;
+      if(!copy.formTitle) copy.formTitle=copy.files[0].title||"";
+    }
+  }
   return copy;
 }
 function shedOtMap(map){
@@ -9536,7 +9650,15 @@ function shedOtMap(map){
 function mergeOtRequest(local, incoming){
   const next=Object.assign({}, incoming||{});
   const l=local||{};
-  if(!otFormUrl(next) && otFormUrl(l)){
+  const files=otFileList(l).concat(otFileList(next));
+  const list=otFileList({files:files});
+  if(list.length){
+    next.files=list.map(f=>({url:f.url, title:f.title||""}));
+    const primary=[].concat(list).reverse().find(f=>f.url && !/^data:/i.test(f.url)) || list[list.length-1];
+    next.formUrl=primary.url;
+    if(primary.title) next.formTitle=primary.title;
+    else if(!next.formTitle && l.formTitle) next.formTitle=l.formTitle;
+  }else if(otFormUrl(l)){
     next.formUrl=otFormUrl(l);
     if(l.formTitle) next.formTitle=l.formTitle;
   }
@@ -9547,16 +9669,65 @@ function mergeOtRequest(local, incoming){
   if(l.wholeSite && !next.wholeSite && !(next.empIds||[]).length) next.wholeSite=true;
   if((next.hoursEach==null || next.hoursEach==="") && l.hoursEach!=null && l.hoursEach!=="")
     next.hoursEach=l.hoursEach;
+  if(l._otShared) next._otShared=true;
   return next;
 }
 function otReqNeedsRepair(local, incoming){
   if(!local || !incoming) return false;
   const merged=mergeOtRequest(local, incoming);
+  if(otFileList(merged).length > otFileList(incoming).length) return true;
   if(otFormUrl(merged) && !otFormUrl(incoming)) return true;
   if(String(merged.status||"").trim() && !String(incoming.status||"").trim()) return true;
   if((merged.empIds||[]).length && !(incoming.empIds||[]).length && !incoming.wholeSite) return true;
   if(String(merged.from||"") && !String(incoming.from||"")) return true;
   return false;
+}
+/* Union the shared list with requests that still exist only on this browser.
+   A snapshot that is missing a row does not delete it unless this browser
+   deleted it, or the row was already on the shared store and the snapshot
+   still has other rows (a real delete). An empty read used to replace the
+   whole map and drop every request the server had refused to store. */
+function foldOtMap(localMap, incomingMap){
+  const local=localMap||{};
+  const incoming=incomingMap||{};
+  const next={};
+  const repair=[];
+  let incomingCount=0;
+  Object.keys(incoming).forEach(id=>{
+    if(!incoming[id] || otTombstoned(id)) return;
+    incomingCount++;
+    const inc=Object.assign({}, incoming[id]);
+    inc._otShared=true;
+    const loc=local[id];
+    const merged=loc?mergeOtRequest(loc, inc):inc;
+    if(merged && typeof merged==="object"){ merged._otShared=true; if(!merged.id) merged.id=id; }
+    next[id]=merged;
+    if(loc && otReqNeedsRepair(loc, incoming[id])) repair.push(merged);
+  });
+  Object.keys(local).forEach(id=>{
+    if(next[id] || otTombstoned(id)) return;
+    const loc=local[id];
+    if(!loc || typeof loc!=="object") return;
+    if(!loc.id) loc.id=id;
+    if(loc._otShared && incomingCount>0) return;
+    next[id]=loc;
+    if(!loc._otShared || incomingCount===0) repair.push(loc);
+  });
+  return {map:next, repair:repair};
+}
+function otFormHtml(r){
+  const files=otFileList(r);
+  if(!files.length){
+    const title=r && r.formTitle ? String(r.formTitle) : "";
+    if(title) return '<span class="lbl">'+esc(title)+' — file not stored. Edit and attach it again.</span>';
+    return '<span class="lbl">not attached</span>';
+  }
+  return files.map(f=>{
+    const title=f.title||"Open form";
+    if(/^data:/i.test(f.url))
+      return '<a href="'+esc(f.url)+'" download="'+esc(title)+'">'+esc(title)+'</a>';
+    return '<a href="'+esc(f.url)+'" target="_blank" rel="noopener noreferrer">'+esc(title)+'</a>';
+  }).join("<br>");
 }
 function otRequestCovers(req, empId, date, site){
   if(!req || req.status!=="Approved" || !otFormUrl(req)) return false;
@@ -9787,15 +9958,12 @@ function viewOtRequests(){
         return e ? flipName(e.name) : id;
       }).join(", ") || "—");
       const pill=r.status==="Approved"?"ok":r.status==="Rejected"?"crit":"warn";
-      const url=otFormUrl(r);
       h+='<tr><td class="mono">'+esc(r.from||"")+(r.to&&r.to!==r.from?" → "+esc(r.to):"")+'</td>'
         + '<td>'+esc(r.site||"—")+'</td>'
         + '<td>'+esc(who)+'</td>'
         + '<td class="num">'+(r.hoursEach!=null && r.hoursEach!=="" ? esc(String(r.hoursEach)) : "—")+'</td>'
         + '<td><span class="pill '+pill+'">'+esc(r.status||"Filed")+'</span></td>'
-        + '<td>'+(url && !/^data:/i.test(url)
-            ? '<a href="'+esc(url)+'" target="_blank" rel="noopener noreferrer">'+esc(r.formTitle||"Open form")+'</a>'
-            : (url ? esc(r.formTitle||"Attached") : '<span class="lbl">not attached</span>'))+'</td>'
+        + '<td>'+otFormHtml(r)+'</td>'
         + '<td>'+esc(r.reason||"")+'</td>'
         + '<td style="white-space:nowrap"><button class="btn sm" data-otedit="'+esc(r.id)+'">Edit</button> '
         + '<button class="btn sm danger" data-otdel="'+esc(r.id)+'">Delete</button></td></tr>';
@@ -9896,11 +10064,11 @@ function openOtEditor(pre){
       + '<div id="ot-people-wrap"><div class="f"><label>People covered</label><input id="ot-q" placeholder="Find a name or number"></div>'
       + '<div id="ot-people" style="max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px"></div></div>'
       + '<div class="f"><label>Signed OT request form</label>'
-      + '<input id="ot-file" type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,.heic,.doc,.docx">'
-      + '<input id="ot-link" type="url" value="'+esc(/^data:/i.test(rec.formUrl||"")?"":(rec.formUrl||""))+'" placeholder="or paste a Google Drive link">'
-      + (otFormUrl(rec)?'<div class="lbl" style="text-transform:none;letter-spacing:0">Attached: '+esc(rec.formTitle||"form on file")+'</div>':"")
+      + '<input id="ot-file" type="file" multiple accept=".pdf,.jpg,.jpeg,.png,.webp,.heic,.doc,.docx">'
+      + '<input id="ot-link" type="url" placeholder="or paste a Google Drive link">'
+      + '<div class="lbl" style="text-transform:none;letter-spacing:0">'+otFormHtml(rec)+'</div>'
       + '</div>'
-      + '<div class="note">The file is stored as a Drive link when Drive accepts the upload. If domain-wide delegation is refused, a smaller file is kept on the shared OT request itself, the same way a 201 attachment survives. A temporary browser address is not kept.</div>'
+      + '<div class="note">Every file stays on the request. A new file is added; it does not replace the ones already attached. Drive stores the upload when it accepts it. If domain-wide delegation is refused, a file under 1.5 MB is kept on the shared OT request. A temporary browser address is not kept.</div>'
       + '<div class="note" id="ot-err" style="border-left-color:var(--crit)" hidden></div>'
       + '</div>',
     foot:'<button class="btn" id="ot-cancel">Cancel</button><button class="btn pri" id="ot-save">Save request</button>' });
@@ -9930,24 +10098,26 @@ function openOtEditor(pre){
     let status=$("#ot-status").value||"Filed";
     if(["Filed","Approved","Rejected"].indexOf(status)<0) status="Filed";
     const hoursRaw=String($("#ot-hours").value||"").trim();
-    let formUrl=otFormUrl(rec);
-    let formTitle=rec.formTitle||"";
+    const kept=otFileList(rec).map(f=>({url:f.url, title:f.title||""}));
     const link=String($("#ot-link").value||"").trim();
     if(link){
       const durable=typeof durableDriveUrl==="function" ? durableDriveUrl(link) : link;
       if(!durable || (typeof isEphemeralUrl==="function" && isEphemeralUrl(durable))){
         fail("That link will not last. Paste the Google Drive file link."); return;
       }
-      formUrl=durable; formTitle=formTitle||"Drive link";
+      kept.push({url:durable, title:"Drive link"});
     }
     const fileEl=$("#ot-file");
-    const file=fileEl && fileEl.files && fileEl.files[0];
-    if(file){
+    const pickedFiles=fileEl && fileEl.files ? Array.prototype.slice.call(fileEl.files) : [];
+    for(let fi=0; fi<pickedFiles.length; fi++){
       try{
-        const stored=await storeOtFile(file);
-        if(stored && stored.url){ formUrl=stored.url; formTitle=stored.title||file.name; }
+        const stored=await storeOtFile(pickedFiles[fi]);
+        if(stored && stored.url) kept.push({url:stored.url, title:stored.title||pickedFiles[fi].name||"OT request"});
       }catch(ex){ fail(ex && ex.message ? ex.message : "The form could not be stored."); return; }
     }
+    const files=otFileList({files:kept});
+    const formUrl=otFormUrl({files:files});
+    const formTitle=(files.find(f=>f.url===formUrl)||{}).title || rec.formTitle || "";
     if(status==="Approved" && !formUrl){
       fail("Attach the signed form before marking this Approved. It is saved as Filed until then.");
       status="Filed";
@@ -9958,19 +10128,23 @@ function openOtEditor(pre){
       hoursEach: hoursRaw==="" ? "" : (Number(hoursRaw)||0),
       reason: String($("#ot-why").value||"").trim(),
       status: status, formUrl: formUrl, formTitle: formTitle,
+      files: files.map(f=>({url:f.url, title:f.title||""})),
       on: rec.on||TODAY
     };
+    if(rec._otShared) next._otShared=true;
     S.otreqs=S.otreqs||{};
     S.otreqs[next.id]=next;
-    await put("otreqs", next.id, next);
+    const saved=await put("otreqs", next.id, next);
     closeModal();
-    toast(status==="Approved" && formUrl ? "OT request approved. Pending hours for those dates count the next time payroll opens." : "OT request saved.","ok");
+    if(saved===false) toast("OT request is on this browser only. Shared storage did not take it, so it is not on the other computers yet.","err");
+    else toast(status==="Approved" && formUrl ? "OT request approved. Pending hours for those dates count the next time payroll opens." : "OT request saved.","ok");
     render();
   };
 }
 async function storeOtFile(file){
   if(!file) return null;
   const parent=String((S.settings&&(S.settings.otFolder||S.settings.hr201Inbox))||"");
+  let driveErr="";
   try{
     const mcp=await getMcp();
     if(mcp && parent && file.size <= MAX_UPLOAD_MB*1024*1024){
@@ -9983,9 +10157,11 @@ async function storeOtFile(file){
       });
       const p=(r&&r.payload)||{};
       if(p.viewUrl) return {url: durableDriveUrl(p.viewUrl)||p.viewUrl, title: p.title||file.name};
-    }
-  }catch(e){}
-  if(file.size>1500000) throw new Error("Drive did not take that file. Paste a Drive link, or choose a file under 1.5 MB.");
+      driveErr="Drive did not return a file link.";
+    }else if(!parent) driveErr="No OT folder is set. The file was not sent to Drive.";
+    else if(!mcp) driveErr="Drive is not available in this view.";
+  }catch(e){ driveErr=(e&&e.message)||"Drive refused the upload."; }
+  if(file.size>1500000) throw new Error((driveErr?driveErr+" ":"")+"Paste a Drive link, or choose a file under 1.5 MB so it can be kept on the OT request.");
   const url=await new Promise((resolve,reject)=>{
     const fr=new FileReader();
     fr.onload=()=>resolve(String(fr.result||""));
