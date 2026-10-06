@@ -291,13 +291,13 @@ describe("cash advance control numbers", () => {
     assert.equal(ca.takenByOther(S, "CAF2026-0002"), true);
   });
 
-  it("is build 2026-10-06a and the portal loads the cash-advance numbering companion", () => {
+  it("is build 2026-10-07a and the portal loads the cash-advance numbering companion", () => {
     const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
     const shim = fs.readFileSync(path.join(__dirname, "../public/claude-shim.js"), "utf8");
     const db = fs.readFileSync(path.join(__dirname, "../netlify/functions/db.js"), "utf8");
     const readme = fs.readFileSync(path.join(__dirname, "../README.md"), "utf8");
     const sw = fs.readFileSync(path.join(__dirname, "../public/sw.js"), "utf8");
-    assert.match(html, /const BUILD = "2026-10-06a"/);
+    assert.match(html, /const BUILD = "2026-10-07a"/);
     assert.match(shim, /hr-ca-numbers\.js/);
     assert.match(shim, /data-hr-ca-numbers/);
     assert.match(shim, /assignCa/);

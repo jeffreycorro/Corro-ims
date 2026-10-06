@@ -12,6 +12,7 @@ const {
 const { formatManilaIso } = require("../lib/manila");
 const leaveNumbers = require("../../public/hr-leave-numbers");
 const caNumbers = require("../../public/hr-ca-numbers");
+const { mergeStoredOtRequest } = require("../lib/ot-merge");
 
 function storeFromRows(rows) {
   return leaveNumbers.rowsToStore(rows);
@@ -164,6 +165,10 @@ exports.handler = async (event) => {
             : {}),
           ...body.data,
         };
+      }
+      if (collection === "otreqs") {
+        const existing = await getDoc(collection, id);
+        payload = mergeStoredOtRequest(existing && existing.data, payload);
       }
       if (collection === "advances") {
         const result = await caNumbers.assignCashAdvance(

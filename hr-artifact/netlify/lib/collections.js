@@ -26,6 +26,8 @@ const ALLOWED_COLLECTIONS = Object.freeze([
   "compliance",
   "forms",
   "periods",
+  "otreqs",
+  "payruns",
   "meta",
 ]);
 
