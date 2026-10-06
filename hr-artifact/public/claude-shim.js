@@ -386,6 +386,12 @@
           },
         };
       },
+      assignCa: function (advance, holder) {
+        return dbCall("assignCa", {
+          advance: advance,
+          holder: holder || getHolder(),
+        });
+      },
       collection: function (name) {
         return {
           get: function () {
@@ -864,6 +870,7 @@
     loadCompanion("/hr-onboarding-links.js", "data-hr-onboarding-links");
     loadCompanion("/hr-ask-leave.js", "data-hr-ask-leave");
     loadCompanion("/hr-ask-attach.js", "data-hr-ask-attach");
+    loadCompanion("/hr-ca-numbers.js", "data-hr-ca-numbers");
   }
 
   var apiObj = {

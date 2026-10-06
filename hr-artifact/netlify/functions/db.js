@@ -11,6 +11,7 @@ const {
 } = require("../lib/supabase");
 const { formatManilaIso } = require("../lib/manila");
 const leaveNumbers = require("../../public/hr-leave-numbers");
+const caNumbers = require("../../public/hr-ca-numbers");
 
 function storeFromRows(rows) {
   return leaveNumbers.rowsToStore(rows);
@@ -29,6 +30,67 @@ async function rejectDuplicateLeaveNumber(collection, id, data) {
     docreg: storeFromRows(regRows),
   };
   return leaveNumbers.conflictForWrite(collection, id, data, stores);
+}
+
+function serverIo(holder) {
+  return {
+    async lock() {
+      try {
+        const result = await acquireLock("series", "CA", holder || "ca", 5);
+        return !!(result && result.acquired === true);
+      } catch (e) {
+        return false;
+      }
+    },
+    async load() {
+      const [advances, docreg, filed, series] = await Promise.all([
+        listCollection("advances"),
+        listCollection("docreg"),
+        listCollection("filed"),
+        getDoc("series", "CA"),
+      ]);
+      return {
+        advances: caNumbers.rowsToMap(advances),
+        docreg: caNumbers.rowsToMap(docreg),
+        filed: caNumbers.rowsToMap(filed),
+        series: {
+          CA:
+            (series && series.data) || {
+              key: "CA",
+              prefix: "CAF",
+              pad: 4,
+              pattern: "{PREFIX}{YYYY}-{NNNN}",
+            },
+        },
+      };
+    },
+    async readAdvance(id) {
+      const row = await getDoc("advances", id);
+      return row && row.data ? row.data : null;
+    },
+    async writeAdvance(rec) {
+      const payload = Object.assign({}, rec);
+      delete payload._hrCaInternal;
+      await setDoc("advances", rec.id, payload);
+    },
+    async writeDocreg(rec) {
+      await setDoc("docreg", rec.id, rec);
+    },
+    async writeSeries(rec) {
+      const row = await getDoc("series", "CA");
+      const stored = (row && row.data) || {};
+      const merged = caNumbers.mergeSeriesCounter(stored, rec);
+      await setDoc("series", "CA", Object.assign({}, stored, merged));
+    },
+    uid(prefix) {
+      return (
+        (prefix || "d") +
+        Date.now().toString(36) +
+        Math.random().toString(36).slice(2, 8)
+      );
+    },
+    year: new Date().getFullYear(),
+  };
 }
 
 function snapshotFromRow(id, row) {
@@ -64,6 +126,30 @@ exports.handler = async (event) => {
       return json(200, { ...snapshotFromRow(id, row), collection, ...tz });
     }
 
+    if (op === "assignCa") {
+      const advance = body.advance || body.data;
+      if (!advance || !advance.id) {
+        return json(400, { error: "advance id is required" });
+      }
+      const result = await caNumbers.assignCashAdvance(
+        serverIo(body.holder || "assignCa"),
+        advance
+      );
+      return json(200, {
+        ...snapshotFromRow(result.advance.id, {
+          id: result.advance.id,
+          data: result.advance,
+        }),
+        advance: result.advance,
+        docreg: result.docreg || null,
+        series: result.series || null,
+        kind: result.kind || "",
+        ignored: result.ignored || "",
+        collection: "advances",
+        ...tz,
+      });
+    }
+
     if (op === "set") {
       const { collection, id } = parsePath(body.path, body.id);
       if (body.data === undefined) {
@@ -79,6 +165,29 @@ exports.handler = async (event) => {
           ...body.data,
         };
       }
+      if (collection === "advances") {
+        const result = await caNumbers.assignCashAdvance(
+          serverIo(body.holder || "set"),
+          Object.assign({}, payload, { id: id })
+        );
+        return json(200, {
+          ...snapshotFromRow(id, { id: id, data: result.advance }),
+          advance: result.advance,
+          docreg: result.docreg || null,
+          series: result.series || null,
+          kind: result.kind || "",
+          ignored: result.ignored || "",
+          collection,
+          ...tz,
+        });
+      }
+      if (collection === "series" && id === "CA") {
+        const existing = await getDoc("series", "CA");
+        payload = caNumbers.guardSeriesWrite(
+          existing && existing.data,
+          payload
+        );
+      }
       const conflict = await rejectDuplicateLeaveNumber(collection, id, payload);
       if (conflict) {
         return json(409, {
@@ -86,7 +195,7 @@ exports.handler = async (event) => {
           code: leaveNumbers.DUP_CODE,
         });
       }
-      const row = await setDoc(collection, id, body.data, {
+      const row = await setDoc(collection, id, payload, {
         merge: Boolean(body.merge),
       });
       return json(200, { ...snapshotFromRow(id, row), collection, ...tz });
@@ -94,6 +203,19 @@ exports.handler = async (event) => {
 
     if (op === "delete") {
       const { collection, id } = parsePath(body.path, body.id);
+      if (collection === "advances" || collection === "docreg") {
+        const existing = await getDoc(collection, id);
+        const data = existing && existing.data;
+        const caRow =
+          collection === "advances"
+            ? data
+            : data && caNumbers.isCaDoc(data)
+              ? { no: data.no, id: data.refId, empId: data.empId, date: data.date }
+              : null;
+        if (caRow && caRow.no) {
+          await caNumbers.retireNumber(serverIo(body.holder || "delete"), caRow);
+        }
+      }
       await deleteDoc(collection, id);
       return json(200, { ok: true, collection, id, exists: false, ...tz });
     }
