@@ -140,7 +140,7 @@ function people() {
 
 describe("2026-10-04a reopen a saved day and show its OT total", () => {
   it("is build 2026-10-05a and shows OT total hrs on the day, the reports list, and the print", () => {
-    assert.match(html, /const BUILD = "2026-10-06a"/);
+    assert.match(html, /const BUILD = "2026-10-07a"/);
     assert.match(html, /OT total hrs","pending hours included"/);
     assert.match(html, />OT total hrs<\/th>/);
     assert.match(extractFunction(html, "printDaily"), /OT total hrs/);
