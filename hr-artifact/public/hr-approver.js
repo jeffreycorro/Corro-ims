@@ -711,13 +711,21 @@
 
   async function persistStamped(host, rec, title, bytes) {
     var b64 = bytesToBase64(bytes);
-    var uploaded = null;
     try {
-      uploaded = await uploadStamped(host, rec, title, b64);
+      var uploaded = await uploadStamped(host, rec, title, b64);
+      if (uploaded && uploaded.url) return uploaded;
     } catch (e) {
-      uploaded = null;
+      var reason = e && e.message ? String(e.message) : "The stamped form could not be stored.";
+      var err = new Error(reason);
+      err.code = (e && e.code) || "upload_failed";
+      throw err;
     }
-    if (uploaded && uploaded.url) return uploaded;
+    /* No upload connector in this view. A small stamp can still sit on the
+       record. A large one is not inlined. Copies already stored as data:
+       URLs keep opening. */
+    if (bytes && bytes.length > 1500000) {
+      throw new Error("The stamped form could not be stored.");
+    }
     return { url: "data:application/pdf;base64," + b64, title: title, inline: true };
   }
 

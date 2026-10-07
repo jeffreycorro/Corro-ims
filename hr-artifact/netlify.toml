@@ -26,6 +26,9 @@
 [functions.drive]
   timeout = 26
 
+[functions.files]
+  timeout = 26
+
 [functions.transcribe]
   timeout = 26
 

@@ -776,6 +776,157 @@
       });
     }
 
+    var DRIVE_SKIP_KEY = "hr-drive-upload-blocked";
+
+    function driveUploadBlocked() {
+      try {
+        return sessionStorage.getItem(DRIVE_SKIP_KEY) === "1";
+      } catch (e) {
+        return false;
+      }
+    }
+
+    function rememberDriveUploadBlocked() {
+      try {
+        sessionStorage.setItem(DRIVE_SKIP_KEY, "1");
+      } catch (e) {}
+    }
+
+    function canFallbackFile(args) {
+      args = args || {};
+      if ((args.contentMimeType || "") === "application/vnd.google-apps.folder") return false;
+      if (!args.base64Content) return false;
+      return true;
+    }
+
+    function shouldFallback(err) {
+      if (!err || err.code === "cancelled" || err.name === "AbortError") return false;
+      var code = String(err.code || (err.body && err.body.code) || "");
+      if (code === "quota_exceeded" || code === "unauthorized_client") return true;
+      var msg = String(err.message || err.text || "");
+      if (err.body && err.body.error) msg += " " + String(err.body.error);
+      return /domain-wide delegation|storage quota|refused/i.test(msg);
+    }
+
+    function bytesFromBase64(b64) {
+      var clean = String(b64 || "").replace(/\s/g, "");
+      var table = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+      var out = [];
+      var buf = 0;
+      var bits = 0;
+      for (var i = 0; i < clean.length; i++) {
+        var c = clean.charAt(i);
+        if (c === "=") break;
+        var v = table.indexOf(c);
+        if (v < 0) continue;
+        buf = (buf << 6) | v;
+        bits += 6;
+        if (bits >= 8) {
+          bits -= 8;
+          out.push((buf >> bits) & 255);
+        }
+      }
+      return new Uint8Array(out);
+    }
+
+    function clipReason(err) {
+      var msg = String((err && (err.message || err.text)) || "")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (!msg) return "";
+      var sentence = msg.split(". ")[0];
+      if (sentence.length > 180) sentence = sentence.slice(0, 177) + "...";
+      if (sentence && !/[.!?]$/.test(sentence)) sentence += ".";
+      return sentence;
+    }
+
+    function combinedUploadMessage(driveErr, storageErr) {
+      var reason = clipReason(storageErr) || clipReason(driveErr);
+      if (!reason) return "The file could not be stored.";
+      if (/^the file could not be stored/i.test(reason)) return reason;
+      return "The file could not be stored. " + reason;
+    }
+
+    function uploadViaSupabase(args) {
+      args = args || {};
+      var bytes = bytesFromBase64(args.base64Content);
+      return gatedCall("files", {
+        op: "upload_url",
+        title: args.title || "file",
+        contentMimeType: args.contentMimeType || "application/octet-stream",
+        size: bytes.length,
+        parentId: args.parentId || "",
+      }).then(function (signed) {
+        var uploadUrl = signed && signed.uploadUrl;
+        var path = signed && signed.path;
+        if (!uploadUrl || !path) {
+          var missing = new Error("Storage did not return an upload link.");
+          missing.code = "upstream_error";
+          throw missing;
+        }
+        return fetch(uploadUrl, {
+          method: "PUT",
+          credentials: "omit",
+          headers: {
+            "content-type": args.contentMimeType || "application/octet-stream",
+            "x-upsert": "true",
+          },
+          body: bytes,
+        }).then(function (res) {
+          if (res.ok) {
+            return {
+              payload: {
+                id: "",
+                title: args.title || "file",
+                mimeType: args.contentMimeType || "application/octet-stream",
+                viewUrl: "/.netlify/functions/files?path=" + encodeURIComponent(path),
+              },
+            };
+          }
+          return res.text().then(function (text) {
+            var msg = "";
+            try {
+              var parsed = JSON.parse(text || "");
+              msg = (parsed && (parsed.message || parsed.error)) || "";
+            } catch (e) {
+              msg = String(text || "").replace(/\s+/g, " ").trim();
+            }
+            if (msg.length > 180) msg = msg.slice(0, 177) + "...";
+            var failed = new Error(msg || "Storage upload failed (" + res.status + ").");
+            failed.status = res.status;
+            throw failed;
+          });
+        });
+      });
+    }
+
+    function storageFailed(err, driveErr) {
+      var both = new Error(combinedUploadMessage(driveErr, err));
+      both.code = "upload_failed";
+      return both;
+    }
+
+    function createFileWithFallback(args) {
+      if (!canFallbackFile(args)) return createFileMaybeChunked(args);
+      if (driveUploadBlocked()) {
+        return uploadViaSupabase(args).catch(function (err) {
+          throw storageFailed(err);
+        });
+      }
+      return createFileMaybeChunked(args).then(
+        function (out) {
+          return out;
+        },
+        function (err) {
+          if (!shouldFallback(err)) throw err;
+          rememberDriveUploadBlocked();
+          return uploadViaSupabase(args).catch(function (fallbackErr) {
+            throw storageFailed(fallbackErr, err);
+          });
+        }
+      );
+    }
+
     return Object.freeze({
       callTool: function (server, toolName, args) {
         if (String(server) !== "Google Drive") {
@@ -784,7 +935,7 @@
           return Promise.reject(missing);
         }
         if (toolName === "create_file") {
-          return createFileMaybeChunked(args);
+          return createFileWithFallback(args);
         }
         return driveCall({
           tool: toolName,

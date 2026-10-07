@@ -1821,7 +1821,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-10-07b";
+const BUILD = "2026-10-07c";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -10243,7 +10243,7 @@ function openOtEditor(pre){
             + '</div>'
           : "")
       + '</div>'
-      + '<div class="note">Each file stays on this request. Choosing another one adds it. The file is stored as a Drive link when Drive accepts the upload. If domain-wide delegation is refused, a smaller file is kept on the shared OT request itself, the same way a 201 attachment survives. A temporary browser address is not kept. Saving Daily Manpower or payroll does not remove it.</div>'
+      + '<div class="note">Each file stays on this request. Choosing another one adds it. The file is stored as a link. A form already saved on the request, including an older copy kept on the request itself, still opens. A temporary browser address is not kept. Saving Daily Manpower or payroll does not remove it.</div>'
       + '<div class="note" id="ot-err" style="border-left-color:var(--crit)" hidden></div>'
       + '</div>',
     foot:'<button class="btn" id="ot-cancel">Cancel</button><button class="btn pri" id="ot-save">Save request</button>' });
@@ -10313,30 +10313,27 @@ function openOtEditor(pre){
 }
 async function storeOtFile(file){
   if(!file) return null;
+  if(file.size > MAX_UPLOAD_MB*1024*1024)
+    throw new Error("That file is over "+MAX_UPLOAD_MB+" MB.");
   const parent=String((S.settings&&(S.settings.otFolder||S.settings.hr201Inbox))||"");
+  const mcp=await getMcp();
+  if(!mcp) throw new Error("File storage is not available.");
+  let r;
   try{
-    const mcp=await getMcp();
-    if(mcp && parent && file.size <= MAX_UPLOAD_MB*1024*1024){
-      const r=await mcp.callTool(DRIVE_SERVER,"create_file",{
-        title: file.name||"OT request",
-        parentId: parent,
-        base64Content: await fileToBase64(file),
-        contentMimeType: file.type||"application/octet-stream",
-        disableConversionToGoogleType: true
-      });
-      const p=(r&&r.payload)||{};
-      if(p.viewUrl) return {url: durableDriveUrl(p.viewUrl)||p.viewUrl, title: p.title||file.name};
-    }
-  }catch(e){}
-  if(file.size>1500000) throw new Error("Drive did not take that file. Paste a Drive link, or choose a file under 1.5 MB.");
-  const url=await new Promise((resolve,reject)=>{
-    const fr=new FileReader();
-    fr.onload=()=>resolve(String(fr.result||""));
-    fr.onerror=()=>reject(fr.error||new Error("Could not read the file"));
-    fr.readAsDataURL(file);
-  });
-  if(!url || (typeof isEphemeralUrl==="function" && isEphemeralUrl(url))) throw new Error("That file could not be stored.");
-  return {url:url, title:file.name||"OT request"};
+    r=await mcp.callTool(DRIVE_SERVER,"create_file",{
+      title: file.name||"OT request",
+      parentId: parent,
+      base64Content: await fileToBase64(file),
+      contentMimeType: file.type||"application/octet-stream",
+      disableConversionToGoogleType: true
+    });
+  }catch(e){
+    throw new Error((e&&e.message)||"The form could not be stored.");
+  }
+  const p=(r&&r.payload)||{};
+  if(!p.viewUrl) throw new Error("The file was stored without a link.");
+  const url=(typeof durableDriveUrl==="function"?durableDriveUrl(p.viewUrl):"")||p.viewUrl;
+  return {url:url, title:p.title||file.name};
 }
 function viewDaily(){
   DAILY_SITES_CACHE=null;
@@ -18664,13 +18661,13 @@ function leaveCaPrintBlocked(){
 }
 function driveMessage(e){
   const c = e && e.code;
-  const raw = String((e&&e.message)||(e&&e.text)||"");
-  if(c==="quota_exceeded" || /quota|storage.?full/i.test(raw)){
-    if(/GOOGLE_DRIVE_DELEGATED_USER|service account's My Drive/i.test(raw)) return raw;
-    return "The service account's My Drive is full, so this file was not uploaded. The portal accepts Leave and Cash Advance scans up to "
-      + MAX_UPLOAD_MB + " MB. Sharing the folder with the service account does not use the owner's quota. "
-      + "On Netlify site corcondev-hr, set GOOGLE_DRIVE_DELEGATED_USER for all contexts (include Functions) to jeffreycorro@corroconstruction.com. "
-      + "Workspace Admin must allow domain-wide delegation for the service account client_id with https://www.googleapis.com/auth/drive. A Shared Drive is an alternative.";
+  const raw = String((e&&e.message)||(e&&e.text)||"").replace(/\s+/g," ").trim();
+  if(c==="upload_failed") return raw || "The file could not be stored.";
+  if(c==="quota_exceeded" || c==="unauthorized_client" || /domain-wide delegation|storage quota/i.test(raw)){
+    if(!raw) return "The file could not be stored.";
+    const sentence=raw.split(". ")[0];
+    const out=sentence.length>220?sentence.slice(0,217)+"...":sentence;
+    return /[.!?]$/.test(out)?out:out+".";
   }
   if(c==="server_not_connected") return "Google Drive is not connected to your Claude account. Add the Google Drive connector, then try again.";
   if(c==="needs_reauth")         return "Your Google Drive connection needs signing in again. Reconnect it in Claude, then try again.";
@@ -19025,11 +19022,15 @@ async function handleSignedPick(job, file){
     if(c.docs[k.docKey].s!=="exp") c.docs[k.docKey].s="on";
     if(!c.docs[k.docKey].filed) c.docs[k.docKey].filed=TODAY;
     await put("employees",c.id,c);
+    const scan=job.coll==="leaves" || job.coll==="advances";
+    const canRead=scan && !!out.id;
     toast(out.toInbox ? "Uploaded to _INBOX — this employee has no 201 folder yet"
-                      : "Signed form on file — reading it now", out.toInbox?undefined:"ok");
+                      : (canRead ? "Signed form on file — reading it now" : "Signed form on file"),
+          out.toInbox?undefined:"ok");
     /* the same automatic read the 201 folder gets: what the paper says is
-       offered against the record, and nothing changes until HR ticks it */
-    if((job.coll==="leaves" || job.coll==="advances") && out.id) await readSignedScan(job.coll, job.recId, out.id, out.title||file.name);
+       offered against the record, and nothing changes until HR ticks it.
+       A fallback file has no Drive id, so the read is skipped with a note. */
+    if(scan) await readSignedScan(job.coll, job.recId, out.id, out.title||file.name);
     else k.back(job.recId);
   }catch(e){
     const m=driveMessage(e); if(m) toast(m,"err");
@@ -22986,12 +22987,19 @@ function scanLeaveType(t){
 }
 async function readSignedScan(coll, recId, fileId, title){
   const back=()=>{ const k=SIGNED_KIND[coll]; if(k && k.back) k.back(recId); };
+  const id=String(fileId||"").trim();
+  /* Drive file ids have no slashes. Fallback copies are stored without one. */
+  if(!id || /[\/\s]/.test(id) || id.length>200){
+    toast("This copy is not in Google Drive, so the form was not read automatically. Open the file and check it yourself.");
+    back();
+    return;
+  }
   const mcp=await getMcp(), sample=await getSample();
   if(!mcp || !sample){ back(); return; }
   openModal({ title:"Reading the signed form", body:'<div class="stack"><div class="lbl">Reading '+esc(title||"the scan")+'…</div>'+meterBar(35)+'</div>'});
   let txt="";
   try{
-    const rr=await mcp.callTool(DRIVE_SERVER,"read_file_content",{fileId});
+    const rr=await mcp.callTool(DRIVE_SERVER,"read_file_content",{fileId:id});
     txt=String(payloadText(rr)||"").replace(/CamScanner|https:\/\/v3\.camscanner\.com\S*/g,"").trim();
   }catch(e){ txt=""; }
   if(txt.replace(/\s+/g,"").length<40){
@@ -23136,8 +23144,7 @@ function newFromScan(coll){
       if(!c.docs[k.docKey].filed) c.docs[k.docKey].filed=TODAY;
       await put("employees", c.id, c);
       closeModal();
-      if(out.id) await readSignedScan(coll, rec.id, out.id, out.title||file.name);
-      else k.back(rec.id);
+      await readSignedScan(coll, rec.id, out.id, out.title||file.name);
     }catch(err){
       const m=driveMessage(err); if(m) toast(m,"err");
       btn.disabled=false; btn.textContent="File and read it";

@@ -106,7 +106,7 @@ const MERGE_NAMES = [
 
 describe("2026-10-01b checklist, drive keywords, and a recoverable screen", () => {
   it("is build 2026-10-05a and keeps a checklist file the snapshot left blank", () => {
-    assert.match(html, /const BUILD = "2026-10-07b"/);
+    assert.match(html, /const BUILD = "2026-10-07c"/);
     assert.match(html, /function keepChecklistDocs\(/);
     assert.match(html, /function checklistSnapNeedsRepair\(/);
     assert.match(html, /function paintCrash\(/);
