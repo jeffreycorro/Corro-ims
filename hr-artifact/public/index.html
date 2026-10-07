@@ -1135,7 +1135,16 @@ function flushEmpSaves(){
   EMP_SAVE_CHAIN=job.then(()=>{});
   return job;
 }
-async function put(coll,id,obj){
+function otReqPayload(obj){
+  if(!obj || typeof obj!=="object") return obj;
+  const payload=Object.assign({}, obj);
+  delete payload._formOnServer;
+  delete payload.shared;
+  if(Array.isArray(obj.empIds)) payload.empIds=obj.empIds.slice();
+  if(Array.isArray(obj.forms)) payload.forms=obj.forms.map(f=>Object.assign({}, f));
+  return payload;
+}
+async function put(coll,id,obj,opts){
   /* A hire added after start-up belongs on People & Pay straight away rather
      than waiting to be adopted from a manpower report. */
   if(coll==="employees" && obj && S.ready && !S.employees[id] && obj.status!=="Separated" && !obj.rosterConfirmed)
@@ -1147,13 +1156,21 @@ async function put(coll,id,obj){
     delete obj._dmShed;
     slimDailyRecord(obj);
   }
-  const payload=coll==="employees" ? employeePersist(obj) : obj;
+  const payload=coll==="employees" ? employeePersist(obj) : (coll==="otreqs" ? otReqPayload(obj) : obj);
   S[coll][id]=obj; lsSaveSoon();
   ALERTS_GEN++;
   if(!S.db) return true;
-  try{ await S.db.doc(coll+"/"+id).set(payload); return true; }
+  try{
+    await S.db.doc(coll+"/"+id).set(payload);
+    /* The shared row now has the file bytes. The browser copy may drop them. */
+    if(coll==="otreqs" && S[coll][id]){
+      S[coll][id]._formOnServer=true;
+      lsSaveSoon();
+    }
+    return true;
+  }
   catch(e){
-    if(coll!=="daily"){
+    if(!(opts && opts.quiet) && coll!=="daily"){
       if(e && e.code==="quota_exceeded") toast("Storage is full — delete old records before adding more.","err");
       else if(e && e.code!=="revoked") toast("Could not save to shared storage. Change kept on this device.","err");
     }
@@ -1221,21 +1238,47 @@ async function connect(){
   dot.classList.add("live");
   dot.lastElementChild.textContent="shared · live";
   dot.title="Records are saved to the portal's shared store and visible to your HR team.";
+  /* One collection the server does not know yet must not cancel the load of
+     the others. OT requests were that collection: the list failed, this whole
+     sync threw, and the only snapshot was then ignored. */
+  const loaded=new Set();
   try{
-    const snaps = await Promise.all(COLLS.map(c=>db.collection(c).get()));
+    const snaps = await Promise.all(COLLS.map(async c=>{
+      try{ return await db.collection(c).get(); }
+      catch(e){ return null; }
+    }));
     let any=false;
-    snaps.forEach((snap,i)=>{ const c=COLLS[i]; snap.docs.forEach(d=>{
+    snaps.forEach((snap,i)=>{
+      if(!snap) return;
+      const c=COLLS[i];
+      loaded.add(c);
+      const seen={};
+      snap.docs.forEach(d=>{
+      seen[d.id]=1;
       const incoming=clone(d.data());
       const local=S[c]&&S[c][d.id];
       const merged=local?mergeIncomingDoc(c, incoming, local):incoming;
       if(c==="daily" && slimDailyRecord(merged)) merged._dmShed=1;
+      if(c==="otreqs" && typeof otReqNeedsRepair==="function" && !otReqNeedsRepair(local, incoming) && typeof otMarkFromServer==="function")
+        otMarkFromServer(merged);
       S[c][d.id]=merged;
       if(c==="employees" && employeeSnapNeedsRepair(local, incoming))
         put("employees", d.id, merged);
       if(c==="otreqs" && typeof otReqNeedsRepair==="function" && otReqNeedsRepair(local, incoming))
         put("otreqs", d.id, merged);
       any=true;
-    }); });
+    });
+      /* A request that never reached the shared store still lives in this
+         browser. Copy it up. Quiet: until the collection is allowed the
+         write fails, and the form stays on this device. */
+      if(c==="otreqs"){
+        Object.keys(S.otreqs||{}).forEach(id=>{
+          const row=S.otreqs[id];
+          if(!row || seen[id] || row.shared) return;
+          put("otreqs", id, row, {quiet:true});
+        });
+      }
+    });
     const st = await db.doc("meta/settings").get();
     if(st.exists){
       const incoming=clone(st.data());
@@ -1254,8 +1297,9 @@ async function connect(){
   }catch(e){}
   /* The get() above already merged this generation. The first listener event
      is that same snapshot again — applying it redraws every screen once per
-     collection (employees, daily, payroll, …) and freezes the first load. */
-  const liveEcho=new Set(COLLS);
+     collection (employees, daily, payroll, …) and freezes the first load.
+     A collection whose get() failed still needs that first event. */
+  const liveEcho=loaded;
   COLLS.forEach(c=>{
     S.subs.push(db.collection(c).onSnapshot(snap=>{
       if(liveEcho.has(c)){ liveEcho.delete(c); return; }
@@ -1270,7 +1314,19 @@ async function connect(){
           repair.push([d.id, next[d.id]]);
         if(c==="otreqs" && typeof otReqNeedsRepair==="function" && otReqNeedsRepair(local, incoming))
           repair.push([d.id, next[d.id], "otreqs"]);
+        else if(c==="otreqs" && typeof otMarkFromServer==="function")
+          otMarkFromServer(next[d.id]);
       });
+      /* A request saved on this browser and not yet in the snapshot stays.
+         Replacing the map with the snapshot is how a filed form disappeared
+         when the shared list was still empty. */
+      if(c==="otreqs"){
+        Object.keys(S.otreqs||{}).forEach(id=>{
+          if(next[id]) return;
+          next[id]=S.otreqs[id];
+          if(!S.otreqs[id].shared) repair.push([id, next[id], "otreqs", {quiet:true}]);
+        });
+      }
       /* A just-saved Daily Manpower or signed memo can lose fields when a
          stale collection snapshot replaces the whole map. Merge, don't swap.
          A live 201 status that beat a stale Separated row, a 201 value the
@@ -1295,7 +1351,7 @@ function flushLiveSnapshots(){
   batch.forEach(item=>{
     S[item.coll]=item.next;
     if(item.coll==="daily") queueDailyShrink();
-    item.repair.forEach((row)=>{ put(row[2]||"employees", row[0], row[1]); });
+    item.repair.forEach((row)=>{ put(row[2]||"employees", row[0], row[1], row[3]); });
   });
   SNAP_GEN++;
   lsSaveSoon();
@@ -1765,7 +1821,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-10-06a";
+const BUILD = "2026-10-07a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -9514,18 +9570,76 @@ commitLeaverStrip.busy={};
    have OT entered for a date. Approved, with a file that is still a real
    link, is what unlocks the box. Hours already saved stay either way. */
 function otSiteKey(s){ return String(s||"").trim().toLowerCase().replace(/\s+/g," "); }
-function otFormUrl(req){
-  if(!req) return "";
-  const raw=String(req.formUrl||req.link||"").trim();
+/* One request can carry several signed forms. formUrl stays the first one so
+   older rows, which only stored that field, still open. A blob: address is
+   not a file. */
+function otFileKey(url){
+  const raw=String(url||"").trim();
   if(!raw || (typeof isEphemeralUrl==="function" && isEphemeralUrl(raw))) return "";
   if(typeof durableDriveUrl==="function") return durableDriveUrl(raw)||"";
   return raw;
+}
+function otFormFiles(req){
+  if(!req) return [];
+  const out=[], seen={};
+  function push(url, title, on){
+    const key=otFileKey(url);
+    if(!key || seen[key]) return;
+    seen[key]=1;
+    out.push({url:key, title:title||"", on:on||""});
+  }
+  push(req.formUrl, req.formTitle, req.formOn||"");
+  [req.forms, req.files, req.links].forEach(list=>{
+    (list||[]).forEach(x=>{
+      if(!x) return;
+      if(typeof x==="string") push(x,"","");
+      else push(x.url||x.link, x.title, x.on);
+    });
+  });
+  return out;
+}
+function otFormUrl(req){
+  const files=otFormFiles(req);
+  if(!files.length) return "";
+  const drive=files.find(f=>/drive\.google\.com|docs\.google\.com/i.test(f.url));
+  return (drive||files[0]).url;
+}
+function otAttachForm(req, url, title){
+  const files=otFormFiles(req);
+  const key=otFileKey(url);
+  if(!key) return files;
+  if(!files.some(f=>f.url===key)) files.push({url:key, title:title||"", on:typeof TODAY==="string"?TODAY:""});
+  return files;
+}
+function otApplyForms(req, files){
+  const list=(files||[]).filter(f=>f && f.url);
+  const primary=list.find(f=>/drive\.google\.com|docs\.google\.com/i.test(f.url))||list[0]||null;
+  req.forms=list.map(f=>({url:f.url, title:f.title||"", on:f.on||""}));
+  req.formUrl=primary?primary.url:"";
+  req.formTitle=primary?(primary.title||""):"";
+  return req;
+}
+function otMarkFromServer(req){
+  if(req && typeof req==="object") req._formOnServer=true;
+  return req;
 }
 function shedOtRequest(req){
   if(!req || typeof req!=="object") return req;
   const copy=Object.assign({}, req);
   if(Array.isArray(req.empIds)) copy.empIds=req.empIds.slice();
-  if(typeof isHeavyDataUrl==="function" && isHeavyDataUrl(copy.formUrl)) copy.formUrl="";
+  delete copy._formOnServer;
+  if(req._formOnServer) copy.shared=1;
+  /* Drop the file bytes from this browser only after the shared row has them.
+     Stripping them on every save, before that write existed, is why a reload
+     still showed the request and said the form was not attached. */
+  if(!req._formOnServer) return copy;
+  const files=otFormFiles(req).filter(f=>!(typeof isHeavyDataUrl==="function" && isHeavyDataUrl(f.url)));
+  copy.forms=files;
+  if(typeof isHeavyDataUrl==="function" && isHeavyDataUrl(copy.formUrl)){
+    const keep=files[0];
+    copy.formUrl=keep?keep.url:"";
+    copy.formTitle=keep?(keep.title||""):"";
+  }
   return copy;
 }
 function shedOtMap(map){
@@ -9536,7 +9650,19 @@ function shedOtMap(map){
 function mergeOtRequest(local, incoming){
   const next=Object.assign({}, incoming||{});
   const l=local||{};
-  if(!otFormUrl(next) && otFormUrl(l)){
+  const files=[];
+  const seen={};
+  function add(list){
+    (list||[]).forEach(f=>{
+      if(!f || !f.url || seen[f.url]) return;
+      seen[f.url]=1;
+      files.push({url:f.url, title:f.title||"", on:f.on||""});
+    });
+  }
+  add(typeof otFormFiles==="function" ? otFormFiles(l) : []);
+  add(typeof otFormFiles==="function" ? otFormFiles(next) : []);
+  if(files.length && typeof otApplyForms==="function") otApplyForms(next, files);
+  else if(!otFormUrl(next) && otFormUrl(l)){
     next.formUrl=otFormUrl(l);
     if(l.formTitle) next.formTitle=l.formTitle;
   }
@@ -9552,6 +9678,9 @@ function mergeOtRequest(local, incoming){
 function otReqNeedsRepair(local, incoming){
   if(!local || !incoming) return false;
   const merged=mergeOtRequest(local, incoming);
+  const inc=(typeof otFormFiles==="function" ? otFormFiles(incoming) : []).map(f=>f.url);
+  const got=(typeof otFormFiles==="function" ? otFormFiles(merged) : []).map(f=>f.url);
+  if(got.some(u=>inc.indexOf(u)<0)) return true;
   if(otFormUrl(merged) && !otFormUrl(incoming)) return true;
   if(String(merged.status||"").trim() && !String(incoming.status||"").trim()) return true;
   if((merged.empIds||[]).length && !(incoming.empIds||[]).length && !incoming.wholeSite) return true;
@@ -9754,6 +9883,31 @@ function otCsv(report){
   });
   return rows;
 }
+function otFormsCell(req){
+  const files=otFormFiles(req);
+  if(!files.length) return '<span class="lbl">not attached</span>';
+  return files.map((f,i)=>{
+    const label=f.title||("File "+(i+1));
+    if(/^data:/i.test(f.url))
+      return '<button type="button" class="btn sm" data-otopen="'+esc(req.id)+'" data-otfilei="'+i+'">'+esc(label)+'</button>';
+    return '<a href="'+esc(f.url)+'" target="_blank" rel="noopener noreferrer">'+esc(label)+'</a>';
+  }).join(" ");
+}
+function openOtFormFile(reqId, index){
+  const req=S.otreqs&&S.otreqs[reqId];
+  const f=otFormFiles(req)[Number(index)||0];
+  if(!f || !f.url) return;
+  if(/^data:/i.test(f.url)){
+    const a=document.createElement("a");
+    a.href=f.url;
+    a.download=f.title||"OT-request";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    return;
+  }
+  window.open(f.url, "_blank", "noopener");
+}
 function viewOtRequests(){
   const ui=S.ui||{};
   const week=weekStart(ui.otFrom||TODAY);
@@ -9773,7 +9927,8 @@ function viewOtRequests(){
     + '<button class="btn" id="ot-csv"><svg><use href="#i-dl"/></svg> CSV</button>'
     + '</div>'
     + '<div class="note" style="margin-bottom:12px">File the signed overtime request here. '
-    + 'OT hours can be typed with no request on file. They show <b>Pending OT form</b> and are not paid until <b>Approved</b> with the form attached covers that person or that site on that date. '
+    + 'Every form attached to a request stays on that request. A later file is added to the list. '
+    + 'OT hours can be typed with no request on file. They show <b>Pending OT form</b> and are not paid until <b>Approved</b> with a form attached covers that person or that site on that date. '
     + 'The next time payroll opens, those hours count. No retyping.</div>';
   h+='<div class="card" style="margin-bottom:14px"><div class="card-h"><h3>Requests</h3>'
     + '<span class="lbl">'+reqs.length+' on file</span></div><div class="card-b">';
@@ -9787,15 +9942,12 @@ function viewOtRequests(){
         return e ? flipName(e.name) : id;
       }).join(", ") || "—");
       const pill=r.status==="Approved"?"ok":r.status==="Rejected"?"crit":"warn";
-      const url=otFormUrl(r);
       h+='<tr><td class="mono">'+esc(r.from||"")+(r.to&&r.to!==r.from?" → "+esc(r.to):"")+'</td>'
         + '<td>'+esc(r.site||"—")+'</td>'
         + '<td>'+esc(who)+'</td>'
         + '<td class="num">'+(r.hoursEach!=null && r.hoursEach!=="" ? esc(String(r.hoursEach)) : "—")+'</td>'
         + '<td><span class="pill '+pill+'">'+esc(r.status||"Filed")+'</span></td>'
-        + '<td>'+(url && !/^data:/i.test(url)
-            ? '<a href="'+esc(url)+'" target="_blank" rel="noopener noreferrer">'+esc(r.formTitle||"Open form")+'</a>'
-            : (url ? esc(r.formTitle||"Attached") : '<span class="lbl">not attached</span>'))+'</td>'
+        + '<td>'+otFormsCell(r)+'</td>'
         + '<td>'+esc(r.reason||"")+'</td>'
         + '<td style="white-space:nowrap"><button class="btn sm" data-otedit="'+esc(r.id)+'">Edit</button> '
         + '<button class="btn sm danger" data-otdel="'+esc(r.id)+'">Delete</button></td></tr>';
@@ -9897,10 +10049,14 @@ function openOtEditor(pre){
       + '<div id="ot-people" style="max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px"></div></div>'
       + '<div class="f"><label>Signed OT request form</label>'
       + '<input id="ot-file" type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,.heic,.doc,.docx">'
-      + '<input id="ot-link" type="url" value="'+esc(/^data:/i.test(rec.formUrl||"")?"":(rec.formUrl||""))+'" placeholder="or paste a Google Drive link">'
-      + (otFormUrl(rec)?'<div class="lbl" style="text-transform:none;letter-spacing:0">Attached: '+esc(rec.formTitle||"form on file")+'</div>':"")
+      + '<input id="ot-link" type="url" value="" placeholder="or paste another Google Drive link">'
+      + (otFormFiles(rec).length
+          ? '<div class="lbl" style="text-transform:none;letter-spacing:0">On file: '
+            + otFormFiles(rec).map(f=>esc(f.title||"form on file")).join(", ")
+            + '</div>'
+          : "")
       + '</div>'
-      + '<div class="note">The file is stored as a Drive link when Drive accepts the upload. If domain-wide delegation is refused, a smaller file is kept on the shared OT request itself, the same way a 201 attachment survives. A temporary browser address is not kept.</div>'
+      + '<div class="note">Each file stays on this request. Choosing another one adds it. The file is stored as a Drive link when Drive accepts the upload. If domain-wide delegation is refused, a smaller file is kept on the shared OT request itself, the same way a 201 attachment survives. A temporary browser address is not kept. Saving Daily Manpower or payroll does not remove it.</div>'
       + '<div class="note" id="ot-err" style="border-left-color:var(--crit)" hidden></div>'
       + '</div>',
     foot:'<button class="btn" id="ot-cancel">Cancel</button><button class="btn pri" id="ot-save">Save request</button>' });
@@ -9930,25 +10086,24 @@ function openOtEditor(pre){
     let status=$("#ot-status").value||"Filed";
     if(["Filed","Approved","Rejected"].indexOf(status)<0) status="Filed";
     const hoursRaw=String($("#ot-hours").value||"").trim();
-    let formUrl=otFormUrl(rec);
-    let formTitle=rec.formTitle||"";
+    let forms=otFormFiles(rec);
     const link=String($("#ot-link").value||"").trim();
     if(link){
       const durable=typeof durableDriveUrl==="function" ? durableDriveUrl(link) : link;
       if(!durable || (typeof isEphemeralUrl==="function" && isEphemeralUrl(durable))){
         fail("That link will not last. Paste the Google Drive file link."); return;
       }
-      formUrl=durable; formTitle=formTitle||"Drive link";
+      forms=otAttachForm({forms:forms}, durable, "Drive link");
     }
     const fileEl=$("#ot-file");
     const file=fileEl && fileEl.files && fileEl.files[0];
     if(file){
       try{
         const stored=await storeOtFile(file);
-        if(stored && stored.url){ formUrl=stored.url; formTitle=stored.title||file.name; }
+        if(stored && stored.url) forms=otAttachForm({forms:forms}, stored.url, stored.title||file.name);
       }catch(ex){ fail(ex && ex.message ? ex.message : "The form could not be stored."); return; }
     }
-    if(status==="Approved" && !formUrl){
+    if(status==="Approved" && !forms.length){
       fail("Attach the signed form before marking this Approved. It is saved as Filed until then.");
       status="Filed";
     }
@@ -9957,14 +10112,15 @@ function openOtEditor(pre){
       empIds: whole ? [] : Array.from(picked),
       hoursEach: hoursRaw==="" ? "" : (Number(hoursRaw)||0),
       reason: String($("#ot-why").value||"").trim(),
-      status: status, formUrl: formUrl, formTitle: formTitle,
+      status: status,
       on: rec.on||TODAY
     };
+    otApplyForms(next, forms);
     S.otreqs=S.otreqs||{};
     S.otreqs[next.id]=next;
     await put("otreqs", next.id, next);
     closeModal();
-    toast(status==="Approved" && formUrl ? "OT request approved. Pending hours for those dates count the next time payroll opens." : "OT request saved.","ok");
+    toast(status==="Approved" && forms.length ? "OT request approved. Pending hours for those dates count the next time payroll opens." : "OT request saved.","ok");
     render();
   };
 }
@@ -23041,6 +23197,7 @@ function wire(){
   }
   const otNew=$("#ot-new",v); if(otNew) otNew.onclick=()=>openOtEditor(null);
   on("[data-otedit]","click",e=>openOtEditor({id:e.currentTarget.dataset.otedit}));
+  on("[data-otopen]","click",e=>openOtFormFile(e.currentTarget.dataset.otopen, e.currentTarget.dataset.otfilei));
   on("[data-otdel]","click",async e=>{
     const id=e.currentTarget.dataset.otdel;
     if(!await askConfirm("Delete this OT request? Hours already typed on Daily Manpower stay.")) return;
