@@ -226,7 +226,7 @@ describe("artifact HTML — 6033 restore and build 2026-10-05 a", () => {
   const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
 
   it("ships the stamp, the paper form, and a restore that does not claim a number", () => {
-    assert.match(html, /var BUILD = "2026-10-06 a"/);
+    assert.match(html, /var BUILD = "2026-10-07 a"/);
     assert.match(html, /function paperVrf6033/);
     assert.match(html, /function restoreMissingPaperVrfs/);
     assert.match(html, /function rehydrateSealedVrfs/);

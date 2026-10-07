@@ -300,33 +300,47 @@ describe("approve-vrf Netlify function", () => {
     assert.equal(hold.approvedVia, "api");
   });
 
-  it("returns 409 when that VRF is already posted", async () => {
-    const res = await call(
-      handlerWithSeed({
-        hold: { status: "Approved", vrfs: ["5812"], approvedBudget: 12500 },
+  it("returns 200 when that VRF is already approved and on the ledger", async () => {
+    const store = createMemoryStore(
+      seedDocs({
+        hold: { status: "Approved", vrfs: ["5812"], approvedBudget: 12500, approvedBy: "Jeffrey", approvedAt: "2026-09-21" },
         ledgerRows: [{ vrf: "5812", vstatus: "Open", src: "ledger" }],
-      }),
-      {
-        headers: { "X-Approve-Secret": SECRET },
-        body: JSON.stringify({ vrfNumber: 5812 }),
-      }
+      })
     );
-    assert.equal(res.statusCode, 409);
-    assert.equal(JSON.parse(res.body).code, "already_posted");
+    const res = await call(createHandler({ store }), {
+      headers: { "X-Approve-Secret": SECRET },
+      body: JSON.stringify({ vrfNumber: 5812 }),
+    });
+    assert.equal(res.statusCode, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.ok, true);
+    assert.equal(body.vrf, "5812");
+    assert.equal(body.status, "Open");
+    assert.equal(body.ledgerLines, 1);
+    assert.equal(body.already, true);
+    const month = await store.get("ledger", "2026-09");
+    assert.equal(month.rows.filter((row) => row.vrf === "5812").length, 1);
   });
 
-  it("returns 409 when a pending hold still shows a number that is already on the ledger", async () => {
-    const res = await call(
-      handlerWithSeed({
+  it("marks a pending hold Approved when its number is already on the ledger", async () => {
+    const store = createMemoryStore(
+      seedDocs({
         ledgerRows: [{ vrf: "5812", vstatus: "Open", total: 12500 }],
-      }),
-      {
-        headers: { authorization: `Bearer ${SECRET}` },
-        body: JSON.stringify({ vrf: "5812" }),
-      }
+      })
     );
-    assert.equal(res.statusCode, 409);
-    assert.equal(JSON.parse(res.body).code, "already_posted");
+    const res = await call(createHandler({ store }), {
+      headers: { authorization: `Bearer ${SECRET}` },
+      body: JSON.stringify({ vrf: "5812" }),
+    });
+    assert.equal(res.statusCode, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.ok, true);
+    assert.equal(body.ledgerLines, 1);
+    assert.equal(body.already, true);
+    const month = await store.get("ledger", "2026-09");
+    assert.equal(month.rows.filter((row) => row.vrf === "5812").length, 1);
+    const hold = (await store.get("reserves", "2026")).rows.find((row) => row.no === "12");
+    assert.equal(hold.status, "Approved");
   });
 
   it("returns 409 on an ambiguous duplicate pending hold", async () => {
@@ -398,9 +412,22 @@ describe("approve-vrf Netlify function", () => {
 });
 
 describe("resolveHold posted vs missing", () => {
-  it("prefers already-posted over a colliding Requested hold when keyed by VRF number", () => {
+  it("returns the pending hold when its number is already on the ledger", () => {
     const snapshot = {
       reserves: [pendingHold()],
+      ledgerRows: [{ vrf: "5812", src: "ledger" }],
+    };
+    const hold = resolveHold(snapshot, { kind: "vrf", no: "5812", bareNumber: true });
+    assert.equal(hold.no, "12");
+    assert.equal(hold.status, "Requested");
+  });
+
+  it("refuses when two reserves already claim the posted number", () => {
+    const snapshot = {
+      reserves: [
+        pendingHold(),
+        pendingHold({ no: "40", status: "Approved", vrfs: ["5812"] }),
+      ],
       ledgerRows: [{ vrf: "5812", src: "ledger" }],
     };
     assert.throws(

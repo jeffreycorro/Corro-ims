@@ -125,6 +125,6 @@ describe("artifact HTML — liquidate an approved hold onto the ledger", () => {
     assert.match(html, /planNow==="refuse"/);
     assert.match(html, /is still waiting for approval, so it cannot be liquidated/);
     assert.doesNotMatch(html, /vrfNo\s*=\s*"5795"/);
-    assert.match(html, /var BUILD = "2026-10-06 a"/);
+    assert.match(html, /var BUILD = "2026-10-07 a"/);
   });
 });

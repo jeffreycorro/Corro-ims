@@ -86,7 +86,7 @@ describe("artifact HTML — counter follows the log, create keeps the row", () =
   const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
 
   it("aligns the counter, releases a failed claim, and still shows every VRF", () => {
-    assert.match(html, /var BUILD = "2026-10-06 a"/);
+    assert.match(html, /var BUILD = "2026-10-07 a"/);
     assert.match(html, /function alignedNextVrf/);
     assert.match(html, /function reconcileVrfCounter/);
     assert.match(html, /async function releaseVrfClaim/);

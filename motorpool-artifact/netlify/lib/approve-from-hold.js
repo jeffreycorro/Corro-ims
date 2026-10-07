@@ -8,6 +8,9 @@
  *
  * Does not invent a VRF number. If that number is already on the ledger,
  * approval finishes the same hold or refuses. It does not mint a second VRF.
+ * A hold already marked Approved with no ledger line is healed: the missing
+ * lines are inserted and the reserve is left Approved. A repeat call writes
+ * nothing when both the reserve and the ledger line are already in place.
  */
 
 const { manilaDate, manilaYear } = require("./manila");
@@ -217,52 +220,54 @@ function isPostedNumber(snapshot, no) {
   });
 }
 
+function isClosedOut(status) {
+  const st = String(status || "");
+  return st === "Rejected" || st === "Cancelled" || st === "Archived";
+}
+
+/** Reserves this approve key can act on. Rejected and cancelled rows are ignored. */
+function matchingReserves(reserves, key) {
+  const pool = (reserves || []).filter((r) => r && !isClosedOut(r.status) && r.archived !== true);
+  if (!key) return [];
+  if (key.kind === "reserve") return pool.filter((r) => normNo(r.no) === key.no);
+  const byVrf = pool.filter(
+    (r) => normNo(r.vrfNo) === key.no || (r.vrfs || []).some((x) => String(x) === key.no)
+  );
+  if (byVrf.length || !key.bareNumber) return byVrf;
+  return pool.filter((r) => normNo(r.no) === key.no);
+}
+
 function resolveHold(snapshot, key) {
-  const pending = pendingHolds(snapshot.reserves);
+  const matches = matchingReserves(snapshot.reserves, key);
 
   if (key.kind === "reserve") {
-    const hits = pending.filter((r) => normNo(r.no) === key.no);
-    if (hits.length > 1) {
+    if (matches.length > 1) {
       throw approveError(
         409,
         "ambiguous",
-        `RSV-${key.no} matches ${hits.length} pending holds — refusing to guess`
+        `RSV-${key.no} matches ${matches.length} holds — refusing to guess`
       );
     }
-    if (hits.length === 1) return hits[0];
-    const any = (snapshot.reserves || []).filter((r) => normNo(r.no) === key.no);
-    if (any.length === 1 && approvedState(any[0].status)) {
-      throw approveError(409, "already_posted", `RSV-${key.no} is already posted`);
-    }
+    if (matches.length === 1) return matches[0];
     throw approveError(404, "not_found", `RSV-${key.no} is not waiting for approval`);
   }
 
-  if (isPostedNumber(snapshot, key.no)) {
-    throw approveError(409, "already_posted", `VRF ${key.no} is already posted`);
-  }
-
-  const byVrf = pending.filter((r) => normNo(r.vrfNo) === key.no);
-  if (byVrf.length > 1) {
-    throw approveError(
-      409,
-      "ambiguous",
-      `VRF ${key.no} matches ${byVrf.length} pending holds — refusing to guess`
-    );
-  }
-  if (byVrf.length === 1) return byVrf[0];
-
-  if (key.bareNumber) {
-    const byReserve = pending.filter((r) => normNo(r.no) === key.no);
-    if (byReserve.length > 1) {
+  if (matches.length > 1) {
+    const pending = matches.filter((r) => String(r.status) === "Requested");
+    if (pending.length > 1) {
       throw approveError(
         409,
         "ambiguous",
-        `${key.no} matches ${byReserve.length} pending reserve numbers — refusing to guess`
+        `VRF ${key.no} matches ${pending.length} pending holds — refusing to guess`
       );
     }
-    if (byReserve.length === 1) return byReserve[0];
+    throw approveError(
+      409,
+      "already_posted",
+      `VRF ${key.no} is already on another reserve. Not creating another number.`
+    );
   }
-
+  if (matches.length === 1) return matches[0];
   throw approveError(404, "not_found", `VRF ${key.no} is not waiting for approval`);
 }
 
@@ -349,22 +354,77 @@ function buildLedgerRows(hold, vrfNo, snapshot, today) {
   });
 }
 
+function ledgerLinesFor(snapshot, vrfNo) {
+  const no = normNo(vrfNo);
+  return (snapshot.ledgerRows || []).filter((row) => isPostedVrfRow(row) && normNo(row.vrf) === no);
+}
+
+function appendAudit(hold, entry) {
+  const audit = Array.isArray(hold.audit) ? hold.audit.slice() : [];
+  const dup = audit.some(
+    (note) =>
+      note &&
+      note.field === entry.field &&
+      String(note.from || "") === String(entry.from || "") &&
+      String(note.to || "") === String(entry.to || "") &&
+      String(note.note || "") === String(entry.note || "")
+  );
+  if (!dup) audit.push(entry);
+  hold.audit = audit;
+}
+
+function approvePayload(hold, vrfNo, extra) {
+  extra = extra || {};
+  const payload = {
+    ok: true,
+    vrf: String(vrfNo),
+    reserve: String(hold.no),
+    status: extra.status || "Open",
+    ledgerLines: extra.ledgerLines || 0,
+    approvedVia: hold.approvedVia || "api",
+    approvedAt: hold.approvedAt,
+    approvedBudget: hold.approvedBudget,
+  };
+  if (extra.already) payload.already = true;
+  if (extra.healed) payload.healed = true;
+  if (extra.approverNote) payload.approverNote = extra.approverNote;
+  return payload;
+}
+
+function rememberLedgerRows(snapshot, month, rows) {
+  snapshot.ledgerByMonth = snapshot.ledgerByMonth || {};
+  snapshot.ledgerByMonth[month] = (snapshot.ledgerByMonth[month] || []).concat(rows);
+  snapshot.ledgerRows = (snapshot.ledgerRows || []).concat(rows);
+  if ((snapshot.ledgerMonths || []).indexOf(month) < 0) {
+    snapshot.ledgerMonths = (snapshot.ledgerMonths || []).concat([month]).sort();
+    snapshot.ledgerIndexDirty = true;
+  }
+}
+
+function linkApprovedHold(hold, vrfNo, today, opts) {
+  const before = JSON.stringify(hold);
+  if ((hold.vrfs || []).indexOf(String(vrfNo)) < 0) {
+    hold.vrfs = (hold.vrfs || []).concat([String(vrfNo)]);
+  }
+  appendAudit(hold, {
+    at: hold.approvedAt || (opts && opts.now) || today,
+    by: hold.approvedBy || (opts && opts.approvedBy) || "api",
+    field: "ledger",
+    from: "",
+    to: String(vrfNo),
+    note: "Posted missing ledger lines",
+  });
+  return JSON.stringify(hold) !== before;
+}
+
 function applyApproveFromHold(snapshot, hold, opts) {
   opts = opts || {};
-  if (!hold || String(hold.status) !== "Requested") {
+  if (!hold) {
     throw approveError(409, "not_pending", "That VRF is not waiting for approval");
   }
 
-  const lines = (hold.draftLines || []).filter((l) => l && l.cat);
-  if (!lines.length) {
-    throw approveError(
-      409,
-      "no_draft_lines",
-      "Pending hold has no draft lines to post — refusing to invent a VRF"
-    );
-  }
-
-  let vrfNo = normNo(hold.vrfNo);
+  const st = String(hold.status || "");
+  const vrfNo = normNo(hold.vrfNo);
   if (!vrfNo) {
     throw approveError(
       409,
@@ -373,83 +433,133 @@ function applyApproveFromHold(snapshot, hold, opts) {
     );
   }
 
-  if (postedVrfNumbers(snapshot.ledgerRows)[String(vrfNo)]) {
-    const others = otherReservesClaiming(snapshot.reserves, hold, vrfNo);
-    if (others.length) {
-      throw approveError(
-        409,
-        "already_posted",
-        `VRF ${vrfNo} is already on the ledger. Not creating another number.`
-      );
-    }
-    hold.status = "Approved";
-    hold.approvedBudget = hold.approvedBudget != null ? hold.approvedBudget : hold.budget;
-    hold.approvedBy = String(opts.approvedBy || "").trim() || hold.approvedBy || "api";
-    hold.approvedAt = hold.approvedAt || opts.now || manilaDate();
-    if ((hold.vrfs || []).indexOf(String(vrfNo)) < 0) {
-      hold.vrfs = (hold.vrfs || []).concat([String(vrfNo)]);
-    }
-    return {
-      already: true,
-      month: monthKey(hold.date) || String(opts.now || manilaDate()).slice(0, 7),
-      rows: [],
-      hold,
-      payload: {
-        ok: true,
-        already: true,
-        vrf: String(vrfNo),
-        reserve: String(hold.no),
-        status: "Open",
-        approvedVia: hold.approvedVia || "api",
-        approvedAt: hold.approvedAt,
-        approvedBudget: hold.approvedBudget,
-      },
-    };
-  }
-
+  const lines = (hold.draftLines || []).filter((l) => l && l.cat);
+  const posted = !!postedVrfNumbers(snapshot.ledgerRows)[String(vrfNo)];
   const others = otherReservesClaiming(snapshot.reserves, hold, vrfNo);
   if (others.length) {
     throw approveError(
       409,
-      "ambiguous",
-      `VRF ${vrfNo} is also on RSV-${others.map((o) => o.no).join(", RSV-")} — refusing to guess`
+      posted ? "already_posted" : "ambiguous",
+      posted
+        ? `VRF ${vrfNo} is already on the ledger. Not creating another number.`
+        : `VRF ${vrfNo} is also on RSV-${others.map((o) => o.no).join(", RSV-")} — refusing to guess`
     );
   }
 
   const today = opts.now || manilaDate();
   const note = String(opts.approverNote || "").trim();
-  hold.status = "Approved";
-  hold.approvedBudget = hold.approvedBudget != null ? hold.approvedBudget : hold.budget;
-  hold.approvedBy = String(opts.approvedBy || "").trim() || "api";
-  hold.approvedAt = today;
-  hold.decisionNote = note || hold.decisionNote || "";
-  hold.approvedVia = "api";
-  hold.approverNote = note;
-  hold.vrfs = (hold.vrfs || []).concat([String(vrfNo)]);
+  const month = monthKey(hold.date) || String(today).slice(0, 7);
+  const existingLines = ledgerLinesFor(snapshot, vrfNo);
+  const lineStatus = existingLines.length && existingLines[0].vstatus ? String(existingLines[0].vstatus) : "Open";
 
-  const rows = buildLedgerRows(hold, vrfNo, snapshot, today);
-  const mk = rows[0] ? rows[0].month : monthKey(hold.date) || today.slice(0, 7);
-  snapshot.ledgerByMonth[mk] = (snapshot.ledgerByMonth[mk] || []).concat(rows);
-  snapshot.ledgerRows = snapshot.ledgerRows.concat(rows);
-  if ((snapshot.ledgerMonths || []).indexOf(mk) < 0) {
-    snapshot.ledgerMonths = (snapshot.ledgerMonths || []).concat([mk]).sort();
-    snapshot.ledgerIndexDirty = true;
+  if ((st === "Approved" || st === "Closed" || st === "Flagged") && posted) {
+    return {
+      noop: true,
+      already: true,
+      writeReserve: false,
+      writeLedger: false,
+      month,
+      rows: [],
+      hold,
+      payload: approvePayload(hold, vrfNo, {
+        already: true,
+        ledgerLines: existingLines.length,
+        status: lineStatus,
+        approverNote: note,
+      }),
+    };
   }
 
+  if (st === "Approved" && !posted) {
+    if (!lines.length) {
+      throw approveError(
+        409,
+        "no_draft_lines",
+        "Pending hold has no draft lines to post — refusing to invent a VRF"
+      );
+    }
+    const changed = linkApprovedHold(hold, vrfNo, today, opts);
+    const rows = buildLedgerRows(hold, vrfNo, snapshot, today);
+    const mk = rows[0] ? rows[0].month : month;
+    rememberLedgerRows(snapshot, mk, rows);
+    return {
+      heal: true,
+      writeReserve: changed,
+      writeLedger: true,
+      month: mk,
+      rows,
+      hold,
+      payload: approvePayload(hold, vrfNo, {
+        healed: true,
+        ledgerLines: rows.length,
+        status: "Open",
+        approverNote: note,
+      }),
+    };
+  }
+
+  if (st !== "Requested") {
+    throw approveError(409, "not_pending", "That VRF is not waiting for approval");
+  }
+
+  if (!posted && !lines.length) {
+    throw approveError(
+      409,
+      "no_draft_lines",
+      "Pending hold has no draft lines to post — refusing to invent a VRF"
+    );
+  }
+
+  hold.status = "Approved";
+  hold.approvedBudget = hold.approvedBudget != null ? hold.approvedBudget : hold.budget;
+  hold.approvedBy = String(opts.approvedBy || "").trim() || hold.approvedBy || "api";
+  hold.approvedAt = posted ? hold.approvedAt || today : today;
+  hold.decisionNote = note || hold.decisionNote || "";
+  hold.approvedVia = hold.approvedVia || "api";
+  if (note) hold.approverNote = note;
+  if ((hold.vrfs || []).indexOf(String(vrfNo)) < 0) {
+    hold.vrfs = (hold.vrfs || []).concat([String(vrfNo)]);
+  }
+  appendAudit(hold, {
+    at: hold.approvedAt || today,
+    by: hold.approvedBy || "api",
+    field: "status",
+    from: "Requested",
+    to: "Approved",
+    note: note || "approved",
+  });
+
+  if (posted) {
+    return {
+      already: true,
+      writeReserve: true,
+      writeLedger: false,
+      month,
+      rows: [],
+      hold,
+      payload: approvePayload(hold, vrfNo, {
+        already: true,
+        ledgerLines: existingLines.length,
+        status: lineStatus,
+        approverNote: note,
+      }),
+    };
+  }
+
+  const rows = buildLedgerRows(hold, vrfNo, snapshot, today);
+  const mk = rows[0] ? rows[0].month : month;
+  rememberLedgerRows(snapshot, mk, rows);
   return {
+    writeReserve: true,
+    writeLedger: true,
     month: mk,
     rows,
     hold,
-    payload: {
-      ok: true,
-      vrf: String(vrfNo),
-      reserve: String(hold.no),
+    payload: approvePayload(hold, vrfNo, {
+      ledgerLines: rows.length,
       status: "Open",
-      approvedVia: "api",
-      approvedAt: today,
-      approvedBudget: hold.approvedBudget,
-      approverNote: note || undefined,
-    },
+      approverNote: note,
+    }),
   };
 }
 
@@ -496,43 +606,6 @@ async function listIdsOf(store, collection) {
   return (rows || []).map((row) => String(row && row.id != null ? row.id : ""));
 }
 
-function findPendingHold(reserves, key) {
-  const pending = pendingHolds(reserves);
-  if (!key) return null;
-  if (key.kind === "reserve") {
-    const hits = pending.filter((r) => normNo(r.no) === key.no);
-    if (hits.length > 1) {
-      throw approveError(
-        409,
-        "ambiguous",
-        `RSV-${key.no} matches ${hits.length} pending holds — refusing to guess`
-      );
-    }
-    return hits[0] || null;
-  }
-  const byVrf = pending.filter((r) => normNo(r.vrfNo) === key.no);
-  if (byVrf.length > 1) {
-    throw approveError(
-      409,
-      "ambiguous",
-      `VRF ${key.no} matches ${byVrf.length} pending holds — refusing to guess`
-    );
-  }
-  if (byVrf.length === 1) return byVrf[0];
-  if (key.bareNumber) {
-    const byReserve = pending.filter((r) => normNo(r.no) === key.no);
-    if (byReserve.length > 1) {
-      throw approveError(
-        409,
-        "ambiguous",
-        `${key.no} matches ${byReserve.length} pending reserve numbers — refusing to guess`
-      );
-    }
-    if (byReserve.length === 1) return byReserve[0];
-  }
-  return null;
-}
-
 /**
  * Load the reserve year and the one ledger month this VRF belongs to.
  * Other months stay on the server — approving must not download the workbook.
@@ -567,7 +640,7 @@ async function loadSnapshot(store, key) {
     });
   });
 
-  const peek = findPendingHold(reserves, key);
+  const peek = matchingReserves(reserves, key)[0] || null;
   const targetMonth = peek ? monthKey(peek.date) || String(manilaDate()).slice(0, 7) : null;
   const monthRec = targetMonth ? await readRec(store, "ledger", targetMonth) : { data: null, updated_at: null };
   const months = mergeIds(ledgerIds, (ledgerIndex && ledgerIndex.months) || [], /^\d{4}-\d{2}$/);
@@ -641,7 +714,125 @@ async function writeVersioned(store, collection, id, data, updatedAt, remix) {
   throw approveError(409, "conflict", "The workbook changed while approving. Try again.");
 }
 
+function publicReserve(hold) {
+  const copy = thaw(hold) || {};
+  ["preparedSig", "checkedSig", "approvedSig"].forEach((key) => {
+    if (typeof copy[key] === "string" && copy[key].length > 80) delete copy[key];
+  });
+  return copy;
+}
+
+function approveSpec(result) {
+  const hold = result.hold;
+  return {
+    vrf: String(result.payload.vrf),
+    reserveNo: String(hold.no),
+    month: result.month,
+    year: yearOf(hold.date),
+    writeLedger: !!result.writeLedger,
+    writeReserve: !!result.writeReserve,
+    reserve: publicReserve(hold),
+    rows: result.rows || [],
+  };
+}
+
+function missingApproveRpc(err) {
+  if (!err) return false;
+  if (err.code === "missing_rpc" || err.code === "PGRST202") return true;
+  const msg = String(err.message || "");
+  return /could not find the function|schema cache/i.test(msg);
+}
+
+function issuedEntry(hold, rows, month) {
+  const no = normNo(hold.vrfNo);
+  return {
+    no,
+    reserveNo: String(hold.no),
+    sealed: true,
+    reason: hold.printedAt ? "printed" : "approved",
+    at: hold.printedAt || hold.approvedAt || "",
+    snapshot: {
+      month: month || "",
+      rows: rows || [],
+      reserve: {
+        no: hold.no,
+        vrfNo: no,
+        vrfs: hold.vrfs || [],
+        date: hold.date,
+        status: hold.status,
+        veh: hold.veh,
+        project: hold.project,
+        work: hold.work,
+        requestedBy: hold.requestedBy,
+        approvedBy: hold.approvedBy,
+        approvedAt: hold.approvedAt,
+        printedAt: hold.printedAt || "",
+        draftPurpose: hold.draftPurpose || "",
+        draftLines: hold.draftLines || [],
+        budget: hold.budget,
+        approvedBudget: hold.approvedBudget,
+      },
+    },
+  };
+}
+
+/**
+ * Per-record approve. The SQL function writes the ledger line and the reserve
+ * in one transaction. If that function is not installed yet, the ledger row
+ * is written first and the reserve second, so a timeout cannot leave the
+ * reserve Approved with no ledger line.
+ */
+async function persistRecordApprove(store, result) {
+  const payload = result.payload;
+  if (!result.writeLedger && !result.writeReserve) return payload;
+  const spec = approveSpec(result);
+  (spec.rows || []).forEach((row) => {
+    if (!row || String(row.vrf) !== spec.vrf) {
+      throw approveError(
+        409,
+        "vrf_mismatch",
+        `Refusing to write VRF ${row && row.vrf} while saving VRF ${spec.vrf}`
+      );
+    }
+  });
+  let usedRpc = false;
+  if (store.approveAtomic) {
+    try {
+      const rpc = await store.approveAtomic(spec);
+      usedRpc = true;
+      if (rpc && rpc.ledgerLines != null) payload.ledgerLines = rpc.ledgerLines;
+      if (rpc && rpc.status && !result.payload.status) payload.status = rpc.status;
+    } catch (err) {
+      if (!missingApproveRpc(err)) throw err;
+    }
+  }
+  if (!usedRpc) {
+    if (spec.writeLedger) {
+      if (!store.putLedgerRecord) {
+        throw approveError(500, "not_configured", "Approve store cannot write a ledger row");
+      }
+      const ledger = await store.putLedgerRecord(spec);
+      if (ledger && ledger.ledgerLines != null) payload.ledgerLines = ledger.ledgerLines;
+    }
+    if (spec.writeReserve) {
+      if (!store.putReserveRecord) {
+        throw approveError(500, "not_configured", "Approve store cannot write a reserve row");
+      }
+      await store.putReserveRecord(spec);
+    }
+  }
+  if (result.writeLedger && store.sealIssued) {
+    try {
+      await store.sealIssued(issuedEntry(result.hold, result.rows, result.month));
+    } catch (err) {
+      /* The VRF is already on the ledger. A missed seal must not undo the approval. */
+    }
+  }
+  return payload;
+}
+
 async function persistApprove(store, snapshot, result) {
+  if (!result.writeReserve && !result.writeLedger) return;
   const year = yearOf(result.hold.date);
   const vrfNo = String(result.payload.vrf);
   (result.rows || []).forEach((row) => {
@@ -653,25 +844,12 @@ async function persistApprove(store, snapshot, result) {
       );
     }
   });
-  const yearDoc = (snapshot.reserveDocs && snapshot.reserveDocs[year]) || { rows: [], updated_at: null };
-  const yearRows = mergeReserveRows(yearDoc.rows || [], result.hold);
-  const monthBase = (snapshot.ledgerByMonth && snapshot.ledgerByMonth[result.month]) || [];
-  /* applyApproveFromHold already concatenated this VRF onto the month copy.
-     Replace with the approved lines so a retry cannot append them twice. */
-  const monthRows = mergeLedgerRows(monthBase, vrfNo, result.rows || [], "replace");
-  const writes = [
-    writeVersioned(
-      store,
-      "reserves",
-      year,
-      { year, rows: yearRows },
-      yearDoc.updated_at,
-      (fresh) => ({
-        year,
-        rows: mergeReserveRows(fresh && Array.isArray(fresh.rows) ? fresh.rows : [], result.hold),
-      })
-    ),
-    writeVersioned(
+  /* Ledger first on the document path too. The records table is the live
+     store; this order matters only when that table is not in use yet. */
+  if (result.writeLedger) {
+    const monthBase = (snapshot.ledgerByMonth && snapshot.ledgerByMonth[result.month]) || [];
+    const monthRows = mergeLedgerRows(monthBase, vrfNo, result.rows || [], "replace");
+    await writeVersioned(
       store,
       "ledger",
       result.month,
@@ -686,23 +864,39 @@ async function persistApprove(store, snapshot, result) {
           "replace"
         ),
       })
-    ),
-  ];
-  if (snapshot.ledgerIndexDirty) {
-    writes.push(store.set("ledger", "index", { months: snapshot.ledgerMonths }));
+    );
+    if (snapshot.ledgerIndexDirty) {
+      await store.set("ledger", "index", { months: snapshot.ledgerMonths });
+    }
   }
-  if ((snapshot.reserveYears || []).indexOf(year) < 0) {
-    const years = (snapshot.reserveYears || []).concat([year]).sort();
-    writes.push(store.set("reserves", "index", { years }));
+  if (result.writeReserve) {
+    const yearDoc = (snapshot.reserveDocs && snapshot.reserveDocs[year]) || { rows: [], updated_at: null };
+    const yearRows = mergeReserveRows(yearDoc.rows || [], result.hold);
+    await writeVersioned(
+      store,
+      "reserves",
+      year,
+      { year, rows: yearRows },
+      yearDoc.updated_at,
+      (fresh) => ({
+        year,
+        rows: mergeReserveRows(fresh && Array.isArray(fresh.rows) ? fresh.rows : [], result.hold),
+      })
+    );
+    if ((snapshot.reserveYears || []).indexOf(year) < 0) {
+      const years = (snapshot.reserveYears || []).concat([year]).sort();
+      await store.set("reserves", "index", { years });
+    }
   }
   if (snapshot.cfgDirty) {
-    writes.push(store.set("config", "app", configPayload(snapshot.cfg)));
+    await store.set("config", "app", configPayload(snapshot.cfg));
   }
-  await Promise.all(writes);
-  try {
-    await sealApprovedNumber(store, result.hold, result.rows, result.month);
-  } catch (err) {
-    /* The VRF is already on the ledger. A missed seal must not undo the approval. */
+  if (result.writeLedger) {
+    try {
+      await sealApprovedNumber(store, result.hold, result.rows, result.month);
+    } catch (err) {
+      /* The VRF is already on the ledger. A missed seal must not undo the approval. */
+    }
   }
 }
 
@@ -758,29 +952,22 @@ async function sealApprovedNumber(store, hold, rows, month) {
  */
 async function approvePendingVrf(store, body, options) {
   const key = normalizeVrfRequest(body);
-  const snapshot = await loadSnapshot(store, key);
-  const hold = resolveHold(snapshot, key);
-  const result = applyApproveFromHold(snapshot, hold, {
+  const opts = {
     approverNote: body && body.approverNote,
     approvedBy: body && body.approvedBy,
     now: options && options.now,
-  });
-  if (result.already) {
-    const year = yearOf(result.hold.date);
-    const yearDoc = (snapshot.reserveDocs && snapshot.reserveDocs[year]) || { rows: [], updated_at: null };
-    await writeVersioned(
-      store,
-      "reserves",
-      year,
-      { year, rows: mergeReserveRows(yearDoc.rows || [], result.hold) },
-      yearDoc.updated_at,
-      (fresh) => ({
-        year,
-        rows: mergeReserveRows(fresh && Array.isArray(fresh.rows) ? fresh.rows : [], result.hold),
-      })
-    );
-    return result.payload;
+  };
+  if (store.readApproveRecords) {
+    const slice = await store.readApproveRecords(key);
+    if (slice) {
+      const hold = resolveHold(slice, key);
+      const result = applyApproveFromHold(slice, hold, opts);
+      return persistRecordApprove(store, result);
+    }
   }
+  const snapshot = await loadSnapshot(store, key);
+  const hold = resolveHold(snapshot, key);
+  const result = applyApproveFromHold(snapshot, hold, opts);
   await persistApprove(store, snapshot, result);
   return result.payload;
 }
@@ -812,6 +999,21 @@ function createSupabaseStore(api) {
     },
     async cas(collection, id, data, updatedAt) {
       return docs.setDocIfUpdatedAt(collection, id, data, updatedAt);
+    },
+    async readApproveRecords(key) {
+      return docs.readApproveSlice(key);
+    },
+    async approveAtomic(spec) {
+      return docs.approveVrfRecord(spec);
+    },
+    async putLedgerRecord(spec) {
+      return docs.putLedgerRecord(spec);
+    },
+    async putReserveRecord(spec) {
+      return docs.putReserveRecord(spec);
+    },
+    async sealIssued(entry) {
+      return docs.putIssuedOnce(entry);
     },
   };
 }
@@ -878,6 +1080,7 @@ module.exports = {
   createSupabaseStore,
   isPostedNumber,
   loadSnapshot,
+  matchingReserves,
   normalizeVrfRequest,
   persistApprove,
   postedVrfNumbers,
