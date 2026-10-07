@@ -1821,7 +1821,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-10-07a";
+const BUILD = "2026-10-07b";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -9802,7 +9802,7 @@ function otTrack(opts){
   }
   function bucket(d){
     const k=bucketKey(d);
-    return buckets[k]||(buckets[k]={key:k, label:bucketLabel(k), requests:0, hours:0, approvedHours:0, pendingHours:0, pay:0, pendingPay:0, noFormHours:0, emp:{}, site:{}, _reqs:{}});
+    return buckets[k]||(buckets[k]={key:k, label:bucketLabel(k), requests:0, hours:0, approvedHours:0, pendingHours:0, pay:0, pendingPay:0, noFormHours:0, emp:{}, site:{}, siteEmp:{}, _reqs:{}});
   }
   let requests=0;
   Object.values(S.otreqs||{}).forEach(r=>{
@@ -9858,27 +9858,204 @@ function otTrack(opts){
       sr.hours+=ot; sr.approvedHours+=approvedH; sr.pendingHours+=pendingH;
       sr.pay+=approvedPay; sr.pendingPay+=pendingPay; sr.days++;
       if(!covered) sr.noFormHours+=ot;
+      /* Same hours, split under the site on the manpower row. A person at two
+         sites is two rows. Adding the sites back together is the week — do not
+         add that to the employee list, which already counted every site once. */
+      const sg=b.siteEmp[sk]||(b.siteEmp[sk]={site:site||"(no area)", key:sk, hours:0, approvedHours:0, pendingHours:0, pay:0, pendingPay:0, noFormHours:0, days:{}, emp:{}});
+      if((!sg.site || sg.site==="(no area)") && site) sg.site=site;
+      sg.hours+=ot; sg.approvedHours+=approvedH; sg.pendingHours+=pendingH;
+      sg.pay+=approvedPay; sg.pendingPay+=pendingPay;
+      if(!covered) sg.noFormHours+=ot;
+      const sday=sg.days[d]||(sg.days[d]={date:d, hours:0, approvedHours:0, pendingHours:0, pay:0, pendingPay:0});
+      sday.hours+=ot; sday.approvedHours+=approvedH; sday.pendingHours+=pendingH;
+      sday.pay+=approvedPay; sday.pendingPay+=pendingPay;
+      const eg=sg.emp[empId]||(sg.emp[empId]={id:empId, name:name, empNo:(e&&e.empNo)||row.empNo||"", hours:0, approvedHours:0, pendingHours:0, pay:0, pendingPay:0, noFormHours:0, days:{}});
+      eg.hours+=ot; eg.approvedHours+=approvedH; eg.pendingHours+=pendingH;
+      eg.pay+=approvedPay; eg.pendingPay+=pendingPay;
+      if(!covered) eg.noFormHours+=ot;
+      const eday=eg.days[d]||(eg.days[d]={date:d, hours:0, approvedHours:0, pendingHours:0, pay:0, pendingPay:0});
+      eday.hours+=ot; eday.approvedHours+=approvedH; eday.pendingHours+=pendingH;
+      eday.pay+=approvedPay; eday.pendingPay+=pendingPay;
     });
   });
   const list=Object.keys(buckets).sort().map(k=>{
     const b=buckets[k];
     b.employees=Object.values(b.emp).sort((a,c)=>c.hours-a.hours || String(a.name).localeCompare(String(c.name)));
     b.sites=Object.values(b.site).sort((a,c)=>c.hours-a.hours || String(a.site).localeCompare(String(c.site)));
-    delete b.emp; delete b.site; delete b._reqs;
+    b.bySite=Object.values(b.siteEmp||{}).map(sg=>{
+      sg.employees=Object.values(sg.emp).sort((a,c)=>String(a.name).localeCompare(String(c.name)) || String(a.empNo).localeCompare(String(c.empNo)));
+      delete sg.emp;
+      return sg;
+    }).sort((a,c)=>{
+      const rank=s=>s==="(no area)"?2:String(s||"").toUpperCase()==="ADMINS"?1:0;
+      const d=rank(a&&a.site)-rank(c&&c.site);
+      return d || String((a&&a.site)||"").localeCompare(String((c&&c.site)||""));
+    });
+    delete b.emp; delete b.site; delete b.siteEmp; delete b._reqs;
     return b;
   });
   return {requests:requests, buckets:list, mode:mode, from:from, to:to};
 }
+/* Thursday-to-Wednesday when the bucket is a payroll week, including days
+   with no overtime so a blank day is visible. A month or a longer range
+   lists only the dates that have hours. */
+function otBySiteDates(bucket, report){
+  report=report||{};
+  const mode=report.mode||"";
+  let from=String(report.from||"").slice(0,10);
+  let to=String(report.to||"").slice(0,10);
+  if(mode==="week" && bucket && /^\d{4}-\d{2}-\d{2}$/.test(String(bucket.key||""))){
+    const start=bucket.key;
+    const end=addDays(start,6);
+    if(!from || from<start) from=start;
+    if(!to || to>end) to=end;
+    if(from>to) return [];
+    return otEachDate(from, to);
+  }
+  const have={};
+  ((bucket&&bucket.bySite)||[]).forEach(sg=>{
+    Object.keys(sg.days||{}).forEach(d=>{ if(Number((sg.days[d]||{}).hours)>0) have[d]=1; });
+  });
+  const dates=Object.keys(have).sort();
+  if(dates.length) return dates;
+  if(from && to && from<=to){
+    const span=otEachDate(from, to);
+    if(span.length && span.length<=8) return span;
+  }
+  return dates;
+}
+function otDayLabel(d){
+  const t=new Date(String(d||"")+"T00:00:00");
+  if(isNaN(t.getTime())) return String(d||"");
+  const W=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+  const M=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  return W[t.getDay()]+" "+t.getDate()+" "+M[t.getMonth()];
+}
+function otDayCellHtml(day){
+  if(!day || !(Number(day.hours)>0)) return '<span class="lbl">—</span>';
+  const bits=[];
+  if(Number(day.approvedHours)>0) bits.push(esc(num(day.approvedHours,1)));
+  if(Number(day.pendingHours)>0) bits.push(esc(num(day.pendingHours,1))+' <span class="pill warn">pending</span>');
+  return bits.join("<br>");
+}
+function otDayText(day){
+  if(!day || !(Number(day.hours)>0)) return "—";
+  const bits=[];
+  if(Number(day.approvedHours)>0) bits.push(num(day.approvedHours,1));
+  if(Number(day.pendingHours)>0) bits.push(num(day.pendingHours,1)+" pending");
+  return bits.join(" · ");
+}
+function otFormChip(pendingHours){
+  const n=Number(pendingHours)||0;
+  if(n>0) return '<span class="pill warn">Pending OT form</span> '+esc(num(n,1))+" h";
+  return '<span class="pill ok">approved</span>';
+}
+function otBySiteSum(list){
+  const t={hours:0, approvedHours:0, pendingHours:0, pay:0, pendingPay:0, days:{}};
+  (list||[]).forEach(sg=>{
+    t.hours+=Number(sg.hours)||0;
+    t.approvedHours+=Number(sg.approvedHours)||0;
+    t.pendingHours+=Number(sg.pendingHours)||0;
+    t.pay+=Number(sg.pay)||0;
+    t.pendingPay+=Number(sg.pendingPay)||0;
+    Object.keys(sg.days||{}).forEach(d=>{
+      const day=sg.days[d]||{};
+      const slot=t.days[d]||(t.days[d]={date:d, hours:0, approvedHours:0, pendingHours:0});
+      slot.hours+=Number(day.hours)||0;
+      slot.approvedHours+=Number(day.approvedHours)||0;
+      slot.pendingHours+=Number(day.pendingHours)||0;
+    });
+  });
+  return t;
+}
+function otBySiteHtml(bucket, dates){
+  dates=dates||[];
+  const sites=(bucket&&bucket.bySite)||[];
+  const cols=2+dates.length+5;
+  const heads=dates.map(d=>'<th class="num">'+esc(otDayLabel(d))+'</th>').join("");
+  let h='<div class="tw ot-by-site" style="margin-top:8px"><table><thead><tr>'
+    + '<th>Employee</th><th>ID</th>'+heads
+    + '<th class="num">Approved h</th><th class="num">Pending h</th><th class="num">Total h</th><th class="num">OT pay</th><th>Form</th>'
+    + '</tr></thead><tbody>';
+  if(!sites.length){
+    h+='<tr><td colspan="'+cols+'"><span class="lbl">No OT hours for a site in this bucket.</span></td></tr></tbody></table></div>';
+    return h;
+  }
+  function moneyRow(label, rec, attr){
+    let row='<tr'+(attr||"")+'><td colspan="2"><b>'+esc(label)+'</b></td>';
+    dates.forEach(d=>{ row+='<td class="num">'+otDayCellHtml((rec.days||{})[d])+'</td>'; });
+    row+='<td class="num">'+num(rec.approvedHours,1)+'</td><td class="num">'+num(rec.pendingHours,1)+'</td>'
+      + '<td class="num"><b>'+num(rec.hours,1)+'</b></td><td class="num">'+num(rec.pay,2)+'</td>'
+      + '<td>'+otFormChip(rec.pendingHours)+'</td></tr>';
+    return row;
+  }
+  sites.forEach(sg=>{
+    h+='<tr style="background:var(--surface2)" data-ot-site="'+esc(sg.site)+'"><td colspan="'+cols+'"><b>'+esc(sg.site)+'</b></td></tr>';
+    (sg.employees||[]).forEach(e=>{
+      h+='<tr data-ot-emp="'+esc(e.id)+'" data-ot-at="'+esc(sg.site)+'"><td><b>'+esc(flipName(e.name)||e.name)+'</b></td>'
+        + '<td class="mono">'+esc(e.empNo||"—")+'</td>';
+      dates.forEach(d=>{ h+='<td class="num">'+otDayCellHtml((e.days||{})[d])+'</td>'; });
+      h+='<td class="num">'+num(e.approvedHours,1)+'</td><td class="num">'+num(e.pendingHours,1)+'</td>'
+        + '<td class="num"><b>'+num(e.hours,1)+'</b></td><td class="num">'+num(e.pay,2)+'</td>'
+        + '<td>'+otFormChip(e.pendingHours)+'</td></tr>';
+    });
+    h+=moneyRow(sg.site+" subtotal", sg, ' data-ot-subtotal="'+esc(sg.site)+'"');
+  });
+  h+=moneyRow("All sites", otBySiteSum(sites), ' data-ot-allsites="1"');
+  h+='</tbody></table></div>';
+  return h;
+}
+function otBySitePrint(bucket, dates){
+  dates=dates||[];
+  const sites=(bucket&&bucket.bySite)||[];
+  if(!sites.length) return "";
+  let h='<h3 style="font-size:12px;margin:14px 0 4px">By site</h3>'
+    + '<p style="font-size:10px;margin:0 0 6px">A plain number is approved. Pending is logged and not paid until an approved form covers that person or that site on that date. '
+    + 'A person at two sites is listed under each. Site subtotals add up to the week and are not added again to the employee list above.</p>'
+    + '<table class="pf-t reg"><tr><td class="hd">Employee</td><td class="hd">ID</td>'
+    + dates.map(d=>'<td class="hd">'+esc(otDayLabel(d))+'</td>').join("")
+    + '<td class="hd">Approved h</td><td class="hd">Pending h</td><td class="hd">Total h</td><td class="hd">OT pay</td><td class="hd">Form</td></tr>';
+  function cells(rec){
+    let row="";
+    dates.forEach(d=>{ row+='<td class="n">'+esc(otDayText((rec.days||{})[d]))+'</td>'; });
+    row+='<td class="n">'+esc(num(rec.approvedHours,1))+'</td><td class="n">'+esc(num(rec.pendingHours,1))+'</td>'
+      + '<td class="n"><b>'+esc(num(rec.hours,1))+'</b></td><td class="n">'+esc(num(rec.pay,2))+'</td>'
+      + '<td>'+(Number(rec.pendingHours)>0?"Pending OT form "+esc(num(rec.pendingHours,1))+" h":"approved")+'</td>';
+    return row;
+  }
+  sites.forEach(sg=>{
+    h+='<tr><td colspan="'+(2+dates.length+5)+'"><b>'+esc(sg.site)+'</b></td></tr>';
+    (sg.employees||[]).forEach(e=>{
+      h+='<tr><td>'+esc(flipName(e.name)||e.name)+'</td><td>'+esc(e.empNo||"")+'</td>'+cells(e)+'</tr>';
+    });
+    h+='<tr><td colspan="2"><b>'+esc(sg.site+" subtotal")+'</b></td>'+cells(sg)+'</tr>';
+  });
+  h+='<tr><td colspan="2"><b>All sites</b></td>'+cells(otBySiteSum(sites))+'</tr></table>';
+  return h;
+}
 function otCsv(report){
   const n=(v,d)=>(Number(v)||0).toFixed(d==null?2:d);
-  const rows=[["Period","Kind","Name","ID","Approved OT hours","Approved OT pay","Pending OT hours","Pending OT pay","Days with OT","OT requests"]];
+  const rows=[["Period","Kind","Name","ID","Approved OT hours","Approved OT pay","Pending OT hours","Pending OT pay","Days with OT","OT requests","Site","Date","Day approved h","Day pending h"]];
+  const blank=["","","",""];
   (report.buckets||[]).forEach(b=>{
-    rows.push([b.label,"Period total","", "", n(b.approvedHours,1), n(b.pay,2), n(b.pendingHours,1), n(b.pendingPay,2), "", b.requests]);
+    rows.push([b.label,"Period total","", "", n(b.approvedHours,1), n(b.pay,2), n(b.pendingHours,1), n(b.pendingPay,2), "", b.requests].concat(blank));
     (b.employees||[]).forEach(e=>{
-      rows.push([b.label,"Employee", e.name, e.empNo||"", n(e.approvedHours,1), n(e.pay,2), n(e.pendingHours,1), n(e.pendingPay,2), e.days, ""]);
+      rows.push([b.label,"Employee", e.name, e.empNo||"", n(e.approvedHours,1), n(e.pay,2), n(e.pendingHours,1), n(e.pendingPay,2), e.days, ""].concat(blank));
     });
     (b.sites||[]).forEach(s=>{
-      rows.push([b.label,"Site", s.site, "", n(s.approvedHours,1), n(s.pay,2), n(s.pendingHours,1), n(s.pendingPay,2), s.days, ""]);
+      rows.push([b.label,"Site", s.site, "", n(s.approvedHours,1), n(s.pay,2), n(s.pendingHours,1), n(s.pendingPay,2), s.days, ""].concat(blank));
+    });
+    (b.bySite||[]).forEach(sg=>{
+      (sg.employees||[]).forEach(e=>{
+        const dayCount=Object.keys(e.days||{}).filter(d=>Number((e.days[d]||{}).hours)>0).length;
+        rows.push([b.label,"Site employee", e.name, e.empNo||"", n(e.approvedHours,1), n(e.pay,2), n(e.pendingHours,1), n(e.pendingPay,2), dayCount, "", sg.site, "", "", ""]);
+        Object.keys(e.days||{}).sort().forEach(d=>{
+          const day=e.days[d];
+          if(!day || !(Number(day.hours)>0)) return;
+          rows.push([b.label,"Site day", e.name, e.empNo||"", "", "", "", "", "", "", sg.site, d, n(day.approvedHours,1), n(day.pendingHours,1)]);
+        });
+      });
+      rows.push([b.label,"Site subtotal", sg.site, "", n(sg.approvedHours,1), n(sg.pay,2), n(sg.pendingHours,1), n(sg.pendingPay,2), "", "", sg.site, "", "", ""]);
     });
   });
   return rows;
@@ -9929,6 +10106,7 @@ function viewOtRequests(){
     + '<div class="note" style="margin-bottom:12px">File the signed overtime request here. '
     + 'Every form attached to a request stays on that request. A later file is added to the list. '
     + 'OT hours can be typed with no request on file. They show <b>Pending OT form</b> and are not paid until <b>Approved</b> with a form attached covers that person or that site on that date. '
+    + 'By week, those hours are also listed under each site, with a column for each day. '
     + 'The next time payroll opens, those hours count. No retyping.</div>';
   h+='<div class="card" style="margin-bottom:14px"><div class="card-h"><h3>Requests</h3>'
     + '<span class="lbl">'+reqs.length+' on file</span></div><div class="card-b">';
@@ -9981,6 +10159,15 @@ function viewOtRequests(){
       + tile(num(b.pendingHours,1),"Pending OT",b.pendingHours?"not paid until a form is approved":"none waiting", b.pendingHours?"warn":"ok")
       + tile(String(b.requests),"OT requests","overlapping this "+(mode==="month"?"month":mode==="week"?"week":"range"),"")
       + '</div>';
+    h+='<h3 style="margin:14px 0 6px">By site</h3>'
+      + '<div class="note" style="margin-bottom:8px">'
+      + 'Each person is listed under the site on that day&rsquo;s Daily Manpower row. '
+      + 'A plain number is approved. <span class="pill warn">pending</span> is logged and is not paid until an approved OT request with a signed form covers that person or that site on that date. '
+      + 'Someone who worked at more than one site is listed under each site, with only that site&rsquo;s hours. '
+      + 'The site subtotals add up to this '+(mode==="month"?"month":mode==="week"?"week":"range")+'. '
+      + 'The employee table below already includes every site once, so do not add the two together.</div>'
+      + otBySiteHtml(b, otBySiteDates(b, report));
+    h+='<h3 style="margin:14px 0 6px">All employees</h3>';
     h+='<div class="tw" style="margin-top:8px"><table><thead><tr><th>Employee</th><th>ID</th><th class="num">Approved h</th><th class="num">Pending h</th><th class="num">OT pay</th><th class="num">Days</th><th>Form</th></tr></thead><tbody>';
     if(!(b.employees||[]).length) h+='<tr><td colspan="7"><span class="lbl">No OT hours for an employee in this bucket.</span></td></tr>';
     (b.employees||[]).forEach(e=>{
@@ -23239,6 +23426,7 @@ function wire(){
         body+='<tr><td><b>'+esc(s.site)+'</b></td><td class="n">'+esc(num(s.approvedHours,1))+'</td><td class="n">'+esc(num(s.pendingHours,1))+'</td><td class="n">'+esc(num(s.pay,2))+'</td><td>'+(s.pendingHours?'Pending OT form':'approved')+'</td></tr>';
       });
       body+='</table>';
+      body+=otBySitePrint(b, otBySiteDates(b, report));
     });
     openModal({ title:"Overtime tracking", wide:true, body:pfWrap(body,{land:true}),
       foot:'<button class="btn" id="otp-back">Back</button><button class="btn pri" id="otp-print">Print</button>'});

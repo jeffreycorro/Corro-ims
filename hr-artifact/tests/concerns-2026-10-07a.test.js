@@ -61,7 +61,7 @@ const HEAVY = "data:application/pdf;base64," + "A".repeat(3000);
 
 describe("2026-10-07a OT forms stay on the request", () => {
   it("is build 2026-10-07a and the shared store accepts otreqs", () => {
-    assert.match(html, /const BUILD = "2026-10-07a"/);
+    assert.match(html, /const BUILD = "2026-10-07b"/);
     assert.ok(ALLOWED_COLLECTIONS.includes("otreqs"));
     assert.ok(ALLOWED_COLLECTIONS.includes("payruns"));
     assert.match(html, /Every form attached to a request stays/);
