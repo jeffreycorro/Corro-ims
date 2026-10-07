@@ -74,7 +74,7 @@ describe("Approvals renders before any picture fetch", () => {
     assert.match(painted, /el\("button","btn","Reject"\)/);
     assert.doesNotMatch(painted, /listPhotos|mountLazyGallery|S\.db\.photoMeta|signedUrl|createSignedUrl/);
     assert.ok(body.indexOf("document.body.appendChild(m)") < body.indexOf("mountLazyGallery(pgal"));
-    assert.match(html, /var BUILD = "2026-10-06 a"/);
+    assert.match(html, /var BUILD = "2026-10-07 a"/);
   });
 
   it("opens a VRF sheet without fetching pictures, and prints only when asked", () => {

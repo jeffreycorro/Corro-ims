@@ -300,6 +300,175 @@ async function readRecord(id) {
   return Array.isArray(rows) && rows[0] ? rows[0] : null;
 }
 
+function canon(value) {
+  if (Array.isArray(value)) return value.map(canon);
+  if (value && typeof value === "object") {
+    const out = {};
+    Object.keys(value)
+      .sort()
+      .forEach((key) => {
+        if (value[key] !== undefined) out[key] = canon(value[key]);
+      });
+    return out;
+  }
+  return value;
+}
+
+function comparableData(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return data;
+  const copy = Object.assign({}, data);
+  ["preparedSig", "checkedSig", "approvedSig"].forEach((key) => {
+    if (typeof copy[key] === "string" && copy[key].length > 80) delete copy[key];
+  });
+  return copy;
+}
+
+function sameJson(a, b) {
+  return JSON.stringify(canon(comparableData(a))) === JSON.stringify(canon(comparableData(b)));
+}
+
+function col(value) {
+  return value == null ? "" : String(value);
+}
+
+function sameStoredRecord(existing, next) {
+  if (!existing || !next) return false;
+  if (col(existing.vrf_no) !== col(next.vrf_no)) return false;
+  if (Boolean(existing.live) !== Boolean(next.live)) return false;
+  if (col(existing.year) !== col(next.year)) return false;
+  if (col(existing.month) !== col(next.month)) return false;
+  if (col(existing.reserve_no) !== col(next.reserve_no)) return false;
+  return sameJson(existing.data, next.data);
+}
+
+function isDuplicate(err) {
+  const details = err && err.details;
+  const code = details && details.code;
+  return code === "23505" || (err && err.statusCode === 409);
+}
+
+function reserveIsLive(row) {
+  const status = String((row && row.status) || "");
+  return !(status === "Rejected" || status === "Archived" || (row && row.archived === true));
+}
+
+/**
+ * The row that would be stored for one reserve. Long signatures are left off
+ * the write. An existing vrf number, audit trail, and renumber note are kept
+ * when the incoming copy is thinner.
+ */
+function nextReserveWrite(row, year, existing) {
+  if (!row || row.no == null || String(row.no) === "") return null;
+  const id = "reserve:" + row.no;
+  if (existing) {
+    const prev = existing.data || {};
+    const next = Object.assign({}, prev);
+    Object.keys(row).forEach((key) => {
+      if (PATCH_KEEP[key]) return;
+      next[key] = row[key];
+    });
+    next.no = prev.no != null ? prev.no : row.no;
+    next.vrfNo =
+      prev.vrfNo != null && String(prev.vrfNo) !== "" ? prev.vrfNo : existing.vrf_no || row.vrfNo || "";
+    if ((prev.audit || []).length > (next.audit || []).length) next.audit = prev.audit;
+    if (prev.renumberNote) next.renumberNote = prev.renumberNote;
+    if (prev.printedAs) next.printedAs = prev.printedAs;
+    ["preparedSig", "checkedSig", "approvedSig"].forEach((key) => {
+      if (typeof next[key] === "string" && next[key].length > 80) delete next[key];
+    });
+    return {
+      id,
+      kind: "reserve",
+      reserve_no: String(existing.reserve_no || next.no),
+      vrf_no: String(next.vrfNo || existing.vrf_no || ""),
+      live: reserveIsLive(next),
+      year: String(year || existing.year || ""),
+      month: existing.month == null ? null : existing.month,
+      data: next,
+    };
+  }
+  const fresh = stripSigObject(Object.assign({}, row));
+  return {
+    id,
+    kind: "reserve",
+    reserve_no: String(fresh.no),
+    vrf_no: String(fresh.vrfNo || ""),
+    live: reserveIsLive(fresh),
+    year: String(year || ""),
+    month: null,
+    data: fresh,
+  };
+}
+
+function nextLedgerWrite(vrf, month, rows, existing, reserveNo) {
+  const data = { month: String(month), vrf: String(vrf), rows: rows || [] };
+  const linked = reserveNo || (existing && existing.reserve_no) || null;
+  return {
+    id: "ledger:" + vrf,
+    kind: "ledger",
+    reserve_no: linked == null || linked === "" ? null : String(linked),
+    vrf_no: String(vrf),
+    live: false,
+    year: String(month).slice(0, 4),
+    month: String(month),
+    data,
+  };
+}
+
+function ledgerUnchanged(existing, next) {
+  if (!existing || !next) return false;
+  if (col(existing.month) !== col(next.month)) return false;
+  if (col(existing.vrf_no) !== col(next.vrf_no)) return false;
+  return sameJson(existing.data, next.data);
+}
+
+/**
+ * Which per-record rows a year or month document would actually change.
+ * Callers that still save a whole document use this so an untouched VRF
+ * is not patched and its updated_at stays put.
+ */
+function planCollectionWrites(collection, id, data, existingRecs) {
+  const payload = data && typeof data === "object" ? data : {};
+  const existing = existingRecs || [];
+  const writes = [];
+  if (collection === "reserves") {
+    const byNo = {};
+    existing.forEach((rec) => {
+      if (rec && rec.reserve_no != null && String(rec.reserve_no) !== "") byNo[String(rec.reserve_no)] = rec;
+    });
+    const rows = Array.isArray(payload.rows) ? payload.rows : [];
+    rows.forEach((row) => {
+      const prev = byNo[String(row && row.no)];
+      const next = nextReserveWrite(row, id, prev);
+      if (!next) return;
+      if (prev && sameStoredRecord(prev, next)) return;
+      writes.push(next);
+    });
+    return writes;
+  }
+  if (collection === "ledger") {
+    const byVrf = {};
+    existing.forEach((rec) => {
+      const vrf = String((rec && (rec.vrf_no || (rec.data && rec.data.vrf))) || "").trim();
+      if (vrf) byVrf[vrf] = rec;
+    });
+    const groups = {};
+    (Array.isArray(payload.rows) ? payload.rows : []).forEach((row) => {
+      const vrf = String((row && row.vrf) || "").trim();
+      if (!vrf) return;
+      (groups[vrf] = groups[vrf] || []).push(row);
+    });
+    Object.keys(groups).forEach((vrf) => {
+      const prev = byVrf[vrf];
+      const reserveNo = (groups[vrf][0] && groups[vrf][0].reserve) || (prev && prev.reserve_no) || null;
+      const next = nextLedgerWrite(vrf, id, groups[vrf], prev, reserveNo);
+      if (ledgerUnchanged(prev, next)) return;
+      writes.push(next);
+    });
+  }
+  return writes;
+}
+
 async function writeRecord(row, exists) {
   if (exists) {
     await rest({
@@ -311,6 +480,7 @@ async function writeRecord(row, exists) {
         data: row.data,
         live: row.live,
         vrf_no: row.vrf_no,
+        reserve_no: row.reserve_no,
         year: row.year,
         month: row.month,
       },
@@ -326,99 +496,184 @@ async function writeRecord(row, exists) {
 }
 
 async function upsertReserveRecord(row, year) {
-  if (!row || row.no == null || String(row.no) === "") return;
-  const id = "reserve:" + row.no;
-  const existing = await readRecord(id);
-  if (existing) {
-    const prev = existing.data || {};
-    const next = Object.assign({}, prev);
-    Object.keys(row).forEach((key) => {
-      if (PATCH_KEEP[key]) return;
-      next[key] = row[key];
-    });
-    next.no = prev.no != null ? prev.no : row.no;
-    next.vrfNo = prev.vrfNo != null && prev.vrfNo !== "" ? prev.vrfNo : existing.vrf_no || "";
-    if ((prev.audit || []).length > (next.audit || []).length) next.audit = prev.audit;
-    if (prev.renumberNote) next.renumberNote = prev.renumberNote;
-    if (prev.printedAs) next.printedAs = prev.printedAs;
-    ["preparedSig", "checkedSig", "approvedSig"].forEach((key) => {
-      if (typeof next[key] === "string" && next[key].length > 80) delete next[key];
-    });
-    const status = String(next.status || "");
-    await writeRecord(
-      {
-        id,
-        data: next,
-        live: !(status === "Rejected" || status === "Archived" || next.archived === true),
-        vrf_no: String(next.vrfNo || existing.vrf_no || ""),
-        year: year || existing.year,
-        month: existing.month,
-      },
-      true
-    );
-    return;
-  }
-  const fresh = stripSigObject(Object.assign({}, row));
-  const status = String(fresh.status || "");
-  await writeRecord(
-    {
-      id,
-      kind: "reserve",
-      reserve_no: String(fresh.no),
-      vrf_no: String(fresh.vrfNo || ""),
-      live: !(status === "Rejected" || status === "Archived" || fresh.archived === true),
-      year: String(year || ""),
-      month: null,
-      data: fresh,
-    },
-    false
-  );
+  if (!row || row.no == null || String(row.no) === "") return { wrote: false };
+  const existing = await readRecord("reserve:" + row.no);
+  const next = nextReserveWrite(row, year, existing);
+  if (!next) return { wrote: false };
+  if (existing && sameStoredRecord(existing, next)) return { wrote: false };
+  await writeRecord(next, !!existing);
+  return { wrote: true, id: next.id };
 }
 
-async function upsertLedgerRecord(vrf, month, rows) {
-  const id = "ledger:" + vrf;
-  const existing = await readRecord(id);
-  const data = { month, vrf: String(vrf), rows: rows || [] };
-  if (existing) {
-    await writeRecord(
-      { id, data, live: false, vrf_no: String(vrf), year: String(month).slice(0, 4), month },
-      true
-    );
-    return;
+async function upsertLedgerRecord(vrf, month, rows, reserveNo) {
+  const existing = await readRecord("ledger:" + vrf);
+  const have = existing && existing.data && Array.isArray(existing.data.rows) ? existing.data.rows : [];
+  /* Lines already stored for this VRF stay as they are. Approve must not
+     append a second copy, and it must not bump updated_at on a repeat call. */
+  if (have.length) return { wrote: false, ledgerLines: have.length };
+  const next = nextLedgerWrite(vrf, month, rows, existing, reserveNo);
+  if (ledgerUnchanged(existing, next)) return { wrote: false, ledgerLines: have.length };
+  try {
+    await writeRecord(next, !!existing);
+  } catch (err) {
+    if (!existing && isDuplicate(err)) return { wrote: false, ledgerLines: (rows || []).length };
+    throw err;
   }
-  await writeRecord(
-    {
-      id,
-      kind: "ledger",
-      reserve_no: null,
-      vrf_no: String(vrf),
-      live: false,
-      year: String(month).slice(0, 4),
-      month,
-      data,
-    },
-    false
-  );
+  return { wrote: true, ledgerLines: (rows || []).length, id: next.id };
 }
 
 async function upsertBlobRows(collection, id, data) {
-  const payload = data && typeof data === "object" ? data : {};
-  if (collection === "reserves") {
-    const rows = Array.isArray(payload.rows) ? payload.rows : [];
-    for (let i = 0; i < rows.length; i++) await upsertReserveRecord(rows[i], id);
-    return;
+  if (collection !== "reserves" && collection !== "ledger") return;
+  const filter =
+    collection === "reserves"
+      ? "kind=eq.reserve&year=eq." + encodeURIComponent(id)
+      : "kind=eq.ledger&month=eq." + encodeURIComponent(id);
+  const existing = await listRecordPage(filter);
+  const writes = planCollectionWrites(collection, id, data, existing);
+  for (let i = 0; i < writes.length; i++) {
+    const row = writes[i];
+    const exists = existing.some((rec) => rec && rec.id === row.id);
+    await writeRecord(row, exists);
   }
-  if (collection === "ledger") {
-    const rows = Array.isArray(payload.rows) ? payload.rows : [];
-    const groups = {};
-    rows.forEach((row) => {
-      const vrf = String((row && row.vrf) || "").trim();
-      if (!vrf) return;
-      (groups[vrf] = groups[vrf] || []).push(row);
+}
+
+function approveReserveFilter(key) {
+  const no = encodeURIComponent(String(key.no));
+  if (key.kind === "reserve") return "kind=eq.reserve&reserve_no=eq." + no;
+  return "kind=eq.reserve&vrf_no=eq." + no;
+}
+
+function unionRecords(left, right) {
+  const byId = {};
+  (left || []).concat(right || []).forEach((rec) => {
+    if (rec && rec.id) byId[rec.id] = rec;
+  });
+  return Object.keys(byId).map((id) => byId[id]);
+}
+
+async function queryReserves(key) {
+  if (!key) return [];
+  if (key.kind === "reserve") return listRecordPage(approveReserveFilter(key));
+  const byVrf = await listRecordPage(approveReserveFilter(key));
+  if (byVrf.length || !key.bareNumber) return byVrf;
+  return listRecordPage("kind=eq.reserve&reserve_no=eq." + encodeURIComponent(String(key.no)));
+}
+
+function monthFromReserve(rec) {
+  const date = rec && rec.data && rec.data.date;
+  const match = /^(\d{4})-(\d{2})/.exec(String(date || ""));
+  return match ? match[1] + "-" + match[2] : null;
+}
+
+/**
+ * The one reserve (plus any other reserve that claims the same VRF) and the
+ * one ledger row. Approving must not download the rest of the year.
+ */
+async function readApproveSlice(key) {
+  if (!key) return null;
+  let primary = false;
+  try {
+    primary = await recordsPrimary();
+  } catch (err) {
+    if (isMissingRelation(err)) return null;
+    throw err;
+  }
+  if (!primary) return null;
+
+  let reserveRecs = await queryReserves(key);
+  let vrf = key.kind === "vrf" ? String(key.no) : "";
+  if (!vrf && reserveRecs.length === 1) {
+    vrf = String(reserveRecs[0].vrf_no || (reserveRecs[0].data && reserveRecs[0].data.vrfNo) || "");
+  }
+  if (vrf && key.kind === "reserve") {
+    const claimants = await queryReserves({ kind: "vrf", no: vrf, bareNumber: false });
+    reserveRecs = unionRecords(reserveRecs, claimants);
+  }
+  const ledgerRec = vrf ? await readRecord("ledger:" + vrf) : null;
+  const ledgerRows =
+    ledgerRec && ledgerRec.data && Array.isArray(ledgerRec.data.rows) ? ledgerRec.data.rows : [];
+  const month = (ledgerRec && ledgerRec.month) || monthFromReserve(reserveRecs[0]);
+  const [vehiclesRec, partsRec] = await Promise.all([
+    fetchDoc("master", "vehicles"),
+    fetchDoc("master", "parts"),
+  ]);
+  const ledgerByMonth = {};
+  if (month) ledgerByMonth[month] = ledgerRows.slice();
+  return {
+    reserves: reserveRecs.map((rec) => rec && rec.data).filter(Boolean),
+    ledgerRows: ledgerRows.slice(),
+    ledgerByMonth,
+    ledgerMonths: month ? [month] : [],
+    ledgerIndexDirty: false,
+    vehicles: (vehiclesRec && vehiclesRec.data) || { rows: [] },
+    parts: (partsRec && partsRec.data) || { rows: [] },
+    records: true,
+  };
+}
+
+async function approveVrfRecord(spec) {
+  try {
+    return await rest({
+      method: "POST",
+      path: "/rest/v1/rpc/motorpool_approve_vrf",
+      body: { p_spec: spec || {} },
     });
-    const keys = Object.keys(groups);
-    for (let i = 0; i < keys.length; i++) await upsertLedgerRecord(keys[i], id, groups[keys[i]]);
+  } catch (err) {
+    if (isMissingRpc(err)) {
+      const missing = new Error((err && err.message) || "motorpool_approve_vrf is not installed");
+      missing.code = "missing_rpc";
+      missing.statusCode = err.statusCode || 404;
+      throw missing;
+    }
+    throw err;
   }
+}
+
+async function putLedgerRecord(spec) {
+  const vrf = String((spec && spec.vrf) || "").trim();
+  const month = String((spec && spec.month) || "").trim();
+  const rows = (spec && spec.rows) || [];
+  if (!vrf || !month) {
+    const err = new Error("VRF number and month are required");
+    err.statusCode = 409;
+    err.code = "vrf_mismatch";
+    throw err;
+  }
+  return upsertLedgerRecord(vrf, month, rows, spec.reserveNo || null);
+}
+
+async function putReserveRecord(spec) {
+  if (!spec || !spec.reserve) return { wrote: false };
+  return upsertReserveRecord(spec.reserve, spec.year);
+}
+
+async function putIssuedOnce(entry) {
+  if (!entry || typeof entry !== "object") return { wrote: false };
+  const no = String(entry.no || entry.vrf || "").trim();
+  if (!no) return { wrote: false };
+  const reserveNo = String(entry.reserveNo || "").trim();
+  const id = "issued:" + no + "@" + (reserveNo || "number");
+  const existing = await readRecord(id);
+  if (existing) return { wrote: false };
+  try {
+    await writeRecord(
+      {
+        id,
+        kind: "issued",
+        reserve_no: reserveNo || null,
+        vrf_no: no,
+        live: false,
+        year: null,
+        month: null,
+        data: entry,
+      },
+      false
+    );
+  } catch (err) {
+    if (isDuplicate(err)) return { wrote: false };
+    throw err;
+  }
+  return { wrote: true, id };
 }
 
 async function issueRecord(spec, build) {
@@ -680,6 +935,8 @@ async function getProfile(userId, accessToken) {
 module.exports = {
   acquireLock,
   anonKey,
+  approveReserveFilter,
+  approveVrfRecord,
   deleteDoc,
   fetchProfileWithUserJwt,
   getDoc,
@@ -693,6 +950,11 @@ module.exports = {
   photoMetaQuery,
   photoMetaRow,
   photoMetaSelect,
+  planCollectionWrites,
+  putIssuedOnce,
+  putLedgerRecord,
+  putReserveRecord,
+  readApproveSlice,
   recordsAvailable,
   recordsPrimary,
   rest,
