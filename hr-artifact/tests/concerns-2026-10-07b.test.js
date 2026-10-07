@@ -149,8 +149,8 @@ function sumHours(list, field) {
 }
 
 describe("2026-10-07b overtime by site", () => {
-  it("is build 2026-10-07b and keeps the employee summary on OT Requests", () => {
-    assert.match(html, /const BUILD = "2026-10-07b"/);
+  it("is build 2026-10-07c and keeps the employee summary on OT Requests", () => {
+    assert.match(html, /const BUILD = "2026-10-07c"/);
     assert.match(html, /function viewOtRequests\(/);
     assert.match(html, /All employees/);
     assert.match(html, /<th>Employee<\/th><th>ID<\/th><th class="num">Approved h<\/th>/);
