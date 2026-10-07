@@ -289,7 +289,8 @@ describe("supabase file fallback", () => {
       contentMimeType: "application/pdf",
       base64Content: "SGVsbG8=",
     });
-    assert.deepEqual(out.payload, {
+    const payload = JSON.parse(JSON.stringify(out.payload));
+    assert.deepEqual(payload, {
       id: "",
       title: "Leave.pdf",
       mimeType: "application/pdf",
