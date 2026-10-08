@@ -12,7 +12,9 @@ const {
   listCollection,
   listIds,
   listPhotoMeta,
+  putReserveRecord,
   recordsAvailable,
+  saveLedgerVrf,
   setDoc,
   setDocIfUpdatedAt,
 } = require("../lib/supabase");
@@ -115,9 +117,29 @@ exports.handler = async (event) => {
       if (!spec.at) spec.at = formatManilaIso();
       const gated = gateWrite({ op: "merge", build: body.build });
       if (gated) return json(gated.statusCode, { error: gated.error, code: gated.code });
+      /* The browser sends the build beside the spec. Numbering checks spec.build,
+         so an empty spec.build must not reach that check after the gate passed. */
+      if (body.build) spec.build = String(body.build);
       if (await recordsAvailable()) {
+        /* The live issue function numbers a new reserve and patches an existing
+           one. It has no ledger branch: a kind "ledger" call falls through and
+           inserts another reserve. Reserve patches also drop fields the SQL
+           allow-list does not name (audit, printedAt, duplicateOf). Those two
+           kinds are written one record at a time here, and still work when
+           motorpool_approve_vrf is not installed. */
+        if (spec.kind === "ledger") {
+          const result = await saveLedgerVrf(spec);
+          return json(200, Object.assign({ ok: true }, result || {}, tz));
+        }
+        if (spec.kind === "reserve") {
+          const result = await putReserveRecord(spec);
+          if (!result || result.reserveNo == null || String(result.reserveNo) === "") {
+            return json(409, { error: "Reserve number is required", code: "vrf_mismatch" });
+          }
+          return json(200, Object.assign({ ok: true }, result, tz));
+        }
         try {
-          const result = await issueRecord(spec, body.build);
+          const result = await issueRecord(spec, spec.build || body.build || "");
           return json(200, Object.assign({ ok: true }, result || {}, tz));
         } catch (err) {
           if (isReloadPage(err)) {
