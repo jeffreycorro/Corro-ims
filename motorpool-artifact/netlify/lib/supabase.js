@@ -500,9 +500,17 @@ async function upsertReserveRecord(row, year) {
   const existing = await readRecord("reserve:" + row.no);
   const next = nextReserveWrite(row, year, existing);
   if (!next) return { wrote: false };
-  if (existing && sameStoredRecord(existing, next)) return { wrote: false };
+  if (existing && sameStoredRecord(existing, next)) {
+    return {
+      wrote: false,
+      id: next.id,
+      data: next.data,
+      reserveNo: next.reserve_no,
+      vrfNo: next.vrf_no,
+    };
+  }
   await writeRecord(next, !!existing);
-  return { wrote: true, id: next.id };
+  return { wrote: true, id: next.id, data: next.data, reserveNo: next.reserve_no, vrfNo: next.vrf_no };
 }
 
 async function upsertLedgerRecord(vrf, month, rows, reserveNo) {
@@ -642,9 +650,94 @@ async function putLedgerRecord(spec) {
   return upsertLedgerRecord(vrf, month, rows, spec.reserveNo || null);
 }
 
+function ledgerWriteError(message) {
+  const err = new Error(message);
+  err.statusCode = 409;
+  err.code = "vrf_mismatch";
+  return err;
+}
+
+/**
+ * One ledger row, addressed by VRF number. Replace writes the lines this save
+ * carries. Append adds them to the lines already stored for that VRF. An empty
+ * replace clears a month only while the stored row still says that month, so
+ * a header move cannot wipe the lines it just wrote.
+ */
+async function saveLedgerVrf(spec) {
+  const vrf = String((spec && spec.vrf) || "").trim();
+  const month = String((spec && spec.month) || "").trim();
+  const mode = spec && spec.mode === "append" ? "append" : "replace";
+  const incoming = Array.isArray(spec && spec.rows) ? spec.rows : [];
+  if (!vrf || !/^\d{4}-\d{2}$/.test(month)) throw ledgerWriteError("VRF number and month are required");
+  incoming.forEach((row) => {
+    if (!row || String(row.vrf) !== vrf) {
+      throw ledgerWriteError(
+        `Refusing to write VRF ${row && row.vrf} while saving VRF ${vrf}`
+      );
+    }
+  });
+  const existing = await readRecord("ledger:" + vrf);
+  if (!incoming.length && mode === "replace") {
+    if (!existing || String(existing.month || "") !== month) {
+      return { ok: true, kind: "ledger", vrf, store: "records", wrote: false };
+    }
+    const cleared = nextLedgerWrite(vrf, month, [], existing, existing.reserve_no);
+    await rest({
+      method: "PATCH",
+      path: "/rest/v1/motorpool_records",
+      query:
+        `id=eq.${encodeURIComponent(cleared.id)}` +
+        `&month=eq.${encodeURIComponent(month)}`,
+      prefer: "return=minimal",
+      body: {
+        data: cleared.data,
+        live: cleared.live,
+        vrf_no: cleared.vrf_no,
+        reserve_no: cleared.reserve_no,
+        year: cleared.year,
+        month: cleared.month,
+      },
+    });
+    return { ok: true, kind: "ledger", vrf, store: "records", wrote: true };
+  }
+  const have = existing && existing.data && Array.isArray(existing.data.rows) ? existing.data.rows : [];
+  const rows = mode === "append" ? have.concat(incoming) : incoming.slice();
+  const reserveNo =
+    (incoming[0] && incoming[0].reserve) || (existing && existing.reserve_no) || null;
+  const next = nextLedgerWrite(vrf, month, rows, existing, reserveNo);
+  if (ledgerUnchanged(existing, next)) {
+    return { ok: true, kind: "ledger", vrf, store: "records", wrote: false };
+  }
+  await writeRecord(next, !!existing);
+  if (spec && spec.ensureIndex) await ensureLedgerMonthIndexed(month);
+  return { ok: true, kind: "ledger", vrf, store: "records", wrote: true };
+}
+
+async function ensureLedgerMonthIndexed(month) {
+  const row = await fetchDoc("ledger", "index");
+  const data = (row && row.data) || { months: [] };
+  const months = Array.isArray(data.months) ? data.months.slice() : [];
+  if (months.indexOf(month) >= 0) return;
+  months.push(month);
+  months.sort();
+  await setDoc("ledger", "index", { months });
+}
+
 async function putReserveRecord(spec) {
   if (!spec || !spec.reserve) return { wrote: false };
-  return upsertReserveRecord(spec.reserve, spec.year);
+  const out = await upsertReserveRecord(spec.reserve, spec.year);
+  if (!out || out.reserveNo == null || String(out.reserveNo) === "") return out || { wrote: false };
+  return Object.assign(
+    {
+      ok: true,
+      kind: "reserve",
+      store: "records",
+      reserve: out.data,
+      reserveNo: String(out.reserveNo),
+      vrfNo: out.vrfNo == null ? "" : String(out.vrfNo),
+    },
+    out
+  );
 }
 
 async function putIssuedOnce(entry) {
@@ -955,6 +1048,7 @@ module.exports = {
   putLedgerRecord,
   putReserveRecord,
   readApproveSlice,
+  saveLedgerVrf,
   recordsAvailable,
   recordsPrimary,
   rest,

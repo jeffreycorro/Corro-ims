@@ -380,8 +380,12 @@ var SIGNATORIES = [
   {name:"Jeffrey James M. Corro", role:"CEO",              cap:"Approved By"}
 ];
 var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
-/* Shown on the Ask screen, so a screenshot says which version someone is on. */
-var BUILD = "2026-10-07 a";
+/* Shown on the Ask screen, so a screenshot says which version someone is on.
+   This label is inside the page function. The shim reads window.BUILD when it
+   sends a save. Without that copy every save goes out with an empty build and
+   the server answers "Reload the page". */
+var BUILD = "2026-10-08 a";
+try { window.BUILD = BUILD; } catch (e) {}
 var DAY = 86400000, MO = 30.44;
 
 /* Part categories that were entered under two spellings and so split a unit's
@@ -2464,6 +2468,16 @@ async function readDocLive(path){
 }
 async function writeDoc(path,body,opts){
   opts=opts||{};
+  var head=String(path||"").split("/");
+  var col=head[0], docId=head.slice(1).join("/");
+  /* A connected page never replaces a whole year or month. That set is rejected
+     by the server, and it is how a failed per-record save used to look like
+     "Reload the page". */
+  if(S.db && ((col==="reserves" && /^\d{4}$/.test(docId)) || (col==="ledger" && /^\d{4}-\d{2}$/.test(docId)))){
+    var blocked=new Error("This list is saved one record at a time. Nothing was overwritten.");
+    blocked.code="stale_overwrite";
+    throw blocked;
+  }
   lsSet(path,body);
   if(!S.db) return {ok:false, local:true};
   try{ await S.db.doc(path).set(body); return {ok:true, shared:true}; }
@@ -3536,17 +3550,20 @@ async function commitVrfBundle(spec){
       kind:"bundle", month:month, vrf:no, rows:rows, mode:mode,
       year:y, reserve:reserve, ensureIndex:!S.ledger[month], restore:spec.restore===true
     });
-    if(ack){
-      var savedNo=String(ack.vrf||no);
-      if(savedNo!==no){
-        rows.forEach(function(row){ if(row) row.vrf=savedNo; });
-        if(reserve) reserve.vrfNo=savedNo;
-      }
-      rememberLedger(month, savedNo, rows, mode);
-      if((ack.changes||[]).length){ try{ await reloadReserveYears(); }catch(e){} }
-      _vrfs=null;
-      return ack;
+    if(!ack){
+      var missedBundle=new Error("Could not save VRF "+no+" to the shared workbook. Nothing else was changed — try again.");
+      missedBundle.code="not_confirmed";
+      throw missedBundle;
     }
+    var savedNo=String(ack.vrf||no);
+    if(savedNo!==no){
+      rows.forEach(function(row){ if(row) row.vrf=savedNo; });
+      if(reserve) reserve.vrfNo=savedNo;
+    }
+    rememberLedger(month, savedNo, rows, mode);
+    if((ack.changes||[]).length){ try{ await reloadReserveYears(); }catch(e){} }
+    _vrfs=null;
+    return ack;
   }
   if(mode==="replace") await replaceLedgerVrf(month, no, rows);
   else await appendLedger(month, rows);
@@ -3636,7 +3653,13 @@ async function replaceLedgerVrf(month, vrfNo, rows){
       kind:"ledger", month:month, vrf:no, rows:rows||[], mode:"replace",
       ensureIndex:!haveMonth
     });
-    if(ack){ rememberLedger(month, no, rows, "replace"); return S.ledger[month]; }
+    if(!ack){
+      var missedLedger=new Error("Could not save VRF "+no+" to the shared workbook. Nothing else was changed — try again.");
+      missedLedger.code="not_confirmed";
+      throw missedLedger;
+    }
+    rememberLedger(month, no, rows, "replace");
+    return S.ledger[month];
   }
   var cur=await readLedgerRows(month, no);
   var kept=cur.filter(function(row){ return !row || String(row.vrf)!==no; });
@@ -3675,7 +3698,13 @@ async function appendLedger(month,rows){
       kind:"ledger", month:month, vrf:no, rows:rows, mode:"append",
       ensureIndex:!haveMonth
     });
-    if(ack){ rememberLedger(month, no, rows, "append"); return; }
+    if(!ack){
+      var missedAppend=new Error("Could not save VRF "+no+" to the shared workbook. Nothing else was changed — try again.");
+      missedAppend.code="not_confirmed";
+      throw missedAppend;
+    }
+    rememberLedger(month, no, rows, "append");
+    return;
   }
   var cur=await readLedgerRows(month, no);
   var kept=cur.filter(function(row){ return !row || String(row.vrf)!==no; });
@@ -10123,7 +10152,7 @@ async function saveVrfHeader(entry, patch, by){
   var posted=vrfPostedInLedger(no);
   var writes=[];
   if(posted){
-    var oldMonths={}, groups={};
+    var groups={};
     (entry.rows||[]).forEach(function(r){
       if(!r||String(r.vrf)!==no) return;
       var copy=Object.assign({}, r);
@@ -10141,13 +10170,10 @@ async function saveVrfHeader(entry, patch, by){
       copy.qty=r.qty; copy.price=r.price; copy.total=r.total;
       copy.vstatus=r.vstatus; copy.liq=r.liq;
       copy.audit=(r.audit||[]).concat(notes);
-      if(r.month) oldMonths[r.month]=1;
       (groups[mk]=groups[mk]||[]).push(copy);
     });
-    var mkList=Object.keys(oldMonths);
-    for(var i=0;i<mkList.length;i++){
-      if(!groups[mkList[i]]) writes.push(replaceLedgerVrf(mkList[i], no, []));
-    }
+    /* One ledger record per VRF. Writing the destination month moves it.
+       Clearing the old month would be a second write of that same record. */
     var dest=Object.keys(groups);
     for(var j=0;j<dest.length;j++) writes.push(replaceLedgerVrf(dest[j], no, groups[dest[j]]));
   }

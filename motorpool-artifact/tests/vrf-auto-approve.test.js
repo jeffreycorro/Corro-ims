@@ -99,6 +99,6 @@ describe("artifact HTML — auto-approve on send, queue unchanged at ₱1,000+",
     assert.match(html, /function applyVrfAutoApproval/);
     assert.match(html, /var VRF_AUTO_APPROVE_UNDER=1000/);
     assert.match(html, /return n>0 && n<VRF_AUTO_APPROVE_UNDER/);
-    assert.match(html, /var BUILD = "2026-10-07 a"/);
+    assert.match(html, /var BUILD = "2026-10-08 a"/);
   });
 });
