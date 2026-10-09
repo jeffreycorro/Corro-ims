@@ -166,7 +166,7 @@ const WEEK = { from: "2026-08-20", to: "2026-08-26" };
 
 describe("2026-09-29b payroll — hire date, name match, half day", () => {
   it("is build 2026-10-05a and recompute still rereads attendance", () => {
-    assert.match(html, /const BUILD = "2026-10-07c"/);
+    assert.match(html, /const BUILD = "2026-10-08a"/);
     assert.match(html, /id="pay-recompute"/);
     const handler = html.slice(html.indexOf('const payRec=$("#pay-recompute"'));
     assert.match(handler.slice(0, 800), /delete line\.days/);

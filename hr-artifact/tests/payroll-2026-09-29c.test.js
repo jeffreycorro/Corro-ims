@@ -202,7 +202,7 @@ function legacyContribInclude(ctx, e) {
 
 describe("2026-09-29c payroll roster, sites, and contributions", () => {
   it("is build 2026-10-05a and the run can filter or group by site", () => {
-    assert.match(html, /const BUILD = "2026-10-07c"/);
+    assert.match(html, /const BUILD = "2026-10-08a"/);
     const view = extractFunction(html, "viewPayrollRun");
     assert.match(view, /id="pay-site"/);
     assert.match(view, /id="pay-group"/);

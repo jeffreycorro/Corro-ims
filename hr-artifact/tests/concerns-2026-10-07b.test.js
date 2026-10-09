@@ -37,6 +37,10 @@ function loadOt() {
     "otCovered",
     "otEachDate",
     "otHourlyOf",
+    "otManilaDay",
+    "otLoggedHours",
+    "otSiteIndex",
+    "otResolvedSite",
     "otTrack",
     "otBySiteDates",
     "otDayLabel",
@@ -149,8 +153,8 @@ function sumHours(list, field) {
 }
 
 describe("2026-10-07b overtime by site", () => {
-  it("is build 2026-10-07c and keeps the employee summary on OT Requests", () => {
-    assert.match(html, /const BUILD = "2026-10-07c"/);
+  it("is build 2026-10-08a and keeps the employee summary on OT Requests", () => {
+    assert.match(html, /const BUILD = "2026-10-08a"/);
     assert.match(html, /function viewOtRequests\(/);
     assert.match(html, /All employees/);
     assert.match(html, /<th>Employee<\/th><th>ID<\/th><th class="num">Approved h<\/th>/);
