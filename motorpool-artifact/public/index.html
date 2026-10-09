@@ -413,7 +413,7 @@ var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
    This label is inside the page function. The shim reads window.BUILD when it
    sends a save. Without that copy every save goes out with an empty build and
    the server answers "Reload the page". */
-var BUILD = "2026-10-10 a";
+var BUILD = "2026-10-10 b";
 try { window.BUILD = BUILD; } catch (e) {}
 var DAY = 86400000, MO = 30.44;
 
@@ -6443,7 +6443,7 @@ function vrfReportView(){
     w.appendChild(el("div","empty","The report calculator did not load. Reload the page."));
     return w;
   }
-  var hint=el("p","rpt-note noprint","Opens on the previous month. The current month is through today, Manila time. Ledger-only VRFs are included, with no approved amount. A bulk fuel-reserve purchase is its own category, so issues from the reserve are not added to that purchase. Cancelled duplicates are left out of the spend. Possible duplicates that were not cancelled stay in the totals.");
+  var hint=el("p","rpt-note noprint","Opens on the previous month. The current month is through today, Manila time. Each ledger VRF keeps its own number. A reserve link does not copy status onto a different VRF. Repeats of the same reserve and unit count once. A bulk fuel-reserve purchase is its own category. Cancelled duplicates are left out of the spend.");
   w.appendChild(hint);
   var report;
   try{
@@ -6543,6 +6543,25 @@ function vrfReportView(){
     {h:"Requested by", get:function(r){ return r.requestedBy; }},
     {h:"Approved", num:true, get:function(r){ return rptApproved(r); }}
   ], ex.openOlderThan7Days||[], "None."));
+  exBody.appendChild(el("h4",null,"Uncancelled repeats"));
+  exBody.appendChild(el("p","rpt-note","Several ledger VRFs share one reserve and the same unit. Only the liquidated or first copy is in the totals."));
+  exBody.appendChild(rptTable([
+    {h:"VRF", get:function(r){ return r.vrf; }},
+    {h:"Reserve", get:function(r){ return r.reserve; }},
+    {h:"Unit", get:function(r){ return r.unit; }},
+    {h:"Status", get:function(r){ return r.status; }},
+    {h:"Counted as", get:function(r){ return r.kept; }},
+    {h:"Why it is listed", get:function(r){ return r.detail; }}
+  ], ex.uncancelledRepeats||[], "None."));
+  exBody.appendChild(el("h4",null,"Already liquidated on another VRF"));
+  exBody.appendChild(el("p","rpt-note","Same reserve, unit, and odometer as a liquidated ledger VRF. Left out of the open total."));
+  exBody.appendChild(rptTable([
+    {h:"VRF", get:function(r){ return r.vrf; }},
+    {h:"Unit", get:function(r){ return r.unit; }},
+    {h:"Reading", num:true, get:function(r){ return r.odo==null?"—":nnum(r.odo,0); }},
+    {h:"Liquidated as", get:function(r){ return r.kept; }},
+    {h:"Why it is listed", get:function(r){ return r.detail; }}
+  ], ex.liquidatedElsewhere||[], "None."));
   exBody.appendChild(el("h4",null,"Possible duplicates"));
   exBody.appendChild(el("p","rpt-note","Same request or submission number, or the same unit, date, and amount. These stay in the totals."));
   exBody.appendChild(rptTable([

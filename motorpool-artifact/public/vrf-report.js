@@ -6,8 +6,11 @@
  * and the vrf-report Netlify function (module.exports).
  * Pure: it only reads the reserves and ledger rows it is given.
  * Ledger-only VRFs use vstatus (blank means Closed) and have no approved amount.
+ * A ledger row is its own VRF. Its reserve field is only a link, and status
+ * is never copied onto a different VRF number.
+ * Repeated postings of one reserve on the same unit count once.
  * A bulk fuel-reserve purchase is its own category. Reserve status wins when
- * the ledger disagrees. Possible duplicates stay in the totals.
+ * the same VRF's ledger disagrees. Possible duplicates stay in the totals.
  */
 
 var COMPANY = "Corro Construction Development and Trade Corporation";
@@ -225,10 +228,12 @@ function lineExcluded(line) {
 
 function lineAmount(line) {
   if (!line) return 0;
+  var explicit = line.total != null && line.total !== "" ? round2(money(line.total)) : null;
+  if (explicit != null && explicit !== 0) return explicit;
   var q = money(line.qty);
   var p = money(line.price);
   if (q || p) return round2(q * p);
-  return round2(money(line.total));
+  return explicit == null ? 0 : explicit;
 }
 
 function fuelLiters(line) {
@@ -237,8 +242,9 @@ function fuelLiters(line) {
   if (cat !== "Fuel" && cat !== "Fuel reserve (bulk)") return 0;
   var liters = money(line.liters);
   if (liters > 0) return liters;
-  var unit = String(line.unit || "").trim().toLowerCase();
-  if (/^(l|lt|ltr|liter|liters|litre|litres)$/.test(unit)) return money(line.qty);
+  var price = money(line.price);
+  var qty = money(line.qty);
+  if (qty > 0 && price >= 40 && price <= 200) return qty;
   return 0;
 }
 
@@ -465,6 +471,8 @@ function spendLines(status, reserve, lines) {
   if (use.length) return use;
   if (raw.length) return [];
   if (!reserve || (status !== "Closed" && status !== "Flagged" && status !== "Legacy")) return [];
+  var drafted = draftSpendLines(reserve);
+  if (drafted.length) return drafted;
   if (reserve.actual != null && reserve.actual !== "") {
     return [{
       total: reserve.actual,
@@ -479,11 +487,41 @@ function spendLines(status, reserve, lines) {
   return [];
 }
 
+function draftSpendLines(reserve) {
+  var drafts = ((reserve && reserve.draftLines) || []).filter(function (line) {
+    return line && (line.cat || line.item || line.grp);
+  });
+  if (!drafts.length) return [];
+  var actualSet = reserve.actual != null && reserve.actual !== "";
+  if (!actualSet) {
+    return drafts.map(function (line) {
+      return Object.assign({}, line, {
+        veh: line.veh || reserve.veh || "",
+        project: line.project || reserve.project || "",
+      });
+    });
+  }
+  var actual = money(reserve.actual);
+  var weights = drafts.map(function (line) { return lineAmount(line); });
+  var sum = 0;
+  weights.forEach(function (n) { sum += n; });
+  var running = 0;
+  return drafts.map(function (line, i) {
+    var share = !(sum > 0) ? (i === 0 ? round2(actual) : 0) : (i === drafts.length - 1 ? round2(actual - running) : round2(actual * weights[i] / sum));
+    running = round2(running + share);
+    return Object.assign({}, line, {
+      veh: line.veh || reserve.veh || "",
+      project: line.project || reserve.project || "",
+      total: share,
+      qty: 1,
+      price: share,
+    });
+  });
+}
+
 function buildSlots(reserves, lines, month, from, to) {
   var slots = [];
-  var byKey = {};
   var byVrf = {};
-  var byReserve = {};
   var claimCount = {};
   var inRes = (reserves || []).filter(function (r) {
     return keepReserve(r) && dateKey(r.date) && dateKey(r.date) >= from && dateKey(r.date) <= to;
@@ -495,27 +533,29 @@ function buildSlots(reserves, lines, month, from, to) {
   inRes.forEach(function (r) {
     var claim = String(r.vrfNo || "").trim();
     var key = !claim ? "rsv:" + r.no : (claimCount[claim] > 1 ? claim + "@" + r.no : claim);
-    var slot = { key: key, vrf: claim || ("RSV-" + r.no), reserve: r, lines: [] };
+    var slot = {
+      key: key,
+      vrf: claim || ("RSV-" + r.no),
+      reserve: r,
+      lines: [],
+      linkedReserveNo: r.no != null ? String(r.no) : "",
+    };
     slots.push(slot);
-    byKey[key] = slot;
-    byReserve[String(r.no)] = slot;
     if (claim && claimCount[claim] === 1) byVrf[claim] = slot;
   });
   (lines || []).forEach(function (line) {
     if (!line || !lineInPeriod(line, month, from, to)) return;
     var vrf = String(line.vrf || "").trim();
+    if (!vrf) return;
     var rno = String(line.reserve || "").trim();
-    var slot = (rno && byReserve[rno]) || (vrf && byVrf[vrf]) || null;
-    if (slot && slot.reserve && rno && String(slot.reserve.no) !== rno) slot = null;
-    if (!slot && vrf) {
-      slot = byVrf[vrf];
-      if (!slot) {
-        slot = { key: vrf, vrf: vrf, reserve: null, lines: [] };
-        slots.push(slot);
-        byVrf[vrf] = slot;
-      }
+    var slot = byVrf[vrf];
+    if (!slot) {
+      slot = { key: vrf, vrf: vrf, reserve: null, lines: [], linkedReserveNo: rno };
+      slots.push(slot);
+      byVrf[vrf] = slot;
+    } else if (rno) {
+      slot.linkedReserveNo = rno;
     }
-    if (!slot) return;
     slot.lines.push(line);
   });
   return slots;
@@ -652,6 +692,8 @@ function ledgerMonthFromParts(id, recs, blob) {
   (recs || []).forEach(function (rec) {
     rowsFromLedgerData(rec && rec.data).forEach(function (row) { rows.push(row); });
   });
+  /* Records win. The month document is stale and must not replace a VRF
+     that already has ledger records. It only fills VRF numbers with none. */
   var blobData = blob && blob.data != null ? blob.data : blob;
   var merged = mergeLedgerRows(rows, rowsFromLedgerData(blobData));
   var updated = null;
@@ -666,6 +708,97 @@ function ledgerMonthFromParts(id, recs, blob) {
     data: { month: String(id), rows: merged },
     updated_at: updated,
   };
+}
+
+function normVrfNo(v) {
+  var digits = String(v == null ? "" : v).replace(/\D/g, "");
+  return digits.replace(/^0+/, "") || digits;
+}
+
+function sameUnit(a, b) {
+  var left = String(a || "").trim().toUpperCase();
+  var right = String(b || "").trim().toUpperCase();
+  return !!left && left === right;
+}
+
+function separateRepeatPostings(records, reserveByNo, repeatNotes, liquidatedElsewhere) {
+  var groups = {};
+  (records || []).forEach(function (row) {
+    if (!row || !row.fromLedger) return;
+    var reserveNo = String(row.linkedReserveNo || "").trim();
+    var unit = String(row.unit || "").trim().toUpperCase();
+    if (!reserveNo || !unit) return;
+    var key = reserveNo + "\0" + unit;
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(row);
+  });
+  var drop = {};
+  Object.keys(groups).forEach(function (key) {
+    var group = groups[key];
+    if (group.length < 2) return;
+    var reserve = reserveByNo[String(group[0].linkedReserveNo)];
+    var named = normVrfNo(reserve && reserve.duplicateOf);
+    var keeper = null;
+    if (named) {
+      for (var i = 0; i < group.length; i++) {
+        if (normVrfNo(group[i].vrf) === named) { keeper = group[i]; break; }
+      }
+    }
+    if (!keeper) {
+      var liquidated = group.filter(function (row) {
+        return row.status === "Closed" || row.status === "Flagged" || row.status === "Not bought";
+      });
+      var pool = liquidated.length ? liquidated.slice() : group.slice();
+      pool.sort(function (a, b) { return vrfSeq(a.vrf) - vrfSeq(b.vrf); });
+      keeper = pool[0];
+    }
+    group.forEach(function (row) {
+      if (row === keeper) return;
+      drop[row.vrf + "\0" + row.reserve] = 1;
+      repeatNotes.push({
+        vrf: row.vrf,
+        reserve: row.reserve,
+        date: row.date,
+        unit: row.unit,
+        status: row.status,
+        actual: row.actual,
+        approved: row.approved,
+        kept: keeper.vrf,
+        detail: "VRF " + row.vrf + " repeats reserve #" + row.linkedReserveNo +
+          " on " + row.unit + ". Counted VRF " + keeper.vrf + " instead. Left out of the totals.",
+      });
+    });
+  });
+  (records || []).forEach(function (row) {
+    if (!row || row.fromLedger || row.status !== "Open") return;
+    if (drop[row.vrf + "\0" + row.reserve]) return;
+    var reserveNo = String(row.linkedReserveNo || row.reserve || "").trim();
+    if (!reserveNo || row.odo == null) return;
+    var hit = null;
+    (records || []).forEach(function (other) {
+      if (hit || !other || !other.fromLedger || other.vrf === row.vrf) return;
+      if (String(other.linkedReserveNo || "") !== reserveNo) return;
+      if (!sameUnit(other.unit, row.unit) || other.odo == null || other.odo !== row.odo) return;
+      if (other.status !== "Closed" && other.status !== "Flagged") return;
+      hit = other;
+    });
+    if (!hit) return;
+    drop[row.vrf + "\0" + row.reserve] = 1;
+    liquidatedElsewhere.push({
+      vrf: row.vrf,
+      reserve: row.reserve,
+      date: row.date,
+      unit: row.unit,
+      status: row.status,
+      odo: row.odo,
+      kept: hit.vrf,
+      detail: "VRF " + row.vrf + " is the same " + row.unit + " reading " + row.odo +
+        " already liquidated as VRF " + hit.vrf + ". Left out of the open total.",
+    });
+  });
+  return (records || []).filter(function (row) {
+    return !drop[row.vrf + "\0" + row.reserve];
+  });
 }
 
 function buildMonthlyVrfReport(input) {
@@ -699,7 +832,7 @@ function buildMonthlyVrfReport(input) {
     if (odo == null) odo = reserveOdo(reserve);
     return {
       vrf: slot.vrf,
-      reserve: reserve && reserve.no != null ? String(reserve.no) : "",
+      reserve: reserve && reserve.no != null ? String(reserve.no) : (slot.linkedReserveNo || ""),
       date: dateOf(reserve, slot.lines),
       unit: unitOf(reserve, slot.lines),
       requestedBy: requestedByOf(reserve, slot.lines),
@@ -717,6 +850,8 @@ function buildMonthlyVrfReport(input) {
       submissionIds: submissionIdsOf(reserve, slot.lines),
       odo: odo,
       duplicateOf: String((reserve && reserve.duplicateOf) || "").trim(),
+      linkedReserveNo: slot.linkedReserveNo || (reserve && reserve.no != null ? String(reserve.no) : ""),
+      fromLedger: slot.lines.length > 0,
       spend: spend,
     };
   });
@@ -725,6 +860,15 @@ function buildMonthlyVrfReport(input) {
     if (a.date !== b.date) return a.date < b.date ? -1 : 1;
     return vrfSeq(a.vrf) - vrfSeq(b.vrf) || String(a.vrf).localeCompare(String(b.vrf));
   });
+
+  var reserveByNo = {};
+  (reserves || []).forEach(function (r) {
+    if (!keepReserve(r) || r.no == null) return;
+    reserveByNo[String(r.no)] = r;
+  });
+  var repeatNotes = [];
+  var liquidatedElsewhere = [];
+  records = separateRepeatPostings(records, reserveByNo, repeatNotes, liquidatedElsewhere);
 
   var summary = {
     raised: records.length,
@@ -763,7 +907,7 @@ function buildMonthlyVrfReport(input) {
 
   var catMap = {};
   CATEGORIES.forEach(function (name) {
-    catMap[name] = { category: name, amount: 0, liters: 0, vrfCount: 0, vrfs: {} };
+    catMap[name] = { category: name, amount: 0, liters: 0, literSpend: 0, vrfCount: 0, vrfs: {} };
   });
   var vehMap = {};
   var projMap = {};
@@ -776,7 +920,11 @@ function buildMonthlyVrfReport(input) {
       var cat = categoryOf(line);
       var bucket = catMap[cat] || catMap.Others;
       bucket.amount += amount;
-      if (cat === "Fuel" || cat === "Fuel reserve (bulk)") bucket.liters += fuelLiters(line);
+      if (cat === "Fuel" || cat === "Fuel reserve (bulk)") {
+        var litersHere = fuelLiters(line);
+        bucket.liters += litersHere;
+        if (litersHere > 0) bucket.literSpend += amount;
+      }
       if (!seenCat[cat]) { seenCat[cat] = 1; bucket.vrfs[row.vrf] = 1; }
       var unit = String((line && line.veh) || row.unit || "").trim() || "(no unit)";
       if (!vehMap[unit]) vehMap[unit] = { unit: unit, count: 0, liters: 0, amount: 0, vrfs: {} };
@@ -797,7 +945,7 @@ function buildMonthlyVrfReport(input) {
       category: name,
       amount: round2(bucket.amount),
       liters: trackLiters ? liters : null,
-      avgPricePerLiter: trackLiters && liters > 0 ? round2(bucket.amount / liters) : null,
+      avgPricePerLiter: trackLiters && liters > 0 ? round2(bucket.literSpend / liters) : null,
       count: Object.keys(bucket.vrfs).length,
     };
   });
@@ -1045,6 +1193,8 @@ function buildMonthlyVrfReport(input) {
       openOlderThan7Days: openOlder,
       duplicatesCancelled: duplicates,
       possibleDuplicates: possibleDuplicates,
+      uncancelledRepeats: repeatNotes,
+      liquidatedElsewhere: liquidatedElsewhere,
       statusMismatches: statusMismatches,
       odometer: odometer,
     },
