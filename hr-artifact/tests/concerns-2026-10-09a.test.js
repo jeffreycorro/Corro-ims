@@ -11,8 +11,9 @@ const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8
 
 function extractFunction(src, name) {
   const needle = "function " + name + "(";
-  const start = src.indexOf(needle);
+  let start = src.indexOf(needle);
   if (start < 0) throw new Error("missing " + name);
+  if (src.slice(start - 6, start) === "async ") start -= 6;
   let i = src.indexOf("{", start);
   let depth = 0;
   for (; i < src.length; i += 1) {
@@ -24,6 +25,15 @@ function extractFunction(src, name) {
     }
   }
   throw new Error("unclosed " + name);
+}
+
+function extractConst(src, name) {
+  const needle = "const " + name + " = ";
+  const start = src.indexOf(needle);
+  if (start < 0) throw new Error("missing " + name);
+  const end = src.indexOf(";", start);
+  if (end < 0) throw new Error("unclosed " + name);
+  return src.slice(start, end + 1);
 }
 
 function load(names) {
@@ -56,8 +66,16 @@ function load(names) {
     async fileToDataUrl(file) {
       return "data:" + (file.type || "application/octet-stream") + ";base64," + String(file.body || "");
     },
+    MAX_UPLOAD_MB: 80,
   };
-  const src = html.slice(gStart, gEnd) + "\n" + names.map((n) => extractFunction(html, n)).join("\n");
+  const src =
+    extractConst(html, "INLINE_LOCAL_MAX") +
+    "\n" +
+    extractConst(html, "CHECKLIST_INLINE_MAX") +
+    "\n" +
+    html.slice(gStart, gEnd) +
+    "\n" +
+    names.map((n) => extractFunction(html, n)).join("\n");
   vm.runInNewContext(src, ctx);
   return ctx;
 }
@@ -158,7 +176,7 @@ describe("2026-10-09a TOR/Diploma onboarding requirement", () => {
     assert.equal(merged.docs.resume.s, "on");
     assert.equal(merged.docs.resume.link, "https://drive.google.com/file/d/CV/view");
     const files = ctx.docFiles(merged.docs.tor).map((x) => x.url).sort();
-    assert.deepEqual(files, [jpg, pdf].sort());
+    assert.deepEqual(JSON.parse(JSON.stringify(files)), [jpg, pdf].sort());
     assert.equal(merged.docs.tor.s, "on");
     const naSnap = ctx.mergeDocSlot(local.tor, { s: "na", link: "", links: [], filed: "", expiry: "" });
     assert.equal(ctx.docFiles(naSnap).length, 2);
@@ -194,7 +212,7 @@ describe("2026-10-09a TOR/Diploma onboarding requirement", () => {
     assert.equal(emp.docs.tor.s, "on");
     assert.equal(emp.docs.tor.filed, "2026-10-09");
     const titles = ctx.docFiles(emp.docs.tor).map((x) => x.title).sort();
-    assert.deepEqual(titles, ["Diploma.pdf", "tor diploma - Domingo Monte Jr.JPG"]);
+    assert.deepEqual(JSON.parse(JSON.stringify(titles)), ["Diploma.pdf", "tor diploma - Domingo Monte Jr.JPG"]);
     assert.equal(ctx.puts.length, 2);
     assert.equal(ctx.puts[0].coll, "employees");
     assert.equal(JSON.stringify(ctx.S.onboarding), onboardingBefore);
@@ -213,7 +231,7 @@ describe("2026-10-09a TOR/Diploma onboarding requirement", () => {
     assert.equal(c.docs.resume.s, "on");
     assert.equal(c.docs.resume.link, "https://drive.google.com/file/d/CV/view");
     assert.equal(c.docs.tor.s, "miss");
-    assert.deepEqual(c.docs.tor.links, []);
+    assert.equal(c.docs.tor.links.length, 0);
   });
 
   it("keeps a modest inline scan in this browser until the shared row has it", () => {
