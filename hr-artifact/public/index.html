@@ -535,7 +535,9 @@ const DOCS = [
   {k:"benefack",n:"Gov Benefit Deduction — acknowledged",     g:"Employment"},
   {k:"regeval", n:"Regularization Performance Evaluation",    g:"Employment", cond:1, code:"PE"},
   {k:"ppe",     n:"PPE, Uniform, ID — issued",                g:"Employment"},
-  {k:"tor",     n:"TOR",                                      g:"Recruitment", cond:1},
+  /* Same key as the masterlist TOR column. The label is TOR/Diploma so a
+     transcript and a diploma are filed on this row, not as a second record. */
+  {k:"tor",     n:"TOR/Diploma", aka:"Transcript of Records or Diploma", g:"Recruitment", cond:1},
   {k:"certs",   n:"Certificates",                             g:"Recruitment", cond:1},
   {k:"med",     n:"Med Cert",                                 g:"Clearances", exp:1},
   {k:"drug",    n:"Drug Test",                                g:"Clearances", exp:1},
@@ -965,12 +967,18 @@ function settingsForLocal(st){
   }
   return copy;
 }
-function shedDocSlotLocal(v){
+/* A scan kept only as a data URL stays in this browser until the shared
+   employee row has it. After that save, the bytes are dropped here so a full
+   localStorage cannot throw away the checklist. Anything over the cap is
+   never kept in this browser copy — it has to live on Drive or the shared row. */
+const INLINE_LOCAL_MAX = 180000;
+function shedDocSlotLocal(v, dropHeavy){
   if(!v || typeof v!=="object") return v;
   const slot=Object.assign({}, v);
   const files=docFiles(slot).map(x=>{
     const url=durableDriveUrl(x.url);
-    if(!url || isEphemeralUrl(url) || isHeavyDataUrl(url)) return null;
+    if(!url || isEphemeralUrl(url)) return null;
+    if(isHeavyDataUrl(url) && (dropHeavy || url.length>INLINE_LOCAL_MAX)) return null;
     return {url:url, title:x.title||"", on:x.on||""};
   }).filter(Boolean);
   docSetFiles(slot, files);
@@ -983,8 +991,9 @@ function shedLocalEmployee(emp){
     if(typeof copy[k]==="string" && (isHeavyImage(copy[k]) || copy[k].length>8192)) delete copy[k];
   });
   if(copy.docs && typeof copy.docs==="object"){
+    const dropHeavy=!!(emp && emp._docsOnServer && typeof S!=="undefined" && S && S.db);
     const docs={};
-    Object.keys(copy.docs).forEach(k=>{ docs[k]=shedDocSlotLocal(copy.docs[k]); });
+    Object.keys(copy.docs).forEach(k=>{ docs[k]=shedDocSlotLocal(copy.docs[k], dropHeavy); });
     copy.docs=docs;
   }
   return copy;
@@ -1086,6 +1095,9 @@ function employeePersist(emp){
   /* The hold is only so a stale snapshot cannot wipe a figure just typed.
      It is not part of the 201. */
   if(emp._contribHold) drop("_contribHold");
+  /* A browser flag. The shared row does not need it, and a reload must not
+     treat an unsaved scan as already stored. */
+  if(emp._docsOnServer) drop("_docsOnServer");
   return copy||emp;
 }
 let EMP_SAVE_T=null;
@@ -1157,6 +1169,9 @@ async function put(coll,id,obj,opts){
     slimDailyRecord(obj);
   }
   const payload=coll==="employees" ? employeePersist(obj) : (coll==="otreqs" ? otReqPayload(obj) : obj);
+  /* Clear the flag before the local copy is written, so a scan added in this
+     save is not stripped until the shared write has actually succeeded. */
+  if(coll==="employees" && obj) obj._docsOnServer=false;
   S[coll][id]=obj; lsSaveSoon();
   ALERTS_GEN++;
   if(!S.db) return true;
@@ -1165,6 +1180,10 @@ async function put(coll,id,obj,opts){
     /* The shared row now has the file bytes. The browser copy may drop them. */
     if(coll==="otreqs" && S[coll][id]){
       S[coll][id]._formOnServer=true;
+      lsSaveSoon();
+    }
+    if(coll==="employees" && S[coll][id]===obj){
+      obj._docsOnServer=true;
       lsSaveSoon();
     }
     return true;
@@ -1821,7 +1840,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-10-08a";
+const BUILD = "2026-10-09a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -5262,7 +5281,7 @@ function printChecklist(e, no, opt){
    + pfBand("PERSONAL INFORMATION CHECKLIST")
    + two([
        ["Employee Data Sheet", on("datasheet"), "Residential Sketch", on("sketch")],
-       ["Resume / Biodata", on("resume"), "TOR or Diploma if applicable", on("tor")],
+       ["Resume / Biodata", on("resume"), "TOR/Diploma if applicable", on("tor")],
        ["Birth Certificate", on("psa"), "Photo (1x1 or 2x2)", on("photo")||!!(e&&e.photoLink)],
        ["Driver's License", on("license"), "TIN No. "+((e&&e.tinNo)||"__________"), on("tin")||govNoFilled(e&&e.tinNo)],
        ["Barangay / Police Clearance", on("brgy"), "NBI Clearance", on("nbi")],
@@ -11845,6 +11864,68 @@ function driveOffNote(){
       + 'Until then you can still paste a link into the <b>Drive link</b> box on any row by hand — open the file in '
       + 'Drive, Share, Copy link.</div>';
 }
+function torDocRow(){
+  return (typeof DOCS!=="undefined" && DOCS.find(d=>d&&d.k==="tor"))||null;
+}
+function torDiplomaLabel(e){
+  const v=(e&&e.docs&&e.docs.tor)||{};
+  const shown=docShown(e,"tor",v);
+  const n=docFiles(v).length;
+  const name=DSTAT[shown]||shown||"Missing";
+  return name+(n?" · "+n+" file"+(n===1?"":"s"):"");
+}
+/* One checklist row. The onboarding tab and the 201 file both use this, so a
+   TOR/Diploma scan is the same slot either way. */
+function checklistDocRow(e, d){
+  const v=(e.docs||{})[d.k]||{s:"miss",link:"",links:[],filed:"",expiry:""};
+  const shown=docShown(e, d.k, v);
+  const files=docFiles(v);
+  const expd = d.exp && v.expiry ? daysFromToday(v.expiry) : null;
+  const cls = shown==="miss"?"miss": (expd!=null && expd<=(S.settings.docExpiryWarnDays||60) ? "exp":"");
+  return '<div class="chk '+cls+'"><span class="idx">'+String(DOCS.indexOf(d)+1).padStart(2,"0")+'</span>'
+   + '<span class="n"><b>'+esc(d.n)
+   + (d.code?' <span class="pill mut" style="font-family:var(--f-mono);font-size:9.5px;padding:1px 5px;vertical-align:middle">'+esc(d.code)+'</span>':"")
+   + '</b>'
+   + (d.aka?'<span>'+esc(d.aka)+'</span>':"")
+   + (expd!=null?'<span>'+(expd<0?"expired "+Math.abs(expd)+"d ago":"expires "+fmtSpan(expd))+'</span>':(v.filed?'<span>filed '+esc(v.filed)+'</span>':''))
+   + (files.length
+      ? '<span style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">'
+        + files.slice().sort(function(a,b){
+            if(!!a.title!==!!b.title) return a.title?-1:1;
+            return String(a.title||"").localeCompare(String(b.title||""));
+          }).map(function(x,fi){
+            return '<span class="pill mut" style="display:inline-flex;align-items:center;gap:4px;max-width:280px">'
+             + '<a href="'+esc(x.url)+'" target="_blank" rel="noopener noreferrer" '
+             + 'style="color:var(--acc);text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" '
+             + 'title="'+esc(x.title||x.url)+'">'+esc(docLinkLabel(x,fi))+'</a>'
+             + '<button class="x" data-droplink="'+esc(d.k)+'" data-url="'+esc(x.url)+'" '
+             + 'title="Take this file off the row — the file itself stays where it was stored" '
+             + 'style="border:0;background:none;cursor:pointer;color:var(--crit);font-size:12px;line-height:1;padding:0 1px">&times;</button>'
+             + '</span>'; }).join("")
+        + '</span>'
+      : "")
+   + '</span>'
+   + '<select data-doc="'+d.k+'" data-dk="s">'+Object.entries(DSTAT).map(([k,n])=>'<option value="'+k+'"'+(shown===k?" selected":"")+'>'+n+'</option>').join("")+'</select>'
+   + '<input type="date" data-doc="'+d.k+'" data-dk="filed" value="'+esc(v.filed||"")+'" title="Date filed" style="width:126px">'
+   + (d.exp?'<input type="date" data-doc="'+d.k+'" data-dk="expiry" value="'+esc(v.expiry||"")+'" title="Expiry" style="width:126px">':'<span style="width:126px"></span>')
+   + (files.length
+       ? '<span class="pill '+(files.length>1?"acc":"ok")+'" style="width:62px;text-align:center" title="'
+         + esc(files.length+" file"+(files.length===1?"":"s")+" on this row")+'">'
+         + files.length+' file'+(files.length===1?"":"s")+'</span>'
+       : '<span class="lbl" style="width:62px;text-align:right" title="No file is linked to this row yet">not linked</span>')
+   + '<button class="btn sm" data-upload="'+d.k+'" title="Upload one or more JPG or PDF scans">Upload</button>'
+   + '<input type="url" data-addlink="'+d.k+'" placeholder="paste a Drive link to add" style="width:124px" title="Adds another file to this row — it does not replace what is there">'
+   + '</div>';
+}
+function onboardingRequirementBlock(e){
+  const d=torDocRow();
+  if(!d) return "";
+  return '<div class="sect-h" style="margin:6px 0 0"><h2 style="font-size:12.5px">Onboarding requirements</h2><span class="rule"></span></div>'
+   + '<div class="note"><b>TOR/Diploma</b> is the transcript of records or the diploma. Mark it here during onboarding. '
+   + 'It is the same row as the 201 checklist, and Missing Documents reads that row. '
+   + 'A JPG or PDF scan stays on this person’s file — adding one does not clear the others.</div>'
+   + '<div class="chklist" id="onb-tor">'+checklistDocRow(e,d)+'</div>';
+}
 function empDocs(e,c){
   /* "On file" came from the masterlist and only means somebody ticked a box.
      A row with no link has nothing to open — worth showing the difference. */
@@ -11868,52 +11949,7 @@ function empDocs(e,c){
   DOCG.forEach(g=>{
     const items=DOCS.filter(d=>d.g===g);
     h+='<div class="sect-h" style="margin:6px 0 0"><h2 style="font-size:12.5px">'+esc(g)+'</h2><span class="rule"></span></div><div class="chklist">';
-    items.forEach(d=>{
-      const v=(e.docs||{})[d.k]||{s:"miss",link:"",links:[],filed:"",expiry:""};
-      const shown=docShown(e, d.k, v);
-      const files=docFiles(v);
-      const expd = d.exp && v.expiry ? daysFromToday(v.expiry) : null;
-      const cls = shown==="miss"?"miss": (expd!=null && expd<=(S.settings.docExpiryWarnDays||60) ? "exp":"");
-      h+='<div class="chk '+cls+'"><span class="idx">'+String(DOCS.indexOf(d)+1).padStart(2,"0")+'</span>'
-       + '<span class="n"><b>'+esc(d.n)
-       /* the code the filed paper actually carries — a scan named LRF2026-0157
-          has to be findable as the row it ticks off */
-       + (d.code?' <span class="pill mut" style="font-family:var(--f-mono);font-size:9.5px;padding:1px 5px;vertical-align:middle">'+esc(d.code)+'</span>':"")
-       + '</b>'
-       + (expd!=null?'<span>'+(expd<0?"expired "+Math.abs(expd)+"d ago":"expires "+fmtSpan(expd))+'</span>':(v.filed?'<span>filed '+esc(v.filed)+'</span>':''))
-       /* every file on the row, not just the first — three cash advances are
-          three documents and each has to be reachable */
-       + (files.length
-          ? '<span style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">'
-            /* by name, so the two scans of one contract sit together; anything
-               linked before file names were kept goes last */
-            + files.slice().sort(function(a,b){
-                if(!!a.title!==!!b.title) return a.title?-1:1;
-                return String(a.title||"").localeCompare(String(b.title||""));
-              }).map(function(x,fi){
-                return '<span class="pill mut" style="display:inline-flex;align-items:center;gap:4px;max-width:280px">'
-                 + '<a href="'+esc(x.url)+'" target="_blank" rel="noopener noreferrer" '
-                 + 'style="color:var(--acc);text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" '
-                 + 'title="'+esc(x.title||x.url)+'">'+esc(docLinkLabel(x,fi))+'</a>'
-                 + '<button class="x" data-droplink="'+esc(d.k)+'" data-url="'+esc(x.url)+'" '
-                 + 'title="Take this file off the row — the file itself stays in Drive" '
-                 + 'style="border:0;background:none;cursor:pointer;color:var(--crit);font-size:12px;line-height:1;padding:0 1px">&times;</button>'
-                 + '</span>'; }).join("")
-            + '</span>'
-          : "")
-       + '</span>'
-       + '<select data-doc="'+d.k+'" data-dk="s">'+Object.entries(DSTAT).map(([k,n])=>'<option value="'+k+'"'+(shown===k?" selected":"")+'>'+n+'</option>').join("")+'</select>'
-       + '<input type="date" data-doc="'+d.k+'" data-dk="filed" value="'+esc(v.filed||"")+'" title="Date filed" style="width:126px">'
-       + (d.exp?'<input type="date" data-doc="'+d.k+'" data-dk="expiry" value="'+esc(v.expiry||"")+'" title="Expiry" style="width:126px">':'<span style="width:126px"></span>')
-       + (files.length
-           ? '<span class="pill '+(files.length>1?"acc":"ok")+'" style="width:62px;text-align:center" title="'
-             + esc(files.length+" file"+(files.length===1?"":"s")+" on this row")+'">'
-             + files.length+' file'+(files.length===1?"":"s")+'</span>'
-           : '<span class="lbl" style="width:62px;text-align:right" title="No file is linked to this row yet">not linked</span>')
-       + '<button class="btn sm" data-upload="'+d.k+'" title="Upload into this employee\'s 201 folder in Drive">Upload</button>'
-       + '<input type="url" data-addlink="'+d.k+'" placeholder="paste a Drive link to add" style="width:124px" title="Adds another file to this row — it does not replace what is there">'
-       + '</div>';
-    });
+    items.forEach(d=>{ h+=checklistDocRow(e,d); });
     h+='</div>';
   });
   h+='</div>';
@@ -13758,10 +13794,13 @@ function viewOnboarding(){
   h+='<div class="sect-h"><h2>Progress by employee</h2><span class="rule"></span></div>';
   if(!emps.length) h+='<div class="card"><div class="empty">No active employees.</div></div>';
   else{
-    h+='<div class="card"><div class="tw"><table><thead><tr><th>Employee</th><th>Department</th><th>Hired</th><th style="width:150px">Required items</th><th class="num">Done</th><th></th></tr></thead><tbody>';
+    h+='<div class="card"><div class="tw"><table><thead><tr><th>Employee</th><th>Department</th><th>Hired</th><th style="width:150px">Required items</th><th class="num">Done</th><th>TOR/Diploma</th><th></th></tr></thead><tbody>';
     emps.sort((a,b)=>a.p.pct-b.p.pct).forEach(({e,p})=>{
+      const tor=torDiplomaLabel(e);
+      const torOn=/^On file/.test(tor);
       h+='<tr><td class="nm">'+esc(e.name)+'</td><td>'+esc(e.dept||"—")+'</td><td class="mono">'+esc(e.dateHired||"—")+'</td>'
        + '<td>'+meterBar(p.pct)+'</td><td class="num">'+p.done+" / "+p.need+'</td>'
+       + '<td><span class="pill '+(torOn?"ok":"mut")+'">'+esc(tor)+'</span></td>'
        + '<td><button class="btn sm" data-emp-open="'+e.id+'" data-goto="employees" data-tab="onboard">Open checklist</button></td></tr>';
     });
     h+='</tbody></table></div></div>';
@@ -13774,6 +13813,7 @@ function empOnboard(e){
   h+='<div class="row"><div style="flex:1;min-width:180px">'+meterBar(p.pct)+'</div>'
    + '<span class="lbl">'+p.done+' of '+p.need+' required items signed off</span>'
    + '<button class="btn sm" data-goto="onboarding">Open library</button></div>';
+  h+=onboardingRequirementBlock(e);
   const byT={}; rs.forEach(r=>{ (byT[r.dept]=byT[r.dept]||[]).push(r); });
   ["All",e.dept].forEach(d=>{
     const items=byT[d]; if(!items) return;
@@ -19089,6 +19129,63 @@ async function uploadToDrive(emp, docKey, file){
   return { url:p.viewUrl, title:p.title, toInbox: !parentId };
 }
 
+/* Without Drive, a modest JPG or PDF is kept on the employee row itself.
+   A larger scan has to go to Drive or the private file bucket — stuffing it
+   into this browser is what used to vanish on refresh. */
+const CHECKLIST_INLINE_MAX = 120 * 1024;
+function checklistFileOk(file){
+  const type=String((file&&file.type)||"");
+  const name=String((file&&file.name)||"");
+  return /^image\//.test(type) || type==="application/pdf" || /\.(jpe?g|png|webp|gif|pdf|heic)$/i.test(name);
+}
+async function storeChecklistFile(emp, docKey, file){
+  if(!file) throw {code:"bad_request", message:"choose a file"};
+  if(file.size > MAX_UPLOAD_MB*1024*1024)
+    throw {code:"bad_request", message:"the file is over "+MAX_UPLOAD_MB+" MB"};
+  const mcp=await getMcp();
+  if(mcp) return uploadToDrive(emp, docKey, file);
+  if(!checklistFileOk(file))
+    throw {code:"bad_request", message:"attach a JPG or PDF scan"};
+  if(file.size > CHECKLIST_INLINE_MAX)
+    throw {code:"bad_request", message:"that scan is over 120 KB and Drive is not connected, so it cannot be kept for the other computers"};
+  const url=await fileToDataUrl(file);
+  if(!url) throw {code:"bad_request", message:"the file could not be read"};
+  return { url:url, title:file.name||"scan", toInbox:false, inline:true };
+}
+/* Copy the checklist that is already stored. A missing map is the only time
+   a blank checklist is created. An empty list is never written over rows
+   that are already there. */
+function checklistSlot(emp, docKey){
+  const c=clone(emp);
+  if(!c.docs || typeof c.docs!=="object" || Array.isArray(c.docs)) c.docs=blankDocs();
+  else c.docs=Object.assign({}, c.docs);
+  const prev=c.docs[docKey];
+  const slot=Object.assign({s:"miss",link:"",links:[],filed:"",expiry:""}, prev&&typeof prev==="object"?prev:{});
+  if(prev && Array.isArray(prev.links))
+    slot.links=prev.links.map(x=>typeof x==="string"?{url:x,title:"",on:""}:Object.assign({}, x));
+  else if(!Array.isArray(slot.links)) slot.links=[];
+  c.docs[docKey]=slot;
+  return c;
+}
+async function attachChecklistFiles(empId, docKey, files){
+  const list=(files||[]).filter(Boolean);
+  if(!empId || !docKey || !list.length) return [];
+  const stored=[];
+  for(let i=0;i<list.length;i++){
+    const emp=S.employees[empId];
+    if(!emp) throw {code:"bad_request", message:"that employee is not on the register"};
+    const out=await storeChecklistFile(emp, docKey, list[i]);
+    const c=checklistSlot(emp, docKey);
+    docAddLink(c.docs[docKey], out.url, out.title||list[i].name||"");
+    if(c.docs[docKey].s!=="exp") c.docs[docKey].s="on";
+    if(!c.docs[docKey].filed) c.docs[docKey].filed=TODAY;
+    const ok=await put("employees", c.id, c);
+    if(ok===false) throw {code:"cancelled"};
+    stored.push(out);
+  }
+  return stored;
+}
+
 /* One hidden picker, reused by every row. */
 let PENDING=null;
 function ensurePicker(){
@@ -19109,21 +19206,19 @@ function ensurePicker(){
     const btn=document.querySelector('[data-upload="'+job.docKey+'"]');
     if(btn){ btn.disabled=true; btn.textContent="Uploading…"; }
     try{
-      const out=await uploadToDrive(emp, job.docKey, file);
-      const c=clone(S.employees[job.empId]);
-      c.docs=c.docs||blankDocs();
-      c.docs[job.docKey]=c.docs[job.docKey]||{s:"miss",link:"",links:[],filed:"",expiry:""};
-      docAddLink(c.docs[job.docKey], out.url, out.title||file.name);
-      if(c.docs[job.docKey].s!=="exp") c.docs[job.docKey].s="on";
-      if(!c.docs[job.docKey].filed) c.docs[job.docKey].filed=TODAY;
-      await put("employees",c.id,c);
-      toast(out.toInbox
-        ? "Uploaded to _INBOX — this employee has no 201 folder yet"
-        : "Uploaded "+out.title, out.toInbox?undefined:"ok");
+      const stored=await attachChecklistFiles(job.empId, job.docKey, files);
+      const last=stored[stored.length-1]||{};
+      toast(stored.length>1
+        ? stored.length+" files on this row"
+        : (last.toInbox
+          ? "Uploaded to _INBOX — this employee has no 201 folder yet"
+          : "Uploaded "+(last.title||"the scan")),
+        last.toInbox?undefined:"ok");
       render();
     }catch(e){
       const m=driveMessage(e); if(m) toast(m,"err");
       if(btn){ btn.disabled=false; btn.textContent="Upload"; }
+      if(S.employees[job.empId]) render();
     }
   });
   document.body.appendChild(el);
@@ -19173,7 +19268,10 @@ async function handleSignedPick(job, file){
 }
 function pickFor(empId, docKey){
   PENDING={empId,docKey};
-  ensurePicker().click();
+  const el=ensurePicker();
+  el.multiple=true;
+  el.accept=".pdf,.jpg,.jpeg,.png,.webp,.heic,.doc,.docx,.xls,.xlsx";
+  el.click();
 }
 
 /* ============ HR general files ============ */
@@ -19570,9 +19668,9 @@ const GUESS = [
   [/employee\s*data\s*sheet|personal\s*info\w*\s*(checklist|sheet)?|\bpds\b/i,"datasheet"],
   [/residential\s*sketch|sketch\s*of|location\s*sketch/i,"sketch"],
   [/resume|biodata|bio\s*data|curriculum(\s*vitae)?|application\s*letter|\bcv\b/i,"resume"],
-  [/transcript(\s*of\s*records)?|\btor\b/i, "tor"],
+  [/transcript(\s*of\s*records)?|\btor\b|\bdiploma\b/i, "tor"],
   [/\bcosh\b|\bbosh\b|\bosh\b|\bohs\b|\boshs\b|\bso1\b|\bso2\b|safety\s*(orientation|protocol|training|officer)|toolbox/i,"safety"],
-  [/diploma|\bcoc\b|\bojt\b|certificate\s*of\s*(completion|training)|\bcpr\b/i,"certs"],
+  [/\bcoc\b|\bojt\b|certificate\s*of\s*(completion|training)|\bcpr\b/i,"certs"],
   /* identification */
   [/driver'?s?\s*licen[cs]e|drivers?[\s_-]*licen/i,"license"],
   [/\bumid\b|\bpostal\s*id\b|\bvoter'?s?\s*id\b|gov.*\bid\b|valid\s*id|\bcedula\b|passport|national\s*id|\bphil\s*sys\b/i,"govid"],
@@ -19651,7 +19749,7 @@ function guessDoc(name, emp){
     [/pagibig/, "hdmf"],
     [/birthcertificate|birthcert/, "psa"],
     [/jobdescription/, "jd"],
-    [/transcriptofrecords/, "tor"],
+    [/transcriptofrecords|\bdiploma\b/, "tor"],
     [/socialsecurity/, "sss"],
     [/employmentcontract/, "contract"],
     [/curriculumvitae/, "resume"],

@@ -96,7 +96,7 @@ function track(ctx, extra) {
 
 describe("2026-10-08a overtime tracking reads Daily Manpower hours", () => {
   it("is build 2026-10-08a and does not write overtime or manpower records", () => {
-    assert.match(html, /const BUILD = "2026-10-08a"/);
+    assert.match(html, /const BUILD = "2026-10-09a"/);
     assert.match(html, /No overtime hours in this window\./);
     assert.match(extractFunction(html, "viewOtRequests"), /if\(!report\.buckets\.length\)/);
     assert.match(extractFunction(html, "viewOtRequests"), /otEmptyNote\(/);
