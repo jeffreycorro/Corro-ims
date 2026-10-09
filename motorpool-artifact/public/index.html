@@ -1,4 +1,4 @@
-<!doctype html><html><head><script src="/claude-shim.js"></script><link rel="manifest" href="/manifest.json"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/favicon.svg"><link rel="stylesheet" href="/pwa.css"><script src="/pwa.js"></script><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1"><title>Corcondev Motorpool</title>
+<!doctype html><html><head><script src="/claude-shim.js"></script><link rel="manifest" href="/manifest.json"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/favicon.svg"><link rel="stylesheet" href="/pwa.css"><script src="/pwa.js"></script><script src="/vrf-report.js"></script><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1"><title>Corcondev Motorpool</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600&family=Archivo+Narrow:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
@@ -312,6 +312,25 @@ svg text{font-family:var(--font-body)}
   align-items:center;justify-content:center;padding:20px;cursor:zoom-out}
 .lightbox img,.lightbox video{max-width:100%;max-height:100%;object-fit:contain}
 
+.vrfreport{max-width:980px}
+.vrfreport .rpt-tools{display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;margin:0 0 18px}
+.vrfreport .rpt-tools .field{margin:0}
+.vrfreport .rpt-co{font-family:var(--font-heading);font-weight:700;font-size:18px;letter-spacing:.01em;line-height:1.2}
+.vrfreport .rpt-title{font-family:var(--font-heading);font-weight:700;font-size:22px;letter-spacing:.12em;text-transform:uppercase;margin-top:4px}
+.vrfreport .rpt-meta{font-size:12px;color:#444;margin:6px 0 0}
+.vrfreport .rpt-sec{margin-top:22px}
+.vrfreport .rpt-sec.first{margin-top:0}
+.vrfreport h3{font-family:var(--font-heading);font-size:14px;letter-spacing:.08em;text-transform:uppercase;border-bottom:1px solid #111;padding-bottom:3px;margin:0 0 8px}
+.vrfreport h4{font-family:var(--font-heading);font-size:12px;letter-spacing:.06em;text-transform:uppercase;margin:14px 0 6px}
+.vrfreport table{width:100%;border-collapse:collapse;font-size:12px;margin-top:4px}
+.vrfreport th{background:#f0f0f0;border:1px solid #999;padding:4px 5px;font-family:var(--font-heading);font-size:10px;letter-spacing:.06em;text-transform:uppercase;text-align:left;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.vrfreport td{border:1px solid #bbb;padding:4px 5px;vertical-align:top}
+.vrfreport td.num,.vrfreport th.num{text-align:right;font-family:var(--font-mono);white-space:nowrap}
+.vrfreport .rpt-note{font-size:12px;color:var(--text-muted);margin:0 0 8px}
+.vrfreport .rpt-runhead{display:none}
+.vrfreport .rpt-kicker{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:#333}
+@page mp-vrf-report{size:A4;margin:12mm}
+
 @media print{
   .rail,.topbar,.noprint,.btn{display:none!important}
   body.printing>*{display:none!important}
@@ -324,6 +343,16 @@ svg text{font-family:var(--font-body)}
   body{background:#fff;font-size:11pt}
   .content{max-width:none;padding:0}
   .card,.stat{box-shadow:none;border:1px solid #ccc;break-inside:avoid}
+  body:has(.vrfreport){page:mp-vrf-report}
+  .vrfreport{max-width:none;color:#111;background:#fff}
+  .vrfreport .rpt-sec+.rpt-sec{break-before:page;page-break-before:always}
+  .vrfreport thead{display:table-header-group}
+  .vrfreport tfoot{display:table-footer-group}
+  .vrfreport table{page-break-inside:auto}
+  .vrfreport tr{break-inside:avoid;page-break-inside:avoid}
+  .vrfreport h3,.vrfreport h4{break-after:avoid;page-break-after:avoid}
+  .vrfreport .rpt-runhead{display:block;margin-bottom:8px}
+  .vrfreport .rpt-runhead .rpt-co{font-size:14px}
 }
 </style>
 
@@ -384,7 +413,7 @@ var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
    This label is inside the page function. The shim reads window.BUILD when it
    sends a save. Without that copy every save goes out with an empty build and
    the server answers "Reload the page". */
-var BUILD = "2026-10-08 a";
+var BUILD = "2026-10-09 a";
 try { window.BUILD = BUILD; } catch (e) {}
 var DAY = 86400000, MO = 30.44;
 
@@ -6240,6 +6269,7 @@ var OFFICE=[
   {id:"approve", ic:"✔", label:"Approvals", count:function(){
       return openReserves().length+flaggedReserves().length; }},
   {id:"spend",   ic:"◫", label:"Spend"},
+  {id:"vrfrpt",  ic:"▥", label:"Monthly VRF report"},
   {id:"fuelecon",ic:"◴", label:"Fuel economics"},
   {id:"consume", ic:"◑", label:"Consumption"},
   {id:"inv",     ic:"▨", label:"Inventory"},
@@ -6278,7 +6308,7 @@ function go(v){
 var VIEW_NAMES={yard:"the yard board",ask:"Ask the log",remind:"Reminders",
   rsv:"Reserves",vrf:"the VRF form",fuel:"Fuel",down:"Workshop",
   tasks:"Tasks",store:"Store",vrflog:"the VRF log",parts:"History",fleet:"Fleet",
-  approve:"Approvals",spend:"Spend",fuelecon:"Fuel economics",consume:"Consumption",
+  approve:"Approvals",spend:"Spend",vrfrpt:"the monthly VRF report",fuelecon:"Fuel economics",consume:"Consumption",
   inv:"Inventory",plan:"Maintenance plan",health:"Data health"};
 var _loc=null;
 function locKey(s){
@@ -6318,6 +6348,214 @@ function goBack(){
   try{ window.scrollTo(0,prev.y||0); }catch(e){}
 }
 
+function vrfReportApi(){
+  try{ if(typeof VrfMonthlyReport!=="undefined" && VrfMonthlyReport && VrfMonthlyReport.buildMonthlyVrfReport) return VrfMonthlyReport; }catch(e){}
+  return (window && window.VrfMonthlyReport && window.VrfMonthlyReport.buildMonthlyVrfReport) ? window.VrfMonthlyReport : null;
+}
+function rptTable(cols, rows, empty){
+  var t=el("table"), head=el("thead"), hr=el("tr");
+  cols.forEach(function(c){
+    hr.appendChild(el("th", c.num?"num":"", c.h));
+  });
+  head.appendChild(hr); t.appendChild(head);
+  var tb=el("tbody");
+  if(!rows.length){
+    var er=el("tr"), ed=el("td",null, empty||"Nothing in this month.");
+    ed.colSpan=cols.length; er.appendChild(ed); tb.appendChild(er);
+  }
+  rows.forEach(function(r){
+    var x=el("tr");
+    cols.forEach(function(c){
+      var d=el("td", c.num?"num":"");
+      var v=c.get(r);
+      d.textContent=(v==null||v==="")?"—":String(v);
+      x.appendChild(d);
+    });
+    tb.appendChild(x);
+  });
+  t.appendChild(tb);
+  return t;
+}
+function rptMoney(n){
+  var api=vrfReportApi();
+  if(api) return api.formatPeso(n);
+  return peso(n);
+}
+function rptJob(code){
+  if(!code) return "—";
+  try{ var name=workName(code); return name||code; }catch(e){ return code; }
+}
+function rptApproved(r){
+  if(!r||r.status==="Pending"||r.status==="Duplicate"||r.status==="Cancelled") return "—";
+  return rptMoney(r.approved);
+}
+function rptActual(r){
+  if(!r||r.status==="Open"||r.status==="Pending") return "—";
+  return rptMoney(r.actual);
+}
+function vrfReportRunHead(report){
+  var run=el("div","rpt-runhead");
+  run.appendChild(el("div","rpt-co", report.header.company));
+  run.appendChild(el("div","rpt-kicker", report.header.title+" · "+report.header.periodLabel));
+  return run;
+}
+function vrfReportSection(report, title, body, first){
+  var s=el("section","rpt-sec"+(first?" first":""));
+  if(!first) s.appendChild(vrfReportRunHead(report));
+  if(title) s.appendChild(el("h3",null,title));
+  if(body) s.appendChild(body);
+  return s;
+}
+/* Office-only. The numbers come from the reserves and ledger already on the
+   page. Nothing here writes a year or a month. */
+function vrfReportView(){
+  var api=vrfReportApi();
+  var w=el("div","vrfreport");
+  var tools=el("div","rpt-tools noprint");
+  var field=el("div","field");
+  field.appendChild(el("label",null,"Month"));
+  var input=el("input");
+  input.type="month";
+  input.id="vrfReportMonth";
+  if(api){
+    var todayMonth=api.currentMonth(new Date());
+    input.max=todayMonth;
+    if(!S.vrfReportMonth || S.vrfReportMonth>todayMonth) S.vrfReportMonth=api.defaultReportMonth(new Date());
+    input.value=S.vrfReportMonth;
+  }
+  input.addEventListener("change",function(){
+    if(!input.value) return;
+    S.vrfReportMonth=input.value;
+    render();
+  });
+  field.appendChild(input);
+  tools.appendChild(field);
+  var printBtn=el("button","btn pri","Print / Save as PDF");
+  printBtn.type="button";
+  printBtn.addEventListener("click",function(){ window.print(); });
+  tools.appendChild(printBtn);
+  w.appendChild(tools);
+  if(!api){
+    w.appendChild(el("div","empty","The report calculator did not load. Reload the page."));
+    return w;
+  }
+  var hint=el("p","rpt-note noprint","Opens on the previous month. The current month is through today, Manila time. Duplicates, cancellations, and lines that were not bought are left out of the spend.");
+  w.appendChild(hint);
+  var report;
+  try{
+    report=api.buildMonthlyVrfReport({
+      month:S.vrfReportMonth,
+      reserves:S.reserves||[],
+      ledger:S.ledger||{},
+      now:new Date(),
+      build:typeof BUILD!=="undefined"?BUILD:""
+    });
+  }catch(e){
+    w.appendChild(el("div","empty",(e&&e.message)||"Could not build the report."));
+    return w;
+  }
+  var s=report.summary||{};
+  var head=el("div","rpt-head");
+  head.appendChild(el("div","rpt-co", report.header.company));
+  head.appendChild(el("div","rpt-title", report.header.title));
+  head.appendChild(el("div","rpt-meta", report.header.periodLabel+
+    " · Generated "+report.header.generatedAtLabel+" (Manila)"+
+    " · Build "+(report.header.build||"—")));
+  var summary=el("div");
+  summary.appendChild(head);
+  summary.appendChild(el("h3",null,"Summary"));
+  summary.appendChild(stats([
+    ["VRFs raised", String(s.raised), "in this month"],
+    ["Approved", String(s.approved), "includes open and closed"],
+    ["Closed / liquidated", String(s.closed), s.flagged?s.flagged+" flagged":"bought, not bought, flagged"],
+    ["Still open", String(s.open), "approved, not liquidated"],
+    ["Cancelled", String(s.cancelled), "duplicates counted separately"],
+    ["Duplicates", String(s.duplicates), "cancelled as duplicate"],
+    ["Pending approval", String(s.pending), "Requested"]
+  ]));
+  summary.appendChild(rptTable([
+    {h:"", get:function(r){ return r[0]; }},
+    {h:"Amount", num:true, get:function(r){ return r[1]; }}
+  ], [
+    ["Approved amount", rptMoney(s.approvedAmount)],
+    ["Actual spent (liquidated)", rptMoney(s.actualSpent)],
+    ["Variance (actual − approved)", rptMoney(s.variance)]
+  ]));
+  w.appendChild(vrfReportSection(report, "", summary, true));
+
+  w.appendChild(vrfReportSection(report, "Spend by category", rptTable([
+    {h:"Category", get:function(r){ return r.category; }},
+    {h:"VRFs", num:true, get:function(r){ return String(r.count); }},
+    {h:"Liters", num:true, get:function(r){ return r.liters==null?"—":nnum(r.liters,2); }},
+    {h:"Avg / liter", num:true, get:function(r){ return r.avgPricePerLiter==null?"—":rptMoney(r.avgPricePerLiter); }},
+    {h:"Amount", num:true, get:function(r){ return rptMoney(r.amount); }}
+  ], report.byCategory||[], "No liquidated spend.")));
+
+  w.appendChild(vrfReportSection(report, "Spend by vehicle", rptTable([
+    {h:"Unit", get:function(r){ return r.unit; }},
+    {h:"VRFs", num:true, get:function(r){ return String(r.count); }},
+    {h:"Liters", num:true, get:function(r){ return nnum(r.liters,2); }},
+    {h:"Amount", num:true, get:function(r){ return rptMoney(r.amount); }}
+  ], report.byVehicle||[], "No liquidated spend.")));
+
+  w.appendChild(vrfReportSection(report, "Spend by project", rptTable([
+    {h:"Project / site", get:function(r){ return r.project; }},
+    {h:"VRFs", num:true, get:function(r){ return String(r.count); }},
+    {h:"Amount", num:true, get:function(r){ return rptMoney(r.amount); }}
+  ], report.byProject||[], "No liquidated spend.")));
+
+  w.appendChild(vrfReportSection(report, "Top 10 largest VRFs", rptTable([
+    {h:"VRF", get:function(r){ return r.vrf; }},
+    {h:"Date", get:function(r){ return r.date; }},
+    {h:"Unit", get:function(r){ return r.unit; }},
+    {h:"Project", get:function(r){ return r.project; }},
+    {h:"Approved", num:true, get:function(r){ return rptApproved(r); }},
+    {h:"Actual", num:true, get:function(r){ return rptActual(r); }},
+    {h:"Status", get:function(r){ return r.status; }}
+  ], report.top||[], "No VRFs to rank.")));
+
+  w.appendChild(vrfReportSection(report, "VRF list", rptTable([
+    {h:"VRF no", get:function(r){ return r.vrf; }},
+    {h:"Date", get:function(r){ return r.date; }},
+    {h:"Unit", get:function(r){ return r.unit; }},
+    {h:"Requested by", get:function(r){ return r.requestedBy; }},
+    {h:"Job type", get:function(r){ return rptJob(r.jobType); }},
+    {h:"Description", get:function(r){ return r.description; }},
+    {h:"Approved amount", num:true, get:function(r){ return rptApproved(r); }},
+    {h:"Actual", num:true, get:function(r){ return rptActual(r); }},
+    {h:"Status", get:function(r){ return r.status; }}
+  ], report.vrfs||[], "No VRFs in this month.")));
+
+  var ex=report.exceptions||{};
+  var exBody=el("div");
+  exBody.appendChild(el("h4",null,"Open longer than 7 days"));
+  exBody.appendChild(rptTable([
+    {h:"VRF", get:function(r){ return r.vrf; }},
+    {h:"Date", get:function(r){ return r.date; }},
+    {h:"Unit", get:function(r){ return r.unit; }},
+    {h:"Days open", num:true, get:function(r){ return String(r.ageDays); }},
+    {h:"Requested by", get:function(r){ return r.requestedBy; }},
+    {h:"Approved", num:true, get:function(r){ return rptApproved(r); }}
+  ], ex.openOlderThan7Days||[], "None."));
+  exBody.appendChild(el("h4",null,"Duplicates cancelled"));
+  exBody.appendChild(rptTable([
+    {h:"VRF", get:function(r){ return r.vrf; }},
+    {h:"Date", get:function(r){ return r.date; }},
+    {h:"Unit", get:function(r){ return r.unit; }},
+    {h:"Duplicate of", get:function(r){ return r.duplicateOf; }},
+    {h:"Requested by", get:function(r){ return r.requestedBy; }}
+  ], ex.duplicatesCancelled||[], "None."));
+  exBody.appendChild(el("h4",null,"Odometer"));
+  exBody.appendChild(rptTable([
+    {h:"VRF", get:function(r){ return r.vrf; }},
+    {h:"Unit", get:function(r){ return r.unit; }},
+    {h:"Reading", num:true, get:function(r){ return r.odo==null?"—":nnum(r.odo,0); }},
+    {h:"What is wrong", get:function(r){ return r.detail; }}
+  ], ex.odometer||[], "None."));
+  w.appendChild(vrfReportSection(report, "Exceptions", exBody, false));
+  return w;
+}
+
 /* ============================ views ============================ */
 function render(){
   _oil=null; _cons=null; _inv=null; _itemIdx=null;
@@ -6334,7 +6572,7 @@ function render(){
   if(isOffice && !S.office){ v.appendChild(gateView()); return; }
   var fn={yard:yardView,ask:askView,remind:remindView,rsv:rsvView,approve:approveView,vrf:vrfView,fuel:fuelView,down:downView,
     tasks:tasksView,store:storeView,inv:invView,vrflog:vrfLogView,parts:partsView,fleet:fleetView,
-    spend:spendView,fuelecon:fuelEconView,consume:consumeView,plan:planView,health:healthView}[S.view]||yardView;
+    spend:spendView,vrfrpt:vrfReportView,fuelecon:fuelEconView,consume:consumeView,plan:planView,health:healthView}[S.view]||yardView;
   v.appendChild(fn());
 }
 
