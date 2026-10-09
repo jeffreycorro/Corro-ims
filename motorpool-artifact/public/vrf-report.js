@@ -9,14 +9,17 @@
  * A ledger row is its own VRF. Its reserve field is only a link, and status
  * is never copied onto a different VRF number.
  * Repeated postings of one reserve on the same unit count once.
- * A bulk fuel-reserve purchase is its own category. Reserve status wins when
- * the same VRF's ledger disagrees. Possible duplicates stay in the totals.
+ * The keeper is a liquidated copy when one exists. Cancelled and duplicate
+ * ledger VRFs are not repeats. Variance is actual minus approved only for
+ * VRFs that have both. A bulk fuel-reserve purchase is its own category.
+ * Reserve status wins when the same VRF's ledger disagrees. Possible
+ * duplicates stay in the totals.
  */
 
 var COMPANY = "Corro Construction Development and Trade Corporation";
 var REPORT_TITLE = "Motorpool Monthly VRF Report";
 var MANILA = "Asia/Manila";
-var CATEGORIES = ["Fuel", "Fuel reserve (bulk)", "Parts", "Labor/Service", "Others"];
+var CATEGORIES = ["Fuel", "Fuel reserve (bulk)", "Parts", "Labor/Service", "Cash advance", "Others"];
 var MONTH_NAMES = [
   "January", "February", "March", "April", "May", "June",
   "July", "August", "September", "October", "November", "December",
@@ -193,11 +196,18 @@ function categoryOf(row) {
   var cat = String((row && row.cat) || "");
   var grp = String((row && row.grp) || "");
   var sub = String((row && row.sub) || "");
+  var item = String((row && row.item) || "");
+  var work = String((row && row.work) || "").trim();
+  var blob = [cat, grp, sub, item, work].join(" ");
+  if (/cash\s*advance/i.test(blob)) return "Cash advance";
+  if (!cat.trim() && /^FUEL(?:-|$)/i.test(work) && !/^FUEL-BULK$/i.test(work)) return "Fuel";
   if (isFuel(cat) || /^\s*fuel\s*$/i.test(grp)) return "Fuel";
-  if (/\blabor\b|\blabour\b/i.test(cat + " " + grp + " " + sub)) return "Labor/Service";
+  if (/lto\s*renewal|emission\s*test|body\s*repair/i.test(blob)) return "Labor/Service";
+  if (/\blabor\b|\blabour\b/i.test(blob)) return "Labor/Service";
   if (/\bservice\b/i.test(grp) || /^\s*service\b/i.test(cat)) return "Labor/Service";
   if (/^\s*parts\s*$/i.test(grp) || /^\s*parts\s*$/i.test(cat)) return "Parts";
   if (/^\s*maintenance\s*$/i.test(grp)) return "Parts";
+  if (/\bclutch\b/i.test(blob)) return "Parts";
   if (/[—–-]/.test(cat) && !isFuel(cat)) return "Parts";
   return "Others";
 }
@@ -236,15 +246,25 @@ function lineAmount(line) {
   return explicit == null ? 0 : explicit;
 }
 
+function qtyTimesPriceIsTotal(line) {
+  var qty = money(line && line.qty);
+  var price = money(line && line.price);
+  if (!(qty > 0) || !(price > 0)) return false;
+  var total = line.total != null && line.total !== "" ? money(line.total) : qty * price;
+  return round2(qty * price) === round2(total);
+}
+
 function fuelLiters(line) {
   if (!line) return 0;
   var cat = categoryOf(line);
   if (cat !== "Fuel" && cat !== "Fuel reserve (bulk)") return 0;
-  var liters = money(line.liters);
-  if (liters > 0) return liters;
   var price = money(line.price);
   var qty = money(line.qty);
-  if (qty > 0 && price >= 40 && price <= 200) return qty;
+  var perLiter = price >= 40 && price <= 200 && qtyTimesPriceIsTotal(line);
+  if (perLiter && qty > 1) return qty;
+  if (perLiter && round2(qty) === 1) return 0;
+  var liters = money(line.liters);
+  if (liters > 0) return liters;
   return 0;
 }
 
@@ -561,6 +581,10 @@ function buildSlots(reserves, lines, month, from, to) {
   return slots;
 }
 
+function isInactiveStatus(status) {
+  return status === "Cancelled" || status === "Duplicate";
+}
+
 function historyReadings(reserves, lines) {
   var by = {};
   function put(vrf, unit, date, odo) {
@@ -574,10 +598,13 @@ function historyReadings(reserves, lines) {
   }
   (lines || []).forEach(function (line) {
     if (!line) return;
+    var named = statusFromText(line.vstatus, lineOutcome(line));
+    if (isInactiveStatus(named)) return;
     put(line.vrf, line.veh, line.date, parseOdo(line.odo));
   });
   (reserves || []).forEach(function (r) {
     if (!keepReserve(r)) return;
+    if (isInactiveStatus(reserveReportStatus(r))) return;
     put(r.vrfNo, r.veh, r.date, reserveOdo(r));
   });
   return Object.keys(by).map(function (k) { return by[k]; });
@@ -721,10 +748,22 @@ function sameUnit(a, b) {
   return !!left && left === right;
 }
 
+function anyLineBought(lines) {
+  for (var i = 0; i < (lines || []).length; i++) {
+    if (lineOutcome(lines[i]) === "bought") return true;
+  }
+  return false;
+}
+
+function isLiquidatedCopy(row) {
+  return !!row && (row.status === "Closed" || row.status === "Flagged" || row.status === "Not bought" || row.bought === true);
+}
+
 function separateRepeatPostings(records, reserveByNo, repeatNotes, liquidatedElsewhere) {
   var groups = {};
   (records || []).forEach(function (row) {
     if (!row || !row.fromLedger) return;
+    if (isInactiveStatus(row.status)) return;
     var reserveNo = String(row.linkedReserveNo || "").trim();
     var unit = String(row.unit || "").trim().toUpperCase();
     if (!reserveNo || !unit) return;
@@ -737,20 +776,23 @@ function separateRepeatPostings(records, reserveByNo, repeatNotes, liquidatedEls
     var group = groups[key];
     if (group.length < 2) return;
     var reserve = reserveByNo[String(group[0].linkedReserveNo)];
-    var named = normVrfNo(reserve && reserve.duplicateOf);
+    var liquidated = group.filter(isLiquidatedCopy);
     var keeper = null;
-    if (named) {
-      for (var i = 0; i < group.length; i++) {
-        if (normVrfNo(group[i].vrf) === named) { keeper = group[i]; break; }
+    if (liquidated.length) {
+      liquidated.sort(function (a, b) { return vrfSeq(a.vrf) - vrfSeq(b.vrf); });
+      keeper = liquidated[0];
+    } else {
+      var named = normVrfNo(reserve && reserve.duplicateOf);
+      if (named) {
+        for (var i = 0; i < group.length; i++) {
+          if (normVrfNo(group[i].vrf) === named) { keeper = group[i]; break; }
+        }
       }
-    }
-    if (!keeper) {
-      var liquidated = group.filter(function (row) {
-        return row.status === "Closed" || row.status === "Flagged" || row.status === "Not bought";
-      });
-      var pool = liquidated.length ? liquidated.slice() : group.slice();
-      pool.sort(function (a, b) { return vrfSeq(a.vrf) - vrfSeq(b.vrf); });
-      keeper = pool[0];
+      if (!keeper) {
+        var pool = group.slice();
+        pool.sort(function (a, b) { return vrfSeq(a.vrf) - vrfSeq(b.vrf); });
+        keeper = pool[0];
+      }
     }
     group.forEach(function (row) {
       if (row === keeper) return;
@@ -852,6 +894,7 @@ function buildMonthlyVrfReport(input) {
       duplicateOf: String((reserve && reserve.duplicateOf) || "").trim(),
       linkedReserveNo: slot.linkedReserveNo || (reserve && reserve.no != null ? String(reserve.no) : ""),
       fromLedger: slot.lines.length > 0,
+      bought: anyLineBought(slot.lines),
       spend: spend,
     };
   });
@@ -884,6 +927,7 @@ function buildMonthlyVrfReport(input) {
     actualSpent: 0,
     openNotLiquidated: 0,
     variance: 0,
+    varianceCount: 0,
   };
   records.forEach(function (row) {
     if (row.status === "Pending") summary.pending += 1;
@@ -903,7 +947,15 @@ function buildMonthlyVrfReport(input) {
   summary.approvedAmount = round2(summary.approvedAmount);
   summary.actualSpent = round2(summary.actualSpent);
   summary.openNotLiquidated = round2(summary.openNotLiquidated);
-  summary.variance = round2(summary.actualSpent - summary.approvedAmount);
+  var variance = 0;
+  var varianceCount = 0;
+  records.forEach(function (row) {
+    if (row.approved == null || !(row.actual > 0)) return;
+    variance += row.actual - row.approved;
+    varianceCount += 1;
+  });
+  summary.variance = round2(variance);
+  summary.varianceCount = varianceCount;
 
   var catMap = {};
   CATEGORIES.forEach(function (name) {
@@ -1027,7 +1079,9 @@ function buildMonthlyVrfReport(input) {
   });
 
   var odometer = [];
-  var reportRefs = records.map(function (row) {
+  var reportRefs = records.filter(function (row) {
+    return row && !isInactiveStatus(row.status);
+  }).map(function (row) {
     return { vrf: row.vrf, unit: row.unit, date: row.date, odo: row.odo, status: row.status };
   });
   reportRefs.forEach(function (row) {
@@ -1057,29 +1111,26 @@ function buildMonthlyVrfReport(input) {
     byOdo[key].push(row);
   });
   Object.keys(byOdo).forEach(function (key) {
-    var group = byOdo[key];
+    var group = byOdo[key].slice();
     var units = {};
     group.forEach(function (row) { units[row.unit] = 1; });
     if (Object.keys(units).length < 2) return;
+    group.sort(function (a, b) { return vrfSeq(a.vrf) - vrfSeq(b.vrf); });
+    var labels = group.map(function (row) { return row.unit + " (VRF " + row.vrf + ")"; });
+    var listed = labels.length === 2 ? labels[0] + " and " + labels[1] : labels.slice(0, -1).join(", ") + ", and " + labels[labels.length - 1];
+    var unitNames = [];
     group.forEach(function (row) {
-      var other = null;
-      for (var i = 0; i < group.length; i++) {
-        if (group[i].unit !== row.unit) { other = group[i]; break; }
-      }
-      if (!other) return;
-      odometer.push({
-        vrf: row.vrf,
-        unit: row.unit,
-        date: row.date,
-        odo: row.odo,
-        kind: "identical-other-unit",
-        otherVrf: other.vrf,
-        otherUnit: other.unit,
-        otherDate: other.date,
-        otherOdo: other.odo,
-        detail: "VRF " + row.vrf + " · " + row.unit + " · odometer " + row.odo +
-          " is the same as VRF " + other.vrf + " on " + other.unit,
-      });
+      if (unitNames.indexOf(row.unit) < 0) unitNames.push(row.unit);
+    });
+    odometer.push({
+      vrf: group.map(function (row) { return row.vrf; }).join(", "),
+      unit: unitNames.join(", "),
+      date: group[0].date,
+      odo: group[0].odo,
+      kind: "identical-other-unit",
+      vrfs: group.map(function (row) { return row.vrf; }),
+      units: unitNames,
+      detail: "Odometer " + group[0].odo + " is the same on " + listed,
     });
   });
 
