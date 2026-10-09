@@ -1821,7 +1821,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-10-07c";
+const BUILD = "2026-10-08a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -9569,7 +9569,17 @@ commitLeaverStrip.busy={};
 /* An overtime request is the signed form that lets a person or a whole site
    have OT entered for a date. Approved, with a file that is still a real
    link, is what unlocks the box. Hours already saved stay either way. */
-function otSiteKey(s){ return String(s||"").trim().toLowerCase().replace(/\s+/g," "); }
+/* "Danao SPLPA", "Danao-SPLPA", and "DANAO  SPLPA" are the same area.
+   A hyphen or a slash is a space. The letters on the report stay as stored. */
+function otSiteKey(s){
+  return String(s||"")
+    .replace(/[\u00A0\u2007\u202F]/g," ")
+    .trim()
+    .toLowerCase()
+    .replace(/[-–—_/.,]+/g," ")
+    .replace(/\s+/g," ")
+    .trim();
+}
 /* One request can carry several signed forms. formUrl stays the first one so
    older rows, which only stored that field, still open. A blob: address is
    not a file. */
@@ -9779,8 +9789,127 @@ function otHourlyOf(emp){
   const daily=Number(emp.dailyRate)||0;
   return daily>0 ? daily/8 : 0;
 }
+/* The calendar day a manpower document belongs to. A plain YYYY-MM-DD is
+   that day. A timestamp is read in Manila, so midnight in Cebu is not
+   yesterday. A document saved as dYYYYMMDD still counts when its date
+   field was left blank. This does not write the date back. */
+function otManilaDay(rec, key){
+  let d="";
+  if(rec && typeof dateInputValue==="function") d=dateInputValue(rec.date);
+  else if(rec) d=String(rec.date||"").slice(0,10);
+  if(/^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
+  const id=String((rec&&rec.id)||key||"");
+  const m=id.match(/^d(\d{4})(\d{2})(\d{2})$/);
+  return m ? m[1]+"-"+m[2]+"-"+m[3] : "";
+}
+/* Hours on the manpower row. Payroll's reader wins when it is loaded,
+   including a figure that is only still in that day's change history.
+   otHours and overtime are the same cell when ot itself was left blank. */
+function otLoggedHours(rec, empId, row){
+  if(typeof payrollOtHours==="function") return Number(payrollOtHours(rec, empId, row))||0;
+  if(typeof dailyOtHoursOf==="function") return Number(dailyOtHoursOf(row))||0;
+  if(!row) return 0;
+  const raw=row.ot!=null && String(row.ot).trim()!=="" ? row.ot
+    : row.otHours!=null && String(row.otHours).trim()!=="" ? row.otHours
+    : row.overtime!=null && String(row.overtime).trim()!=="" ? row.overtime
+    : "";
+  const n=Number(raw);
+  return Number.isFinite(n) && n>0 ? n : 0;
+}
+/* The area the Daily Manpower sheet shows. The cell wins. A blank cell
+   keeps the last area this person was given on an earlier day, then the
+   project on the 201 file — the same order the day sheet uses. */
+function otResolvedSite(empId, row, day, siteIx){
+  const raw=row && String(row.site||"").trim();
+  if(raw) return raw;
+  const e=S.employees && S.employees[empId];
+  if(!e) return "";
+  let prev="";
+  const list=(siteIx && siteIx[empId])||[];
+  for(let i=0;i<list.length;i++){ if(list[i][0]<day) prev=list[i][1]; else break; }
+  if(prev) return prev;
+  return e.project || "ADMINS";
+}
+function otSiteIndex(){
+  const ix={};
+  Object.keys(S.daily||{}).forEach(key=>{
+    const rec=S.daily[key];
+    if(!rec || !rec.rows) return;
+    const d=otManilaDay(rec, key);
+    if(!d) return;
+    Object.keys(rec.rows).forEach(id=>{
+      const row=rec.rows[id];
+      const s=row && String(row.site||"").trim();
+      if(!s) return;
+      (ix[id]=ix[id]||[]).push([d, s]);
+    });
+  });
+  Object.keys(ix).forEach(id=>ix[id].sort((a,b)=>a[0]<b[0]?-1:a[0]>b[0]?1:0));
+  return ix;
+}
+/* Shown only when this window has no manpower hours and no OT request.
+   Points at the previous Thursday–Wednesday week, or at a site filter
+   that is hiding hours, so an empty new week is not read as missing data. */
+function otEmptyNote(opts){
+  opts=opts||{};
+  const from=String(opts.from||"").slice(0,10);
+  const to=String(opts.to||from).slice(0,10);
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(from)) return "";
+  const bits=[];
+  let buttons="";
+  function hoursOf(report){
+    return (report&&report.buckets||[]).reduce((n,b)=>n+(Number(b.hours)||0),0);
+  }
+  if(opts.site){
+    const wider=otTrack({from:from, to:to, site:"", empId:opts.empId||"", mode:opts.mode||"range"});
+    const hours=hoursOf(wider);
+    if(hours>0){
+      const names=[];
+      (wider.buckets||[]).forEach(b=>(b.bySite||b.sites||[]).forEach(s=>{
+        if(Number(s.hours)>0 && names.indexOf(s.site)<0) names.push(s.site);
+      }));
+      bits.push("Other sites in this window have "+num(hours,1)+" overtime hours"
+        +(names.length?" ("+names.slice(0,4).join(", ")+(names.length>4?", …":"")+")":"")
+        +". The site filter is "+String(opts.site)+".");
+      buttons+='<button type="button" class="btn sm" data-otclear="site">Show all sites</button>';
+    }
+  }
+  if(opts.empId){
+    const wider=otTrack({from:from, to:to, site:opts.site||"", empId:"", mode:opts.mode||"range"});
+    const hours=hoursOf(wider);
+    if(hours>0){
+      bits.push("Other people in this window have "+num(hours,1)+" overtime hours. The employee filter is hiding them.");
+      buttons+='<button type="button" class="btn sm" data-otclear="emp">Show everyone</button>';
+    }
+  }
+  const prevEnd=addDays(from,-1);
+  const prevStart=typeof weekStart==="function" ? weekStart(prevEnd) : "";
+  const prevTo=prevStart ? addDays(prevStart,6) : "";
+  if(prevStart && prevTo && prevTo<from){
+    const prev=otTrack({from:prevStart, to:prevTo, site:opts.site||"", empId:opts.empId||"", mode:"week"});
+    const hours=hoursOf(prev);
+    const reqs=Number(prev&&prev.requests)||0;
+    if(hours>0 || reqs>0){
+      const where=opts.site ? " at "+String(opts.site) : "";
+      let sentence="The previous week ("+prevStart+" to "+prevTo+") has ";
+      if(hours>0) sentence+=num(hours,1)+" overtime hours"+where;
+      else sentence+="no manpower overtime"+where;
+      if(reqs) sentence+=(hours>0?", and ":" and ")+reqs+" OT request"+(reqs===1?"":"s");
+      sentence+=". This window starts on "+from+".";
+      bits.push(sentence);
+      buttons+='<button type="button" class="btn sm" data-otjump="'+esc(prevStart)+'" data-otjumpto="'+esc(prevTo)+'">Show the previous week</button>';
+    }
+  }
+  if(!bits.length) return "";
+  return '<div class="note" data-ot-empty-note="1" style="margin-top:10px;text-align:left">'
+    + bits.map(t=>'<div>'+esc(t)+'</div>').join("")
+    + (buttons?'<div class="row" style="margin-top:8px">'+buttons+'</div>':"")
+    + '</div>';
+}
 /* Hours actually on Daily Manpower, plus how many OT requests overlap the
-   window. Week buckets start Thursday, the same week payroll uses. */
+   window. Week buckets start Thursday, the same week payroll uses.
+   An OT request is not required. Hours with no approved signed form are
+   pending. */
 function otTrack(opts){
   opts=opts||{};
   const from=String(opts.from||"").slice(0,10);
@@ -9823,21 +9952,24 @@ function otTrack(opts){
     });
   });
   if(mode==="range" && !buckets[(from||"")+"|"+(to||"")]) bucket(from||to||TODAY);
-  Object.values(S.daily||{}).forEach(rec=>{
-    const d=String((rec&&rec.date)||"").slice(0,10);
+  const siteIx=otSiteIndex();
+  Object.keys(S.daily||{}).forEach(key=>{
+    const rec=S.daily[key];
+    if(!rec || typeof rec!=="object") return;
+    const d=otManilaDay(rec, key);
     if(!/^\d{4}-\d{2}-\d{2}$/.test(d)) return;
     if(from && d<from) return;
     if(to && d>to) return;
-    Object.keys((rec&&rec.rows)||{}).forEach(key=>{
-      const row=rec.rows[key];
+    Object.keys((rec&&rec.rows)||{}).forEach(rowKey=>{
+      const row=rec.rows[rowKey];
       if(!row || typeof row!=="object") return;
-      let empId=key;
+      let empId=rowKey;
       if(!(S.employees&&S.employees[empId]) && typeof summaryPersonId==="function")
-        empId=summaryPersonId(key, row)||key;
+        empId=summaryPersonId(rowKey, row)||rowKey;
       if(empWant && empId!==empWant) return;
-      const site=row.site||(S.employees&&S.employees[empId]&&S.employees[empId].project)||"";
+      const site=otResolvedSite(empId, row, d, siteIx);
       if(siteWant && otSiteKey(site)!==siteWant) return;
-      const ot=typeof payrollOtHours==="function" ? Number(payrollOtHours(rec, empId, row))||0 : (Number(row.ot)||0);
+      const ot=otLoggedHours(rec, empId, row);
       if(!(ot>0)) return;
       const e=S.employees&&S.employees[empId];
       const covered=otCovered(empId, d, site);
@@ -10150,7 +10282,9 @@ function viewOtRequests(){
     + people.map(e=>'<option value="'+esc(e.id)+'"'+(empId===e.id?" selected":"")+'>'+esc((e.empNo?e.empNo+" · ":"")+flipName(e.name))+'</option>').join("")
     + '</select></div></div>';
   if(!report.buckets.length){
-    h+='<div class="empty">No overtime hours in this window.</div>';
+    h+='<div class="empty">No overtime hours in this window.'
+      + otEmptyNote({from:from, to:to, site:site, empId:empId, mode:mode})
+      + '</div>';
   }
   report.buckets.forEach(b=>{
     h+='<h3 style="margin:12px 0 6px">'+esc(b.label)+'</h3>'
@@ -23398,6 +23532,20 @@ function wire(){
     await drop("otreqs", id); render();
   });
   on("[data-otmode]","click",e=>{ S.ui.otMode=e.currentTarget.dataset.otmode; render(); });
+  on("[data-otjump]","click",e=>{
+    const start=e.currentTarget.dataset.otjump||"";
+    const end=e.currentTarget.dataset.otjumpto||"";
+    if(!start) return;
+    S.ui.otFrom=start;
+    S.ui.otTo=end||addDays(start,6);
+    S.ui.otMode="week";
+    render();
+  });
+  on("[data-otclear]","click",e=>{
+    if(e.currentTarget.dataset.otclear==="site") S.ui.otSite="";
+    if(e.currentTarget.dataset.otclear==="emp") S.ui.otEmp="";
+    render();
+  });
   const otApply=()=>{
     const f=$("#ot-from",v), t=$("#ot-to",v), s=$("#ot-site",v), emp=$("#ot-emp",v);
     if(f && f.value) S.ui.otFrom=f.value;
