@@ -7,6 +7,7 @@
  * Authorization: Bearer <APPROVE_VRF_SECRET>
  *
  * Loads reserves and ledger the way the portal already does (getDoc / listIds).
+ * A ledger month read also keeps rows that exist only on the month document.
  * It does not write a year, a month, or an index. No SQL.
  * The secret is never logged and never copied into the JSON.
  */
