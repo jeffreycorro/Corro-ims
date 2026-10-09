@@ -281,7 +281,7 @@ function report() {
     reserves: src.reserves,
     ledger: src.ledger,
     now: NOW,
-    build: "2026-10-10 b",
+    build: "2026-10-10 c",
   });
 }
 
@@ -293,7 +293,7 @@ describe("monthly VRF report computation", () => {
     assert.equal(out.header.month, "2026-09");
     assert.equal(out.header.monthLabel, "September 2026");
     assert.equal(out.header.monthToDate, false);
-    assert.equal(out.header.build, "2026-10-10 b");
+    assert.equal(out.header.build, "2026-10-10 c");
     assert.equal(out.header.generatedAt, "2026-10-09T10:00:00+08:00");
     assert.match(out.header.generatedAtLabel, /9 Oct 2026, 10:00:00 AM/);
 
@@ -309,7 +309,8 @@ describe("monthly VRF report computation", () => {
     assert.equal(out.summary.approvedAmount, 15600);
     assert.equal(out.summary.actualSpent, 7600);
     assert.equal(out.summary.openNotLiquidated, 8000);
-    assert.equal(out.summary.variance, -8000);
+    assert.equal(out.summary.variance, 400);
+    assert.equal(out.summary.varianceCount, 4);
     assert.equal(
       out.summary.pending + out.summary.open + out.summary.closed + out.summary.flagged +
         out.summary.cancelled + out.summary.duplicates,
@@ -344,9 +345,10 @@ describe("monthly VRF report computation", () => {
     const others = out.byCategory.find((row) => row.category === "Others");
     assert.deepEqual(
       out.byCategory.map((row) => row.category),
-      ["Fuel", "Fuel reserve (bulk)", "Parts", "Labor/Service", "Others"]
+      ["Fuel", "Fuel reserve (bulk)", "Parts", "Labor/Service", "Cash advance", "Others"]
     );
     assert.equal(out.byCategory.find((row) => row.category === "Fuel reserve (bulk)").amount, 0);
+    assert.equal(out.byCategory.find((row) => row.category === "Cash advance").amount, 0);
     assert.equal(fuel.amount, 3500);
     assert.equal(fuel.liters, 50);
     assert.equal(fuel.avgPricePerLiter, 70);
@@ -355,7 +357,7 @@ describe("monthly VRF report computation", () => {
     assert.equal(labor.amount, 1900);
     assert.equal(others.amount, 0);
     assert.equal(formatPeso(fuel.amount), "₱ 3,500.00");
-    assert.equal(formatPeso(out.summary.variance), "-₱ 8,000.00");
+    assert.equal(formatPeso(out.summary.variance), "₱ 400.00");
   });
 
   it("sorts vehicles by amount and rolls projects up", () => {
@@ -414,8 +416,12 @@ describe("monthly VRF report computation", () => {
     assert.equal(lower.previousOdo, 1500);
     assert.equal(lower.odo, 1000);
     const same = out.exceptions.odometer.filter((row) => row.kind === "identical-other-unit");
-    assert.deepEqual(same.map((row) => row.vrf).sort(), ["1006", "1007"]);
-    assert.match(same[0].detail, /same as VRF/);
+    assert.equal(same.length, 1);
+    assert.match(same[0].vrf, /1006/);
+    assert.match(same[0].vrf, /1007/);
+    assert.match(same[0].detail, /Odometer 5000 is the same on/);
+    assert.match(same[0].detail, /SV-02 \(VRF 1006\)/);
+    assert.match(same[0].detail, /SV-03 \(VRF 1007\)/);
     const flagged = out.vrfs.find((row) => row.vrf === "1008");
     assert.equal(flagged.status, "Flagged");
     assert.match(flagged.statusNote, /Reserve says Flagged; ledger says Closed/);
@@ -430,7 +436,7 @@ describe("monthly VRF report computation", () => {
     const out = buildMonthlyVrfReport({
       month: "2026-10",
       now: NOW,
-      build: "2026-10-10 b",
+      build: "2026-10-10 c",
       reserves: [
         { no: "a", vrfNo: "2001", date: "2026-10-01", status: "Approved", veh: "SV-01", approvedBudget: 100, requestedBy: "Ana" },
         { no: "b", vrfNo: "2002", date: "2026-10-02", status: "Open", veh: "SV-01", approvedBudget: 100, requestedBy: "Ana" },
@@ -933,7 +939,7 @@ describe("ledger VRF numbers stay separate from the reserve", () => {
           actual: 1500,
           approvedBudget: 1500,
           draftPurpose: "clutch",
-          draftLines: [{ cat: "CLUTCH — Disc", item: "clutch disc", qty: 1, price: 1500, grp: "Parts" }],
+          draftLines: [{ cat: "Clutch", item: "clutch parts", qty: 1, price: 1500 }],
         },
       ],
       ledger: {},
@@ -965,6 +971,245 @@ describe("ledger VRF numbers stay separate from the reserve", () => {
     assert.equal(out.vrfs[0].actual, 168);
     assert.equal(out.summary.actualSpent, 168);
   });
+
+  it("keeps the liquidated copy when a duplicate cancellation names another VRF", () => {
+    const out = buildMonthlyVrfReport({
+      month: "2026-09",
+      now: NOW,
+      reserves: [
+        { no: "26", vrfNo: "6116", date: "2026-09-06", status: "Cancelled", cancelOutcome: "duplicate", duplicateOf: "5845", veh: "MC-16", approvedBudget: 5000 },
+        { no: "27", vrfNo: "6117", date: "2026-09-07", status: "Cancelled", cancelOutcome: "duplicate", duplicateOf: "5846", veh: "SV-06", approvedBudget: 4000 },
+        { no: "39", vrfNo: "6118", date: "2026-09-09", status: "Cancelled", cancelOutcome: "duplicate", duplicateOf: "5858", veh: "DT-04", approvedBudget: 5597.88 },
+      ],
+      ledger: {
+        "2026-09": [
+          closedLine({ vrf: "5845", reserve: "26", veh: "MC-16", date: "2026-09-01", total: 5000, qty: 1, price: 5000, vstatus: "Open", liq: null }),
+          closedLine({ vrf: "5867", reserve: "26", veh: "MC-16", date: "2026-09-08", total: 5000, qty: 1, price: 5000, vstatus: "Closed", liq: { outcome: "bought" } }),
+          closedLine({ vrf: "5899", reserve: "26", veh: "MC-16", date: "2026-09-10", total: 5000, qty: 1, price: 5000, vstatus: "Open", liq: null }),
+          closedLine({ vrf: "5846", reserve: "27", veh: "SV-06", date: "2026-09-02", total: 4000, qty: 1, price: 4000, vstatus: "Open", liq: null }),
+          closedLine({ vrf: "5868", reserve: "27", veh: "SV-06", date: "2026-09-08", total: 4000, qty: 1, price: 4000, vstatus: "Closed", liq: { outcome: "bought" } }),
+          closedLine({ vrf: "5858", reserve: "39", veh: "DT-04", date: "2026-09-03", total: 5597.88, qty: 1, price: 5597.88, vstatus: "Open", liq: null }),
+          closedLine({ vrf: "5875", reserve: "39", veh: "DT-04", date: "2026-09-09", total: 5597.88, qty: 1, price: 5597.88, vstatus: "Closed", liq: { outcome: "bought" } }),
+          closedLine({ vrf: "5860", reserve: "40", veh: "SV-08", date: "2026-09-04", total: 50, qty: 1, price: 50, vstatus: "Open", liq: null }),
+          closedLine({ vrf: "5883", reserve: "40", veh: "SV-08", date: "2026-09-11", total: 50, qty: 1, price: 50, vstatus: "Flagged", liq: { outcome: "bought" } }),
+        ],
+      },
+    });
+    assert.equal(out.vrfs.find((row) => row.vrf === "5867").status, "Closed");
+    assert.equal(out.vrfs.find((row) => row.vrf === "5867").actual, 5000);
+    assert.equal(out.vrfs.find((row) => row.vrf === "5868").actual, 4000);
+    assert.equal(out.vrfs.find((row) => row.vrf === "5875").status, "Closed");
+    assert.equal(out.vrfs.find((row) => row.vrf === "5875").actual, 5597.88);
+    assert.equal(out.vrfs.find((row) => row.vrf === "5883").status, "Flagged");
+    assert.equal(out.vrfs.find((row) => row.vrf === "5860"), undefined);
+    assert.equal(out.vrfs.find((row) => row.vrf === "5845"), undefined);
+    assert.equal(out.vrfs.find((row) => row.vrf === "5846"), undefined);
+    assert.equal(out.vrfs.find((row) => row.vrf === "5858"), undefined);
+    const kept = {};
+    out.exceptions.uncancelledRepeats.forEach((row) => { kept[row.vrf] = row.kept; });
+    assert.equal(kept["5845"], "5867");
+    assert.equal(kept["5899"], "5867");
+    assert.equal(kept["5846"], "5868");
+    assert.equal(kept["5858"], "5875");
+    assert.equal(kept["5860"], "5883");
+    assert.equal(out.summary.closed, 3);
+    assert.equal(out.summary.flagged, 1);
+    assert.equal(out.summary.open, 0);
+    assert.equal(out.summary.actualSpent, 14647.88);
+    assert.equal(out.summary.openNotLiquidated, 0);
+    assert.deepEqual(out.exceptions.openOlderThan7Days.map((row) => row.vrf), []);
+  });
+
+  it("treats a bought line as the liquidated copy even when vstatus is still Open", () => {
+    const out = buildMonthlyVrfReport({
+      month: "2026-09",
+      now: NOW,
+      reserves: [
+        { no: "26", vrfNo: "6116", date: "2026-09-06", status: "Cancelled", cancelOutcome: "duplicate", duplicateOf: "5845", veh: "MC-16" },
+      ],
+      ledger: {
+        "2026-09": [
+          closedLine({ vrf: "5845", reserve: "26", veh: "MC-16", date: "2026-09-06", total: 100, qty: 1, price: 100, vstatus: "Open", liq: null }),
+          closedLine({ vrf: "5867", reserve: "26", veh: "MC-16", date: "2026-09-08", total: 100, qty: 1, price: 100, vstatus: "Open", liq: { outcome: "bought" } }),
+        ],
+      },
+    });
+    assert.equal(out.vrfs.find((row) => row.vrf === "5867").status, "Open");
+    assert.equal(out.vrfs.find((row) => row.vrf === "5845"), undefined);
+    assert.equal(out.exceptions.uncancelledRepeats[0].vrf, "5845");
+    assert.equal(out.exceptions.uncancelledRepeats[0].kept, "5867");
+  });
+
+  it("leaves cancelled and duplicate ledger VRFs in the counts when they share a reserve and unit", () => {
+    const cancelled = ["5855", "5856", "5870", "5871", "5876", "5880"];
+    const duplicates = ["5847", "5866", "5874", "5877", "5878"];
+    const out = buildMonthlyVrfReport({
+      month: "2026-09",
+      now: NOW,
+      reserves: [],
+      ledger: {
+        "2026-09": [
+          closedLine({ vrf: "5867", reserve: "26", veh: "MC-16", date: "2026-09-08", total: 5000, qty: 1, price: 5000 }),
+        ].concat(cancelled.map((vrf) => closedLine({
+          vrf: vrf,
+          reserve: "26",
+          veh: "MC-16",
+          date: "2026-09-08",
+          total: 10,
+          qty: 1,
+          price: 10,
+          vstatus: "Cancelled",
+          liq: { outcome: "cancelled" },
+        }))).concat(duplicates.map((vrf) => closedLine({
+          vrf: vrf,
+          reserve: "26",
+          veh: "MC-16",
+          date: "2026-09-08",
+          total: 10,
+          qty: 1,
+          price: 10,
+          vstatus: "Duplicate",
+          liq: { outcome: "duplicate" },
+        }))),
+      },
+    });
+    assert.equal(out.summary.raised, 12);
+    assert.equal(out.summary.closed, 1);
+    assert.equal(out.summary.cancelled, 6);
+    assert.equal(out.summary.duplicates, 5);
+    assert.equal(out.summary.actualSpent, 5000);
+    cancelled.forEach((vrf) => {
+      assert.equal(out.vrfs.find((row) => row.vrf === vrf).status, "Cancelled");
+    });
+    duplicates.forEach((vrf) => {
+      assert.equal(out.vrfs.find((row) => row.vrf === vrf).status, "Duplicate");
+    });
+    assert.deepEqual(out.exceptions.uncancelledRepeats, []);
+  });
+
+  it("maps fuel work codes, labor names, cash advances, and clutch drafts", () => {
+    const out = buildMonthlyVrfReport({
+      month: "2026-09",
+      now: NOW,
+      reserves: [
+        {
+          no: "8",
+          vrfNo: "5794",
+          date: "2026-09-05",
+          status: "Closed",
+          veh: "DT-03",
+          liquidatedAt: "2026-09-05",
+          actual: 800,
+          approvedBudget: 800,
+          draftLines: [{ cat: "Clutch", item: "clutch parts", qty: 1, price: 800 }],
+        },
+      ],
+      ledger: {
+        "2026-09": [
+          closedLine({ vrf: "5795", veh: "MC-16", date: "2026-09-14", cat: "", item: "", grp: "", work: "FUEL-STN", qty: 144.82, price: 88, total: 12744.16, liters: null, unit: "pc" }),
+          closedLine({ vrf: "5809", veh: "SV-01", date: "2026-09-06", cat: "LTO Renewal", item: "", grp: "", qty: 1, price: 1500, total: 1500 }),
+          closedLine({ vrf: "5895", veh: "SV-02", date: "2026-09-07", cat: "Emission Test", item: "", grp: "", qty: 1, price: 900, total: 900 }),
+          closedLine({ vrf: "5812", veh: "SV-04", date: "2026-09-07", cat: "Body Repair", item: "", grp: "", qty: 1, price: 700, total: 700 }),
+          closedLine({ vrf: "5811", veh: "SV-03", date: "2026-09-08", cat: "Labor — Welding", grp: "", qty: 1, price: 400, total: 400 }),
+          closedLine({ vrf: "5887", veh: "DT-01", date: "2026-09-09", cat: "Cash Advance (to reconcile)", grp: "", qty: 1, price: 2000, total: 2000 }),
+          closedLine({ vrf: "5904", veh: "DT-02", date: "2026-09-11", cat: "Cash Advance (to reconcile)", grp: "", qty: 1, price: 168, total: 168 }),
+        ],
+      },
+    });
+    const amount = (name) => out.byCategory.find((row) => row.category === name).amount;
+    const fuel = out.byCategory.find((row) => row.category === "Fuel");
+    assert.equal(fuel.amount, 12744.16);
+    assert.equal(fuel.liters, 144.82);
+    assert.equal(amount("Labor/Service"), 3500);
+    assert.equal(amount("Cash advance"), 2168);
+    assert.equal(amount("Parts"), 800);
+    assert.equal(amount("Others"), 0);
+    assert.equal(out.vrfs.find((row) => row.vrf === "5794").actual, 800);
+  });
+
+  it("uses qty as liters when qty times price equals the total and skips a peso line", () => {
+    const out = buildMonthlyVrfReport({
+      month: "2026-09",
+      now: NOW,
+      reserves: [],
+      ledger: {
+        "2026-09": [
+          closedLine({ vrf: "5749", veh: "DT-01", date: "2026-09-04", cat: "Fuel — Diesel", grp: "Fuel", qty: 40, price: 86, total: 3440, liters: 20, unit: "pc" }),
+          closedLine({ vrf: "5746", veh: "DT-02", date: "2026-09-04", cat: "Fuel — Diesel", grp: "Fuel", qty: 30, price: 90, total: 2700, liters: 15, unit: null }),
+          closedLine({ vrf: "5747", veh: "DT-03", date: "2026-09-04", cat: "Fuel — Diesel", grp: "Fuel", qty: 25, price: 80, total: 2000, liters: 10, unit: "pc" }),
+          closedLine({ vrf: "5828", veh: "DT-04", date: "2026-09-05", cat: "Fuel — Diesel", grp: "Fuel", qty: 1, price: 200, total: 200, liters: 1, unit: "pc" }),
+        ],
+      },
+    });
+    const fuel = out.byCategory.find((row) => row.category === "Fuel");
+    assert.equal(fuel.liters, 95);
+    assert.equal(fuel.amount, 8340);
+    assert.equal(fuel.avgPricePerLiter, 85.68);
+  });
+
+  it("checks odometers on active VRFs only and groups one identical reading", () => {
+    const out = buildMonthlyVrfReport({
+      month: "2026-09",
+      now: NOW,
+      reserves: [
+        {
+          no: "70",
+          vrfNo: "6115",
+          date: "2026-09-24",
+          status: "Cancelled",
+          cancelOutcome: "duplicate",
+          duplicateOf: "5872",
+          veh: "SV-09",
+          draftOdo: "431811",
+          approvedBudget: 10,
+        },
+      ],
+      ledger: {
+        "2026-09": [
+          closedLine({ vrf: "5795", veh: "MC-16", date: "2026-09-14", odo: 431885, total: 10, qty: 1, price: 10 }),
+          closedLine({ vrf: "5872", veh: "MC-16", date: "2026-09-24", odo: 431811, total: 10, qty: 1, price: 10 }),
+          closedLine({ vrf: "5896", veh: "MC-16", date: "2026-09-20", odo: 500000, total: 10, qty: 1, price: 10, vstatus: "Cancelled", liq: { outcome: "cancelled" } }),
+          closedLine({ vrf: "6100", veh: "SV-02", date: "2026-09-18", odo: 431811, total: 10, qty: 1, price: 10 }),
+        ],
+      },
+    });
+    const lower = out.exceptions.odometer.filter((row) => row.kind === "lower-than-previous");
+    assert.equal(lower.length, 1);
+    assert.equal(lower[0].vrf, "5872");
+    assert.equal(lower[0].odo, 431811);
+    assert.equal(lower[0].previousVrf, "5795");
+    assert.equal(lower[0].previousOdo, 431885);
+    assert.equal(lower[0].previousDate, "2026-09-14");
+    const identical = out.exceptions.odometer.filter((row) => row.kind === "identical-other-unit");
+    assert.equal(identical.length, 1);
+    assert.match(identical[0].detail, /MC-16 \(VRF 5872\)/);
+    assert.match(identical[0].detail, /SV-02 \(VRF 6100\)/);
+    assert.equal(out.exceptions.odometer.some((row) => String(row.vrf).indexOf("5896") >= 0), false);
+    assert.equal(out.exceptions.odometer.some((row) => String(row.vrf).indexOf("6115") >= 0), false);
+    assert.equal(out.vrfs.find((row) => row.vrf === "5896").status, "Cancelled");
+    assert.equal(out.vrfs.find((row) => row.vrf === "6115").status, "Duplicate");
+  });
+
+  it("compares variance only where a VRF has both an approved amount and an actual", () => {
+    const out = buildMonthlyVrfReport({
+      month: "2026-09",
+      now: NOW,
+      reserves: [
+        { no: "1", vrfNo: "5701", date: "2026-09-02", status: "Approved", veh: "SV-01", approvedBudget: 8000 },
+        { no: "2", vrfNo: "5702", date: "2026-09-03", status: "Closed", veh: "SV-02", approvedBudget: 1000, liquidatedAt: "2026-09-03" },
+      ],
+      ledger: {
+        "2026-09": [
+          line({ vrf: "5702", veh: "SV-02", date: "2026-09-03", total: 400, qty: 1, price: 400, cat: "Bolt", grp: "Parts" }),
+          line({ vrf: "5746", veh: "DT-01", date: "2026-09-04", total: 9000, qty: 1, price: 9000, cat: "Bolt", grp: "Parts", vstatus: "Closed" }),
+        ],
+      },
+    });
+    assert.equal(out.summary.actualSpent, 9400);
+    assert.equal(out.summary.approvedAmount, 9000);
+    assert.equal(out.summary.variance, -600);
+    assert.equal(out.summary.varianceCount, 1);
+  });
 });
 
 describe("vrf-report function", () => {
@@ -978,7 +1223,7 @@ describe("vrf-report function", () => {
     const handler = createHandler({
       secret: SECRET,
       now: new Date(NOW),
-      build: "2026-10-10 b",
+      build: "2026-10-10 c",
       load: async (month) => {
         loaded = month;
         return src;
@@ -996,7 +1241,7 @@ describe("vrf-report function", () => {
       reserves: src.reserves,
       ledger: src.ledger,
       now: NOW,
-      build: "2026-10-10 b",
+      build: "2026-10-10 c",
     });
     assert.deepEqual(body, expected);
     assert.equal(JSON.stringify(res).includes(SECRET), false);
@@ -1048,7 +1293,7 @@ describe("vrf-report function", () => {
     const handler = createHandler({
       secret: SECRET,
       now: new Date(NOW),
-      build: "2026-10-10 b",
+      build: "2026-10-10 c",
       load: async (month) => {
         loaded = month;
         return { reserves: [], ledger: {} };
@@ -1102,7 +1347,7 @@ describe("vrf-report function", () => {
       reserves: sources.reserves,
       ledger: sources.ledger,
       now: NOW,
-      build: "2026-10-10 b",
+      build: "2026-10-10 c",
     });
     assert.equal(out.summary.raised, 2);
     assert.equal(out.vrfs.some((row) => row.vrf === "should-not-load"), false);
@@ -1148,14 +1393,15 @@ describe("monthly VRF report page", () => {
     assert.match(html, /Already liquidated on another VRF/);
     assert.match(html, /Reserve and ledger disagree/);
     assert.match(html, /Actual spent \(closed and flagged\)/);
+    assert.match(html, /VRFs with both/);
     assert.match(html, /window\.print\(\)/);
     assert.match(html, /<script src="\/vrf-report\.js"><\/script>/);
-    assert.match(html, /var BUILD = "2026-10-10 b"/);
+    assert.match(html, /var BUILD = "2026-10-10 c"/);
     assert.match(html, /@page mp-vrf-report\{size:A4/);
     assert.match(html, /\.vrfreport thead\{display:table-header-group\}/);
     assert.match(html, /page-break-before:always/);
     assert.match(html, /Corro Construction Development and Trade Corporation|report\.header\.company/);
-    assert.equal(pageBuild(), "2026-10-10 b");
+    assert.equal(pageBuild(), "2026-10-10 c");
     const fn = fs.readFileSync(path.join(__dirname, "../netlify/functions/vrf-report.js"), "utf8");
     assert.doesNotMatch(fn, /setDoc|writeDoc|putReserve|putLedger|saveLedger/);
     const db = fs.readFileSync(path.join(__dirname, "../netlify/lib/supabase.js"), "utf8");
