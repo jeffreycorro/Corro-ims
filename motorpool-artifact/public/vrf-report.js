@@ -5,12 +5,15 @@
  * Shared by the Motorpool page (script tag → window.VrfMonthlyReport)
  * and the vrf-report Netlify function (module.exports).
  * Pure: it only reads the reserves and ledger rows it is given.
+ * Ledger-only VRFs use vstatus (blank means Closed) and have no approved amount.
+ * A bulk fuel-reserve purchase is its own category. Reserve status wins when
+ * the ledger disagrees. Possible duplicates stay in the totals.
  */
 
 var COMPANY = "Corro Construction Development and Trade Corporation";
 var REPORT_TITLE = "Motorpool Monthly VRF Report";
 var MANILA = "Asia/Manila";
-var CATEGORIES = ["Fuel", "Parts", "Labor/Service", "Others"];
+var CATEGORIES = ["Fuel", "Fuel reserve (bulk)", "Parts", "Labor/Service", "Others"];
 var MONTH_NAMES = [
   "January", "February", "March", "April", "May", "June",
   "July", "August", "September", "October", "November", "December",
@@ -120,6 +123,19 @@ function dateKey(value) {
   if (m) return m[1] + "-" + m[2] + "-" + m[3];
   m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(String(value));
   if (m) return m[3] + "-" + pad2(m[1]) + "-" + pad2(m[2]);
+  var mon = {
+    jan: "01", feb: "02", mar: "03", apr: "04", may: "05", jun: "06",
+    jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12",
+  };
+  var named = String(value).trim();
+  m = /^(\d{1,2})[-\s]([A-Za-z]{3,})[-\s,](\d{4})/.exec(named);
+  if (m && mon[m[2].slice(0, 3).toLowerCase()]) {
+    return m[3] + "-" + mon[m[2].slice(0, 3).toLowerCase()] + "-" + pad2(m[1]);
+  }
+  m = /^([A-Za-z]{3,})\s+(\d{1,2}),?\s+(\d{4})/.exec(named);
+  if (m && mon[m[1].slice(0, 3).toLowerCase()]) {
+    return m[3] + "-" + mon[m[1].slice(0, 3).toLowerCase()] + "-" + pad2(m[2]);
+  }
   return "";
 }
 
@@ -158,7 +174,19 @@ function isFuel(cat) {
   return /^\s*fuel\s*[—–-]/i.test(String(cat || ""));
 }
 
+function isBulkFuelPurchase(row) {
+  if (!row) return false;
+  var work = String(row.work || "").trim().toUpperCase();
+  if (work === "FUEL-BULK") return true;
+  var veh = String(row.veh || row.unit || "").trim().toUpperCase();
+  if (veh !== "AV") return false;
+  var cat = String(row.cat || "");
+  var grp = String(row.grp || "");
+  return isFuel(cat) || /^\s*fuel\s*$/i.test(grp) || /^\s*fuel\b/i.test(cat);
+}
+
 function categoryOf(row) {
+  if (isBulkFuelPurchase(row)) return "Fuel reserve (bulk)";
   var cat = String((row && row.cat) || "");
   var grp = String((row && row.grp) || "");
   var sub = String((row && row.sub) || "");
@@ -204,7 +232,9 @@ function lineAmount(line) {
 }
 
 function fuelLiters(line) {
-  if (!line || categoryOf(line) !== "Fuel") return 0;
+  if (!line) return 0;
+  var cat = categoryOf(line);
+  if (cat !== "Fuel" && cat !== "Fuel reserve (bulk)") return 0;
   var liters = money(line.liters);
   if (liters > 0) return liters;
   var unit = String(line.unit || "").trim().toLowerCase();
@@ -263,45 +293,67 @@ function lineInPeriod(line, month, from, to) {
   return String((line && line.month) || "") === month;
 }
 
-function classify(reserve, lines) {
-  var st = String((reserve && reserve.status) || "").trim();
-  var outcome = normOutcome(reserve && reserve.cancelOutcome);
-  var lineStatus = "";
-  var liq = "";
+function statusFromText(st, outcome) {
+  var text = String(st || "").trim();
+  var oc = normOutcome(outcome);
+  if (oc === "duplicate" || /^duplicate\b/i.test(text)) return "Duplicate";
+  if (oc === "not-bought" || /^not[- ]bought$/i.test(text)) return "Not bought";
+  if (oc === "cancelled" || /^cancel/i.test(text)) return "Cancelled";
+  if (/^requested$/i.test(text) || /^for approval$/i.test(text) || /^sent for approval$/i.test(text)) return "Pending";
+  if (/^flagged$/i.test(text)) return "Flagged";
+  if (/^closed$/i.test(text) || /^liquidated$/i.test(text)) return "Closed";
+  if (/^approved$/i.test(text) || /^open$/i.test(text) || /^posted$/i.test(text) || /awaiting liquidation/i.test(text)) return "Open";
+  return "";
+}
+
+function reserveReportStatus(reserve) {
+  if (!reserve) return "";
+  var named = statusFromText(reserve.status, reserve.cancelOutcome);
+  if (named === "Duplicate" || named === "Not bought" || named === "Cancelled" || named === "Pending" || named === "Flagged" || named === "Closed") {
+    return named;
+  }
+  if (reserve.liquidatedAt) return "Closed";
+  return named;
+}
+
+function ledgerReportStatus(lines) {
+  var named = "";
+  var fromLiq = "";
   (lines || []).forEach(function (line) {
-    if (!lineStatus && line && line.vstatus) lineStatus = String(line.vstatus).trim();
-    if (!liq) liq = lineOutcome(line);
+    if (!line) return;
+    if (!named && line.vstatus) named = statusFromText(line.vstatus, "");
+    if (!fromLiq) {
+      var oc = lineOutcome(line);
+      if (oc) fromLiq = statusFromText("", oc);
+      else if (line.liq) fromLiq = "Closed";
+    }
   });
-  if (outcome === "duplicate" || /^duplicate\b/i.test(st) || liq === "duplicate" || /^duplicate\b/i.test(lineStatus)) {
-    return "Duplicate";
+  if (named) return named;
+  return fromLiq;
+}
+
+function classify(reserve, lines) {
+  var reserveStatus = reserveReportStatus(reserve);
+  var ledgerStatus = ledgerReportStatus(lines);
+  var status = reserve ? (reserveStatus || ledgerStatus || "Open") : (ledgerStatus || "Closed");
+  var statusNote = "";
+  if (reserve && reserveStatus && ledgerStatus && reserveStatus !== ledgerStatus) {
+    statusNote = "Reserve says " + reserveStatus + "; ledger says " + ledgerStatus;
   }
-  if (outcome === "not-bought" || /^not[- ]bought$/i.test(st) || liq === "not-bought" || /^not[- ]bought$/i.test(lineStatus)) {
-    return "Not bought";
-  }
-  if (outcome === "cancelled" || /^cancel/i.test(st) || liq === "cancelled" || /^cancel/i.test(lineStatus)) {
-    return "Cancelled";
-  }
-  if (/^requested$/i.test(st) || /^for approval$/i.test(st) || /^sent for approval$/i.test(st) || /^requested$/i.test(lineStatus)) {
-    return "Pending";
-  }
-  if (/^flagged$/i.test(st)) return "Flagged";
-  if (/^closed$/i.test(st) || (reserve && reserve.liquidatedAt) || /^closed$/i.test(lineStatus) || (lines || []).some(function (line) { return line && line.liq; })) {
-    return "Closed";
-  }
-  if (/^approved$/i.test(st) || /^open$/i.test(st) || /^open$/i.test(lineStatus) || /^approved$/i.test(lineStatus) || /awaiting liquidation/i.test(st)) {
-    return "Open";
-  }
-  if (!reserve && !lineStatus) return "Legacy";
-  if (/^open$/i.test(lineStatus)) return "Open";
-  return lineStatus ? "Legacy" : "Legacy";
+  return {
+    status: status,
+    reserveStatus: reserveStatus,
+    ledgerStatus: ledgerStatus,
+    statusNote: statusNote,
+  };
 }
 
 function isClosedStatus(status) {
-  return status === "Closed" || status === "Flagged" || status === "Not bought" || status === "Legacy";
+  return status === "Closed" || status === "Not bought" || status === "Legacy";
 }
 
 function isApprovedStatus(status) {
-  return status === "Open" || isClosedStatus(status);
+  return status === "Open" || status === "Flagged" || isClosedStatus(status);
 }
 
 function textOf() {
@@ -380,16 +432,10 @@ function odoFromLines(lines) {
 }
 
 function approvedAmountOf(status, reserve, lines) {
+  if (!reserve) return null;
   if (status === "Duplicate" || status === "Cancelled" || status === "Pending") return 0;
-  if (reserve && reserve.approvedBudget != null && reserve.approvedBudget !== "") return round2(money(reserve.approvedBudget));
-  if (reserve && reserve.budget != null && reserve.budget !== "" && status !== "Legacy") return round2(money(reserve.budget));
-  if (status === "Legacy") {
-    var t = 0;
-    (lines || []).forEach(function (line) {
-      if (!lineExcluded(line)) t += lineAmount(line);
-    });
-    return round2(t);
-  }
+  if (reserve.approvedBudget != null && reserve.approvedBudget !== "") return round2(money(reserve.approvedBudget));
+  if (reserve.budget != null && reserve.budget !== "") return round2(money(reserve.budget));
   var draft = 0;
   ((reserve && reserve.draftLines) || []).forEach(function (line) {
     if (line && (line.cat || line.item)) draft += lineAmount(line);
@@ -414,9 +460,10 @@ function spendLines(status, reserve, lines) {
     return [];
   }
   var posted = (lines || []).filter(function (line) { return line && line.src !== "reserve-hold"; });
-  var use = posted.length ? posted : (lines || []).slice();
-  use = use.filter(function (line) { return line && !lineExcluded(line); });
+  var raw = posted.length ? posted : (lines || []).filter(Boolean);
+  var use = raw.filter(function (line) { return line && !lineExcluded(line); });
   if (use.length) return use;
+  if (raw.length) return [];
   if (!reserve || (status !== "Closed" && status !== "Flagged" && status !== "Legacy")) return [];
   if (reserve.actual != null && reserve.actual !== "") {
     return [{
@@ -508,6 +555,119 @@ function previousReading(readings, unit, vrf, date) {
   return best;
 }
 
+function submissionIdsOf(reserve, lines) {
+  var ids = [];
+  function add(v) {
+    var s = String(v == null ? "" : v).trim();
+    if (!s || s === "draft-unnumbered-bt02") return;
+    if (ids.indexOf(s) < 0) ids.push(s);
+  }
+  if (reserve) {
+    add(reserve.submissionId);
+    add(reserve.submissionNo);
+    add(reserve.requestNo);
+    add(reserve.requestId);
+  }
+  (lines || []).forEach(function (line) {
+    if (!line) return;
+    add(line.submissionId);
+    add(line.submissionNo);
+    add(line.requestNo);
+    add(line.requestId);
+  });
+  return ids;
+}
+
+function openNotLiquidatedOf(status, reserve, lines, approved) {
+  if (status !== "Open") return 0;
+  if (approved != null && money(approved) > 0) return round2(money(approved));
+  var posted = (lines || []).filter(function (line) { return line && line.src !== "reserve-hold"; });
+  var raw = posted.length ? posted : (lines || []);
+  var t = 0;
+  raw.forEach(function (line) {
+    if (!line || lineExcluded(line)) return;
+    t += lineAmount(line);
+  });
+  if (t) return round2(t);
+  if (reserve && reserve.budget != null && reserve.budget !== "") return round2(money(reserve.budget));
+  return 0;
+}
+
+function lineIdentity(line) {
+  return [
+    String((line && line.vrf) || "").trim(),
+    dateKey(line && line.date),
+    String((line && line.veh) || "").trim().toUpperCase(),
+    String((line && line.cat) || "").trim().toLowerCase(),
+    String((line && line.item) || "").trim().toLowerCase(),
+    String((line && line.work) || "").trim().toUpperCase(),
+    String((line && line.supplier) || "").trim().toUpperCase(),
+    String(round2(money(line && line.qty))),
+    String(round2(money(line && line.price))),
+    String(round2(money(line && line.total))),
+  ].join("\0");
+}
+
+function mergeLedgerRows(primary, extra) {
+  var rows = [];
+  var vrfs = {};
+  var keys = {};
+  (primary || []).forEach(function (line) {
+    if (!line) return;
+    rows.push(line);
+    var vrf = String(line.vrf || "").trim();
+    if (vrf) vrfs[vrf] = 1;
+    var key = lineIdentity(line);
+    keys[key] = (keys[key] || 0) + 1;
+  });
+  (extra || []).forEach(function (line) {
+    if (!line) return;
+    var vrf = String(line.vrf || "").trim();
+    if (vrf && vrfs[vrf]) return;
+    var key = lineIdentity(line);
+    if (keys[key]) {
+      keys[key] -= 1;
+      return;
+    }
+    rows.push(line);
+    if (vrf) vrfs[vrf] = 1;
+    keys[key] = 1;
+  });
+  return rows;
+}
+
+function rowsFromLedgerData(data) {
+  if (!data) return [];
+  if (Array.isArray(data)) return data.filter(Boolean);
+  if (typeof data !== "object") return [];
+  if (Array.isArray(data.rows)) return data.rows.filter(Boolean);
+  if (Array.isArray(data.lines)) return data.lines.filter(Boolean);
+  if (data.vrf != null && String(data.vrf).trim() !== "") return [data];
+  if (data.vstatus || data.cat || data.item) return [data];
+  return [];
+}
+
+function ledgerMonthFromParts(id, recs, blob) {
+  var rows = [];
+  (recs || []).forEach(function (rec) {
+    rowsFromLedgerData(rec && rec.data).forEach(function (row) { rows.push(row); });
+  });
+  var blobData = blob && blob.data != null ? blob.data : blob;
+  var merged = mergeLedgerRows(rows, rowsFromLedgerData(blobData));
+  var updated = null;
+  (recs || []).forEach(function (rec) {
+    var at = rec && rec.updated_at;
+    if (at && (!updated || String(at) > String(updated))) updated = at;
+  });
+  if (!updated && blob && blob.updated_at) updated = blob.updated_at;
+  return {
+    collection: "ledger",
+    id: String(id),
+    data: { month: String(id), rows: merged },
+    updated_at: updated,
+  };
+}
+
 function buildMonthlyVrfReport(input) {
   input = input || {};
   var month = parseMonth(input.month);
@@ -528,7 +688,8 @@ function buildMonthlyVrfReport(input) {
 
   var records = slots.map(function (slot) {
     var reserve = slot.reserve;
-    var status = classify(reserve, slot.lines);
+    var judged = classify(reserve, slot.lines);
+    var status = judged.status;
     var spend = spendLines(status, reserve, slot.lines);
     var actual = 0;
     spend.forEach(function (line) { actual += lineAmount(line); });
@@ -547,8 +708,13 @@ function buildMonthlyVrfReport(input) {
       project: projectOf(reserve, slot.lines) || "(no project)",
       approved: approved,
       actual: actual,
+      openNotLiquidated: openNotLiquidatedOf(status, reserve, slot.lines, approved),
       requested: requestedAmountOf(reserve, slot.lines),
       status: status,
+      statusNote: judged.statusNote,
+      reserveStatus: judged.reserveStatus,
+      ledgerStatus: judged.ledgerStatus,
+      submissionIds: submissionIdsOf(reserve, slot.lines),
       odo: odo,
       duplicateOf: String((reserve && reserve.duplicateOf) || "").trim(),
       spend: spend,
@@ -572,6 +738,7 @@ function buildMonthlyVrfReport(input) {
     notBought: 0,
     approvedAmount: 0,
     actualSpent: 0,
+    openNotLiquidated: 0,
     variance: 0,
   };
   records.forEach(function (row) {
@@ -579,17 +746,19 @@ function buildMonthlyVrfReport(input) {
     else if (row.status === "Open") summary.open += 1;
     else if (row.status === "Cancelled") summary.cancelled += 1;
     else if (row.status === "Duplicate") summary.duplicates += 1;
+    else if (row.status === "Flagged") summary.flagged += 1;
     else if (isClosedStatus(row.status)) summary.closed += 1;
-    if (row.status === "Flagged") summary.flagged += 1;
     if (row.status === "Not bought") summary.notBought += 1;
     if (isApprovedStatus(row.status)) {
       summary.approved += 1;
-      summary.approvedAmount += row.approved;
+      if (row.approved != null) summary.approvedAmount += row.approved;
     }
     summary.actualSpent += row.actual;
+    summary.openNotLiquidated += row.openNotLiquidated;
   });
   summary.approvedAmount = round2(summary.approvedAmount);
   summary.actualSpent = round2(summary.actualSpent);
+  summary.openNotLiquidated = round2(summary.openNotLiquidated);
   summary.variance = round2(summary.actualSpent - summary.approvedAmount);
 
   var catMap = {};
@@ -607,7 +776,7 @@ function buildMonthlyVrfReport(input) {
       var cat = categoryOf(line);
       var bucket = catMap[cat] || catMap.Others;
       bucket.amount += amount;
-      if (cat === "Fuel") bucket.liters += fuelLiters(line);
+      if (cat === "Fuel" || cat === "Fuel reserve (bulk)") bucket.liters += fuelLiters(line);
       if (!seenCat[cat]) { seenCat[cat] = 1; bucket.vrfs[row.vrf] = 1; }
       var unit = String((line && line.veh) || row.unit || "").trim() || "(no unit)";
       if (!vehMap[unit]) vehMap[unit] = { unit: unit, count: 0, liters: 0, amount: 0, vrfs: {} };
@@ -623,11 +792,12 @@ function buildMonthlyVrfReport(input) {
   var byCategory = CATEGORIES.map(function (name) {
     var bucket = catMap[name];
     var liters = round2(bucket.liters);
+    var trackLiters = name === "Fuel" || name === "Fuel reserve (bulk)";
     return {
       category: name,
       amount: round2(bucket.amount),
-      liters: name === "Fuel" ? liters : null,
-      avgPricePerLiter: name === "Fuel" && liters > 0 ? round2(bucket.amount / liters) : null,
+      liters: trackLiters ? liters : null,
+      avgPricePerLiter: trackLiters && liters > 0 ? round2(bucket.amount / liters) : null,
       count: Object.keys(bucket.vrfs).length,
     };
   });
@@ -671,6 +841,7 @@ function buildMonthlyVrfReport(input) {
       actual: row.actual,
       requested: row.requested,
       status: row.status,
+      statusNote: row.statusNote || "",
       odo: row.odo,
       duplicateOf: row.duplicateOf,
     };
@@ -764,6 +935,86 @@ function buildMonthlyVrfReport(input) {
     });
   });
 
+  function rowLabel(row) {
+    return "VRF " + row.vrf + (row.reserve ? " (reserve " + row.reserve + ")" : "");
+  }
+  function stillInTotals(row) {
+    return row.status !== "Duplicate" && row.status !== "Cancelled";
+  }
+  var dupNotes = {};
+  function noteDuplicate(row, reason, group) {
+    var id = row.vrf + "\0" + row.reserve;
+    if (!dupNotes[id]) dupNotes[id] = { row: row, reasons: [], labels: [] };
+    if (dupNotes[id].reasons.indexOf(reason) < 0) dupNotes[id].reasons.push(reason);
+    group.forEach(function (other) {
+      if (other === row) return;
+      var label = rowLabel(other);
+      if (dupNotes[id].labels.indexOf(label) < 0) dupNotes[id].labels.push(label);
+    });
+  }
+  var bySub = {};
+  var byVrfNo = {};
+  var bySig = {};
+  records.forEach(function (row) {
+    if (!stillInTotals(row)) return;
+    (row.submissionIds || []).forEach(function (id) {
+      if (!bySub[id]) bySub[id] = [];
+      bySub[id].push(row);
+    });
+    if (row.vrf) {
+      if (!byVrfNo[row.vrf]) byVrfNo[row.vrf] = [];
+      byVrfNo[row.vrf].push(row);
+    }
+    var amount = row.actual > 0 ? row.actual : (row.approved != null && Number(row.approved) > 0 ? round2(row.approved) : (row.requested > 0 ? row.requested : 0));
+    var unit = String(row.unit || "").trim().toUpperCase();
+    if (unit && row.date && amount > 0) {
+      var sig = unit + "\0" + row.date + "\0" + amount.toFixed(2);
+      if (!bySig[sig]) bySig[sig] = [];
+      bySig[sig].push(row);
+    }
+  });
+  Object.keys(bySub).forEach(function (id) {
+    var group = bySub[id];
+    var uniq = [];
+    var seen = {};
+    group.forEach(function (row) {
+      var key = row.vrf + "\0" + row.reserve;
+      if (seen[key]) return;
+      seen[key] = 1;
+      uniq.push(row);
+    });
+    if (uniq.length < 2) return;
+    uniq.forEach(function (row) { noteDuplicate(row, "same request or submission number", uniq); });
+  });
+  Object.keys(byVrfNo).forEach(function (vrf) {
+    if (byVrfNo[vrf].length < 2) return;
+    byVrfNo[vrf].forEach(function (row) { noteDuplicate(row, "same request number", byVrfNo[vrf]); });
+  });
+  Object.keys(bySig).forEach(function (sig) {
+    if (bySig[sig].length < 2) return;
+    bySig[sig].forEach(function (row) { noteDuplicate(row, "same unit, date, and amount", bySig[sig]); });
+  });
+  var possibleDuplicates = Object.keys(dupNotes).map(function (id) {
+    var note = dupNotes[id];
+    var row = note.row;
+    var amount = row.actual > 0 ? row.actual : (row.approved != null && Number(row.approved) > 0 ? round2(row.approved) : round2(row.requested));
+    var item = publicRow(row);
+    item.amount = round2(amount);
+    item.reason = note.reasons.join("; ");
+    item.detail = rowLabel(row) + " may duplicate " + note.labels.join(", ") +
+      " (" + item.reason + "). Still included in the totals.";
+    return item;
+  });
+  possibleDuplicates.sort(function (a, b) {
+    if (a.date !== b.date) return a.date < b.date ? -1 : 1;
+    return vrfSeq(a.vrf) - vrfSeq(b.vrf) || String(a.reserve).localeCompare(String(b.reserve));
+  });
+  var statusMismatches = records.filter(function (row) { return row.statusNote; }).map(function (row) {
+    var item = publicRow(row);
+    item.detail = rowLabel(row) + " · " + row.statusNote;
+    return item;
+  });
+
   var periodLabel = monthLabel(month);
   if (monthToDate) periodLabel = "1–" + Number(to.slice(8, 10)) + " " + monthLabel(month) + " (month to date)";
 
@@ -793,6 +1044,8 @@ function buildMonthlyVrfReport(input) {
     exceptions: {
       openOlderThan7Days: openOlder,
       duplicatesCancelled: duplicates,
+      possibleDuplicates: possibleDuplicates,
+      statusMismatches: statusMismatches,
       odometer: odometer,
     },
   };
@@ -803,6 +1056,8 @@ var api = {
   REPORT_TITLE: REPORT_TITLE,
   buildMonthlyVrfReport: buildMonthlyVrfReport,
   categoryOf: categoryOf,
+  ledgerMonthFromParts: ledgerMonthFromParts,
+  mergeLedgerRows: mergeLedgerRows,
   currentMonth: currentMonth,
   defaultReportMonth: defaultReportMonth,
   formatPeso: formatPeso,

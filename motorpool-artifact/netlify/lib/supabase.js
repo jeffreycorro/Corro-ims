@@ -1,5 +1,7 @@
 "use strict";
 
+const { ledgerMonthFromParts } = require("../../public/vrf-report");
+
 function supabaseUrl() {
   return (
     process.env.SUPABASE_URL ||
@@ -232,12 +234,15 @@ async function docFromRecords(collection, id) {
   }
   if (collection === "ledger" && /^\d{4}-\d{2}$/.test(String(id))) {
     const recs = await listRecordPage("kind=eq.ledger&month=eq." + encodeURIComponent(id));
-    const rows = [];
-    recs.forEach((rec) => {
-      const data = rec && rec.data;
-      (data && data.rows ? data.rows : []).forEach((row) => rows.push(row));
-    });
-    return { collection, id, data: { month: String(id), rows }, updated_at: maxUpdated(recs) };
+    let blob = null;
+    try {
+      blob = await fetchDoc("ledger", id);
+    } catch (err) {
+      blob = null;
+    }
+    /* Read-only. Rows that live only on the month document (older sheet
+       imports) are merged in for this response and are not written back. */
+    return ledgerMonthFromParts(id, recs, blob);
   }
   if (collection === "config" && String(id) === "issued") {
     const blob = await fetchDoc("config", "issued");

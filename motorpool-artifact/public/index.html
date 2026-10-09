@@ -413,7 +413,7 @@ var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
    This label is inside the page function. The shim reads window.BUILD when it
    sends a save. Without that copy every save goes out with an empty build and
    the server answers "Reload the page". */
-var BUILD = "2026-10-09 a";
+var BUILD = "2026-10-10 a";
 try { window.BUILD = BUILD; } catch (e) {}
 var DAY = 86400000, MO = 30.44;
 
@@ -6386,12 +6386,16 @@ function rptJob(code){
   try{ var name=workName(code); return name||code; }catch(e){ return code; }
 }
 function rptApproved(r){
-  if(!r||r.status==="Pending"||r.status==="Duplicate"||r.status==="Cancelled") return "—";
+  if(!r||r.approved==null||r.status==="Pending"||r.status==="Duplicate"||r.status==="Cancelled") return "—";
   return rptMoney(r.approved);
 }
 function rptActual(r){
   if(!r||r.status==="Open"||r.status==="Pending") return "—";
   return rptMoney(r.actual);
+}
+function rptStatus(r){
+  if(!r) return "—";
+  return r.statusNote ? r.status+" — "+r.statusNote : (r.status||"—");
 }
 function vrfReportRunHead(report){
   var run=el("div","rpt-runhead");
@@ -6439,7 +6443,7 @@ function vrfReportView(){
     w.appendChild(el("div","empty","The report calculator did not load. Reload the page."));
     return w;
   }
-  var hint=el("p","rpt-note noprint","Opens on the previous month. The current month is through today, Manila time. Duplicates, cancellations, and lines that were not bought are left out of the spend.");
+  var hint=el("p","rpt-note noprint","Opens on the previous month. The current month is through today, Manila time. Ledger-only VRFs are included, with no approved amount. A bulk fuel-reserve purchase is its own category, so issues from the reserve are not added to that purchase. Cancelled duplicates are left out of the spend. Possible duplicates that were not cancelled stay in the totals.");
   w.appendChild(hint);
   var report;
   try{
@@ -6466,8 +6470,9 @@ function vrfReportView(){
   summary.appendChild(el("h3",null,"Summary"));
   summary.appendChild(stats([
     ["VRFs raised", String(s.raised), "in this month"],
-    ["Approved", String(s.approved), "includes open and closed"],
-    ["Closed / liquidated", String(s.closed), s.flagged?s.flagged+" flagged":"bought, not bought, flagged"],
+    ["Approved", String(s.approved), "open, closed, and flagged"],
+    ["Closed / liquidated", String(s.closed), "bought and not bought"],
+    ["Flagged", String(s.flagged||0), "counted beside closed"],
     ["Still open", String(s.open), "approved, not liquidated"],
     ["Cancelled", String(s.cancelled), "duplicates counted separately"],
     ["Duplicates", String(s.duplicates), "cancelled as duplicate"],
@@ -6478,7 +6483,8 @@ function vrfReportView(){
     {h:"Amount", num:true, get:function(r){ return r[1]; }}
   ], [
     ["Approved amount", rptMoney(s.approvedAmount)],
-    ["Actual spent (liquidated)", rptMoney(s.actualSpent)],
+    ["Actual spent (closed and flagged)", rptMoney(s.actualSpent)],
+    ["Open, not liquidated", rptMoney(s.openNotLiquidated)],
     ["Variance (actual − approved)", rptMoney(s.variance)]
   ]));
   w.appendChild(vrfReportSection(report, "", summary, true));
@@ -6511,7 +6517,7 @@ function vrfReportView(){
     {h:"Project", get:function(r){ return r.project; }},
     {h:"Approved", num:true, get:function(r){ return rptApproved(r); }},
     {h:"Actual", num:true, get:function(r){ return rptActual(r); }},
-    {h:"Status", get:function(r){ return r.status; }}
+    {h:"Status", get:function(r){ return rptStatus(r); }}
   ], report.top||[], "No VRFs to rank.")));
 
   w.appendChild(vrfReportSection(report, "VRF list", rptTable([
@@ -6523,7 +6529,7 @@ function vrfReportView(){
     {h:"Description", get:function(r){ return r.description; }},
     {h:"Approved amount", num:true, get:function(r){ return rptApproved(r); }},
     {h:"Actual", num:true, get:function(r){ return rptActual(r); }},
-    {h:"Status", get:function(r){ return r.status; }}
+    {h:"Status", get:function(r){ return rptStatus(r); }}
   ], report.vrfs||[], "No VRFs in this month.")));
 
   var ex=report.exceptions||{};
@@ -6537,6 +6543,25 @@ function vrfReportView(){
     {h:"Requested by", get:function(r){ return r.requestedBy; }},
     {h:"Approved", num:true, get:function(r){ return rptApproved(r); }}
   ], ex.openOlderThan7Days||[], "None."));
+  exBody.appendChild(el("h4",null,"Possible duplicates"));
+  exBody.appendChild(el("p","rpt-note","Same request or submission number, or the same unit, date, and amount. These stay in the totals."));
+  exBody.appendChild(rptTable([
+    {h:"VRF", get:function(r){ return r.vrf; }},
+    {h:"Date", get:function(r){ return r.date; }},
+    {h:"Unit", get:function(r){ return r.unit; }},
+    {h:"Amount", num:true, get:function(r){ return rptMoney(r.amount); }},
+    {h:"Status", get:function(r){ return r.status; }},
+    {h:"Why it is listed", get:function(r){ return r.detail; }}
+  ], ex.possibleDuplicates||[], "None."));
+  exBody.appendChild(el("h4",null,"Reserve and ledger disagree"));
+  exBody.appendChild(el("p","rpt-note","The reserve status is the one used in the totals."));
+  exBody.appendChild(rptTable([
+    {h:"VRF", get:function(r){ return r.vrf; }},
+    {h:"Date", get:function(r){ return r.date; }},
+    {h:"Unit", get:function(r){ return r.unit; }},
+    {h:"Status used", get:function(r){ return r.status; }},
+    {h:"What disagrees", get:function(r){ return r.statusNote||r.detail; }}
+  ], ex.statusMismatches||[], "None."));
   exBody.appendChild(el("h4",null,"Duplicates cancelled"));
   exBody.appendChild(rptTable([
     {h:"VRF", get:function(r){ return r.vrf; }},
