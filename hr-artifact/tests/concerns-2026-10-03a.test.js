@@ -84,7 +84,7 @@ function loadPay() {
 
 describe("2026-10-03a pending OT and late", () => {
   it("is build 2026-10-05a and keeps the OT box editable", () => {
-    assert.match(html, /const BUILD = "2026-10-08a"/);
+    assert.match(html, /const BUILD = "2026-10-09a"/);
     assert.match(html, /Pending OT form/);
     assert.match(html, /OT pending: /);
     assert.match(html, /data-otfile=/);

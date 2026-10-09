@@ -46,6 +46,9 @@
   ];
 
   var MERGED_KEY = "govrefuse";
+  var TOR_KEY = "tor";
+  var TOR_NAME = "TOR/Diploma";
+  var TOR_AKA = "Transcript of Records or Diploma";
   var LEGACY_KEY = "kasabutan";
   var MERGED_NAME = "Refusal of Government-mandated Deductions (Kasabutan)";
   var STATUTORY_KEYS = ["sss", "hdmf", "phic", "tin"];
@@ -259,6 +262,26 @@
       docs[i] = { k: MERGED_KEY, n: MERGED_NAME, g: "Statutory" };
     }
     if (kept < 0) docs.push({ k: MERGED_KEY, n: MERGED_NAME, g: "Statutory" });
+    return labelTorDiploma(docs);
+  }
+
+  /* Rename the existing tor row in place. A second tor key is dropped.
+     A catalog that never had the row is left alone — nothing is inserted
+     ahead of the masterlist columns, and no employee record is rewritten. */
+  function labelTorDiploma(docs) {
+    var kept = -1;
+    var i;
+    for (i = 0; i < docs.length; i += 1) {
+      if (!docs[i] || docs[i].k !== TOR_KEY) continue;
+      if (kept >= 0) {
+        docs.splice(i, 1);
+        i -= 1;
+        continue;
+      }
+      kept = i;
+      docs[i].n = TOR_NAME;
+      docs[i].aka = TOR_AKA;
+    }
     return docs;
   }
 
@@ -389,6 +412,8 @@
     [/coe\s*\(?\s*from\s*employee|previous\s*employer.*coe|coe.*previous/i, "coeemp"],
     [/\bnbi\b|nbi\s*clearance/i, "nbi"],
     [/kasabutan|dili\s*pagperma|refusal.*(?:gov|benefit|deduct)|gov(?:ernment)?[\s-]*man(?:dated)?/i, "govrefuse"],
+    /* Last, so it is checked first. Diploma stays on the existing tor row. */
+    [/transcript(\s*of\s*records)?|\btor\b|\bdiploma\b/i, "tor"],
   ];
 
   function ensureGuess(guess) {

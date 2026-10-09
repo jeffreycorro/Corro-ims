@@ -66,7 +66,7 @@
 
   var RECRUITMENT_DOCS = [
     { k: "resume", n: "Resume / Biodata" },
-    { k: "tor", n: "TOR" },
+    { k: "tor", n: "TOR/Diploma" },
     { k: "certs", n: "Certificates" },
     { k: "datasheet", n: "Employee Data Sheet" },
     { k: "sketch", n: "Residential Sketch" },

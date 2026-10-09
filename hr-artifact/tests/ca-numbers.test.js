@@ -297,7 +297,7 @@ describe("cash advance control numbers", () => {
     const db = fs.readFileSync(path.join(__dirname, "../netlify/functions/db.js"), "utf8");
     const readme = fs.readFileSync(path.join(__dirname, "../README.md"), "utf8");
     const sw = fs.readFileSync(path.join(__dirname, "../public/sw.js"), "utf8");
-    assert.match(html, /const BUILD = "2026-10-08a"/);
+    assert.match(html, /const BUILD = "2026-10-09a"/);
     assert.match(shim, /hr-ca-numbers\.js/);
     assert.match(shim, /data-hr-ca-numbers/);
     assert.match(shim, /assignCa/);

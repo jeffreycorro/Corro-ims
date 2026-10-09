@@ -404,7 +404,7 @@ describe("supabase file fallback", () => {
   });
 
   it("keeps older OT and stamped data URLs, and skips OCR when there is no Drive id", () => {
-    assert.match(html, /const BUILD = "2026-10-08a"/);
+    assert.match(html, /const BUILD = "2026-10-09a"/);
     const store = extractFunction(html, "storeOtFile");
     assert.match(store, /create_file/);
     assert.doesNotMatch(store, /1500000|1\.5 MB|readAsDataURL/);
