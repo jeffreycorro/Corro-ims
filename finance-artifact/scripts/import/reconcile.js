@@ -11,7 +11,8 @@ const TARGETS = {
 
 async function reconciliation(store) {
   const cycles = await store.list("petty_cycles");
-  const cycle = cycles.find((row) => Number(row.cycle_no) === 35);
+  const pcbCycles = cycles.filter((row) => Number(row.cycle_no) === 35);
+  const cycle = pcbCycles.find((row) => Number(row.year) === 2026) || pcbCycles[0];
   let pcb35 = null;
   if (cycle) {
     const cashIns = await store.list("petty_cash_ins", (row) => row.cycle_id === cycle.id);
@@ -38,11 +39,18 @@ async function reconciliation(store) {
   }
   const checks = await store.list("checks");
   const sept = monthTotals(checks, "2026-09");
+  // The Google Sheet monthly summary Total leaves fund transfers out. monthTotals().total still includes them.
+  const sheetTotal = sept.expense;
   return {
     targets: TARGETS,
     pcb35,
     gcash,
-    sept2026: { total: sept.total, expense: sept.expense, matches: sept.total === TARGETS.sept2026Checks },
+    sept2026: {
+      total: sheetTotal,
+      expense: sept.expense,
+      includingTransfers: sept.total,
+      matches: sheetTotal === TARGETS.sept2026Checks,
+    },
   };
 }
 
