@@ -6,12 +6,13 @@ import { PortalHandoffLink } from "@/components/portal-handoff-link";
 import { requireUser } from "@/lib/auth";
 import {
   canAccessDepartment,
+  canAccessFinancePortal,
   canAccessHrPortal,
   canAccessMotorpoolPortal,
   getDepartment,
   isDepartmentSlug,
 } from "@/lib/departments";
-import { getHrPortalUrl, getMotorpoolPortalUrl } from "@/lib/env";
+import { getFinancePortalUrl, getHrPortalUrl, getMotorpoolPortalUrl } from "@/lib/env";
 
 type Params = Promise<{ department: string }>;
 
@@ -39,7 +40,9 @@ export default async function DepartmentPage({ params }: { params: Params }) {
       ? canAccessHrPortal(user.profile)
       : slug === "motorpool"
         ? canAccessMotorpoolPortal(user.profile)
-        : canAccessDepartment(user.profile, slug);
+        : slug === "finance"
+          ? canAccessFinancePortal(user.profile)
+          : canAccessDepartment(user.profile, slug);
 
   return (
     <main className="mx-auto w-full max-w-6xl px-5 py-10">
@@ -113,6 +116,27 @@ export default async function DepartmentPage({ params }: { params: Params }) {
                 </PortalHandoffLink>
                 <p className="mt-3 text-xs text-muted">
                   Opens the live Motorpool site in this tab. If you are already signed in here, a
+                  short-lived session token is passed in the URL hash so you should not need to
+                  type your password again.
+                </p>
+              </div>
+            ) : department.slug === "finance" ? (
+              <div className="rounded-lg border border-navy-200 bg-navy-50 px-5 py-6">
+                <p className="text-xs font-semibold tracking-[0.18em] text-amber-600">LIVE</p>
+                <h2 className="mt-2 font-display text-2xl text-navy-950">Finance</h2>
+                <p className="mt-2 max-w-2xl text-sm text-muted">
+                  Disbursement vouchers, cash advances, and supplier bills live on the Finance
+                  portal — a separate site, not rebuilt inside this workspace. Use the same
+                  company portal email and password. There is no second Finance site password.
+                </p>
+                <PortalHandoffLink
+                  href={getFinancePortalUrl()}
+                  className="mt-5 inline-flex h-11 items-center justify-center rounded-md bg-navy-900 px-5 text-sm font-semibold text-white hover:bg-navy-800"
+                >
+                  Open Finance
+                </PortalHandoffLink>
+                <p className="mt-3 text-xs text-muted">
+                  Opens the live Finance site in this tab. If you are already signed in here, a
                   short-lived session token is passed in the URL hash so you should not need to
                   type your password again.
                 </p>

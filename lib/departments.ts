@@ -111,3 +111,11 @@ export function canAccessMotorpoolPortal(
   if (!profile) return false;
   return profile.role === "admin" || profile.department === "motorpool";
 }
+
+/** Full Finance artifact (corcondev-finance): admins or department finance. */
+export function canAccessFinancePortal(
+  profile: { department: DepartmentSlug; role: Role } | null,
+): boolean {
+  if (!profile) return false;
+  return profile.role === "admin" || profile.department === "finance";
+}
