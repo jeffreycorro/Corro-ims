@@ -2,7 +2,17 @@
 
 const crypto = require("crypto");
 const { fail } = require("./errors");
-const { takeNumber } = require("./numbering");
+const { formatNumber, takeNumber } = require("./numbering");
+
+function formatReserve(series, year, seq, number) {
+  const assigned = {
+    series: String(series || "").toUpperCase(),
+    year: Number(year),
+    seq: Number(seq),
+    number: number || formatNumber(series, year, seq),
+  };
+  return assigned;
+}
 
 function copy(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
@@ -28,6 +38,30 @@ function createMemoryStore() {
     petty_txns: new Map(),
     bank_accounts: new Map(),
     bank_lines: new Map(),
+    employees: new Map(),
+    employee_aliases: new Map(),
+    project_aliases: new Map(),
+    supplier_aliases: new Map(),
+    funding_sources: new Map(),
+    bank_secrets: new Map(),
+    petty_cycles: new Map(),
+    petty_cash_ins: new Map(),
+    petty_vouchers: new Map(),
+    petty_receipts: new Map(),
+    petty_releases: new Map(),
+    checks: new Map(),
+    check_invoices: new Map(),
+    wallets: new Map(),
+    wallet_batches: new Map(),
+    wallet_cash_ins: new Map(),
+    wallet_expenses: new Map(),
+    wallet_receivables: new Map(),
+    checklist_bills: new Map(),
+    checklist_instances: new Map(),
+    rental_units: new Map(),
+    rental_receipts: new Map(),
+    property_taxes: new Map(),
+    import_issues: new Map(),
   };
   const counters = new Map();
   const issued = new Set();
@@ -51,8 +85,13 @@ function createMemoryStore() {
     return run;
   }
 
+  function tableOf(table) {
+    if (!tables[table]) fail("bad_request", "Unknown finance table.");
+    return tables[table];
+  }
+
   function listSync(table, pred) {
-    const rows = Array.from(tables[table].values()).map(copy);
+    const rows = Array.from(tableOf(table).values()).map(copy);
     return pred ? rows.filter(pred) : rows;
   }
 
@@ -65,22 +104,23 @@ function createMemoryStore() {
     },
     async get(table, id) {
       return lock(() => {
-        const row = tables[table].get(String(id));
+        const row = tableOf(table).get(String(id));
         return row ? copy(row) : null;
       });
     },
     async insert(table, row) {
       return lock(() => {
         const id = row.id || crypto.randomUUID();
-        if (tables[table].has(id)) fail("conflict", "That record already exists.");
+        const bag = tableOf(table);
+        if (bag.has(id)) fail("conflict", "That record already exists.");
         const saved = { ...copy(row), id, updated_at: new Date().toISOString() };
-        tables[table].set(id, saved);
+        bag.set(id, saved);
         return copy(saved);
       });
     },
     async update(table, id, patch, expect) {
       return lock(() => {
-        const row = tables[table].get(String(id));
+        const row = tableOf(table).get(String(id));
         if (!row) fail("not_found", "Record not found.");
         if (expect && expect.status && row.status !== expect.status) {
           fail("conflict", `The record is ${row.status} and was not updated.`);
@@ -110,6 +150,16 @@ function createMemoryStore() {
         saved[numberField] = assigned.number;
         tables[table].set(id, saved);
         return copy(saved);
+      });
+    },
+    async reserveNumber(series, year, seq, number) {
+      return lock(() => {
+        const assigned = formatReserve(series, year, seq, number);
+        const key = `${assigned.series}:${assigned.year}`;
+        const last = Number(counters.get(key) || 0);
+        if (assigned.seq > last) counters.set(key, assigned.seq);
+        issued.add(assigned.number);
+        return assigned;
       });
     },
     async registerBuild(id, build, seq) {

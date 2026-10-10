@@ -10,9 +10,13 @@
     ["projects", "Projects"],
     ["approver", "Approver"],
     ["reports", "Reports"],
-    ["billings", "Progress billings"],
     ["petty", "Petty cash"],
-    ["bank", "Bank accounts"],
+    ["checks", "Checks"],
+    ["gcash", "GCash"],
+    ["checklist", "Bill checklist"],
+    ["masters", "Masters"],
+    ["billings", "Progress billings"],
+    ["bank", "Bank recon"],
     ["settings", "Settings"],
   ];
   var DEPTS = ["admin", "technical", "finance", "procurement", "motorpool", "safety", "site", "hr"];
@@ -23,6 +27,8 @@
     approverUnlocked: false,
     projects: [],
     accounts: [],
+    employees: [],
+    banks: [],
     suppliers: [],
     signatories: [],
     vouchers: [],
@@ -156,12 +162,22 @@
       metric(String(pending.total || 0), "Pending approvals", (pending.vouchers || 0) + " vouchers · " + (pending.advances || 0) + " advances") +
       metric(peso(un.amount), "Unliquidated cash advances", (un.count || 0) + " still out") +
       metric(peso(ap.dueThisWeekAmount), "AP due this week", (ap.dueThisWeekCount || 0) + " bills · " + peso(ap.openAmount) + " open") +
+      (d.sheets && d.sheets.petty ? metric(peso(d.sheets.petty.cashOnHand), "Petty cash on hand", d.sheets.petty.label) : "") +
+      (d.sheets && d.sheets.gcash ? metric(peso(d.sheets.gcash.balance), "GCash balance", d.sheets.gcash.label) : "") +
+      (d.sheets ? metric(String(d.sheets.pendingChecks || 0), "Checks due soon", (d.sheets.checklistDue || 0) + " bills due") : "") +
       "</div>"
     );
   }
 
   function metric(value, label, note) {
-    return '<button type="button" class="card" data-nav="' + (label.indexOf("approval") >= 0 ? "approver" : label.indexOf("advance") >= 0 ? "advances" : label.indexOf("AP") >= 0 ? "payables" : "vouchers") + '"><div class="metric">' + esc(value) + "<small>" + esc(label) + "</small></div><div class=\"sub\">" + esc(note) + "</div></button>";
+    var dest = "vouchers";
+    if (label.indexOf("approval") >= 0) dest = "approver";
+    else if (label.indexOf("advance") >= 0) dest = "advances";
+    else if (label.indexOf("AP") >= 0) dest = "payables";
+    else if (label.indexOf("Petty") >= 0) dest = "petty";
+    else if (label.indexOf("GCash") >= 0) dest = "gcash";
+    else if (label.indexOf("Check") >= 0) dest = "checks";
+    return '<button type="button" class="card" data-nav="' + dest + '"><div class="metric">' + esc(value) + "<small>" + esc(label) + "</small></div><div class=\"sub\">" + esc(note) + "</div></button>";
   }
 
   function viewVouchers() {
@@ -272,23 +288,23 @@
       var action = row.readOnly
         ? '<button class="btn sm" data-adopt-supplier="' + esc(row.name) + '">Save into Finance</button>'
         : "";
-      return "<tr><td>" + esc(row.name) + "</td><td>" + esc(row.tin || "—") + "</td><td>" + esc(tag) + "</td><td>" + action + "</td></tr>";
+      return "<tr><td>" + esc(row.name) + (row.branch ? " · " + esc(row.branch) : "") + "</td><td>" + esc(row.tin || "—") + "</td><td>" + esc(row.vat_status || "—") + "</td><td>" + esc(tag) + "</td><td>" + action + "</td></tr>";
     });
     return (
       '<div class="row"><button class="btn pri" data-new="supplier">New supplier</button></div>' +
-      table([{ label: "Name" }, { label: "TIN" }, { label: "Source" }, { label: "" }], rows)
+      table([{ label: "Name" }, { label: "TIN" }, { label: "VAT" }, { label: "Source" }, { label: "" }], rows)
     );
   }
 
   function viewProjects() {
     setTitle("Projects", "Shared list used by vouchers, advances, and bills.");
     var rows = S.projects.map(function (row) {
-      return "<tr><td>" + esc(row.name) + "</td><td>" + esc(row.site || "—") + "</td><td>" + esc(row.source || "finance") + "</td></tr>";
+      return "<tr><td>" + esc(row.code || "—") + "</td><td>" + esc(row.name) + "</td><td>" + esc(row.client || "—") + "</td><td>" + esc(row.site || "—") + "</td></tr>";
     });
     return (
       '<div class="row"><button class="btn pri" data-new="project">New project</button>' +
       '<button class="btn" data-act="copy-projects">Pull names from HR and Motorpool</button></div>' +
-      table([{ label: "Project" }, { label: "Site" }, { label: "Source" }], rows)
+      table([{ label: "Code" }, { label: "Project" }, { label: "Client" }, { label: "Site" }], rows)
     );
   }
 
@@ -372,6 +388,7 @@
   }
 
   function render() {
+    if (window.FinanceSheets) window.FinanceSheets._ctx = { S: S, api: api, refresh: refresh, render: render };
     renderNav();
     var host = document.getElementById("view");
     var html = "";
@@ -384,8 +401,8 @@
     else if (S.view === "approver") html = viewApprover();
     else if (S.view === "reports") html = viewReports();
     else if (S.view === "billings") html = comingSoon("Progress billings", "Contracts, billing percent, retention, and collections are in finance_contracts, finance_billings, and finance_collections.");
-    else if (S.view === "petty") html = comingSoon("Petty cash", "The fund and replenishment lines are in finance_petty_funds and finance_petty_txns. Replenishment will go out on a disbursement voucher.");
-    else if (S.view === "bank") html = comingSoon("Bank accounts", "Accounts, statement lines, and matches are in finance_bank_accounts and finance_bank_lines. CSV import is not on this page yet.");
+    else if (S.view === "bank") html = comingSoon("Bank reconciliation", "Statement lines and matches stay in finance_bank_lines. Check monitoring itself is on the Checks screen.");
+    else if (window.FinanceSheets && window.FinanceSheets.owns(S.view)) html = window.FinanceSheets.render(S);
     else if (S.view === "settings") html = viewSettings();
     host.innerHTML = html;
     renderModal();
@@ -494,7 +511,11 @@
     return (
       "<h2>" + (row.id ? esc(row.ca_no) : "New cash advance") + "</h2>" +
       '<form data-form="advance"><input type="hidden" name="id" value="' + esc(row.id || "") + '"><div class="fields">' +
-      '<div><label>Employee</label><input name="employeeName" required value="' + esc(row.employee_name || "") + '"></div>' +
+      '<div><label>Employee</label><select name="employeeName" required><option value="">Choose an employee</option>' +
+      (S.employees || []).map(function (person) {
+        return "<option" + (row.employee_name === person.name ? " selected" : "") + ">" + esc(person.name) + "</option>";
+      }).join("") +
+      "</select></div>" +
       '<div><label>Department</label><select name="department">' +
       DEPTS.map(function (dept) {
         return "<option" + (row.department === dept ? " selected" : "") + ">" + dept + "</option>";
@@ -524,11 +545,14 @@
   }
 
   function billForm() {
-    var supplierNames = (S.suppliers || []).map(function (row) { return row.name; });
     return (
       "<h2>New supplier bill</h2><form data-form=\"bill\"><div class=\"fields\">" +
-      '<div><label>Supplier</label><input name="supplierName" list="supplierNames" required></div>' +
-      '<datalist id="supplierNames">' + supplierNames.map(function (name) { return "<option value=\"" + esc(name) + "\">"; }).join("") + "</datalist>" +
+      '<div><label>Supplier</label><select name="supplierName" required><option value="">Choose a supplier</option>' +
+      (S.suppliers || []).filter(function (row) { return !row.readOnly; }).map(function (row) {
+        var label = row.name + (row.branch ? " · " + row.branch : "");
+        return '<option value="' + esc(row.name) + '">' + esc(label) + "</option>";
+      }).join("") +
+      "</select></div>" +
       '<div><label>Invoice no.</label><input name="invoiceNo" required></div>' +
       '<div><label>Invoice date</label><input name="invoiceDate" type="date" required></div>' +
       '<div><label>Terms (days)</label><input name="termsDays" value="30"></div>' +
@@ -544,7 +568,9 @@
       "<h2>Release voucher</h2><form data-form=\"release\"><input type=\"hidden\" name=\"id\" value=\"" + esc(id) + "\">" +
       '<div class="fields"><div><label>Method</label><select name="releaseMethod"><option>Cash</option><option>Check</option></select></div>' +
       '<div><label>Receiver</label><input name="receiverName" required></div>' +
-      '<div><label>Bank</label><input name="checkBank"></div><div><label>Check no.</label><input name="checkNo"></div>' +
+      '<div><label>Bank</label><select name="checkBank"><option value="">Cash release</option>' +
+      (S.banks || []).map(function (bank) { return "<option>" + esc(bank.nickname) + "</option>"; }).join("") +
+      '</select></div><div><label>Check no.</label><input name="checkNo" placeholder="BPI2026-1000274146"></div>' +
       '<div><label>Check date</label><input name="checkDate" type="date"></div>' +
       '<div class="span2"><label>Receiver signature</label><canvas class="pad" width="640" height="160"></canvas></div></div>' +
       '<p class="err"></p><button class="btn pri" type="submit">Release</button> <button class="btn" type="button" data-close="1">Close</button></form>'
@@ -553,9 +579,9 @@
 
   function simpleForm(kind) {
     if (kind === "project") {
-      return '<h2>New project</h2><form data-form="project"><label>Name</label><input name="name" required><label>Site</label><input name="site"><p class="err"></p><button class="btn pri" type="submit">Save</button> <button class="btn" type="button" data-close="1">Close</button></form>';
+      return '<h2>New project</h2><form data-form="project"><label>Name</label><input name="name" required><label>Code</label><input name="code"><label>Client</label><input name="client"><label>Site</label><input name="site"><p class="err"></p><button class="btn pri" type="submit">Save</button> <button class="btn" type="button" data-close="1">Close</button></form>';
     }
-    return '<h2>New supplier</h2><form data-form="supplier"><label>Name</label><input name="name" required><label>TIN</label><input name="tin"><label>Address</label><input name="address"><p class="err"></p><button class="btn pri" type="submit">Save</button> <button class="btn" type="button" data-close="1">Close</button></form>';
+    return '<h2>New supplier</h2><form data-form="supplier"><label>Name</label><input name="name" required><label>Branch</label><input name="branch"><label>TIN</label><input name="tin"><label>VAT status</label><select name="vatStatus"><option value=""></option><option>Vat</option><option>Non-Vat</option><option>No Classification</option><option>Vat &amp; No classification</option></select><label>Address</label><input name="address"><p class="err"></p><button class="btn pri" type="submit">Save</button> <button class="btn" type="button" data-close="1">Close</button></form>';
   }
 
   function openModal(html) {
@@ -581,6 +607,7 @@
     if (S.view === "projects") jobs.push(api("projects").then(function (res) { S.projects = res.projects || []; }));
     if (S.view === "reports") jobs.push(api("reports").then(function (res) { S.report = res.report; }));
     if (S.view === "settings") jobs.push(api("signatories").then(function (res) { S.signatories = res.signatories || []; }));
+    if (window.FinanceSheets && window.FinanceSheets.owns(S.view)) jobs.push(window.FinanceSheets.load(S, api));
     return Promise.all(jobs).then(render);
   }
 
@@ -594,6 +621,8 @@
         S.projects = res.projects || [];
         S.accounts = res.accounts || [];
         S.suppliers = res.suppliers || [];
+        S.employees = res.employees || [];
+        S.banks = res.banks || [];
         S.signatories = res.signatories || [];
         render();
         return api("registerBuild", { build: window.BUILD, seq: Date.now() });
@@ -629,6 +658,7 @@
   }
 
   document.addEventListener("click", function (event) {
+    if (window.FinanceSheets && window.FinanceSheets.onClick(event, { S: S, api: api, refresh: refresh, render: render })) return;
     var nav = event.target.closest && event.target.closest("[data-nav]");
     if (nav) {
       S.view = nav.getAttribute("data-nav");

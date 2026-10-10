@@ -33,6 +33,8 @@ const { computeWithholding } = require("../lib/money");
 const { formatManilaDate, formatManilaIso } = require("../lib/manila");
 const { json, requireSession } = require("../lib/session");
 const { putObject, signDownload } = require("../lib/storage");
+const { publicBank } = require("../lib/masters");
+const { ensureCheckForVoucher, handleSheet, sheetSummary } = require("../lib/registers");
 const { createSupabaseStore } = require("../lib/supabase-store");
 
 function lean(row) {
@@ -80,21 +82,26 @@ async function handle(event, deps = {}) {
 
   if (op === "boot") {
     await seedReference(store);
-    const [dash, projects, accounts, signatories, suppliers] = await Promise.all([
+    const [dash, projects, accounts, signatories, suppliers, employees, banks, sheets] = await Promise.all([
       dashboard(store, ctx),
       store.list("projects"),
       store.list("accounts"),
       store.list("signatories"),
       supplierCatalog(store),
+      store.list("employees"),
+      store.list("bank_accounts"),
+      sheetSummary(store, ctx),
     ]);
     return json(200, {
       ...tz,
       me: { email: session.email || null, name: session.name || null, role: session.role || null, department: session.department || null },
-      dashboard: dash,
+      dashboard: { ...dash, sheets },
       projects,
       accounts,
       signatories: signatories.map(publicSignatory),
       suppliers,
+      employees,
+      banks: banks.map(publicBank),
       build: body.build || "",
     });
   }
@@ -106,7 +113,13 @@ async function handle(event, deps = {}) {
     return json(200, { ...tz, ok: true });
   }
   if (op === "preview") return json(200, { ...tz, tax: computeWithholding(body) });
-  if (op === "dashboard") return json(200, { ...tz, dashboard: await dashboard(store, ctx) });
+  if (op === "dashboard") {
+    const dash = await dashboard(store, ctx);
+    const sheets = await sheetSummary(store, ctx);
+    return json(200, { ...tz, dashboard: { ...dash, sheets } });
+  }
+  const sheet = await handleSheet(op, store, body, ctx);
+  if (sheet) return json(sheet.status || 200, { ...tz, ...sheet.body });
   if (op === "reports") return json(200, { ...tz, report: await reports(store, ctx) });
 
   if (op === "listVouchers") {
@@ -120,7 +133,17 @@ async function handle(event, deps = {}) {
   }
   if (op === "createVoucher") return json(200, { ...tz, voucher: lean(await createVoucher(store, body, ctx)) });
   if (op === "updateVoucher") return json(200, { ...tz, voucher: lean(await updateVoucher(store, body.id, body, ctx)) });
-  if (op === "actVoucher") return json(200, { ...tz, voucher: lean(await transitionVoucher(store, body.id, body.action, body, ctx)) });
+  if (op === "actVoucher") {
+    const voucher = await transitionVoucher(store, body.id, body.action, body, ctx);
+    if (body.action === "release" && voucher.release_method === "Check") {
+      try {
+        await ensureCheckForVoucher(store, voucher);
+      } catch (err) {
+        if (err && err.code === "conflict") throw err;
+      }
+    }
+    return json(200, { ...tz, voucher: lean(voucher) });
+  }
 
   if (op === "listAdvances") {
     const advances = await store.list("advances");

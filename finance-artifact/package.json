@@ -8,7 +8,8 @@
     "build": "node -e \"console.log('static Finance artifact — no SPA build')\""
   },
   "dependencies": {
-    "pdf-lib": "^1.17.1"
+    "pdf-lib": "^1.17.1",
+    "xlsx": "^0.18.5"
   },
   "engines": {
     "node": ">=20"

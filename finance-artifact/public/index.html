@@ -70,6 +70,7 @@
     #buildBanner { background: #3d2a12; color: #fff8ee; padding: 10px 16px; display: flex; justify-content: space-between; gap: 12px; align-items: center; }
     #buildBanner[hidden] { display: none !important; }
     .pad { width: 100%; height: 120px; background: white; border: 1px dashed var(--line); border-radius: 8px; touch-action: none; }
+    .scroll { overflow: auto; }
     .foot { margin-top: 22px; color: var(--muted); font-size: 12px; }
     @media (max-width: 980px) {
       .app { grid-template-columns: 1fr; }
@@ -111,9 +112,10 @@
   </div>
   <div id="modalHost"></div>
   <script>
-    const BUILD = "2026-10-10 a";
+    const BUILD = "2026-10-10 b";
     try { window.BUILD = BUILD; } catch (e) {}
   </script>
   <script src="/finance-app.js"></script>
+  <script src="/finance-sheets.js"></script>
 </body>
 </html>

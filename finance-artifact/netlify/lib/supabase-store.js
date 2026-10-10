@@ -23,12 +23,38 @@ const TABLES = {
   petty_txns: "finance_petty_txns",
   bank_accounts: "finance_bank_accounts",
   bank_lines: "finance_bank_lines",
+  employees: "finance_employees",
+  employee_aliases: "finance_employee_aliases",
+  project_aliases: "finance_project_aliases",
+  supplier_aliases: "finance_supplier_aliases",
+  funding_sources: "finance_funding_sources",
+  bank_secrets: "finance_bank_secrets",
+  petty_cycles: "finance_petty_cycles",
+  petty_cash_ins: "finance_petty_cash_ins",
+  petty_vouchers: "finance_petty_vouchers",
+  petty_receipts: "finance_petty_receipts",
+  petty_releases: "finance_petty_releases",
+  checks: "finance_checks",
+  check_invoices: "finance_check_invoices",
+  wallets: "finance_wallets",
+  wallet_batches: "finance_wallet_batches",
+  wallet_cash_ins: "finance_wallet_cash_ins",
+  wallet_expenses: "finance_wallet_expenses",
+  wallet_receivables: "finance_wallet_receivables",
+  checklist_bills: "finance_checklist_bills",
+  checklist_instances: "finance_checklist_instances",
+  rental_units: "finance_rental_units",
+  rental_receipts: "finance_rental_receipts",
+  property_taxes: "finance_property_taxes",
+  import_issues: "finance_import_issues",
 };
 
 const NUMBERED = {
   vouchers: "finance_create_voucher",
   advances: "finance_create_advance",
   bills: "finance_create_bill",
+  petty_vouchers: "finance_create_pcv",
+  wallet_expenses: "finance_create_wallet_expense",
 };
 
 function tableOf(name) {
@@ -51,7 +77,7 @@ function createSupabaseStore() {
       const rows = await rest({
         method: "GET",
         path: `/rest/v1/${tableOf(table)}`,
-        query: "select=*&order=created_at.desc.nullslast&limit=1000",
+        query: "select=*&order=created_at.desc.nullslast&limit=5000",
       });
       const list = Array.isArray(rows) ? rows : [];
       return pred ? list.filter(pred) : list;
@@ -108,6 +134,14 @@ function createSupabaseStore() {
       });
       if (!saved || !saved.id) fail("conflict", "The number was not assigned.");
       return saved;
+    },
+    async reserveNumber(series, year, seq) {
+      await rest({
+        method: "POST",
+        path: "/rest/v1/rpc/finance_reserve_number",
+        body: { p_series: String(series || "").toUpperCase(), p_year: Number(year), p_seq: Number(seq) },
+      });
+      return { series: String(series || "").toUpperCase(), year: Number(year), seq: Number(seq) };
     },
     async registerBuild(id, build, seq) {
       await rest({

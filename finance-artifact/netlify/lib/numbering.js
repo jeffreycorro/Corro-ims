@@ -2,7 +2,7 @@
 
 const { fail } = require("./errors");
 
-const SERIES = ["DV", "CA", "AP"];
+const SERIES = ["DV", "CA", "AP", "PC", "GC"];
 
 function formatNumber(series, year, seq) {
   const prefix = String(series || "").toUpperCase();
@@ -11,7 +11,9 @@ function formatNumber(series, year, seq) {
   const n = Number(seq);
   if (!Number.isInteger(y) || y < 2000 || y > 2100) fail("bad_request", "Year is not valid.");
   if (!Number.isInteger(n) || n < 1) fail("bad_request", "Sequence is not valid.");
-  return `${prefix}${y}-${String(n).padStart(4, "0")}`;
+  const padded = String(n).padStart(4, "0");
+  if (prefix === "GC") return `${y}Gcash-${padded}`;
+  return `${prefix}${y}-${padded}`;
 }
 
 /**

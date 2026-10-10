@@ -77,6 +77,8 @@ async function seedReference(store) {
   for (const row of DEFAULT_SIGNATORIES) {
     if (!have.has(row.slot)) await store.insert("signatories", { ...row, id: row.slot, image_data: "" });
   }
+  const { seedMasters } = require("./masters");
+  await seedMasters(store);
 }
 
 async function requireProject(store, name) {
@@ -683,16 +685,26 @@ async function saveSupplier(store, input) {
   const name = collapse(input.name);
   const key = nameKey(name);
   if (!key) fail("bad_request", "Supplier name is required.");
+  const tin = text(input.tin);
+  const branch = text(input.branch);
+  const vat = text(input.vatStatus != null ? input.vatStatus : input.vat_status);
+  const storedKey = branch ? `${key} ${nameKey(branch)}` : key;
   const rows = await store.list("suppliers");
-  const dup = rows.find((row) => row.name_key === key && row.id !== input.id);
+  const dup = rows.find((row) => {
+    if (row.id === input.id) return false;
+    if (tin) return row.tin === tin && text(row.branch) === branch;
+    return row.name_key === storedKey && !text(row.tin);
+  });
   if (dup) fail("conflict", "That supplier is already on the list.");
   if (input.id) {
     const existing = await store.get("suppliers", input.id);
     if (!existing) fail("not_found", "Supplier not found.");
     return store.update("suppliers", existing.id, {
       name,
-      name_key: key,
-      tin: text(input.tin != null ? input.tin : existing.tin),
+      name_key: storedKey,
+      tin: input.tin != null ? tin : text(existing.tin),
+      branch: input.branch != null ? branch : text(existing.branch),
+      vat_status: input.vatStatus != null || input.vat_status != null ? vat : text(existing.vat_status),
       address: text(input.address != null ? input.address : existing.address),
       terms_days: input.termsDays != null ? Number(input.termsDays) : existing.terms_days,
       active: input.active !== false,
@@ -700,8 +712,10 @@ async function saveSupplier(store, input) {
   }
   return store.insert("suppliers", {
     name,
-    name_key: key,
-    tin: text(input.tin),
+    name_key: storedKey,
+    tin,
+    branch,
+    vat_status: vat,
     address: text(input.address),
     terms_days: input.termsDays != null ? Number(input.termsDays) : 30,
     motorpool_key: "",
@@ -724,6 +738,7 @@ async function saveProject(store, input) {
       name_key: key,
       site: text(input.site != null ? input.site : existing.site),
       code: text(input.code != null ? input.code : existing.code),
+      client: text(input.client != null ? input.client : existing.client),
       active: input.active !== false,
     });
   }
@@ -732,6 +747,7 @@ async function saveProject(store, input) {
     name_key: key,
     site: text(input.site),
     code: text(input.code),
+    client: text(input.client),
     source: text(input.source) || "finance",
     active: true,
   });
