@@ -76,10 +76,14 @@ async function attachPhotoLinks(state, storage) {
   const monitor = state.monitor || {};
   (monitor.photos || []).forEach((row) => rows.push(row));
   (monitor.due30 || []).forEach((day) => (day.checks || []).forEach((row) => rows.push(row)));
+  (state.instances || []).forEach((row) => rows.push(row));
+  (monitor.attention || []).forEach((row) => rows.push(row));
+  (monitor.upcoming || []).forEach((row) => rows.push(row));
+  (monitor.reminders || []).forEach((row) => rows.push(row));
   const cache = new Map();
-  for (const row of rows) {
-    const path = row && row.photo_url ? String(row.photo_url) : "";
-    if (!path || /^https?:\/\//i.test(path)) continue;
+  async function sign(row, field, hrefField) {
+    const path = row && row[field] ? String(row[field]) : "";
+    if (!path || /^https?:\/\//i.test(path)) return;
     if (!cache.has(path)) {
       try {
         const signed = await storage.signDownload(path, 120);
@@ -88,7 +92,11 @@ async function attachPhotoLinks(state, storage) {
         cache.set(path, "");
       }
     }
-    if (cache.get(path)) row.photo_href = cache.get(path);
+    if (cache.get(path)) row[hrefField] = cache.get(path);
+  }
+  for (const row of rows) {
+    await sign(row, "photo_url", "photo_href");
+    await sign(row, "receipt_path", "receipt_href");
   }
 }
 

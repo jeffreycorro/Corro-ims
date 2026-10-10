@@ -105,6 +105,16 @@
     .chk-foot { margin-top: 18px; }
     .chk-audit { padding-left: 18px; }
     .chk-legend { margin-top: 8px; }
+    .bills.dark { --paper: #12161c; --card: #1c2430; --ink: #f4f1ea; --muted: #c4bbae; --line: #314056; background: #12161c; color: #f4f1ea; border-radius: 14px; padding: 12px; }
+    .bills.dark .card, .bills.dark .chk-chart { background: #1c2430; color: #f4f1ea; }
+    .bills.dark input, .bills.dark select, .bills.dark .btn { background: #12161c; color: #f4f1ea; border-color: #314056; }
+    .bills.dark .btn.pri { background: var(--amber); color: white; }
+    .bill-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+    .bill-read { margin-top: 8px; }
+    .bill-bar { margin: 8px 0 12px; }
+    .bill-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .bill-detail { margin: 12px 0; border: 2px solid var(--navy); }
+    @media (max-width: 800px) { .bill-kpis { grid-template-columns: 1fr 1fr; } }
     @media (max-width: 980px) {
       .app { grid-template-columns: 1fr; }
       .rail { display: flex; gap: 6px; overflow: auto; padding: 10px; }
@@ -145,11 +155,12 @@
   </div>
   <div id="modalHost"></div>
   <script>
-    const BUILD = "2026-10-10 c";
+    const BUILD = "2026-10-10 d";
     try { window.BUILD = BUILD; } catch (e) {}
   </script>
   <script src="/finance-app.js"></script>
   <script src="/finance-checks.js"></script>
+  <script src="/finance-bills.js"></script>
   <script src="/finance-sheets.js"></script>
 </body>
 </html>

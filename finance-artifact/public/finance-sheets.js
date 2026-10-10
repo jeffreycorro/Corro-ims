@@ -115,32 +115,8 @@
   }
 
   function renderChecklist(S) {
-    var pack = S.sheet || {};
-    var months = [];
-    (pack.instances || []).forEach(function (row) { if (months.indexOf(row.month) < 0) months.push(row.month); });
-    months.sort();
-    var head = ["Site", "Biller", "Account", "Method"].concat(months);
-    var body = (pack.bills || []).map(function (bill) {
-      var cells = months.map(function (month) {
-        var hit = (pack.instances || []).find(function (row) { return row.bill_id === bill.id && row.month === month; });
-        if (!hit) return "<td></td>";
-        return "<td>" + esc(hit.status) + "<br>" + peso(hit.amount) + "</td>";
-      });
-      return "<tr><td>" + esc(bill.category) + "</td><td>" + esc(bill.biller) + "</td><td>" + esc(bill.account_no) + "</td><td>" + esc(bill.payment_method) + "</td>" + cells.join("") + "</tr>";
-    });
-    var due = (pack.due || []).map(function (row) {
-      var bill = (pack.bills || []).find(function (item) { return item.id === row.bill_id; });
-      return "<tr><td>" + esc(row.bucket) + "</td><td>" + esc(bill ? bill.biller : "") + "</td><td>" + esc(row.due_date) + "</td><td class=\"num\">" + peso(row.amount) + "</td></tr>";
-    });
-    var sites = '<select name="category" required>' + (pack.sites || []).map(function (site) { return "<option>" + esc(site) + "</option>"; }).join("") + "</select>";
-    return (
-      "<h2>Due this week and overdue</h2>" + table(["", "Biller", "Due", "Amount"], due) +
-      "<h2>Monthly grid</h2>" + table(head, body) +
-      "<h2>Add a biller</h2>" + form("saveChecklistBill", field("Site", sites) + field("Biller", '<input name="biller" required>') + field("Account name", '<input name="accountName">') + field("Account no.", '<input name="accountNo" placeholder="masked on save">') + field("Method", '<select name="paymentMethod"><option>GCash</option><option>check</option><option>bank</option></select>')) +
-      "<h2>Month cell</h2>" + form("saveChecklistInstance", field("Bill", '<select name="billId" required><option value="">Bill</option>' + opts(pack.bills, "", "id", "biller") + "</select>") + field("Month", '<input name="month" placeholder="2026-09" required>') + field("Amount", '<input name="amount" required>') + field("Due", '<input name="dueDate" type="date">') + field("Status", '<select name="status"><option>unpaid</option><option>paid</option><option>n-a</option></select>') + field("Paid by", '<select name="paymentKind"><option value=""></option><option>check</option><option>gcash</option><option>dv</option></select>')) +
-      "<h2>Rent</h2>" + form("saveRentalUnit", field("Unit", '<input name="name" required>') + field("Site", '<input name="site">')) +
-      "<h2>Property tax</h2>" + form("savePropertyTax", field("Site", '<input name="site" required>') + field("Year", '<input name="year" required>') + field("Amount", '<input name="amount" required>'))
-    );
+    if (window.FinanceBills) return window.FinanceBills.render(S);
+    return "<p>The bills dashboard is still loading.</p>";
   }
 
   function renderMasters(S) {
@@ -174,8 +150,8 @@
     else if (S.view === "gcash") html = renderGcash(S);
     else if (S.view === "checklist") html = renderChecklist(S);
     else if (S.view === "masters") html = renderMasters(S);
-    if (title) title.textContent = S.view === "petty" ? "Petty cash" : S.view === "checks" ? "Checks" : S.view === "gcash" ? "GCash" : S.view === "checklist" ? "Bill checklist" : "Masters";
-    if (crumb) crumb.textContent = S.view === "checks" ? "Outstanding checks, issued history, and the next 30 days." : "Same registers as the Google Sheets. Pick lists only.";
+    if (title) title.textContent = S.view === "petty" ? "Petty cash" : S.view === "checks" ? "Checks" : S.view === "gcash" ? "GCash" : S.view === "checklist" ? "Bills" : "Masters";
+    if (crumb) crumb.textContent = S.view === "checks" ? "Outstanding checks, issued history, and the next 30 days." : S.view === "checklist" ? "Paid totals, what is due, rent received, and property tax." : "Same registers as the Google Sheets. Pick lists only.";
     if (S.error) html = '<p class="err">' + esc(S.error) + "</p>" + html;
     return html;
   }
@@ -192,6 +168,8 @@
         checkYear: S.checkYear || "",
         checkMonth: S.checkMonth || "",
         checkBank: S.checkBank || "",
+        billCategory: S.billCategory || "",
+        billItem: S.billItem || "",
       }).then(function (res) {
         S.sheet = res.state || {};
         if (res.serverTime) S.checkUpdated = res.serverTime;
@@ -200,6 +178,7 @@
     render: render,
     onClick: function (event, ctx) {
       if (window.FinanceChecks && window.FinanceChecks.onClick(event, ctx)) return true;
+      if (window.FinanceBills && window.FinanceBills.onClick(event, ctx)) return true;
       var cycle = event.target.closest && event.target.closest("[data-sheet-cycle]");
       if (cycle && event.type === "change") return false;
       var button = event.target.closest && event.target.closest("[data-sheet]");

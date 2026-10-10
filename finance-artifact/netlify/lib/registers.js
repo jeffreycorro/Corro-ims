@@ -15,6 +15,7 @@ const { nameKey, collapse } = require("./names");
 const { publicAccountNo } = require("./mask");
 const { buildCheckViews, bankCodeOf, cycleFooter, gcashBalance, monthTotals, parseCheckNo } = require("./sheet-math");
 const { auditBooklets, checkMonitor, shouldStale } = require("./check-monitor");
+const { BILL_TYPES, CREDIT_CARDS, RENTAL_UNITS, billMonitor, dueOn, monthsAhead } = require("./bill-monitor");
 
 const CHECK_STATUSES = ["issued", "for signature", "ready for pickup", "released", "cleared", "cancelled", "void", "stale"];
 
@@ -514,22 +515,42 @@ async function saveChecklistBill(store, input) {
   const category = text(input.category);
   const biller = text(input.biller);
   if (!category || !biller) fail("bad_request", "Site and biller are required.");
+  const billType = text(input.billType || input.bill_type);
+  if (!BILL_TYPES.includes(billType)) fail("bad_request", "Choose a bill type.");
+  const card = text(input.cardName || input.card_name);
+  if (billType === "Credit Cards" && !CREDIT_CARDS.includes(card)) fail("bad_request", "Choose the credit card.");
   const method = text(input.paymentMethod || input.payment_method || "check");
   if (!["GCash", "check", "bank"].includes(method)) fail("bad_request", "Payment method is GCash, check, or bank.");
+  const recurring = flag(input.recurring);
+  const recurringAmount = recurring ? pesos(input.recurringAmount || input.recurring_amount || 0, "Recurring amount") : 0;
+  let dueDay = null;
+  if (present(input.dueDay) || present(input.due_day)) {
+    dueDay = Number(input.dueDay != null && input.dueDay !== "" ? input.dueDay : input.due_day);
+    if (!Number.isInteger(dueDay) || dueDay < 1 || dueDay > 31) fail("bad_request", "Due day is from 1 to 31.");
+  }
   const { protectAccount } = require("./mask");
   const protectedNo = protectAccount(input.accountNo != null ? input.accountNo : input.account_no);
-  const saved = await store.insert("checklist_bills", {
+  const existing = input.id ? await store.get("checklist_bills", input.id) : null;
+  const patch = {
     category,
     biller,
-    account_no: protectedNo.account_no,
+    account_no: protectedNo.account_no || (existing && existing.account_no) || "",
     account_name: text(input.accountName || input.account_name),
-    frequency: text(input.frequency || "monthly"),
+    frequency: text(input.frequency || (existing && existing.frequency) || "monthly"),
     payment_method: method,
-    active: true,
-    import_key: "",
-  });
+    bill_type: billType,
+    card_name: billType === "Credit Cards" ? card : "",
+    recurring,
+    recurring_amount: recurringAmount,
+    due_day: dueDay,
+    active: input.active !== false,
+  };
+  const saved = existing ? await store.update("checklist_bills", existing.id, patch) : await store.insert("checklist_bills", { ...patch, import_key: "" });
   if (protectedNo.ciphertext) {
-    await store.insert("bank_secrets", { id: `bill-${saved.id}`, account_id: saved.id, ciphertext: protectedNo.ciphertext });
+    const secretId = `bill-${saved.id}`;
+    const secret = await store.get("bank_secrets", secretId);
+    if (secret) await store.update("bank_secrets", secretId, { ciphertext: protectedNo.ciphertext });
+    else await store.insert("bank_secrets", { id: secretId, account_id: saved.id, ciphertext: protectedNo.ciphertext });
   }
   return { ...saved, account_no: publicAccountNo(saved.account_no) };
 }
@@ -549,27 +570,89 @@ async function saveChecklistInstance(store, input) {
     bill_id: bill.id,
     month,
     amount: pesos(input.amount || 0, "Amount"),
-    due_date: isoDate(input.dueDate || input.due_date, "Due date"),
-    paid_date: isoDate(input.paidDate || input.paid_date, "Paid date"),
-    status,
-    payment_kind: kind,
-    payment_id: input.paymentId || input.payment_id || null,
   };
+  if (present(input.dueDate) || present(input.due_date) || !existing) patch.due_date = isoDate(input.dueDate || input.due_date, "Due date");
+  if (present(input.status) || !existing) patch.status = status;
+  if (present(input.paidDate) || present(input.paid_date)) patch.paid_date = isoDate(input.paidDate || input.paid_date, "Paid date");
+  if (present(input.paymentKind) || present(input.payment_kind) || !existing) patch.payment_kind = kind;
+  if (present(input.paymentId) || present(input.payment_id)) patch.payment_id = input.paymentId || input.payment_id || null;
   if (existing) return store.update("checklist_instances", existing.id, patch);
-  return store.insert("checklist_instances", { ...patch, import_key: "" });
+  return store.insert("checklist_instances", { ...patch, paid_date: patch.paid_date || "", payment_id: patch.payment_id || null, import_key: "" });
 }
 
-function checklistDue(instances, today) {
-  return (instances || []).filter((row) => {
-    if (row.status === "paid" || row.status === "n-a" || !row.due_date) return false;
-    return row.due_date <= today.slice(0, 10) || (row.due_date >= today && row.due_date <= addWeek(today));
-  }).map((row) => ({ ...row, bucket: row.due_date < today ? "overdue" : "due" }));
+async function actChecklist(store, id, action, input) {
+  const row = await store.get("checklist_instances", id);
+  if (!row) fail("not_found", "That bill month was not found.");
+  const act = String(action || "").toLowerCase();
+  if (act === "paid") {
+    const date = isoDate(input.paidDate || input.paid_date, "Date paid");
+    if (!date) fail("bad_request", "Date paid is required.");
+    const method = text(input.paymentMethod || input.payment_method || "check");
+    if (!["GCash", "check", "bank"].includes(method)) fail("bad_request", "Payment method is GCash, check, or bank.");
+    const kind = text(input.paymentKind || input.payment_kind);
+    const paymentId = input.paymentId || input.payment_id || null;
+    if (kind) {
+      if (!["check", "gcash", "dv"].includes(kind)) fail("bad_request", "Link the payment to a check, GCash expense, or voucher.");
+      if (!paymentId) fail("bad_request", "Choose the check, GCash expense, or voucher.");
+      const table = kind === "check" ? "checks" : kind === "gcash" ? "wallet_expenses" : "vouchers";
+      const linked = await store.get(table, paymentId);
+      if (!linked) fail("not_found", "That payment was not found.");
+    }
+    return store.update("checklist_instances", id, {
+      status: "paid",
+      paid_date: date,
+      payment_method: method,
+      payment_kind: kind,
+      payment_id: paymentId,
+    });
+  }
+  if (act === "na") return store.update("checklist_instances", id, { status: "n-a" });
+  if (act === "unpaid") return store.update("checklist_instances", id, { status: "unpaid", paid_date: "" });
+  if (act === "receipt") {
+    const path = text(input.receiptPath || input.receipt_path);
+    if (!path) fail("bad_request", "Choose a receipt.");
+    return store.update("checklist_instances", id, { receipt_path: path });
+  }
+  fail("bad_request", "Unknown bill action.");
 }
 
-function addWeek(iso) {
-  const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, d + 6));
-  return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
+async function ensureRentals(store) {
+  for (const unit of RENTAL_UNITS) {
+    const existing = await store.get("rental_units", unit.id);
+    if (!existing) {
+      await store.insert("rental_units", { ...unit, active: true });
+      continue;
+    }
+    if (!Number(existing.monthly_rent)) {
+      await store.update("rental_units", unit.id, { monthly_rent: unit.monthly_rent, unit_no: unit.unit_no || existing.unit_no, site: existing.site || unit.site });
+    }
+  }
+}
+
+async function ensureRecurring(store, today) {
+  const bills = await store.list("checklist_bills");
+  const instances = await store.list("checklist_instances");
+  const months = monthsAhead(today || "2000-01-01", 4);
+  for (const bill of bills) {
+    if (!bill.recurring || !(Number(bill.recurring_amount) > 0)) continue;
+    for (const month of months) {
+      if (instances.some((row) => row.bill_id === bill.id && row.month === month)) continue;
+      const saved = await store.insert("checklist_instances", {
+        bill_id: bill.id,
+        month,
+        amount: Number(bill.recurring_amount),
+        due_date: bill.due_day ? dueOn(month, bill.due_day) : "",
+        paid_date: "",
+        status: "unpaid",
+        payment_kind: "",
+        payment_method: bill.payment_method || "",
+        payment_id: null,
+        receipt_path: "",
+        import_key: "",
+      });
+      instances.push(saved);
+    }
+  }
 }
 
 async function saveEmployee(store, input) {
@@ -645,9 +728,10 @@ async function sheetSummary(store, ctx) {
     const detail = await gcashDetail(store, batch.id);
     gcash = { label: `${batch.year} batch ${batch.batch_no}`, balance: detail.balance };
   }
+  const billRows = await store.list("checklist_bills");
   const instances = await store.list("checklist_instances");
-  const due = checklistDue(instances, ctx.today || "2000-01-01");
-  return { petty, gcash, checkMonth: totals, pendingChecks: views.pendingDue.length, checklistDue: due.length };
+  const glance = billMonitor(billRows, instances, { today: ctx.today || "2000-01-01" });
+  return { petty, gcash, checkMonth: totals, pendingChecks: views.pendingDue.length, checklistDue: glance.reminders.length };
 }
 
 async function sheetState(store, body, ctx) {
@@ -686,16 +770,30 @@ async function sheetState(store, body, ctx) {
     return { ...base, batches, ...detail };
   }
   if (view === "checklist") {
+    await ensureRentals(store);
+    await ensureRecurring(store, ctx.today);
     const bills = (await store.list("checklist_bills")).map((row) => ({ ...row, account_no: publicAccountNo(row.account_no) }));
     const instances = await store.list("checklist_instances");
+    const monitor = billMonitor(bills, instances, {
+      today: ctx.today,
+      category: body.billCategory,
+      billId: body.billItem,
+    });
+    const checks = (await store.list("checks")).map((row) => ({ id: row.id, label: row.check_no }));
+    const expenses = (await store.list("wallet_expenses")).map((row) => ({ id: row.id, label: row.ref_no }));
+    const vouchers = (await store.list("vouchers")).map((row) => ({ id: row.id, label: row.dv_no }));
     return {
       ...base,
+      billTypes: BILL_TYPES,
+      cards: CREDIT_CARDS,
       bills,
       instances,
-      due: checklistDue(instances, ctx.today),
+      monitor,
+      due: monitor.reminders,
       rentals: await store.list("rental_units"),
       rentalReceipts: await store.list("rental_receipts"),
       taxes: await store.list("property_taxes"),
+      links: { checks, expenses, vouchers },
     };
   }
   const cycles = await store.list("petty_cycles");
@@ -759,6 +857,7 @@ async function handleSheet(op, store, body, ctx) {
   if (op === "saveReceivable") return { body: { receivable: await saveReceivable(store, body) } };
   if (op === "saveChecklistBill") return { body: { bill: await saveChecklistBill(store, body) } };
   if (op === "saveChecklistInstance") return { body: { instance: await saveChecklistInstance(store, body) } };
+  if (op === "actChecklist") return { body: { instance: await actChecklist(store, body.id, body.action, body) } };
   if (op === "saveRentalUnit") return { body: { unit: await saveRentalUnit(store, body) } };
   if (op === "saveRentalReceipt") return { body: { receipt: await saveRentalReceipt(store, body) } };
   if (op === "savePropertyTax") return { body: { tax: await savePropertyTax(store, body) } };
@@ -773,6 +872,7 @@ async function handleSheet(op, store, body, ctx) {
 
 module.exports = {
   actCheck,
+  actChecklist,
   auditBooklets,
   checkPack,
   closeCycle,
@@ -785,6 +885,8 @@ module.exports = {
   saveCashIn,
   saveCheck,
   saveCheckInvoice,
+  saveChecklistBill,
+  saveChecklistInstance,
   saveGcashExpense,
   savePcv,
   saveReceipt,

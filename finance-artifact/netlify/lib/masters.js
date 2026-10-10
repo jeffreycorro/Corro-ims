@@ -4,20 +4,7 @@ const { fail } = require("./errors");
 const { collapse, nameKey } = require("./names");
 const { protectAccount, publicAccountNo } = require("./mask");
 
-const CHECKLIST_SITES = [
-  "Office",
-  "Tawason",
-  "Pagsabungan",
-  "Danlag",
-  "Borbajo Talamban",
-  "Residencia Edades",
-  "San Remo Oasis",
-  "PITOS HOUSE",
-  "CREDIT CARDS",
-  "City Soho",
-  "LP Balaga",
-  "Medellin",
-];
+const { CATEGORIES: CHECKLIST_SITES } = require("./bill-monitor");
 
 const CLASSIFICATIONS = ["Vat", "Non-Vat", "No Classification", "Vat & No classification"];
 

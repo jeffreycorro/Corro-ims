@@ -13,7 +13,7 @@
     ["petty", "Petty cash"],
     ["checks", "Checks"],
     ["gcash", "GCash"],
-    ["checklist", "Bill checklist"],
+    ["checklist", "Bills"],
     ["masters", "Masters"],
     ["billings", "Progress billings"],
     ["bank", "Bank recon"],
@@ -164,7 +164,7 @@
       metric(peso(ap.dueThisWeekAmount), "AP due this week", (ap.dueThisWeekCount || 0) + " bills · " + peso(ap.openAmount) + " open") +
       (d.sheets && d.sheets.petty ? metric(peso(d.sheets.petty.cashOnHand), "Petty cash on hand", d.sheets.petty.label) : "") +
       (d.sheets && d.sheets.gcash ? metric(peso(d.sheets.gcash.balance), "GCash balance", d.sheets.gcash.label) : "") +
-      (d.sheets ? metric(String(d.sheets.pendingChecks || 0), "Checks due soon", (d.sheets.checklistDue || 0) + " bills due") : "") +
+      (d.sheets ? metric(String(d.sheets.pendingChecks || 0), "Checks due soon", (d.sheets.checklistDue || 0) + " bills due within 3 days") : "") +
       "</div>"
     );
   }

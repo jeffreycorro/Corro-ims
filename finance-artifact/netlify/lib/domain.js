@@ -947,10 +947,10 @@ async function reports(store, ctx) {
 async function attachMeta(store, input, ctx) {
   const ownerKind = text(input.ownerKind || input.owner_kind);
   const ownerId = String(input.ownerId || input.owner_id || "");
-  if (!["voucher", "advance", "bill", "receipt", "check"].includes(ownerKind) || !ownerId) {
+  if (!["voucher", "advance", "bill", "receipt", "check", "checklist"].includes(ownerKind) || !ownerId) {
     fail("bad_request", "Attachment owner is required.");
   }
-  const table = ownerKind === "voucher" ? "vouchers" : ownerKind === "advance" ? "advances" : ownerKind === "bill" ? "bills" : ownerKind === "check" ? "checks" : "receipts";
+  const table = ownerKind === "voucher" ? "vouchers" : ownerKind === "advance" ? "advances" : ownerKind === "bill" ? "bills" : ownerKind === "check" ? "checks" : ownerKind === "checklist" ? "checklist_instances" : "receipts";
   const owner = await store.get(table, ownerId);
   if (!owner) fail("not_found", "That record was not found.");
   const path = String(input.storagePath || input.storage_path || "");
