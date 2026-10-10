@@ -4,6 +4,7 @@
 const fs = require("fs");
 const path = require("path");
 const { createMemoryStore } = require("../../netlify/lib/memory-store");
+const { sheetsToDoc } = require("./doc");
 const { applyImport } = require("./load");
 const { reconciliation } = require("./reconcile");
 const { readWorkbook } = require("./xlsx");
@@ -39,17 +40,13 @@ async function main() {
   const gcashSheets = gcashFile ? sheetsOf(gcashFile) : null;
   const billSheets = billsFile ? sheetsOf(billsFile) : null;
   if (process.exitCode) return;
-  const doc = { defaultYear: Number(arg("--year")) || 2026 };
-  if (pettySheets) doc.petty = pettySheets.flatMap((sheet) => sheet.rows);
-  if (checkSheets) {
-    doc.checks = checkSheets.map((sheet) => ({
-      name: sheet.name,
-      bank: (sheet.name.match(/AUB|BDO|BPI|PBB|RCBC|DBP|LBP/i) || [""])[0].toUpperCase(),
-      rows: sheet.rows,
-    }));
-  }
-  if (gcashSheets) doc.gcash = gcashSheets.flatMap((sheet) => sheet.rows);
-  if (billSheets) doc.bills = billSheets[0] ? billSheets[0].rows : [];
+  const doc = sheetsToDoc({
+    petty: pettySheets,
+    checks: checkSheets,
+    gcash: gcashSheets,
+    bills: billSheets,
+    defaultYear: Number(arg("--year")) || 2026,
+  });
   const store = createMemoryStore();
   const loaded = await applyImport(store, doc);
   const report = await reconciliation(store);

@@ -17,6 +17,7 @@
     ["masters", "Masters"],
     ["billings", "Progress billings"],
     ["bank", "Bank recon"],
+    ["imports", "Import"],
     ["settings", "Settings"],
   ];
   var DEPTS = ["admin", "technical", "finance", "procurement", "motorpool", "safety", "site", "hr"];
@@ -128,7 +129,8 @@
   function renderNav() {
     var nav = document.getElementById("nav");
     if (!nav) return;
-    nav.innerHTML = NAV.map(function (item) {
+    var admin = S.me && String(S.me.role || "").toLowerCase() === "admin";
+    nav.innerHTML = NAV.filter(function (item) { return item[0] !== "imports" || admin; }).map(function (item) {
       var locked = item[0] === "approver" && !S.approverUnlocked ? " locked" : "";
       var on = S.view === item[0] ? " on" : "";
       return '<button type="button" class="nav-i' + on + locked + '" data-nav="' + item[0] + '">' + esc(item[1]) + "</button>";
@@ -389,6 +391,7 @@
 
   function render() {
     if (window.FinanceSheets) window.FinanceSheets._ctx = { S: S, api: api, refresh: refresh, render: render };
+    if (window.FinanceImport) window.FinanceImport._ctx = { S: S, api: api, refresh: refresh, render: render };
     renderNav();
     var host = document.getElementById("view");
     var html = "";
@@ -402,6 +405,7 @@
     else if (S.view === "reports") html = viewReports();
     else if (S.view === "billings") html = comingSoon("Progress billings", "Contracts, billing percent, retention, and collections are in finance_contracts, finance_billings, and finance_collections.");
     else if (S.view === "bank") html = comingSoon("Bank reconciliation", "Statement lines and matches stay in finance_bank_lines. Check monitoring itself is on the Checks screen.");
+    else if (window.FinanceImport && window.FinanceImport.owns(S.view)) html = window.FinanceImport.render(S);
     else if (window.FinanceSheets && window.FinanceSheets.owns(S.view)) html = window.FinanceSheets.render(S);
     else if (S.view === "settings") html = viewSettings();
     host.innerHTML = html;
@@ -607,6 +611,7 @@
     if (S.view === "projects") jobs.push(api("projects").then(function (res) { S.projects = res.projects || []; }));
     if (S.view === "reports") jobs.push(api("reports").then(function (res) { S.report = res.report; }));
     if (S.view === "settings") jobs.push(api("signatories").then(function (res) { S.signatories = res.signatories || []; }));
+    if (window.FinanceImport && window.FinanceImport.owns(S.view)) jobs.push(window.FinanceImport.load(S));
     if (window.FinanceSheets && window.FinanceSheets.owns(S.view)) jobs.push(window.FinanceSheets.load(S, api));
     return Promise.all(jobs).then(render);
   }
@@ -658,7 +663,9 @@
   }
 
   document.addEventListener("click", function (event) {
-    if (window.FinanceSheets && window.FinanceSheets.onClick(event, { S: S, api: api, refresh: refresh, render: render })) return;
+    var host = { S: S, api: api, refresh: refresh, render: render };
+    if (window.FinanceImport && window.FinanceImport.onClick(event, host)) return;
+    if (window.FinanceSheets && window.FinanceSheets.onClick(event, host)) return;
     var nav = event.target.closest && event.target.closest("[data-nav]");
     if (nav) {
       S.view = nav.getAttribute("data-nav");

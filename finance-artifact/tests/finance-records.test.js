@@ -157,7 +157,7 @@ describe("finance access and records", () => {
     const external = store.slice(store.indexOf("external:"), store.indexOf("async function readDocs"));
     assert.doesNotMatch(external, /POST|PATCH|DELETE/);
     const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
-    assert.match(html, /const BUILD = "2026-10-10 d"/);
+    assert.match(html, /const BUILD = "2026-10-10 e"/);
     assert.match(html, /claude-shim\.js/);
     assert.match(html, /buildBanner/);
     const app = fs.readFileSync(path.join(__dirname, "../public/finance-app.js"), "utf8");

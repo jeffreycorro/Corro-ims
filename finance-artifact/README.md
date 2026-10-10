@@ -4,7 +4,7 @@ Separate Netlify site for **Corro Construction Development and Trade Corporation
 
 Suggested site name: `corcondev-finance`.
 
-Build stamp: **2026-10-10 d**.
+Build stamp: **2026-10-10 e**.
 
 ## What this site does
 
@@ -22,6 +22,7 @@ Phase 1 replaces the four Google Sheets, plus disbursement vouchers, cash advanc
 - **Checks** (sheet CCD-04). The Checks screen is the monitoring dashboard: outstanding from this month onward, due through the end of the month, issued history by year, month, and bank, the next 30 days, and outstanding month by month. Check numbers are `{BANK}{booklet year}-{serial}`. The year is the booklet year, not the check date. A new check is issued, then moves for signature, optionally ready for pickup, then released with the receiver and date, then cleared from the bank statement. Cancel and void are on the check. A check still open 180 days after its check date is marked stale and can still be cleared or voided. Each check can have a photo. Run audit lists missing booklet serials. Canceled checks and inter-bank transfers stay out of the dashboard totals. A transfer between our own accounts is still kept in the bank month total used for reconciliation, and out of expenses. A check payable to `Petty Cash PCB No. N` becomes a cash-in on that cycle.
 - **GCash.** Batches carry the opening balance forward. The running balance is computed from top-ups, expenses, fees, and open receivables. Expense refs are `2026Gcash-0001`.
 - **Bills** (the bill-paying checklist). The Bills screen is one scrolling page with a dark-mode toggle. Tiles show last year's paid total, this year paid through the last complete month, the change versus last year (and the same change with credit cards left out), and the needs-attention total. The spend chart compares this year with last year for all bills, all bills except credit cards, one location, or one bill, monthly or cumulative, and marks the current month in progress. Where the money goes can be this year-to-date or last full year, grouped by location, bill type, or credit card. Needs attention lists overdue and due-now items. Upcoming lists amounts already entered for later months. A bill has a bill type. Mark it paid with the date, method, and a link to a check, GCash expense, or disbursement voucher, and attach a receipt. A fixed bill can recur into the next months. A month can be N/A. Rent received is tracked for Residencia Edades 720 (₱8,500), City Soho 1123 (₱10,000), and San Remo 3314 (₱12,500). Yearly property tax is on the same page. Bills due within 3 days are called out.
+- **Import from Google Sheets**, administrators only. Upload CCD-03 Petty Cash, CCD-04 Check Monitoring, GCash monitoring, and the Bill Paying Checklist, or any subset. The files are stored in the private `finance-uploads` bucket in parts, then read back from there. Dry run counts each table, checks PCB 35 cash on hand ₱28,242 with ₱24,315 still released, the GCash balance ₱1,394.11, and the September 2026 check total ₱11,553,814.54, and lists import issues. A CSV of those issues can be downloaded. Import writes in chunks and a later run updates the same rows instead of copying them.
 - Master lists for projects, employees, suppliers, bank nicknames (AUB, BDO, BPI 1842, BPI Credit Line, PBB, RCBC, DBP, LBP), and funding sources (J Jeffrey, M Marian, payroll excess, check, sales, refund). Sheet spellings are alias rows. Vouchers, petty cash, GCash, and advances use those lists.
 - Dashboard: cash out this month, pending approvals, unliquidated advances, AP due this week, petty cash on hand, GCash balance, and checks due soon.
 
@@ -36,8 +37,9 @@ In the Supabase SQL editor for `https://kfflyzprxcidmsdjhuej.supabase.co`, run t
 1. `supabase/migrations/20261010000001_finance_schema.sql`
 2. `supabase/migrations/20261010000002_finance_sheet_registers.sql`
 3. `supabase/migrations/20261010000003_finance_bill_dashboard.sql`
+4. `supabase/migrations/20261010000004_finance_sheet_import.sql`
 
-The files are additive. The first two create `finance_` tables, turn on row level security, and grant them to `service_role` only. The first file also creates the private `finance-uploads` bucket. The third adds bill type, recurring amount, receipt path, and the three rental units. None of them change HR or Motorpool data.
+The files are additive. The first two create `finance_` tables, turn on row level security, and grant them to `service_role` only. The first file also creates the private `finance-uploads` bucket. The third adds bill type, recurring amount, receipt path, and the three rental units. The fourth adds the import-job table used by the Google Sheets screen. None of them change HR or Motorpool data.
 
 ## Import the four sheets
 

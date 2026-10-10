@@ -17,13 +17,14 @@ function requireStorage() {
   return { url, key };
 }
 
-async function storageFetch(method, path, body, contentType) {
+async function storageFetch(method, path, body, contentType, extraHeaders) {
   const { url, key } = requireStorage();
   const headers = { apikey: key, authorization: `Bearer ${key}` };
   if (!(body instanceof Uint8Array) && !Buffer.isBuffer(body)) {
     headers["content-type"] = "application/json";
     headers.accept = "application/json";
   } else if (contentType) headers["content-type"] = contentType;
+  if (extraHeaders) Object.assign(headers, extraHeaders);
   const res = await fetch(`${url}/storage/v1${path}`, {
     method,
     headers,
@@ -68,14 +69,16 @@ function encodeObjectPath(path) {
     .join("/");
 }
 
-async function putObject(path, bytes, contentType) {
+async function putObject(path, bytes, contentType, options) {
   await ensureBucket();
   const clean = String(path || "").replace(/^\/+/, "");
+  const extra = options && options.upsert ? { "x-upsert": "true" } : null;
   const { res, json } = await storageFetch(
     "POST",
     `/object/${BUCKET}/${encodeObjectPath(clean)}`,
     Buffer.from(bytes),
-    contentType || "application/octet-stream"
+    contentType || "application/octet-stream",
+    extra
   );
   if (!res.ok && !alreadyExists(res.status, json)) {
     const err = new Error((json && (json.message || json.error)) || "Upload failed.");
@@ -83,6 +86,21 @@ async function putObject(path, bytes, contentType) {
     throw err;
   }
   return { path: clean };
+}
+
+async function getObject(path) {
+  const { url, key } = requireStorage();
+  const clean = String(path || "").replace(/^\/+/, "");
+  const res = await fetch(`${url}/storage/v1/object/${BUCKET}/${encodeObjectPath(clean)}`, {
+    headers: { apikey: key, authorization: `Bearer ${key}` },
+  });
+  if (!res.ok) {
+    const err = new Error("Could not read that upload.");
+    err.statusCode = res.status === 404 ? 404 : 502;
+    err.code = res.status === 404 ? "not_found" : "bad_request";
+    throw err;
+  }
+  return Buffer.from(await res.arrayBuffer());
 }
 
 async function signDownload(path, expiresIn) {
@@ -99,4 +117,4 @@ async function signDownload(path, expiresIn) {
   return { signedUrl, path: clean, expiresIn: seconds };
 }
 
-module.exports = { BUCKET, FILE_SIZE_LIMIT, ensureBucket, putObject, signDownload };
+module.exports = { BUCKET, FILE_SIZE_LIMIT, ensureBucket, getObject, putObject, signDownload };
