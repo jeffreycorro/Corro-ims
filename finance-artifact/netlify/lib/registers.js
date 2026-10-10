@@ -13,7 +13,7 @@ const {
 } = require("./masters");
 const { nameKey, collapse } = require("./names");
 const { publicAccountNo } = require("./mask");
-const { buildCheckViews, bankCodeOf, cycleFooter, gcashBalance, monthTotals, parseCheckNo } = require("./sheet-math");
+const { buildCheckViews, bankCodeOf, companyChecks, cycleFooter, gcashBalance, monthTotals, parseCheckNo } = require("./sheet-math");
 const { auditBooklets, checkMonitor, shouldStale } = require("./check-monitor");
 const { BILL_TYPES, CREDIT_CARDS, RENTAL_UNITS, billMonitor, dueOn, monthsAhead } = require("./bill-monitor");
 
@@ -717,7 +717,8 @@ async function sheetSummary(store, ctx) {
     const detail = await cycleDetail(store, open.id);
     petty = { label: open.label, cashOnHand: detail.footer.cashOnHand, cashReleased: detail.footer.cashReleased };
   }
-  const checks = await store.list("checks");
+  const banks = await store.list("bank_accounts");
+  const checks = companyChecks(await store.list("checks"), banks);
   const month = monthKey(ctx.today || "");
   const totals = month ? monthTotals(checks, month) : { total: 0, expense: 0 };
   const views = buildCheckViews(checks, ctx.today || "2000-01-01");
@@ -848,7 +849,11 @@ async function handleSheet(op, store, body, ctx) {
   if (op === "auditChecks") {
     await seedMasters(store);
     const banks = (await store.list("bank_accounts")).map(publicBank);
-    return { body: { audit: auditBooklets(await store.list("checks"), banks) } };
+    const bankId = body.bankId || body.checkBank || "";
+    const personal = banks.find((row) => row.is_personal && row.id === bankId);
+    const checks = await store.list("checks");
+    const scoped = personal ? checks.filter((row) => row.bank_account_id === personal.id) : companyChecks(checks, banks);
+    return { body: { audit: auditBooklets(scoped, banks) } };
   }
   if (op === "saveCheckInvoice") return { body: { invoice: await saveCheckInvoice(store, body) } };
   if (op === "openBatch") return { body: await openBatch(store, body) };

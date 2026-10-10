@@ -1,7 +1,7 @@
 "use strict";
 
 const { addDays, daysBetween, monthKey } = require("./manila");
-const { money, sumAmounts } = require("./sheet-math");
+const { companyChecks, money, sumAmounts } = require("./sheet-math");
 
 const COMPANY = "Corro Construction Development and Trade Corporation";
 const STALE_DAYS = 180;
@@ -27,6 +27,7 @@ function bankColor(code) {
   const key = String(code || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
   if (BANK_COLORS[key]) return BANK_COLORS[key];
   if (key.startsWith("BPI")) return BANK_COLORS.BPI;
+  if (key.startsWith("BDO")) return BANK_COLORS.BDO;
   if (key.startsWith("PSB") || key.startsWith("PBB")) return BANK_COLORS.PBB;
   const palette = ["#0f766e", "#7c3aed", "#b45309", "#be185d", "#0369a1", "#3f6212"];
   let hash = 0;
@@ -92,6 +93,14 @@ function inBank(row, bankId) {
   return !bankId || bankId === "all" || row.bank_account_id === bankId;
 }
 
+function scopedChecks(checks, banks, bankId) {
+  const personal = new Set((banks || []).filter((row) => row && row.is_personal).map((row) => row.id));
+  if (bankId && bankId !== "all" && personal.has(bankId)) {
+    return (checks || []).filter((row) => row.bank_account_id === bankId);
+  }
+  return companyChecks(checks, banks);
+}
+
 function bankOf(row, banks) {
   return (banks || []).find((item) => item.id === row.bank_account_id) || null;
 }
@@ -126,7 +135,7 @@ function checkMonitor(checks, banks, options = {}) {
   const year = Number(options.year) || currentYear;
   const monthFilter = options.month && options.month !== "all" ? String(options.month).padStart(2, "0") : "all";
   const bankId = options.bankId && options.bankId !== "all" ? options.bankId : "all";
-  const list = checks || [];
+  const list = scopedChecks(checks, banks, bankId);
   const onward = list.filter((row) => countsAsOutstanding(row) && monthKey(row.check_date) >= monthKey(today));
   const throughEnd = list.filter((row) => {
     if (!countsAsOutstanding(row)) return false;
@@ -261,6 +270,7 @@ function checkMonitor(checks, banks, options = {}) {
     banks: (banks || []).map((row) => ({
       id: row.id,
       nickname: row.nickname || row.bank_name,
+      personal: Boolean(row.is_personal),
       color: bankColor(row.bank_code || row.nickname),
     })),
     shown,

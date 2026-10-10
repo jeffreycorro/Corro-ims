@@ -1,6 +1,6 @@
 "use strict";
 
-const { cycleFooter, gcashBalance, monthTotals } = require("../../netlify/lib/sheet-math");
+const { companyChecks, cycleFooter, gcashBalance, monthTotals } = require("../../netlify/lib/sheet-math");
 
 const TARGETS = {
   pcb35CashOnHand: 28242,
@@ -37,7 +37,8 @@ async function reconciliation(store) {
     const balance = gcashBalance({ opening: latest.opening_balance, cashIns, expenses, receivables });
     gcash = { batch: latest.batch_no, balance, matches: balance === TARGETS.gcashBalance };
   }
-  const checks = await store.list("checks");
+  const banks = await store.list("bank_accounts");
+  const checks = companyChecks(await store.list("checks"), banks);
   const sept = monthTotals(checks, "2026-09");
   // The Google Sheet monthly summary Total leaves fund transfers out. monthTotals().total still includes them.
   const sheetTotal = sept.expense;

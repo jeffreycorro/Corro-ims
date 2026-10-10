@@ -220,6 +220,15 @@ describe("real workbook reconciliation", () => {
     assert.ok(checks.some((row) => row.status === "cancelled" && /cancelled/i.test(row.payee)));
     assert.ok(checks.some((row) => row.bank_code === "DBP"));
     assert.ok(checks.some((row) => String(row.check_no).startsWith("BPICL")));
+    const loan = checks.filter((row) => String(row.check_no).startsWith("BPILOAN"));
+    const joint = checks.filter((row) => String(row.check_no).startsWith("BDOJOINT"));
+    assert.equal(loan.length, 10);
+    assert.ok(loan.every((row) => row.bank_account_id === "bank-bpi-cl"));
+    assert.equal(joint.length, 31);
+    assert.ok(joint.every((row) => row.bank_account_id === "bank-bdo-personal"));
+    const personal = (await store.list("bank_accounts")).find((row) => row.id === "bank-bdo-personal");
+    assert.equal(personal.is_personal, true);
+    assert.equal((loaded.issues || []).some((row) => row.message === "No bank account matches this check."), false);
     assert.equal((await store.list("property_taxes")).length, 12);
     assert.ok((await store.list("rental_receipts")).length >= 27);
     const bills2026 = new Set((await store.list("checklist_bills")).map((row) => row.import_key));
