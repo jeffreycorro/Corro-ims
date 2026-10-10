@@ -34,6 +34,8 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
 # NEXT_PUBLIC_HR_PORTAL_URL=https://corcondev-hr.netlify.app
 # Optional override for the live Motorpool site (defaults to https://corcondev-motorpool.netlify.app)
 # NEXT_PUBLIC_MOTORPOOL_PORTAL_URL=https://corcondev-motorpool.netlify.app
+# Optional override for the live Finance site (defaults to https://corcondev-finance.netlify.app)
+# NEXT_PUBLIC_FINANCE_PORTAL_URL=https://corcondev-finance.netlify.app
 ```
 
 Use the **anon / public** key only in the Next.js app. Never put the service role key, database password, or user passwords in client code or committed files.
@@ -48,6 +50,7 @@ Use the **anon / public** key only in the Next.js app. Never put the service rol
 - **Admin role** sees every department tile. Other roles see only their assigned department
 - The separate HR site (`corcondev-hr`) accepts the **same** email/password. Only `admin`, `hr` role, or department `hr` may enter that site. Other department accounts are signed in on this portal only.
 - The separate Motorpool site (`corcondev-motorpool`) accepts the **same** email/password. Only `admin` role or department `motorpool` may enter that site.
+- The separate Finance site (`corcondev-finance`) accepts the **same** email/password. Only `admin` role or department `finance` may enter that site.
 - If a user can sign in but has no `profiles` row, the hub explains that an administrator must provision the account
 
 Apply the schema from `supabase/migrations/20260907000001_create_profiles.sql` in the Supabase SQL editor (or `supabase db push`).
@@ -76,7 +79,7 @@ Do not commit real emails or passwords. The first admin profile must be inserted
 | `/app/[department]` | Department home (`admin`, `technical`, `finance`, `procurement`, `motorpool`, `safety`, `site`, `hr`) |
 | `/settings` | Signed-in profile and change-password form |
 
-Department stubs show “module coming soon”. The **HR** workspace replaces that stub with a primary CTA to the live HR portal (`NEXT_PUBLIC_HR_PORTAL_URL`, default `https://corcondev-hr.netlify.app`). Staff use the same Supabase login; if they are already signed in here, the CTA hands off a short-lived access token in the URL hash so they should not need to type the password again. The **Motorpool** workspace does the same for the live Motorpool portal (`NEXT_PUBLIC_MOTORPOOL_PORTAL_URL`, default `https://corcondev-motorpool.netlify.app`). Each department home still reserves a **Department Assistant — soon** slot.
+Department stubs show “module coming soon”. The **HR** workspace replaces that stub with a primary CTA to the live HR portal (`NEXT_PUBLIC_HR_PORTAL_URL`, default `https://corcondev-hr.netlify.app`). Staff use the same Supabase login; if they are already signed in here, the CTA hands off a short-lived access token in the URL hash so they should not need to type the password again. The **Motorpool** workspace does the same for the live Motorpool portal (`NEXT_PUBLIC_MOTORPOOL_PORTAL_URL`, default `https://corcondev-motorpool.netlify.app`). The **Finance** workspace does the same for the live Finance portal (`NEXT_PUBLIC_FINANCE_PORTAL_URL`, default `https://corcondev-finance.netlify.app`). Each department home still reserves a **Department Assistant — soon** slot.
 
 ## Demo mode
 
@@ -94,7 +97,7 @@ The mock session is an httpOnly cookie. It is for local/UI review only.
 2. Build command: `npm run build` (see `netlify.toml`)
 3. Publish directory: `.next`
 4. Node version: `20`
-5. In **Site settings → Environment variables**, set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`. Optionally set `NEXT_PUBLIC_HR_PORTAL_URL` or `NEXT_PUBLIC_MOTORPOOL_PORTAL_URL` if those sites are not the default Netlify URLs.
+5. In **Site settings → Environment variables**, set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`. Optionally set `NEXT_PUBLIC_HR_PORTAL_URL`, `NEXT_PUBLIC_MOTORPOOL_PORTAL_URL`, or `NEXT_PUBLIC_FINANCE_PORTAL_URL` if those sites are not the default Netlify URLs.
 6. Redeploy after env vars change
 
 `@netlify/plugin-nextjs` is declared in `netlify.toml` so the Next.js App Router runtime is used. If you skip env vars on Netlify, the deployed site stays in DEMO MODE.
@@ -123,6 +126,10 @@ HR login is the same Supabase Auth used here. Do **not** set a second staff pass
 ## Motorpool artifact (separate Netlify site)
 
 The Claude Motorpool single-file app is **not** part of this portal build. Host it from [`motorpool-artifact/`](motorpool-artifact/) as its **own** Netlify site (base directory `motorpool-artifact`, publish `public`, proposed name `corcondev-motorpool`). `public/index.html` is the Claude export (title Corcondev Motorpool). When that HTML is updated, replace the file, keep the shim tags, and push — see `motorpool-artifact/README.md` (“Redeploy when the artifact HTML is updated”). Do not point the company portal at that folder. Env is hash only — never the office pass plaintext.
+
+## Finance artifact (separate Netlify site)
+
+The Finance app is **not** part of this portal build. Host it from [`finance-artifact/`](finance-artifact/) as its **own** Netlify site (base directory `finance-artifact`, publish `public`, proposed name `corcondev-finance`). See `finance-artifact/README.md` for the SQL migration, env var names, and the Approver password gate. Do not point the company portal at that folder.
 
 ## Out of scope (this phase)
 

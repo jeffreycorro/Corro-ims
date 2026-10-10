@@ -1,0 +1,17 @@
+{
+  "name": "corcondev-finance-artifact",
+  "private": true,
+  "version": "1.0.0",
+  "description": "CorConDev Finance portal — separate Netlify site, not the company portal.",
+  "scripts": {
+    "test": "node --test --test-concurrency=1 tests/*.test.js",
+    "build": "node -e \"console.log('static Finance artifact — no SPA build')\""
+  },
+  "dependencies": {
+    "pdf-lib": "^1.17.1",
+    "xlsx": "^0.18.5"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

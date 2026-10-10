@@ -1,5 +1,6 @@
 export const DEFAULT_HR_PORTAL_URL = "https://corcondev-hr.netlify.app";
 export const DEFAULT_MOTORPOOL_PORTAL_URL = "https://corcondev-motorpool.netlify.app";
+export const DEFAULT_FINANCE_PORTAL_URL = "https://corcondev-finance.netlify.app";
 
 export function isDemoMode(): boolean {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
@@ -13,6 +14,10 @@ export function getHrPortalUrl(): string {
 
 export function getMotorpoolPortalUrl(): string {
   return process.env.NEXT_PUBLIC_MOTORPOOL_PORTAL_URL?.trim() || DEFAULT_MOTORPOOL_PORTAL_URL;
+}
+
+export function getFinancePortalUrl(): string {
+  return process.env.NEXT_PUBLIC_FINANCE_PORTAL_URL?.trim() || DEFAULT_FINANCE_PORTAL_URL;
 }
 
 export function getSupabasePublicEnv(): { url: string; anonKey: string } | null {
