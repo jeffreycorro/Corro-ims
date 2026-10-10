@@ -47,6 +47,7 @@ const TABLES = {
   rental_receipts: "finance_rental_receipts",
   property_taxes: "finance_property_taxes",
   import_issues: "finance_import_issues",
+  import_jobs: "finance_import_jobs",
 };
 
 const NUMBERED = {
@@ -81,6 +82,27 @@ function createSupabaseStore() {
       });
       const list = Array.isArray(rows) ? rows : [];
       return pred ? list.filter(pred) : list;
+    },
+    async listAll(table) {
+      const page = 1000;
+      const all = [];
+      let from = 0;
+      let previousLast = "";
+      for (;;) {
+        const rows = await rest({
+          method: "GET",
+          path: `/rest/v1/${tableOf(table)}`,
+          query: `select=*&order=id.asc&limit=${page}&offset=${from}`,
+        });
+        const list = Array.isArray(rows) ? rows : [];
+        const last = list.length ? String(list[list.length - 1].id || "") : "";
+        if (list.length && last === previousLast) break;
+        all.push(...list);
+        if (list.length < page || from > 200000) break;
+        previousLast = last;
+        from += page;
+      }
+      return all;
     },
     async get(table, id) {
       const rows = await rest({

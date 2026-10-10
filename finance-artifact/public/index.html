@@ -114,6 +114,8 @@
     .bill-bar { margin: 8px 0 12px; }
     .bill-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
     .bill-detail { margin: 12px 0; border: 2px solid var(--navy); }
+    .import-bar { height: 10px; background: #efe8dc; border-radius: 99px; overflow: hidden; margin: 8px 0 12px; }
+    .import-bar > span { display: block; height: 100%; background: var(--navy); }
     @media (max-width: 800px) { .bill-kpis { grid-template-columns: 1fr 1fr; } }
     @media (max-width: 980px) {
       .app { grid-template-columns: 1fr; }
@@ -155,9 +157,10 @@
   </div>
   <div id="modalHost"></div>
   <script>
-    const BUILD = "2026-10-10 d";
+    const BUILD = "2026-10-10 e";
     try { window.BUILD = BUILD; } catch (e) {}
   </script>
+  <script src="/finance-import.js"></script>
   <script src="/finance-app.js"></script>
   <script src="/finance-checks.js"></script>
   <script src="/finance-bills.js"></script>

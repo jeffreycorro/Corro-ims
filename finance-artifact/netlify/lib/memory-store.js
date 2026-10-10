@@ -62,6 +62,7 @@ function createMemoryStore() {
     rental_receipts: new Map(),
     property_taxes: new Map(),
     import_issues: new Map(),
+    import_jobs: new Map(),
   };
   const counters = new Map();
   const issued = new Set();
