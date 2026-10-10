@@ -4,7 +4,7 @@ Separate Netlify site for **Corro Construction Development and Trade Corporation
 
 Suggested site name: `corcondev-finance`.
 
-Build stamp: **2026-10-10 b**.
+Build stamp: **2026-10-10 c**.
 
 ## What this site does
 
@@ -19,7 +19,7 @@ Phase 1 replaces the four Google Sheets, plus disbursement vouchers, cash advanc
 - HR cash advances and Motorpool reserves/suppliers are read through the service role and shown as links. This site does not write those tables.
 - Supplier bills (accounts payable) with VAT and expanded withholding, partial payments through a voucher, aging buckets, and a due-this-week list. Supplier identity is TIN plus branch when a TIN is present.
 - **Petty cash** (sheet CCD-03). Cycles are `PCB {year}-{n}`. Opening balance is the previous closing balance. Cash on hand is total cash minus expenses minus cash still released. Closing a cycle opens the next one with that balance. Voucher numbers are `PC2026-0001`, assigned on the server. One voucher can have many receipt lines. Supplier `Cash` means there is no receipt.
-- **Checks** (sheet CCD-04). Check numbers are `{BANK}{booklet year}-{serial}`. The year is the booklet year, not the check date. Due status is Cleared, Overdue, Due Today, Due Soon (5 days), or OK. Monthly summary, pending due across every bank, a payables date window, and the uncleared list are on the Checks screen. A transfer between our own accounts is kept out of expenses. A check payable to `Petty Cash PCB No. N` becomes a cash-in on that cycle.
+- **Checks** (sheet CCD-04). The Checks screen is the monitoring dashboard: outstanding from this month onward, due through the end of the month, issued history by year, month, and bank, the next 30 days, and outstanding month by month. Check numbers are `{BANK}{booklet year}-{serial}`. The year is the booklet year, not the check date. A new check is issued, then moves for signature, optionally ready for pickup, then released with the receiver and date, then cleared from the bank statement. Cancel and void are on the check. A check still open 180 days after its check date is marked stale and can still be cleared or voided. Each check can have a photo. Run audit lists missing booklet serials. Canceled checks and inter-bank transfers stay out of the dashboard totals. A transfer between our own accounts is still kept in the bank month total used for reconciliation, and out of expenses. A check payable to `Petty Cash PCB No. N` becomes a cash-in on that cycle.
 - **GCash.** Batches carry the opening balance forward. The running balance is computed from top-ups, expenses, fees, and open receivables. Expense refs are `2026Gcash-0001`.
 - **Bill paying checklist.** Sites, billers, and masked account numbers, one row per bill per month, plus rent received and yearly property tax. A month can be paid by a check, a GCash expense, or a disbursement voucher.
 - Master lists for projects, employees, suppliers, bank nicknames (AUB, BDO, BPI 1842, BPI Credit Line, PBB, RCBC, DBP, LBP), and funding sources (J Jeffrey, M Marian, payroll excess, check, sales, refund). Sheet spellings are alias rows. Vouchers, petty cash, GCash, and advances use those lists.

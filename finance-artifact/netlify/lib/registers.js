@@ -14,6 +14,7 @@ const {
 const { nameKey, collapse } = require("./names");
 const { publicAccountNo } = require("./mask");
 const { buildCheckViews, bankCodeOf, cycleFooter, gcashBalance, monthTotals, parseCheckNo } = require("./sheet-math");
+const { auditBooklets, checkMonitor, shouldStale } = require("./check-monitor");
 
 const CHECK_STATUSES = ["issued", "for signature", "ready for pickup", "released", "cleared", "cancelled", "void", "stale"];
 
@@ -334,12 +335,74 @@ async function saveCheckInvoice(store, input) {
   });
 }
 
-async function checkPack(store, ctx, range) {
+async function markStaleChecks(store, today) {
+  const rows = await store.list("checks");
+  for (const row of rows) {
+    if (shouldStale(row, today)) await store.update("checks", row.id, { status: "stale" });
+  }
+}
+
+async function actCheck(store, id, action, input) {
+  const check = await store.get("checks", id);
+  if (!check) fail("not_found", "That check was not found.");
+  const act = String(action || "").toLowerCase();
+  if (act === "for signature") {
+    if (check.status !== "issued") fail("bad_request", "Only an issued check can go for signature.");
+    return store.update("checks", id, { status: "for signature" });
+  }
+  if (act === "ready") {
+    if (check.status !== "for signature") fail("bad_request", "Mark a check ready for pickup after it is for signature.");
+    return store.update("checks", id, { status: "ready for pickup" });
+  }
+  if (act === "release") {
+    if (!["for signature", "ready for pickup"].includes(check.status)) {
+      fail("bad_request", "Release a check that is for signature or ready for pickup.");
+    }
+    const receiver = text(input.receivedBy || input.received_by);
+    const date = isoDate(input.releaseDate || input.release_date, "Release date");
+    if (!receiver || !date) fail("bad_request", "Release needs who received the check and the release date.");
+    return store.update("checks", id, { status: "released", received_by: receiver, release_date: date });
+  }
+  if (act === "clear") {
+    if (!["released", "stale"].includes(check.status)) fail("bad_request", "Clear a check after it is released.");
+    const date = isoDate(input.clearedDate || input.cleared_date, "Cleared date");
+    if (!date) fail("bad_request", "Cleared date from the bank statement is required.");
+    return store.update("checks", id, { status: "cleared", cleared_date: date });
+  }
+  if (act === "cancel" || act === "void") {
+    if (["cleared", "cancelled", "void"].includes(check.status)) fail("bad_request", "That check can no longer be cancelled.");
+    return store.update("checks", id, { status: act === "cancel" ? "cancelled" : "void" });
+  }
+  if (act === "photo") {
+    const url = text(input.photoUrl || input.photo_url);
+    if (!url) fail("bad_request", "Choose a photo of the check.");
+    return store.update("checks", id, { photo_url: url, scanned: true });
+  }
+  fail("bad_request", "Unknown check action.");
+}
+
+async function checkPack(store, ctx, range = {}) {
+  await markStaleChecks(store, ctx.today);
   const checks = await store.list("checks");
   const invoices = await store.list("check_invoices");
   const banks = (await store.list("bank_accounts")).map(publicBank);
   const views = buildCheckViews(checks, ctx.today, range);
-  return { checks: views.checks, invoices, banks, monthly: views.monthly, pendingDue: views.pendingDue, payables: views.payables, uncleared: views.uncleared };
+  const monitor = checkMonitor(checks, banks, {
+    today: ctx.today,
+    year: range.year,
+    month: range.month,
+    bankId: range.bankId,
+  });
+  return {
+    checks: views.checks,
+    invoices,
+    banks,
+    monthly: views.monthly,
+    pendingDue: views.pendingDue,
+    payables: views.payables,
+    uncleared: views.uncleared,
+    monitor,
+  };
 }
 
 async function openBatch(store, input) {
@@ -607,7 +670,13 @@ async function sheetState(store, body, ctx) {
     };
   }
   if (view === "checks") {
-    const pack = await checkPack(store, ctx, { from: body.from || "", to: body.to || "" });
+    const pack = await checkPack(store, ctx, {
+      from: body.from || "",
+      to: body.to || "",
+      year: body.checkYear,
+      month: body.checkMonth,
+      bankId: body.checkBank,
+    });
     return { ...base, ...pack };
   }
   if (view === "gcash") {
@@ -677,6 +746,12 @@ async function handleSheet(op, store, body, ctx) {
   if (op === "saveReceipt") return { body: { receipt: await saveReceipt(store, body) } };
   if (op === "saveRelease") return { body: { release: await saveRelease(store, body) } };
   if (op === "saveCheck") return { body: { check: await saveCheck(store, body) } };
+  if (op === "actCheck") return { body: { check: await actCheck(store, body.id, body.action, body) } };
+  if (op === "auditChecks") {
+    await seedMasters(store);
+    const banks = (await store.list("bank_accounts")).map(publicBank);
+    return { body: { audit: auditBooklets(await store.list("checks"), banks) } };
+  }
   if (op === "saveCheckInvoice") return { body: { invoice: await saveCheckInvoice(store, body) } };
   if (op === "openBatch") return { body: await openBatch(store, body) };
   if (op === "saveWalletCashIn") return { body: { cashIn: await saveWalletCashIn(store, body) } };
@@ -697,6 +772,8 @@ async function handleSheet(op, store, body, ctx) {
 }
 
 module.exports = {
+  actCheck,
+  auditBooklets,
   checkPack,
   closeCycle,
   cycleDetail,

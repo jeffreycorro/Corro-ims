@@ -90,25 +90,8 @@
   }
 
   function renderChecks(S) {
-    var pack = S.sheet || {};
-    var rows = (pack.checks || []).map(function (row) {
-      var bank = (pack.banks || []).find(function (item) { return item.id === row.bank_account_id; });
-      return "<tr><td>" + esc(bank ? bank.nickname : "") + "</td><td><b>" + esc(row.check_no) + "</b></td><td>" + esc(row.check_date) + "</td><td>" + esc(row.payee) + "</td><td>" + esc(row.due_status) + "</td><td>" + esc(row.days_until_due) + "</td><td class=\"num\">" + peso(row.amount) + "</td><td>" + (row.is_transfer ? "transfer" : "") + "</td></tr>";
-    });
-    var monthly = (pack.monthly || []).map(function (row) {
-      return "<tr><td>" + esc(row.month) + "</td><td>" + esc(row.count) + "</td><td class=\"num\">" + peso(row.outstanding) + "</td><td class=\"num\">" + peso(row.cleared) + "</td><td class=\"num\">" + peso(row.total) + "</td><td class=\"num\">" + peso(row.outstandingFromHere) + "</td><td class=\"num\">" + peso(row.expense) + "</td></tr>";
-    });
-    var banks = '<select name="bankAccountId" required><option value="">Bank</option>' + opts(pack.banks, "", "id", "nickname") + "</select>";
-    return (
-      '<p class="sub">Serials are unique per bank. The year in the number is the booklet year. Transfers between our own accounts stay out of expenses.</p>' +
-      "<h2>Monthly summary</h2>" + table(["Month", "Count", "Outstanding", "Cleared", "Total", "Outstanding from here", "Expense"], monthly) +
-      "<h2>Pending due, all banks</h2>" + table(["Bank", "Check", "Date", "Payee", "Due", "Days", "Amount", ""], (pack.pendingDue || []).map(function (row) {
-        return "<tr><td></td><td>" + esc(row.check_no) + "</td><td>" + esc(row.check_date) + "</td><td>" + esc(row.payee) + "</td><td>" + esc(row.due_status) + "</td><td>" + esc(row.days_until_due) + "</td><td class=\"num\">" + peso(row.amount) + "</td><td></td></tr>";
-      })) +
-      "<h2>Record a check</h2>" + form("saveCheck", field("Bank", banks) + field("Check no.", '<input name="checkNo" placeholder="BPI2026-1000274146" required>') + field("Issued", '<input name="dateIssued" type="date">') + field("Check date", '<input name="checkDate" type="date" required>') + field("Payee", '<input name="payee" required>') + field("Supplier", select("supplierId", pack.suppliers, "Supplier, optional").replace(" required", "")) + field("Amount", '<input name="amount" required>') + field("PO", '<input name="poRef">') + field("Status", '<select name="status"><option>issued</option><option>for signature</option><option>ready for pickup</option><option>released</option><option>cleared</option><option>cancelled</option><option>void</option><option>stale</option></select>') + field("Transfer", '<select name="isTransfer"><option value="">No</option><option value="true">Yes, between our accounts</option></select>')) +
-      "<h2>All checks</h2>" + table(["Bank", "Check", "Date", "Payee", "Due", "Days", "Amount", "Transfer"], rows) +
-      "<h2>Payables window</h2>" + form("checkWindow", field("From", '<input name="from" type="date">') + field("To", '<input name="to" type="date">'))
-    );
+    if (window.FinanceChecks) return window.FinanceChecks.render(S);
+    return "<p>The checks dashboard is still loading.</p>";
   }
 
   function renderGcash(S) {
@@ -192,7 +175,7 @@
     else if (S.view === "checklist") html = renderChecklist(S);
     else if (S.view === "masters") html = renderMasters(S);
     if (title) title.textContent = S.view === "petty" ? "Petty cash" : S.view === "checks" ? "Checks" : S.view === "gcash" ? "GCash" : S.view === "checklist" ? "Bill checklist" : "Masters";
-    if (crumb) crumb.textContent = "Same registers as the Google Sheets. Pick lists only.";
+    if (crumb) crumb.textContent = S.view === "checks" ? "Outstanding checks, issued history, and the next 30 days." : "Same registers as the Google Sheets. Pick lists only.";
     if (S.error) html = '<p class="err">' + esc(S.error) + "</p>" + html;
     return html;
   }
@@ -200,12 +183,23 @@
   window.FinanceSheets = {
     owns: function (view) { return VIEWS.indexOf(view) >= 0; },
     load: function (S, api) {
-      return api("sheetState", { view: S.view, cycleId: S.cycleId || "", batchId: S.batchId || "", from: S.checkFrom || "", to: S.checkTo || "" }).then(function (res) {
+      return api("sheetState", {
+        view: S.view,
+        cycleId: S.cycleId || "",
+        batchId: S.batchId || "",
+        from: S.checkFrom || "",
+        to: S.checkTo || "",
+        checkYear: S.checkYear || "",
+        checkMonth: S.checkMonth || "",
+        checkBank: S.checkBank || "",
+      }).then(function (res) {
         S.sheet = res.state || {};
+        if (res.serverTime) S.checkUpdated = res.serverTime;
       });
     },
     render: render,
     onClick: function (event, ctx) {
+      if (window.FinanceChecks && window.FinanceChecks.onClick(event, ctx)) return true;
       var cycle = event.target.closest && event.target.closest("[data-sheet-cycle]");
       if (cycle && event.type === "change") return false;
       var button = event.target.closest && event.target.closest("[data-sheet]");

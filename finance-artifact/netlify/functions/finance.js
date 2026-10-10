@@ -69,6 +69,29 @@ function safePath(parts) {
   return path;
 }
 
+async function attachPhotoLinks(state, storage) {
+  if (!state) return;
+  const rows = [];
+  (state.checks || []).forEach((row) => rows.push(row));
+  const monitor = state.monitor || {};
+  (monitor.photos || []).forEach((row) => rows.push(row));
+  (monitor.due30 || []).forEach((day) => (day.checks || []).forEach((row) => rows.push(row)));
+  const cache = new Map();
+  for (const row of rows) {
+    const path = row && row.photo_url ? String(row.photo_url) : "";
+    if (!path || /^https?:\/\//i.test(path)) continue;
+    if (!cache.has(path)) {
+      try {
+        const signed = await storage.signDownload(path, 120);
+        cache.set(path, signed.signedUrl || "");
+      } catch (err) {
+        cache.set(path, "");
+      }
+    }
+    if (cache.get(path)) row.photo_href = cache.get(path);
+  }
+}
+
 async function handle(event, deps = {}) {
   if (event.httpMethod === "OPTIONS") return { statusCode: 204, body: "" };
   if (event.httpMethod !== "POST") return json(405, { error: "Method not allowed" });
@@ -119,7 +142,12 @@ async function handle(event, deps = {}) {
     return json(200, { ...tz, dashboard: { ...dash, sheets } });
   }
   const sheet = await handleSheet(op, store, body, ctx);
-  if (sheet) return json(sheet.status || 200, { ...tz, ...sheet.body });
+  if (sheet) {
+    if (op === "sheetState" && sheet.body && sheet.body.state && sheet.body.state.monitor) {
+      await attachPhotoLinks(sheet.body.state, storage);
+    }
+    return json(sheet.status || 200, { ...tz, ...sheet.body });
+  }
   if (op === "reports") return json(200, { ...tz, report: await reports(store, ctx) });
 
   if (op === "listVouchers") {
