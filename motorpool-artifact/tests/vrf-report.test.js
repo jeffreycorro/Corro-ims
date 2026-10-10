@@ -1396,12 +1396,12 @@ describe("monthly VRF report page", () => {
     assert.match(html, /VRFs with both/);
     assert.match(html, /window\.print\(\)/);
     assert.match(html, /<script src="\/vrf-report\.js"><\/script>/);
-    assert.match(html, /var BUILD = "2026-10-10 c"/);
+    assert.match(html, /var BUILD = "2026-10-10 d"/);
     assert.match(html, /@page mp-vrf-report\{size:A4/);
     assert.match(html, /\.vrfreport thead\{display:table-header-group\}/);
     assert.match(html, /page-break-before:always/);
     assert.match(html, /Corro Construction Development and Trade Corporation|report\.header\.company/);
-    assert.equal(pageBuild(), "2026-10-10 c");
+    assert.equal(pageBuild(), "2026-10-10 d");
     const fn = fs.readFileSync(path.join(__dirname, "../netlify/functions/vrf-report.js"), "utf8");
     assert.doesNotMatch(fn, /setDoc|writeDoc|putReserve|putLedger|saveLedger/);
     const db = fs.readFileSync(path.join(__dirname, "../netlify/lib/supabase.js"), "utf8");

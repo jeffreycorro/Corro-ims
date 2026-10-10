@@ -269,7 +269,7 @@ describe("reads stay small and the SQL restore is additive", () => {
     assert.doesNotMatch(sql, /\bdrop\b/i);
     assert.doesNotMatch(sql, /\bdelete\s+from\b/i);
     const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
-    assert.match(html, /var BUILD = "2026-10-10 c"/);
+    assert.match(html, /var BUILD = "2026-10-10 d"/);
     assert.match(html, /paperNote/);
     assert.match(html, /S\.db\.listIds/);
     assert.match(html, /function sendUnnumberedDraft/);

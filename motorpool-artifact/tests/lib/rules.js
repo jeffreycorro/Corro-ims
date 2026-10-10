@@ -945,6 +945,7 @@
       liq: stamp || null,
     });
     if (e.supplier != null) next.supplier = e.supplier;
+    if (e.project != null) next.project = e.project;
     return next;
   }
 

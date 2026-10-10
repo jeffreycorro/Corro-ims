@@ -1,6 +1,7 @@
 "use strict";
 
 const { ledgerMonthFromParts } = require("../../public/vrf-report");
+const { normalizeLedgerRows, normalizeReserve } = require("./project-name");
 
 function supabaseUrl() {
   return (
@@ -502,6 +503,7 @@ async function writeRecord(row, exists) {
 
 async function upsertReserveRecord(row, year) {
   if (!row || row.no == null || String(row.no) === "") return { wrote: false };
+  row = normalizeReserve(row);
   const existing = await readRecord("reserve:" + row.no);
   const next = nextReserveWrite(row, year, existing);
   if (!next) return { wrote: false };
@@ -672,7 +674,7 @@ async function saveLedgerVrf(spec) {
   const vrf = String((spec && spec.vrf) || "").trim();
   const month = String((spec && spec.month) || "").trim();
   const mode = spec && spec.mode === "append" ? "append" : "replace";
-  const incoming = Array.isArray(spec && spec.rows) ? spec.rows : [];
+  const incoming = normalizeLedgerRows(Array.isArray(spec && spec.rows) ? spec.rows : []);
   if (!vrf || !/^\d{4}-\d{2}$/.test(month)) throw ledgerWriteError("VRF number and month are required");
   incoming.forEach((row) => {
     if (!row || String(row.vrf) !== vrf) {

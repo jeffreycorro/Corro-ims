@@ -355,7 +355,7 @@
     root = root || (typeof document !== "undefined" ? document : null);
     if (!root || !root.querySelectorAll) return 0;
     var unlocked = 0;
-    var nodes = root.querySelectorAll(".pj-manage input");
+    var nodes = root.querySelectorAll(".pj-manage input, .pj-manage select");
     for (var i = 0; i < nodes.length; i++) {
       var inp = nodes[i];
       try {

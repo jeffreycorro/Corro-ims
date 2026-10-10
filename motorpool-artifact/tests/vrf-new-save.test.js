@@ -24,7 +24,7 @@ delete process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 const { handler } = require("../netlify/functions/db");
 
-const PAGE_BUILD = "2026-10-10 c";
+const PAGE_BUILD = "2026-10-10 d";
 const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
 
 const app = { nextVrf: 6123, nextReserve: 109 };
@@ -706,7 +706,7 @@ describe("new VRF save against the live store", () => {
     assert.equal(page.__api.BUILD, PAGE_BUILD);
     assert.equal(page.BUILD, PAGE_BUILD);
     assert.match(html, /window\.BUILD = BUILD/);
-    assert.match(html, /var BUILD = "2026-10-10 c"/);
+    assert.match(html, /var BUILD = "2026-10-10 d"/);
   });
 
   it("names gateWrite when the shim cannot see the page build", async () => {
