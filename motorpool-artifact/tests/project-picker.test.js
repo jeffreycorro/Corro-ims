@@ -108,7 +108,7 @@ describe("project near-duplicates", () => {
     assert.equal(planned.write, true);
     assert.deepEqual(
       planned.projects.map((p) => p.code),
-      ["BARILI", "Yard A", "Pardo Wharf"]
+      ["BARILI", "Pardo Wharf", "Yard A"]
     );
     const clash = api.applyProjectChange(remote, local, { op: "add", name: "barili" });
     assert.equal(clash.ok, false);
