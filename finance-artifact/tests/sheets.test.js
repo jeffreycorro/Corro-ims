@@ -152,8 +152,8 @@ describe("petty cash, checks, GCash, and bills", () => {
         ["PC2026-0005", "2026-09-02", "Nobody Special", "Cash", "Fuel", "Tower A", "VRF-1", "", "", 10, "", "", "", ""],
       ],
     });
-    const issues = await store.list("import_issues");
-    assert.ok(issues.some((row) => /Nobody Special/.test(row.message)));
+    const imported = (await store.list("petty_vouchers")).find((row) => row.pcv_no === "PC2026-0005");
+    assert.equal(imported.employee_name, "Nobody Special");
     const again = await savePcv(store, {
       cycleId: opened.cycle.id,
       date: "2026-09-04",
@@ -275,13 +275,13 @@ describe("petty cash, checks, GCash, and bills", () => {
     assert.equal(vouchers.length, 1);
     assert.equal(vouchers[0].employee_id, employee.id);
     assert.equal(vouchers[0].txn_date, "2026-09-14");
-    assert.equal(vouchers[0].project_name, "Unassigned");
+    assert.equal(vouchers[0].supplier_name, "Mystery Store");
+    assert.equal(vouchers[0].project_name, "No Such Job");
     const receipts = await store.list("petty_receipts");
     assert.equal(receipts.length, 1);
     assert.equal(receipts[0].si_date, "2026-01-27");
     const issues = await store.list("import_issues");
-    assert.ok(issues.some((row) => /Mystery Store/.test(row.raw) || /Mystery Store/.test(row.message)));
-    assert.equal(issues.filter((row) => /Mystery Store/.test(row.message)).length, 1);
+    assert.equal(issues.filter((row) => /Mystery Store/.test(row.message)).length, 0);
   });
 
   it("matches the reconciliation targets from the sheet footers", async () => {
