@@ -217,8 +217,9 @@
       var value = String(index + 1).padStart(2, "0");
       return '<option value="' + value + '"' + (month === value ? " selected" : "") + ">" + name.slice(0, 3) + "</option>";
     }).join("");
-    var bankOpts = '<option value="all"' + (bank === "all" ? " selected" : "") + ">All</option>" + (mon.banks || []).map(function (row) {
-      return '<option value="' + esc(row.id) + '"' + (bank === row.id ? " selected" : "") + ">" + esc(row.nickname) + "</option>";
+    var bankOpts = '<option value="all"' + (bank === "all" ? " selected" : "") + ">All company</option>" + (mon.banks || []).map(function (row) {
+      var label = row.nickname + (row.personal && !/personal/i.test(row.nickname || "") ? " (personal)" : "");
+      return '<option value="' + esc(row.id) + '"' + (bank === row.id ? " selected" : "") + ">" + esc(label) + "</option>";
     }).join("");
     var chips = mon.chips || {};
     var chip = function (value, label) {
@@ -307,7 +308,7 @@
       '<footer class="chk-foot">' +
       '<div class="row"><button class="btn" type="button" data-check-audit>Run audit — find missing checks</button><button class="btn" type="button" data-check-refresh>Refresh</button><span class="sub">Updated ' + esc(updatedLabel(S.checkUpdated)) + "</span></div>" +
       audit +
-      '<p class="sub">Excludes canceled checks & inter-bank transfers</p>' +
+      '<p class="sub">Excludes canceled checks & inter-bank transfers. Personal accounts stay out of these company totals; choose one in the bank list to view it on its own.</p>' +
       '<p><a href="#chk-photos">Check photos</a></p>' +
       '<ul id="chk-photos">' + (photos || "<li>No check photos yet.</li>") + "</ul>" +
       "</footer></section>"
@@ -363,7 +364,7 @@
       return true;
     }
     if (node.hasAttribute("data-check-audit")) {
-      host.api("auditChecks", {}).then(function (res) {
+      host.api("auditChecks", { bankId: S.checkBank || "" }).then(function (res) {
         S.checkAudit = res.audit || [];
         S.error = "";
         host.render();

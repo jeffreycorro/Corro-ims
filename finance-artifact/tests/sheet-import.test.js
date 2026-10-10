@@ -202,7 +202,7 @@ describe("google sheet import", () => {
     assert.match(sql, /service_role/);
     assert.doesNotMatch(sql, /drop table/i);
     const page = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
-    assert.match(page, /const BUILD = "2026-10-10 f"/);
+    assert.match(page, /const BUILD = "2026-10-10 g"/);
     assert.ok(page.indexOf("finance-import.js") < page.indexOf("finance-app.js"));
     const code = fs.readFileSync(path.join(__dirname, "../public/finance-import.js"), "utf8");
     const sandbox = {

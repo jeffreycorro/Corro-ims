@@ -234,4 +234,59 @@ describe("check monitoring dashboard", () => {
     const page = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
     assert.ok(page.indexOf("finance-checks.js") < page.indexOf("finance-sheets.js"));
   });
+
+  it("leaves a personal bank out of company totals and shows it on its own", async () => {
+    const personal = { id: "bank-bdo-personal", nickname: "BDO Personal", bank_code: "BDOJOINT", is_personal: true };
+    const banks = BANKS.concat([personal]);
+    const checks = sample().concat([
+      row({ id: "joint", check_no: "BDOJOINT2024-1", check_date: "2026-09-02", amount: 52930, payee: "Personal", bank_account_id: personal.id, bank_code: "BDOJOINT" }),
+      row({ id: "joint-old", check_no: "BDOJOINT2024-2", check_date: "2024-02-06", amount: 1000, payee: "Personal", bank_account_id: personal.id, bank_code: "BDOJOINT" }),
+    ]);
+    const company = checkMonitor(checks, banks, { today: TODAY, year: 2026 });
+    const plain = checkMonitor(sample(), BANKS, { today: TODAY, year: 2026 });
+    assert.equal(company.outstandingOnward, plain.outstandingOnward);
+    assert.equal(company.yearMonths.find((item) => item.month === "2026-09").total, plain.yearMonths.find((item) => item.month === "2026-09").total);
+    assert.equal(company.banks.some((item) => item.id === personal.id && item.personal), true);
+    const alone = checkMonitor(checks, banks, { today: TODAY, year: 2026, bankId: personal.id });
+    assert.equal(alone.outstandingOnward, 0);
+    assert.equal(alone.yearMonths.find((item) => item.month === "2026-09").total, 52930);
+
+    const store = createMemoryStore();
+    await seedReference(store);
+    const saved = (await store.list("bank_accounts")).find((item) => item.id === "bank-bdo-personal");
+    assert.equal(saved.nickname, "BDO Personal");
+    assert.equal(saved.is_personal, true);
+    assert.equal(saved.bank_code, "BDOJOINT");
+    await seedReference(store);
+    assert.equal((await store.list("bank_accounts")).filter((item) => item.id === "bank-bdo-personal").length, 1);
+    await saveCheck(store, { bankAccountId: "bank-bdo-personal", checkNo: "BDOJOINT2026-1", checkDate: "2026-10-13", payee: "Personal bill", amount: 80 });
+    await saveCheck(store, { bankAccountId: "bank-bdo-personal", checkNo: "BDOJOINT2026-3", checkDate: "2026-10-13", payee: "Personal bill", amount: 20 });
+    await saveCheck(store, { bankAccountId: BPI, checkNo: "BPI2026-9", checkDate: "2026-10-12", payee: "Company bill", amount: 40 });
+    const ctx = { name: "Ana Cruz", today: TODAY, now: "2026-10-10T09:00:00+08:00" };
+    const { handleSheet } = require("../netlify/lib/registers");
+    const home = await handleSheet("sheetSummary", store, {}, ctx);
+    assert.equal(home.body.sheets.pendingChecks, 1);
+    assert.equal(home.body.sheets.checkMonth.expense, 40);
+    const companyAudit = await handleSheet("auditChecks", store, {}, ctx);
+    assert.equal(companyAudit.body.audit.some((group) => group.bankId === "bank-bdo-personal"), false);
+    const personalAudit = await handleSheet("auditChecks", store, { bankId: "bank-bdo-personal" }, ctx);
+    assert.equal(personalAudit.body.audit.some((group) => group.bankId === "bank-bdo-personal"), true);
+
+    const code = fs.readFileSync(path.join(__dirname, "../public/finance-checks.js"), "utf8");
+    const sandbox = { window: {}, document: { addEventListener() {}, getElementById() { return null; } }, console };
+    vm.createContext(sandbox);
+    vm.runInContext(code, sandbox);
+    const html = sandbox.window.FinanceChecks.render({
+      sheet: { monitor: company, checks: [], banks, suppliers: [], invoices: [] },
+    });
+    assert.match(html, /BDO Personal/);
+    assert.match(html, /All company/);
+    assert.match(html, /Personal accounts stay out of these company totals/);
+    const sql = fs.readFileSync(path.join(__dirname, "../supabase/migrations/20261010000005_finance_personal_bank.sql"), "utf8");
+    assert.match(sql, /is_personal/);
+    assert.match(sql, /bank-bdo-personal/);
+    assert.match(sql, /BDO Personal/);
+    assert.match(sql, /on conflict \(id\) do update/);
+    assert.doesNotMatch(sql, /drop table/i);
+  });
 });

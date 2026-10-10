@@ -139,7 +139,15 @@ function parseCheckNo(raw) {
   };
 }
 
+function companyChecks(checks, banks) {
+  const personal = new Set((banks || []).filter((row) => row && row.is_personal).map((row) => row.id));
+  if (!personal.size) return checks || [];
+  return (checks || []).filter((row) => !personal.has(row.bank_account_id));
+}
+
 function bankCodeOf(account) {
+  const explicit = String((account && account.bank_code) || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (explicit) return explicit;
   const nick = String((account && (account.nickname || account.bank_name)) || "").toUpperCase();
   if (nick.startsWith("BPI")) return "BPI";
   const token = nick.split(/[^A-Z0-9]+/).filter(Boolean)[0];
@@ -151,6 +159,7 @@ module.exports = {
   bankCodeOf,
   buildCheckViews,
   cents,
+  companyChecks,
   cycleFooter,
   dueStatus,
   gcashBalance,

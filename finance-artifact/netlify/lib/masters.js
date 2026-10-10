@@ -26,6 +26,7 @@ const BANKS = [
   { id: "bank-rcbc", bank_name: "RCBC", nickname: "RCBC", account_type: "RCBC", bank_code: "RCBC" },
   { id: "bank-dbp", bank_name: "DBP", nickname: "DBP", account_type: "DBP", bank_code: "DBP" },
   { id: "bank-lbp", bank_name: "Land Bank", nickname: "LBP", account_type: "LBP", bank_code: "LBP" },
+  { id: "bank-bdo-personal", bank_name: "BDO", nickname: "BDO Personal", account_type: "BDO Personal", bank_code: "BDOJOINT", account_name: "Jeffrey", is_personal: true },
 ];
 
 const PARTY = {
@@ -92,10 +93,11 @@ async function seedMasters(store) {
       nickname: row.nickname,
       account_type: row.account_type,
       bank_code: row.bank_code,
-      account_name: "Corro Construction Development and Trade Corporation",
+      account_name: row.account_name || "Corro Construction Development and Trade Corporation",
       account_no: "",
       currency: "PHP",
       active: true,
+      is_personal: Boolean(row.is_personal),
     });
   }
   await ensureRow(store, "wallets", "wallet-gcash", { name: "GCash", active: true });
@@ -181,6 +183,7 @@ function publicBank(row) {
     account_no: publicAccountNo(row.account_no || ""),
     currency: row.currency || "PHP",
     active: row.active !== false,
+    is_personal: Boolean(row.is_personal),
   };
 }
 

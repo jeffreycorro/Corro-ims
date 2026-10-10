@@ -258,14 +258,22 @@ function collectNames(masters, petty, checks, gcash) {
   return names;
 }
 
+const BANK_ALIASES = {
+  bpicl: "bank-bpi-cl",
+  bpiloan: "bank-bpi-cl",
+  bdojoint: "bank-bdo-personal",
+};
+
 function matchBank(banks, sheet, parsedNo) {
   const nick = nameKey(sheet.bank || sheet.bankNickname || "");
   const byNick = banks.find((row) => nameKey(row.nickname) === nick || nameKey(row.account_type) === nick);
   if (byNick) return byNick;
   const code = nameKey(parsedNo.bankCode);
-  if (code === "bpicl") return banks.find((row) => row.id === "bank-bpi-cl") || null;
+  const aliasId = BANK_ALIASES[code];
+  if (aliasId) return banks.find((row) => row.id === aliasId) || null;
   return (
-    banks.find((row) => nameKey(row.bank_code) === code && nameKey(row.nickname) === code) ||
+    banks.find((row) => nameKey(row.bank_code) === code && nameKey(row.nickname) === code && !row.is_personal) ||
+    banks.find((row) => nameKey(row.bank_code) === code && !row.is_personal) ||
     banks.find((row) => nameKey(row.bank_code) === code) ||
     null
   );
