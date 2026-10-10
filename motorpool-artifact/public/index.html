@@ -163,7 +163,7 @@ th.num{text-align:right}
 .empty{padding:var(--space-7) var(--space-4);text-align:center;color:var(--text-muted);font-size:14px}
 .hint{font-size:12px;color:var(--text-muted)}
 .pj-manage{display:flex;gap:var(--space-2);align-items:flex-start}
-.pj-manage input{flex:1;min-width:0}
+.pj-manage input,.pj-manage select{flex:1;min-width:0}
 .checkline{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted);cursor:pointer;user-select:none}
 .checkline input{width:auto;margin:0;accent-color:var(--accent)}
 
@@ -413,7 +413,7 @@ var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
    This label is inside the page function. The shim reads window.BUILD when it
    sends a save. Without that copy every save goes out with an empty build and
    the server answers "Reload the page". */
-var BUILD = "2026-10-10 c";
+var BUILD = "2026-10-10 d";
 try { window.BUILD = BUILD; } catch (e) {}
 var DAY = 86400000, MO = 30.44;
 
@@ -575,6 +575,7 @@ function applyLiquidationLine(row, edit, stamp, outcome){
     notBought:false, vstatus:"Closed", liq:stamp||null
   });
   if(e.supplier!=null) next.supplier=e.supplier;
+  if(e.project!=null) next.project=e.project;
   return next;
 }
 /* Audit amounts stay plain so a later read can compare 200.00 with 150.00. */
@@ -976,6 +977,171 @@ function upsertManagedProject(managed, patch){
   list.sort(function(a,b){ return String(a.code).localeCompare(String(b.code)); });
   return {ok:true, project:next, projects:list};
 }
+/* --- project-match:start --- */
+/* A new project is compared with the master list before it is saved.
+   The comparison ignores case, spaces, hyphens and other punctuation, and
+   collapses a doubled letter (Bariili and Barili). A shorter name that sits
+   inside a longer one (Labangon inside 26HH0083 - Labangon) is the same hit.
+   The existing row is left as it was stored. The person picks that row. */
+function normProjectLabel(raw){
+  return String(raw==null?"":raw).replace(/\s+/g," ").trim();
+}
+function projectFoldKey(raw){
+  var s=normProjectLabel(raw).toLowerCase();
+  var out="", i, c, prev="";
+  for(i=0;i<s.length;i++){
+    c=s.charAt(i);
+    if(!((c>="0"&&c<="9")||(c>="a"&&c<="z"))) continue;
+    if(c===prev) continue;
+    out+=c;
+    prev=c;
+  }
+  return out;
+}
+function projectRowLabels(row){
+  if(row==null || row==="") return [];
+  if(typeof row==="string"){
+    var s=normProjectLabel(row);
+    return s?[s]:[];
+  }
+  var code=normProjectLabel(row.code||row.name||row.id||"");
+  var name=normProjectLabel(row.name||"");
+  var out=[];
+  if(code) out.push(code);
+  if(name && name!==code) out.push(name);
+  return out;
+}
+function projectIdentity(row){
+  var labels=projectRowLabels(row);
+  var code=labels[0]||"";
+  var name=labels.length>1?labels[1]:code;
+  var status="Active";
+  if(row && typeof row==="object" && row.status) status=String(row.status);
+  return {code:code, name:name||code, status:status};
+}
+function projectLabelsMatch(a,b){
+  return normProjectLabel(a).toLowerCase()===normProjectLabel(b).toLowerCase();
+}
+function projectFoldContains(a,b){
+  if(!a||!b||a===b) return false;
+  var shorter=a.length<b.length?a:b;
+  var longer=a.length<b.length?b:a;
+  return shorter.length>=4 && longer.indexOf(shorter)>=0;
+}
+function projectNearMatches(list, raw){
+  var display=normProjectLabel(raw);
+  var key=projectFoldKey(display);
+  if(!display || !key) return [];
+  var alias=display;
+  if(typeof normProj==="function") alias=normProjectLabel(normProj(display));
+  var aliasKey=projectFoldKey(alias);
+  var hits=[];
+  (list||[]).forEach(function(row){
+    var labels=projectRowLabels(row);
+    if(!labels.length) return;
+    var how="", matched="";
+    labels.forEach(function(label){
+      if(how==="same") return;
+      var fk=projectFoldKey(label);
+      if(projectLabelsMatch(label, display) || projectLabelsMatch(label, alias) ||
+         fk===key || (aliasKey && fk===aliasKey)){
+        how="same"; matched=label; return;
+      }
+      if(how) return;
+      if(projectFoldContains(fk, key) || (aliasKey && projectFoldContains(fk, aliasKey))){
+        how="contains"; matched=label;
+      }
+    });
+    if(!how) return;
+    hits.push({project:projectIdentity(row), how:how, matched:matched});
+  });
+  hits.sort(function(a,b){
+    if(a.how===b.how) return String(a.project.code).localeCompare(String(b.project.code));
+    return a.how==="same"?-1:1;
+  });
+  return hits;
+}
+function projectMatchLabel(p){
+  if(!p) return "";
+  var code=p.code||"";
+  var name=p.name&&p.name!==code?p.name:"";
+  return name?code+" — "+name:code;
+}
+function projectNearMessage(planned){
+  var list=(planned&&planned.matches)||[];
+  if(planned&&planned.match&&!list.length) list=[planned.match];
+  var labels=[], seen={};
+  list.forEach(function(p){
+    var label=projectMatchLabel(p);
+    if(!label||seen[label]) return;
+    seen[label]=1;
+    labels.push(label);
+  });
+  if(!labels.length) return "That name is already on the list. Pick the existing project instead.";
+  if(labels.length===1) return "Already on the list as "+labels[0]+". Pick that one instead.";
+  return "Already on the list as "+labels.join("; ")+". Pick one of those instead.";
+}
+function planProjectAdd(list, raw){
+  var display=normProjectLabel(raw);
+  var projects=(list||[]).slice();
+  if(!display || !projectFoldKey(display)) return {ok:false, reason:"blank", projects:projects, matches:[]};
+  var hits=projectNearMatches(projects, display);
+  if(hits.length){
+    return {ok:false, reason:"near", name:display, match:hits[0].project,
+      matches:hits.map(function(h){ return h.project; }), projects:projects};
+  }
+  var row={code:display, name:display, status:"Active"};
+  var next=projects.concat([row]);
+  next.sort(function(a,b){ return String(projectIdentity(a).code).localeCompare(String(projectIdentity(b).code)); });
+  return {ok:true, existing:false, name:display, project:row, projects:next};
+}
+function sameProjectList(a,b){
+  function stamp(list){
+    return (list||[]).map(function(r){
+      var id=projectIdentity(r);
+      return id.code+"\t"+id.name+"\t"+id.status;
+    }).sort().join("\n");
+  }
+  return stamp(a)===stamp(b);
+}
+function foldProjectBase(remote, local){
+  var remoteRows=(remote||[]).slice();
+  var extras=[];
+  (local||[]).forEach(function(r){
+    var label=(projectRowLabels(r)[0])||"";
+    if(!label) return;
+    if(projectNearMatches(remoteRows, label).length) return;
+    if(projectNearMatches(extras, label).length) return;
+    extras.push(r);
+  });
+  return remoteRows.concat(extras);
+}
+function applyProjectChange(remote, local, change){
+  change=change||{};
+  var base=foldProjectBase(remote, local);
+  if(change.op!=="add") return {ok:false, reason:"op", projects:base, write:false};
+  var planned=planProjectAdd(base, change.name);
+  if(!planned.ok){ planned.write=false; return planned; }
+  planned.write=!sameProjectList(planned.projects, remote);
+  return planned;
+}
+function projectDocBody(doc, list){
+  var body={};
+  var src=(doc && typeof doc==="object" && !Array.isArray(doc)) ? doc : null;
+  var next=(list||[]).slice();
+  if(src) Object.keys(src).forEach(function(k){ body[k]=src[k]; });
+  var hasRows=!!(src && Array.isArray(src.rows));
+  var hasProjects=!!(src && Array.isArray(src.projects));
+  if(!src || (!hasRows && !hasProjects)){
+    body.rows=next;
+    body.projects=next;
+    return body;
+  }
+  if(hasRows) body.rows=next;
+  if(hasProjects) body.projects=next;
+  return body;
+}
+/* --- project-match:end --- */
 /* Only actual fuel — "Fuel — Diesel", "Fuel — Gasoline". The old test was
    /^Fuel\b/ which also matched "Fuel Filter", so a filter on a change-oil VRF
    was read as a tank of diesel: it triggered the fuel gate, demanded a reserve,
@@ -1891,7 +2057,7 @@ async function liquidateVrf(entry,edits,added,by,note,outcome){
         work:a2.work||base.work||"", item:a2.item||"",
         qty:qty, price:price, total:qty*price,
         supplier:a2.supplier||"", unit:a2.unit||"pc",
-        project:base.project||"", liters:parseFloat(a2.liters)||null,
+        project:a2.project||base.project||"", liters:parseFloat(a2.liters)||null,
         odo:base.odo||null, reserve:base.reserve||"",
         vstatus:"Closed", liq:stamp, addedAtLiquidation:true,
         notes:base.notes||""};
@@ -2568,7 +2734,8 @@ async function loadAll(){
   if(mks.join(",")!==((idx&&idx.months)||[]).join(",")){
     try{ await writeDoc("ledger/index",{months:mks}); }catch(e){}
   }
-  await harvestProjects(true);
+  /* The projects master is the list staff pick from. Do not copy site strings
+     off old rows back onto it — that is how typed variants became a second project. */
   _vrfs=null; _lw=null;
   /* null means the collection list failed. An empty list is a real answer.
      Do not pull a high counter back when the workbook may be incomplete. */
@@ -2738,15 +2905,16 @@ function harvestProjects(persist){
   return Promise.resolve(next);
 }
 async function saveProjects(){
-  await writeDoc(PATHS.projects,{rows:S.projects,projects:S.projects});
+  var doc=null;
+  try{ doc=await readDoc(PATHS.projects); }catch(e){}
+  await writeDoc(PATHS.projects, projectDocBody(doc, S.projects));
 }
 async function ensureProject(code){
-  var row=asProject(code); if(!row) return "";
-  if(!S.projects.some(function(p){ return projectCodeOf(p)===row.code; })){
-    S.projects=S.projects.concat([row]);
-    try{ await saveProjects(); }catch(e){}
-  }
-  return row.code;
+  var planned=planProjectAdd(S.projects, code);
+  if(!planned.ok) return "";
+  S.projects=planned.projects;
+  try{ await saveProjects(); }catch(e){}
+  return planned.name||"";
 }
 function projectFilterSelect(value,onChange,opts){
   opts=opts||{};
@@ -2823,98 +2991,244 @@ function fuelSpendKind(draft){
   if(hasFuel||work==="FUEL-STN") return "fuel-bulk";
   return "job";
 }
+var ADD_PROJECT_VALUE="\u0000add-project";
+function projectOptionLabel(p){
+  var label=(p.name&&p.name!==p.code)?(p.code+" — "+p.name):p.code;
+  if(p.status==="Archived") label=label+" (archived)";
+  return label;
+}
+function fillProjectSelect(sel, value, opts){
+  opts=opts||{};
+  var want=value==null?"":String(value);
+  if(want===ADD_PROJECT_VALUE) want="";
+  want=normProj(want);
+  sel.innerHTML="";
+  sel.appendChild(new Option(opts.blankLabel||"— project —",""));
+  pickerProjectList(S.projects,{
+    includeArchived:opts.includeArchived!=null?opts.includeArchived:Boolean(S.showArchivedProjects),
+    current:want
+  }).forEach(function(p){
+    sel.appendChild(new Option(projectOptionLabel(p), p.code));
+  });
+  if(opts.allowOrphan!==false && want && !optionHas(sel, want)) sel.appendChild(new Option(want, want));
+  if(opts.allowAdd!==false) sel.appendChild(new Option("+ Add new project…", ADD_PROJECT_VALUE));
+  sel.value=optionHas(sel, want)?want:"";
+}
+function refreshProjectSelects(){
+  var nodes=document.querySelectorAll("select[data-project-pick]");
+  for(var i=0;i<nodes.length;i++){
+    var sel=nodes[i];
+    var meta=sel._mpProject;
+    if(!meta) continue;
+    var keep=sel._mpPrev!=null?sel._mpPrev:sel.value;
+    if(keep===ADD_PROJECT_VALUE) keep="";
+    fillProjectSelect(sel, keep, meta.opts||{});
+  }
+}
+function chooseProjectOption(sel, name, fallback){
+  var opts=sel._mpProject&&sel._mpProject.opts||{};
+  fillProjectSelect(sel, fallback, opts);
+  var key=projectFoldKey(name);
+  for(var i=0;i<sel.options.length;i++){
+    var v=sel.options[i].value;
+    if(!v || v===ADD_PROJECT_VALUE) continue;
+    if(v===name || projectFoldKey(v)===key){
+      sel.value=v;
+      return v;
+    }
+  }
+  sel.value=optionHas(sel, fallback)?fallback:"";
+  return "";
+}
+async function commitProjectChange(change){
+  var lastPlan=null, lastWrite=null;
+  for(var attempt=0; attempt<3; attempt++){
+    var doc=await readDoc(PATHS.projects);
+    var remote=masterList(doc, "projects");
+    lastPlan=applyProjectChange(remote, S.projects, change);
+    if(!lastPlan || !lastPlan.ok) return lastPlan || {ok:false, shared:false, localOnly:false};
+    if(!lastPlan.write){
+      return Object.assign({shared:true, localOnly:false}, lastPlan);
+    }
+    var body=projectDocBody(doc, lastPlan.projects);
+    lastWrite=await writeDoc(PATHS.projects, body, {quiet:true});
+    S.projects=lastPlan.projects;
+    if(!S.db || !lastWrite || !lastWrite.ok) break;
+    var check=await readDoc(PATHS.projects);
+    if(sameProjectList(masterList(check, "projects"), lastPlan.projects)) break;
+  }
+  var shared=!!(lastWrite && lastWrite.ok);
+  return Object.assign({shared:shared, localOnly:!shared}, lastPlan||{ok:false});
+}
+function openAddProjectPrompt(onDone){
+  var ex=document.getElementById("pjAddSheet"); if(ex) ex.remove();
+  var m=el("div","modal"); m.id="pjAddSheet";
+  var sheet=el("div","sheet"); sheet.style.maxWidth="480px";
+  var b=el("div"); b.style.padding="var(--space-5) var(--space-6)";
+  b.appendChild(el("h3",null,"Add a project"));
+  b.appendChild(el("div","hint","The name is added to the shared project list. A name that matches one already on file — ignoring capitals, spaces, hyphens and a doubled letter — is not added."));
+  var field=el("div","field"); field.style.marginTop="var(--space-3)";
+  field.appendChild(el("label",null,"Project or site"));
+  var input=el("input"); input.placeholder="Project or site name";
+  field.appendChild(input);
+  var hint=el("div","hint"); hint.style.marginTop="6px";
+  b.appendChild(field); b.appendChild(hint);
+  var row=el("div","row"); row.style.marginTop="var(--space-4)";
+  var add=el("button","btn pri","Add project");
+  var cancel=el("button","btn","Cancel");
+  row.appendChild(add); row.appendChild(cancel);
+  b.appendChild(row);
+  var finished=false, saving=false;
+  function close(res){
+    if(finished) return;
+    finished=true;
+    m.remove();
+    if(onDone) onDone(res||null);
+  }
+  cancel.addEventListener("click", function(){ close(null); });
+  m.addEventListener("click", function(ev){ if(ev.target===m) close(null); });
+  add.addEventListener("click", async function(){
+    if(saving) return;
+    var display=normProjectLabel(input.value);
+    if(!display || !projectFoldKey(display)){
+      hint.textContent="Type a project name.";
+      try{ input.focus(); }catch(e){}
+      return;
+    }
+    var hits=projectNearMatches(S.projects, display);
+    if(hits.length){
+      hint.textContent=projectNearMessage({matches:hits.map(function(h){ return h.project; })});
+      try{ input.focus(); }catch(e2){}
+      return;
+    }
+    saving=true;
+    add.disabled=true;
+    var res;
+    try{ res=await commitProjectChange({op:"add", name:display}); }
+    catch(e){ res=null; }
+    if(res && res.reason==="near"){
+      saving=false;
+      add.disabled=false;
+      hint.textContent=projectNearMessage(res);
+      return;
+    }
+    if(!res || !res.ok){
+      saving=false;
+      add.disabled=false;
+      hint.textContent="Could not add that project.";
+      return;
+    }
+    close(res);
+  });
+  input.addEventListener("keydown", function(e){
+    if(e.key==="Enter"){ e.preventDefault(); add.click(); }
+    if(e.key==="Escape"){ e.preventDefault(); close(null); }
+  });
+  sheet.appendChild(b); m.appendChild(sheet); document.body.appendChild(m);
+  try{ input.focus(); }catch(e){}
+}
+function bindProjectSelect(sel, value, onChange, opts){
+  opts=opts||{};
+  sel.setAttribute("data-project-pick","1");
+  sel._mpProject={onChange:onChange, opts:opts};
+  fillProjectSelect(sel, value||"", opts);
+  sel._mpPrev=sel.value===ADD_PROJECT_VALUE?"":sel.value;
+  sel.addEventListener("change", function(){
+    if(sel.value!==ADD_PROJECT_VALUE){
+      sel._mpPrev=sel.value;
+      if(onChange) onChange(sel.value);
+      return;
+    }
+    var back=sel._mpPrev||"";
+    sel.value=optionHas(sel, back)?back:"";
+    openAddProjectPrompt(function(res){
+      if(!res || !res.ok || !res.name){
+        sel.value=optionHas(sel, back)?back:"";
+        sel._mpPrev=sel.value;
+        return;
+      }
+      var chosen=chooseProjectOption(sel, res.name, back);
+      sel._mpPrev=chosen||sel.value;
+      if(res.localOnly) toast((res.name||"That project")+" is saved on this device only. The shared workbook did not take it, so other people will not see it yet.");
+      else toast(res.name+" added.");
+      if(onChange) onChange(sel._mpPrev);
+      refreshProjectSelects();
+    });
+  });
+  return sel;
+}
 function projectPicker(value,onChange,opts){
   opts=opts||{};
   var wrap=el("div");
   var row=el("div","pj-manage");
-  var inp=el("input");
-  inp.placeholder=opts.placeholder||"type a project code or name…";
-  inp.setAttribute("autocomplete","off");
-  inp.disabled=false;
-  inp.readOnly=false;
-  var dlId="pj-"+Math.random().toString(36).slice(2,8);
-  var dl=document.createElement("datalist"); dl.id=dlId;
+  var sel=el("select");
   var current=normProj(value||"");
   var show=el("label","checkline");
   var cb=el("input"); cb.type="checkbox"; cb.checked=Boolean(S.showArchivedProjects);
   show.appendChild(cb); show.appendChild(document.createTextNode("Show archived"));
-  function fillList(){
-    dl.innerHTML="";
-    pickerProjectList(S.projects,{
-      includeArchived:cb.checked,
-      current:current
-    }).forEach(function(p){
-      var o=document.createElement("option");
-      o.value=p.code;
-      var bits=[];
-      if(p.name&&p.name!==p.code) bits.push(p.name);
-      if(p.status==="Archived") bits.push("archived");
-      o.label=bits.join(" · ");
-      dl.appendChild(o);
-    });
-  }
   function paintHint(){
-    var rowP=findProject(current);
+    var rowP=findProject(sel.value||current);
     if(rowP&&rowP.status==="Archived"){
       hint.textContent="This file uses an archived project. It stays on the record.";
     }else{
-      hint.textContent=opts.hint||"Pick a project on file. A unit can fill this as a default — you can still change it. Use Manage to add or archive.";
+      hint.textContent=opts.hint||"Pick a project on file. A unit can fill this as a default — you can still change it. + Add new project… checks the list before adding.";
     }
   }
-  fillList();
-  inp.setAttribute("list",dlId);
-  inp.value=current;
+  var hint=el("div","hint");
+  bindProjectSelect(sel, current, function(code){
+    current=code;
+    sel.disabled=false;
+    paintHint();
+    if(onChange) onChange(code);
+  }, {
+    blankLabel:opts.blankLabel||"— project —",
+    includeArchived:cb.checked
+  });
+  cb.addEventListener("change", function(){
+    S.showArchivedProjects=cb.checked;
+    sel._mpProject.opts.includeArchived=cb.checked;
+    fillProjectSelect(sel, sel.value, sel._mpProject.opts);
+    sel._mpPrev=sel.value===ADD_PROJECT_VALUE?"":sel.value;
+  });
   var manage=el("button","btn sm","Manage");
   manage.type="button";
   manage.title="Add or edit projects";
-  manage.addEventListener("click",function(ev){
+  manage.addEventListener("click", function(ev){
     ev.preventDefault();
-    openProjectsManager({onClose:function(){ fillList(); paintHint(); }});
+    openProjectsManager({onClose:function(){
+      fillProjectSelect(sel, sel.value, sel._mpProject.opts);
+      sel._mpPrev=sel.value===ADD_PROJECT_VALUE?"":sel.value;
+      paintHint();
+    }});
   });
-  var hint=el("div","hint");
-  function commit(){
-    var code=normProj(inp.value);
-    current=code;
-    if(code) ensureProject(code);
-    fillList();
-    paintHint();
-    if(onChange) onChange(code);
-  }
-  inp.addEventListener("change",commit);
-  inp.addEventListener("blur",commit);
-  cb.addEventListener("change",function(){
-    S.showArchivedProjects=cb.checked;
-    fillList();
-  });
-  row.appendChild(inp); row.appendChild(manage);
+  row.appendChild(sel); row.appendChild(manage);
   wrap.appendChild(row);
-  wrap.appendChild(dl);
   wrap.appendChild(show);
   wrap.appendChild(hint);
   paintHint();
-  wrap.getCode=function(){ return current; };
+  wrap.getCode=function(){
+    var v=sel.value;
+    return (!v || v===ADD_PROJECT_VALUE)?"":v;
+  };
   wrap.setCode=function(code){
     current=normProj(code||"");
-    inp.disabled=false;
-    inp.readOnly=false;
-    inp.value=current;
-    fillList();
+    sel.disabled=false;
+    fillProjectSelect(sel, current, sel._mpProject.opts);
+    sel._mpPrev=sel.value===ADD_PROJECT_VALUE?"":sel.value;
     paintHint();
   };
-  wrap.input=inp;
   wrap.isLocked=function(){ return false; };
-  wrap.setLocked=function(){ inp.disabled=false; inp.readOnly=false; };
+  wrap.setLocked=function(){ sel.disabled=false; };
   return wrap;
 }
 function openProjectsManager(opts){
   opts=opts||{};
   var ex=document.getElementById("pjSheet"); if(ex) ex.remove();
-  harvestProjects(false);
   var m=el("div","modal"); m.id="pjSheet";
   var sheet=el("div","sheet"); sheet.style.maxWidth="720px";
   var b=el("div"); b.style.padding="var(--space-5) var(--space-6)";
   b.appendChild(el("h3",null,"Projects"));
-  b.appendChild(el("div","hint","Add or edit names and codes. Archive a finished job so it drops off the pickers. Old VRF, reserve and ledger rows keep the name they were saved with."));
+  b.appendChild(el("div","hint","Add or edit names and codes. A name that matches one already on file is refused — pick that project instead. Archive a finished job so it drops off the pickers. Old VRF, reserve and ledger rows keep the name they were saved with."));
 
   var editingPrev="";
   var form=el("div","f3"); form.style.marginTop="var(--space-4)";
@@ -2997,13 +3311,27 @@ function openProjectsManager(opts){
     ],rows,{empty:showCb.checked?"No projects on file yet.":"No active projects — turn on Show archived or add one."}));
   }
   saveBtn.addEventListener("click",async function(){
-    var code=normProj(codeIn.value);
+    var code=normProjectLabel(codeIn.value);
+    var name=normProjectLabel(nameIn.value)||code;
     if(!code){ formHint.textContent="Type the project name or code."; return; }
+    var others=(S.projects||[]).filter(function(p){
+      return !editingPrev || projectCodeOf(p)!==editingPrev;
+    });
+    var hits=projectNearMatches(others, code);
+    if(name!==code){
+      projectNearMatches(others, name).forEach(function(h){
+        if(!hits.some(function(x){ return x.project.code===h.project.code; })) hits.push(h);
+      });
+    }
+    if(hits.length){
+      formHint.textContent=projectNearMessage({matches:hits.map(function(h){ return h.project; })});
+      return;
+    }
     saveBtn.disabled=true;
     var res=upsertManagedProject(S.projects,{
       prevCode:editingPrev||code,
       code:code,
-      name:nameIn.value.trim()||code,
+      name:name,
       archived:archCb.checked
     });
     if(!res.ok){ formHint.textContent=res.reason; saveBtn.disabled=false; return; }
@@ -3013,6 +3341,7 @@ function openProjectsManager(opts){
     resetForm();
     saveBtn.disabled=false;
     drawList();
+    refreshProjectSelects();
   });
   cancelEdit.addEventListener("click",resetForm);
   showCb.addEventListener("change",function(){
@@ -8588,6 +8917,13 @@ function tasksView(){
     .forEach(function(x){ ca.appendChild(new Option(x,x)); });
   r2.appendChild(fld("Unit",vs)); r2.appendChild(fld("Priority",pr)); r2.appendChild(fld("Category",ca));
   b.appendChild(r2);
+  var taskProj=projectPicker("", null, {
+    blankLabel:"— project / site —",
+    hint:"Optional. Pick a project on file."
+  });
+  var taskProjF=fld("Project / site", taskProj);
+  taskProjF.style.marginTop="var(--space-3)";
+  b.appendChild(taskProjF);
   var de=el("textarea"); de.rows=2; de.placeholder="Any detail the person picking this up will need.";
   var df=fld("Detail",de); df.style.marginTop="var(--space-3)"; b.appendChild(df);
   var act=el("div","row"); act.style.marginTop="var(--space-3)";
@@ -8598,6 +8934,7 @@ function tasksView(){
     var n=S.tasks.reduce(function(a,x){ return Math.max(a,parseInt(x.no,10)||0); },0)+1;
     await appendRows("tasks",[{no:String(n),created:iso(),title:ti.value.trim(),detail:de.value.trim(),
       assigned:as.value,vehicle:vs.getCode(),priority:pr.value,due:du.value,category:ca.value,
+      project:taskProj.getCode(),
       status:"Open",closed:"",closedBy:""}]);
     toast("Task T-"+n+" added."); render();
   });
@@ -8757,6 +9094,13 @@ function openTask(no){
   e2.appendChild(f2("Priority",pr)); e2.appendChild(f2("Category",ca));
   e2.appendChild(el("div"));
   eb.appendChild(e2);
+  var taskEditProj=projectPicker(t.project||"", null, {
+    blankLabel:"— project / site —",
+    hint:"Pick a project on file."
+  });
+  var taskEditProjF=f2("Project / site", done?el("div",null,t.project||"—"):taskEditProj);
+  taskEditProjF.style.marginTop="var(--space-3)";
+  eb.appendChild(taskEditProjF);
   if(done){
     [ti,de,as,du].forEach(function(x){ x.readOnly=true; });
     [pr,ca].forEach(function(x){ x.disabled=true; });
@@ -8770,7 +9114,7 @@ function openTask(no){
       esb.disabled=true; esb.textContent="Saving…";
       await saveTask(t.no,{title:ti.value.trim(),detail:de.value.trim(),
         assigned:as.value.trim(),vehicle:tvs.getCode(),priority:pr.value,
-        category:ca.value,due:du.value});
+        category:ca.value,due:du.value,project:taskEditProj.getCode()});
       toast("T-"+t.no+" saved."); render(); openTask(t.no);
     });
     esave.appendChild(esb); esave.appendChild(emsg);
@@ -10974,6 +11318,11 @@ function openVrf(entry,tab){
           var ssel=supplierSelect(e.supplier!=null?e.supplier:r.supplier, function(name){ e.supplier=name; });
           ssel.disabled=!!e.remove;
           stc.appendChild(ssel); tr.appendChild(stc);
+          var plc=el("td");
+          var plsel=el("select");
+          bindProjectSelect(plsel, e.project!=null?e.project:(r.project||entry.project||""), function(name){ e.project=name; }, {blankLabel:"— project —"});
+          plsel.disabled=!!e.remove;
+          plc.appendChild(plsel); tr.appendChild(plc);
           tr.appendChild(el("td","hint",workName(lineWork(r))));
           var qtd=el("td","num");
           qtd.appendChild(numInput((e.qty!=null)?e.qty:r.qty,
@@ -11005,6 +11354,10 @@ function openVrf(entry,tab){
           var std=el("td");
           var ss2=supplierSelect(a2.supplier, function(name){ a2.supplier=name; });
           std.appendChild(ss2); tr.appendChild(std);
+          var aptd=el("td");
+          var apsel=el("select");
+          bindProjectSelect(apsel, a2.project!=null?a2.project:(entry.project||""), function(name){ a2.project=name; }, {blankLabel:"— project —"});
+          aptd.appendChild(apsel); tr.appendChild(aptd);
           var jtd=el("td");
           var js2=workSelect(a2.work||"","— same job —");
           js2.addEventListener("change",function(){ a2.work=js2.value; });
@@ -11027,15 +11380,15 @@ function openVrf(entry,tab){
       }
 
       var wrap2=el("div","scroll"), t2=el("table"), th2=el("thead"), hr2=el("tr");
-      ["Part category","Item","Supplier","Job","Qty","Unit price","Total",""].forEach(function(x,i){
-        var h=el("th",null,x); if(i>=4&&i<=6) h.style.textAlign="right"; hr2.appendChild(h); });
+      ["Part category","Item","Supplier","Project","Job","Qty","Unit price","Total",""].forEach(function(x,i){
+        var h=el("th",null,x); if(i>=5&&i<=7) h.style.textAlign="right"; hr2.appendChild(h); });
       th2.appendChild(hr2); t2.appendChild(th2); t2.appendChild(tb2);
       drawRows(); recalcLiq();
       wrap2.appendChild(t2); body.appendChild(wrap2);
       var addRow=el("div","row"); addRow.style.marginTop="var(--space-3)";
       var addb=el("button","btn","+ Add a line that was actually bought");
       addb.addEventListener("click",function(){
-        added.push({cat:"",item:"",supplier:"",qty:"",unit:"pc",price:"",work:"",liters:""});
+        added.push({cat:"",item:"",supplier:"",project:entry.project||"",qty:"",unit:"pc",price:"",work:"",liters:""});
         drawRows(); recalcLiq();
       });
       addRow.appendChild(addb);
@@ -11299,7 +11652,7 @@ function vrfView(){
     d.project=next.project;
     d.projectOverridden=next.projectOverridden;
     d.vehicleSiteDefault=next.vehicleSiteDefault;
-  },{hint:"Filled from the unit when you type a code — you can still change it. Use Manage to add or archive."});
+  },{hint:"Filled from the unit when you pick one — you can still change it. Choose a project on file."});
   hb.appendChild(fld("Project",pSel));
   g0.appendChild(hb);
 
@@ -12422,6 +12775,13 @@ function downView(){
   mb.appendChild(m2);
   var m2b=el("div","f3"); m2b.style.marginTop="var(--space-3)";
   m2b.appendChild(fld("Against reserve",mrsv));
+  var mproj=projectPicker("", null, {
+    blankLabel:"— project / site —",
+    hint:"Optional. Pick a project on file."
+  });
+  var mprojF=fld("Project / site", mproj);
+  mprojF.style.marginTop="var(--space-3)";
+  m2b.appendChild(mprojF);
   mb.appendChild(m2b);
 
   /* shown only when the unit is off the road — this replaces the old breakdown form */
@@ -12446,6 +12806,7 @@ function downView(){
     var rr=reserveBy(mrsv.value);
     if(!rr) return;
     mvs.setCode(rr.veh);
+    if(rr.project && mproj && !mproj.getCode()) mproj.setCode(rr.project);
     if(mrc&&!mrc.value.trim()) mrc.value=rr.scope||"";
   });
   var mrc=el("textarea"); mrc.rows=2; mrc.placeholder="What is wrong, or what is being asked for.";
@@ -12508,6 +12869,7 @@ function downView(){
       downTo:"", severity:msev.value, location:mloc.value, reportedBy:mrep.value,
       driver:mdrv.value,
       rootCause:mrc.value.trim(),resolution:"",hours:null,vrf:"",reserve:mrsv.value||"",
+      project:mproj.getCode(),
       checklist:lines.map(function(t){return {text:t,done:false,by:"",at:""};}),
       proofs:[],status:"Open",doneAt:"",doneBy:"",verifiedAt:"",verifiedBy:"",verifyNotes:""}]);
     if(mrsv.value){
@@ -12661,12 +13023,35 @@ function openJO(no){
 
   var meta=el("div"); meta.style.cssText="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:var(--space-3);margin:var(--space-4) 0";
   [["Work",j.action],["Assigned to",j.mechanic||"— unassigned"],["Priority",j.priority||"Normal"],
+   ["Project / site", j.project||"—"],
    ["Parts VRF",j.vrf||"—"],["Hours",j.hours!=null?nnum(j.hours,1):"—"]].forEach(function(pp){
     var r=el("div"); r.appendChild(el("div","hint",pp[0]));
     var val=el("div",null,pp[1]||"—"); val.style.fontWeight="500"; r.appendChild(val);
     meta.appendChild(r);
   });
   b.appendChild(meta);
+  if(!closed){
+    var joProj=projectPicker(j.project||"", null, {
+      blankLabel:"— project / site —",
+      hint:"Pick a project on file. The name already on this job order stays until you change it."
+    });
+    var joProjRow=el("div","row"); joProjRow.style.marginBottom="var(--space-4)";
+    var joProjField=el("div","field"); joProjField.style.flex="1";
+    joProjField.appendChild(el("label",null,"Project / site"));
+    joProjField.appendChild(joProj);
+    var joProjSave=el("button","btn sm","Save project");
+    joProjSave.style.alignSelf="end";
+    joProjSave.addEventListener("click", async function(){
+      joProjSave.disabled=true;
+      try{ await saveJO(j.no, {project:joProj.getCode()}); }
+      catch(err){ joProjSave.disabled=false; toast("Could not save the project."); return; }
+      toast("Project saved.");
+      render(); openJO(j.no);
+    });
+    joProjRow.appendChild(joProjField);
+    joProjRow.appendChild(joProjSave);
+    b.appendChild(joProjRow);
+  }
   if(j.rootCause){
     var sc=el("div"); sc.style.marginBottom="var(--space-4)";
     sc.appendChild(el("div","hint","Scope of work"));
@@ -13114,8 +13499,15 @@ function openUnitEdit(code){
   fieldRow([["insurance","Insurer","text",""],["insuranceExp","Insurance expires","date",""],
             ["acquired","Acquired","date",""]]);
   var h3=el("h4",null,"Service and posting"); h3.style.marginTop="var(--space-5)"; b.appendChild(h3);
-  fieldRow([["site","Assigned site","text",""],["lastOil","Last change oil","text",""],
-            ["schedOil","Change oil due","text",""]]);
+  var siteWrap=el("div","field"); siteWrap.style.marginTop="var(--space-3)"; siteWrap.style.maxWidth="520px";
+  siteWrap.appendChild(el("label",null,"Assigned site"));
+  var sitePick=projectPicker(v.site||"", null, {
+    blankLabel:"— assigned site —",
+    hint:"Pick the project or site this unit is on. + Add new project… if it is not on the list."
+  });
+  siteWrap.appendChild(sitePick);
+  b.appendChild(siteWrap);
+  fieldRow([["lastOil","Last change oil","text",""],["schedOil","Change oil due","text",""]]);
   fieldRow([["newTire","New tires","text",""],["battery","Battery","text",""],["notes","Notes","text",""]]);
   fieldRow([["drive","Drive folder","text","https://drive.google.com/drive/folders/…",
              "The unit's own folder — where the OR, CR and insurance scans are kept."]]);
@@ -13137,6 +13529,7 @@ function openUnitEdit(code){
     var row={};
     Object.keys(F).forEach(function(k){ row[k]=String(F[k].value||"").trim(); });
     row.code=codeV;
+    row.site=sitePick.getCode();
     var next=S.vehicles.filter(function(x){ return x.code!==(code||codeV); }).concat([row]);
     next.sort(function(a,b2){ return a.code.localeCompare(b2.code); });
     try{ await saveVehicles(next); }
@@ -14060,7 +14453,7 @@ function healthView(){
   });
   projRow.appendChild(projBtn); projRow.appendChild(showHealth);
   projB.appendChild(projRow);
-  projB.appendChild(el("div","hint","Add or edit names here. Archived codes stay on old VRF and reserve rows but drop off new pickers."));
+  projB.appendChild(el("div","hint","Add a project from any project dropdown (+ Add new project…). A near match is refused so the existing name is picked instead. Archived codes stay on old VRF and reserve rows but drop off new pickers."));
   var shown=S.showArchivedProjects?allP:activeP;
   var plist=el("div","hint"); plist.style.marginTop="var(--space-3)";
   plist.textContent=shown.map(function(p){

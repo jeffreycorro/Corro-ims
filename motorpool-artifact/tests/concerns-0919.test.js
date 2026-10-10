@@ -125,8 +125,10 @@ describe("artifact HTML carries the 9/19 afternoon concern fixes", () => {
     assert.match(html, /function markProjectOverride/);
     assert.match(html, /function projectFieldLocked/);
     assert.match(html, /wrap\.isLocked=function\(\)\{ return false; \}/);
-    assert.match(html, /Filled from the unit when you type a code — you can still change it/);
-    assert.match(html, /inp\.disabled=false;\s*inp\.readOnly=false/);
+    assert.match(html, /you can still change it/);
+    assert.match(html, /sel\.disabled=false/);
+    assert.match(html, /\+ Add new project…/);
+    assert.doesNotMatch(html, /type a project code or name/);
     assert.doesNotMatch(html, /pSel\.input\.disabled\s*=\s*true/);
     assert.doesNotMatch(html, /if\(v&&v\.site&&!d\.project\)/);
   });
@@ -146,6 +148,6 @@ describe("artifact HTML carries the 9/19 afternoon concern fixes", () => {
     assert.match(html, /FUEL RESERVE — drum dispense \(not a purchase\)/);
     assert.match(html, /Fuel Purchase — record a bulk delivery/);
     assert.match(html, /Fuel Reserve — dispense from the drums/);
-    assert.match(html, /var BUILD = "2026-10-10 c"/);
+    assert.match(html, /var BUILD = "2026-10-10 d"/);
   });
 });

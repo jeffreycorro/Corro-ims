@@ -19,6 +19,7 @@ const {
   setDocIfUpdatedAt,
 } = require("../lib/supabase");
 const { applyClientMerge } = require("../lib/doc-merge");
+const { normalizeIssueSpec, normalizeProjectWrite } = require("../lib/project-name");
 const { gateWrite, mergeAppConfig, screenClientSet } = require("../lib/vrf-issue");
 const { formatManilaIso } = require("../lib/manila");
 
@@ -71,6 +72,7 @@ exports.handler = async (event) => {
         const existing = await getDoc(collection, id);
         body.data = mergeAppConfig(existing && existing.data, body.data);
       }
+      body.data = normalizeProjectWrite(collection, id, body.data);
       const row = await setDoc(collection, id, body.data, {
         merge: Boolean(body.merge),
       });
@@ -120,6 +122,13 @@ exports.handler = async (event) => {
       /* The browser sends the build beside the spec. Numbering checks spec.build,
          so an empty spec.build must not reach that check after the gate passed. */
       if (body.build) spec.build = String(body.build);
+      const normalized = normalizeIssueSpec(spec);
+      if (normalized !== spec) {
+        Object.keys(spec).forEach((key) => {
+          delete spec[key];
+        });
+        Object.assign(spec, normalized);
+      }
       if (await recordsAvailable()) {
         /* The live issue function numbers a new reserve and patches an existing
            one. It has no ledger branch: a kind "ledger" call falls through and

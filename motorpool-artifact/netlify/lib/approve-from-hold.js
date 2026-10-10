@@ -15,6 +15,7 @@
 
 const { manilaDate, manilaYear } = require("./manila");
 const { mergeIssuedNumbers, mergeLedgerRows, mergeReserveRows } = require("./doc-merge");
+const { normProjectLabel } = require("./project-name");
 
 function approveError(statusCode, code, error) {
   const err = new Error(error);
@@ -341,7 +342,7 @@ function buildLedgerRows(hold, vrfNo, snapshot, today) {
       total: qty * price,
       supplier: l.supplier || "",
       unit: l.unit || "pc",
-      project: hold.project || "",
+      project: normProjectLabel(hold.project || ""),
       liters: parseFloat(l.liters) || null,
       odo: holdOdo(hold),
       reserve: String(hold.no),
@@ -478,6 +479,7 @@ function applyApproveFromHold(snapshot, hold, opts) {
         "Pending hold has no draft lines to post — refusing to invent a VRF"
       );
     }
+    if (typeof hold.project === "string") hold.project = normProjectLabel(hold.project);
     const changed = linkApprovedHold(hold, vrfNo, today, opts);
     const rows = buildLedgerRows(hold, vrfNo, snapshot, today);
     const mk = rows[0] ? rows[0].month : month;
@@ -510,6 +512,7 @@ function applyApproveFromHold(snapshot, hold, opts) {
     );
   }
 
+  if (typeof hold.project === "string") hold.project = normProjectLabel(hold.project);
   hold.status = "Approved";
   hold.approvedBudget = hold.approvedBudget != null ? hold.approvedBudget : hold.budget;
   hold.approvedBy = String(opts.approvedBy || "").trim() || hold.approvedBy || "api";
