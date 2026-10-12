@@ -83,8 +83,31 @@
     if (typeof root.toast === "function") root.toast(msg, kind);
   }
 
-  function store() {
+  /* Artifact state is `const S`, a lexical binding. Filters and a mailbox
+     refresh miss a person who was just logged until this binds that store. */
+  function bindStore() {
+    if (root.__hrS && root.__hrS.applicants) {
+      root.S = root.__hrS;
+      return root.__hrS;
+    }
+    if (root.S && root.S.applicants) return root.S;
+    try {
+      if (typeof document !== "undefined" && document.documentElement && typeof document.createElement === "function") {
+        var s = document.createElement("script");
+        s.textContent = "window.__hrS=S;window.S=S;";
+        document.documentElement.appendChild(s);
+        if (s.parentNode) s.parentNode.removeChild(s);
+      }
+    } catch (e0) {}
+    if (root.__hrS) {
+      root.S = root.__hrS;
+      return root.__hrS;
+    }
     return root.S || null;
+  }
+
+  function store() {
+    return bindStore();
   }
 
   function today() {
@@ -287,6 +310,11 @@
     (snap.docs || []).forEach(function (d) {
       var data = typeof d.data === "function" ? d.data() : d.data;
       next[d.id] = data;
+    });
+    Object.keys(S.applicants || {}).forEach(function (id) {
+      var row = S.applicants[id];
+      if (!row || !row._pendingSave || next[id]) return;
+      next[id] = row;
     });
     S.applicants = next;
     if (typeof S.lsSaveSoon === "function") S.lsSaveSoon();
@@ -1749,6 +1777,7 @@
   api.examScoresOf = examScoresOf;
   api.examScoreLine = examScoreLine;
   api.examScoresSummaryHtml = examScoresSummaryHtml;
+  api.refreshApplicants = refreshApplicants;
   api.install = attach;
   root.hrRecruit = api;
 

@@ -42,6 +42,11 @@
       var data = typeof d.data === "function" ? d.data() : d.data;
       next[d.id] = data;
     });
+    Object.keys(S.applicants || {}).forEach(function (id) {
+      var row = S.applicants[id];
+      if (!row || !row._pendingSave || next[id]) return;
+      next[id] = row;
+    });
     S.applicants = next;
     if (typeof S.lsSaveSoon === "function") S.lsSaveSoon();
     else if (typeof root.lsSaveSoon === "function") root.lsSaveSoon();
@@ -314,6 +319,7 @@
   api.openEmailDoor = openEmailDoor;
   api.getStatus = getStatus;
   api.pullInbox = pullInbox;
+  api.refreshApplicants = refreshApplicants;
   root.hrEmailApplicants = api;
 
   if (typeof document !== "undefined") {
