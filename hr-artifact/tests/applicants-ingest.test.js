@@ -120,6 +120,25 @@ describe("applicants ingest validation", () => {
     assert.equal(short.stage, "Shortlisted");
   });
 
+  it("accepts Background Check and stores For Final Interview as Final Interview", () => {
+    assert.ok(STAGES.includes("Background Check"));
+    const bg = normalizeItem(
+      { name: "Monte, Domingo Jr.", stage: "Background Check" },
+      0,
+      { today: "2026-10-12" }
+    );
+    const fin = normalizeItem(
+      { name: "Monte, Domingo Jr.", stage: "For Final Interview" },
+      1,
+      { today: "2026-10-12" }
+    );
+    assert.equal(bg.ok, true);
+    assert.equal(bg.stage, "Background Check");
+    assert.equal(bg.warnings && bg.warnings.length, 0);
+    assert.equal(fin.ok, true);
+    assert.equal(fin.stage, "Final Interview");
+  });
+
   it("requires a non-empty name and defaults stage, source, and appliedOn", () => {
     assert.equal(normalizeItem({}, 0, { today: "2026-09-14" }).error, "name is required");
     assert.equal(normalizeItem({ name: "   " }, 0, { today: "2026-09-14" }).error, "name is required");

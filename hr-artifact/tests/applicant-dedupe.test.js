@@ -169,6 +169,16 @@ describe("applicant merge", () => {
     assert.equal(furthestStage(["Applied", "On Hold"]), "On Hold");
     assert.equal(furthestStage(["Shortlisted", "Screening"]), "Shortlisted");
   });
+
+  it("ranks Background Check between Interview and Final Interview", () => {
+    const { STAGES, STAGE_RANK } = require("../public/hr-applicant-dedupe");
+    assert.ok(STAGES.includes("Background Check"));
+    assert.ok(STAGE_RANK["Background Check"] > STAGE_RANK.Interview);
+    assert.ok(STAGE_RANK["Final Interview"] > STAGE_RANK["Background Check"]);
+    assert.equal(STAGE_RANK["For Final Interview"], STAGE_RANK["Final Interview"]);
+    assert.equal(furthestStage(["Interview", "Background Check", "Final Interview"]), "Final Interview");
+    assert.equal(furthestStage(["Interview", "For Final Interview"]), "For Final Interview");
+  });
 });
 
 describe("ingest match", () => {

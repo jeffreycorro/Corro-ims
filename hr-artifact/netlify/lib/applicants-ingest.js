@@ -48,6 +48,7 @@ const STAGES = Object.freeze([
   "On Hold",
   "Written Exam",
   "Interview",
+  "Background Check",
   "Final Interview",
   "Offer",
   "Hired",
@@ -351,6 +352,7 @@ function normalizeItem(item, index, { today, batchOverwrite, batchUpdateOnly } =
 
   const warnings = [];
   let stage = asString(item.stage) || "Applied";
+  if (stage === "For Final Interview") stage = "Final Interview";
   if (!STAGES.includes(stage)) {
     warnings.push(`unknown stage "${stage}", defaulted to Applied`);
     stage = "Applied";

@@ -1156,6 +1156,36 @@ function otReqPayload(obj){
   if(Array.isArray(obj.forms)) payload.forms=obj.forms.map(f=>Object.assign({}, f));
   return payload;
 }
+/* The flag means "this browser has a save the shared list has not echoed".
+   It must not be written to the shared row. */
+function applicantPayload(obj){
+  if(!obj || typeof obj!=="object" || !obj._pendingSave) return obj;
+  const copy=Object.assign({}, obj);
+  delete copy._pendingSave;
+  return copy;
+}
+/* A snapshot that left before this save landed used to replace the whole
+   applicant map and the new person vanished. Keep that row and send it again.
+   A snapshot that already has the id is the confirmation, so the flag drops. */
+function keepPendingApplicants(next, local){
+  const map=Object.assign({}, next||{});
+  const retry=[];
+  Object.keys(local||{}).forEach(id=>{
+    const row=local[id];
+    if(!row || !row._pendingSave) return;
+    if(map[id]){
+      if(map[id]._pendingSave){
+        const cleaned=Object.assign({}, map[id]);
+        delete cleaned._pendingSave;
+        map[id]=cleaned;
+      }
+      return;
+    }
+    map[id]=row;
+    retry.push(id);
+  });
+  return {map:map, retry:retry};
+}
 async function put(coll,id,obj,opts){
   /* A hire added after start-up belongs on People & Pay straight away rather
      than waiting to be adopted from a manpower report. */
@@ -1168,7 +1198,8 @@ async function put(coll,id,obj,opts){
     delete obj._dmShed;
     slimDailyRecord(obj);
   }
-  const payload=coll==="employees" ? employeePersist(obj) : (coll==="otreqs" ? otReqPayload(obj) : obj);
+  if(coll==="applicants" && obj) obj._pendingSave=true;
+  const payload=coll==="employees" ? employeePersist(obj) : (coll==="otreqs" ? otReqPayload(obj) : (coll==="applicants" ? applicantPayload(obj) : obj));
   /* Clear the flag before the local copy is written, so a scan added in this
      save is not stripped until the shared write has actually succeeded. */
   if(coll==="employees" && obj) obj._docsOnServer=false;
@@ -1297,6 +1328,15 @@ async function connect(){
           put("otreqs", id, row, {quiet:true});
         });
       }
+      /* A manual applicant save that the shared list has not echoed yet stays
+         on this device and is sent again. The list call does not delete it. */
+      if(c==="applicants"){
+        Object.keys(S.applicants||{}).forEach(id=>{
+          const row=S.applicants[id];
+          if(!row || seen[id] || !row._pendingSave) return;
+          put("applicants", id, row, {quiet:true});
+        });
+      }
     });
     const st = await db.doc("meta/settings").get();
     if(st.exists){
@@ -1345,6 +1385,12 @@ async function connect(){
           next[id]=S.otreqs[id];
           if(!S.otreqs[id].shared) repair.push([id, next[id], "otreqs", {quiet:true}]);
         });
+      }
+      if(c==="applicants"){
+        const kept=keepPendingApplicants(next, S.applicants);
+        Object.keys(next).forEach(id=>{ delete next[id]; });
+        Object.keys(kept.map).forEach(id=>{ next[id]=kept.map[id]; });
+        kept.retry.forEach(id=>{ repair.push([id, next[id], "applicants", {quiet:true}]); });
       }
       /* A just-saved Daily Manpower or signed memo can lose fields when a
          stale collection snapshot replaces the whole map. Merge, don't swap.
@@ -1840,7 +1886,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-10-09a";
+const BUILD = "2026-10-12a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -15258,7 +15304,7 @@ function viewCOE(){
 }
 
 /* ============ recruitment ============ */
-const STAGES=["Applied","Screening","Shortlisted","On Hold","Written Exam","Interview","Final Interview","Offer","Hired","Rejected"];
+const STAGES=["Applied","Screening","Shortlisted","On Hold","Written Exam","Interview","Background Check","Final Interview","Offer","Hired","Rejected"];
 const SEED_EXAMS=[
  {id:"x001",kind:"exam",title:"IQ and General Aptitude Test",dept:"All",maxScore:50,passing:30,notes:"Logical reasoning, pattern recognition, numeracy and reading comprehension. Given to every applicant before the interview."},
  {id:"x010",kind:"exam",title:"Situational Judgement Test",dept:"All",maxScore:30,passing:18,notes:"Site and office scenarios — what the applicant would actually do."},
@@ -15314,6 +15360,36 @@ const SEED_EXAMS=[
 function examList(){ return Object.values(S.exams).filter(x=>x.kind==="exam").sort((a,b)=>a.title.localeCompare(b.title)); }
 function guideList(){ return Object.values(S.exams).filter(x=>x.kind==="guide").sort((a,b)=>a.title.localeCompare(b.title)); }
 function appList(){ return Object.values(S.applicants).sort((a,b)=>(b.appliedOn||"").localeCompare(a.appliedOn||"")); }
+/* Empty and the HR label "For Final Interview" both belong on a known stage.
+   Anything else is kept as typed so a new person is never dropped from the list. */
+function canonicalApplicantStage(stage){
+  const s=String(stage==null?"":stage).trim();
+  if(!s) return "Applied";
+  if(s==="For Final Interview") return "Final Interview";
+  return s;
+}
+function stageLabel(stage){
+  const s=canonicalApplicantStage(stage);
+  if(s==="Final Interview") return "For Final Interview";
+  return s;
+}
+function countApplicantsAtStage(list, stage){
+  const key=canonicalApplicantStage(stage);
+  return (list||[]).filter(a=>canonicalApplicantStage(a&&a.stage)===key).length;
+}
+function pipelineStageGroups(list){
+  const known={};
+  STAGES.forEach(st=>{ known[st]=[]; });
+  const extra={};
+  (list||[]).forEach(a=>{
+    const key=canonicalApplicantStage(a&&a.stage);
+    if(known[key]) known[key].push(a);
+    else (extra[key]||(extra[key]=[])).push(a);
+  });
+  const groups=STAGES.filter(st=>known[st].length).map(st=>({stage:st, rows:known[st]}));
+  Object.keys(extra).sort().forEach(st=>groups.push({stage:st, rows:extra[st]}));
+  return groups;
+}
 function examVerdict(r){
   const x=r && r.examId ? S.exams[r.examId] : null;
   const title=String((r&&(r.title||r.name))||(x&&x.title)||"").trim();
@@ -17076,20 +17152,30 @@ function viewRecruit(){
   const as=appList(), open=as.filter(a=>a.stage!=="Hired"&&a.stage!=="Rejected");
   const both=as.filter(a=>a.hrVerdict&&a.aiVerdict);
   const disagree=both.filter(a=>a.hrVerdict!==a.aiVerdict);
+  h+='<div class="strip" id="hr-stage-counts" style="margin-bottom:10px">';
+  STAGES.forEach(st=>{
+    const n=countApplicantsAtStage(as, st);
+    const sub=st==="Hired"?"converted to 201 records":st==="Final Interview"?"with management":st==="Background Check"?"references in progress":"at this stage";
+    h+=tile(n, stageLabel(st), sub, st==="Hired"?"ok":(n?"acc":"ok"));
+  });
+  h+='</div>';
   h+='<div class="strip">'
    + tile(open.length,"Applicants in play",as.length+" on record all time",open.length?"acc":"ok")
    + tile(as.filter(a=>(a.interviews||[]).length).length,"Interviewed","scripts completed","acc")
    + tile(both.length,"Both judgements in","HR and the written summary",both.length?"ok":"warn")
    + tile(disagree.length,"Where the two differ","worth your own look",disagree.length?"warn":"ok")
-   + tile(as.filter(a=>a.stage==="Hired").length,"Hired","converted to 201 records","ok")
+   + tile(countApplicantsAtStage(as,"Hired"),"Hired","converted to 201 records","ok")
    + '</div>';
   h+='<div class="sect-h"><h2>Pipeline</h2><span class="rule"></span>'
    + '<button class="btn sm" id="imp-apps">Import from the mailbox</button>'
    + '<button class="btn sm pri" id="new-app"><svg><use href="#i-plus"/></svg> Log an applicant</button></div>';
   if(!as.length) return h+'<div class="card"><div class="empty">No applicants logged. Define the role first, then add applicants against it — the exam scores, the scripted interview and both recommendations all sit on one record.</div></div>';
-  STAGES.forEach(st=>{
-    const rows=as.filter(a=>a.stage===st); if(!rows.length) return;
-    h+='<div class="sect-h" style="margin:16px 0 9px"><h2 style="font-size:13px">'+st+'</h2><span class="rule"></span>'
+  const focusId=S.ui&&S.ui.pipelineFocus;
+  const focus=focusId&&S.applicants[focusId];
+  if(focus) h+='<div class="note" id="hr-pipeline-focus" style="margin:12px 0">'+esc(focus.name)+' is on the pipeline at '+esc(stageLabel(focus.stage))+'.</div>';
+  pipelineStageGroups(as).forEach(g=>{
+    const st=g.stage, rows=g.rows;
+    h+='<div class="sect-h" style="margin:16px 0 9px"><h2 style="font-size:13px">'+esc(stageLabel(st))+'</h2><span class="rule"></span>'
      + '<span class="pill '+(st==="Hired"?"ok":st==="Rejected"?"mut":"acc")+'">'+rows.length+'</span></div>'
      + '<div class="card"><div class="tw"><table><thead><tr><th>Applicant</th><th>Role</th><th>Applied</th><th class="num">Exams</th><th class="num">Interview</th><th>HR says</th><th>Summary says</th><th></th></tr></thead><tbody>';
     rows.forEach(a=>{
@@ -17097,7 +17183,8 @@ function viewRecruit(){
       const ivs=(a.interviews||[]);
       const avg = ivs.length ? (ivs.reduce((s,x)=>s+(parseFloat(x.overall)||0),0)/ivs.length).toFixed(1) : null;
       const clash = a.hrVerdict && a.aiVerdict && a.hrVerdict!==a.aiVerdict;
-      h+='<tr><td class="nm">'+esc(a.name)+'</td><td>'+esc(ro?ro.title:(a.position||"—"))+'</td>'
+      const focused=focusId&&a.id===focusId;
+      h+='<tr'+(focused?' id="hr-pipeline-focus-row" style="background:var(--accent-soft)"':'')+'><td class="nm">'+esc(a.name)+'</td><td>'+esc(ro?ro.title:(a.position||"—"))+'</td>'
        + '<td class="mono">'+esc(a.appliedOn||"—")+'</td>'
        + '<td class="num">'+(sc?sc.passed+"/"+sc.total+" · "+sc.pct+"%":"—")+'</td>'
        + '<td class="num">'+(avg?avg+"/5":"—")+'</td>'
@@ -17163,7 +17250,7 @@ async function appEditor(id){
         + '<div class="f"><label>Name</label><input id="a-name" value="'+esc(a.name)+'"></div>'
         + '<div class="f"><label>Role applied for</label><select id="a-role"><option value="">— not linked to a role —</option>'
           + roleList().map(r=>'<option value="'+r.id+'"'+(a.roleId===r.id?" selected":"")+'>'+esc(r.title)+' ('+esc(r.dept)+')</option>').join("")+'</select></div>'
-        + '<div class="f"><label>Stage</label><select id="a-stage">'+STAGES.map(x=>'<option'+(a.stage===x?" selected":"")+'>'+x+'</option>').join("")+'</select></div>'
+        + '<div class="f"><label>Stage</label><select id="a-stage">'+STAGES.map(x=>'<option value="'+esc(x)+'"'+(canonicalApplicantStage(a.stage)===x?" selected":"")+'>'+esc(stageLabel(x))+'</option>').join("")+'</select></div>'
         + '</div>'
         + gatePanel(a)
         + (role?'<div class="note"><b>'+esc(role.title)+'</b> — '+esc(role.purpose||"no purpose recorded")
@@ -17247,7 +17334,7 @@ async function appEditor(id){
         + '<button class="btn pri" id="a-save">Save</button>'});
 
     const grab=()=>{
-      a.name=$("#a-name").value.trim(); a.roleId=$("#a-role").value; a.stage=$("#a-stage").value;
+      a.name=$("#a-name").value.trim(); a.roleId=$("#a-role").value; a.stage=canonicalApplicantStage($("#a-stage").value);
       const ro=S.roles[a.roleId]; if(ro){ a.position=ro.title; a.dept=ro.dept; }
       a.appliedOn=$("#a-date").value; a.source=$("#a-src").value; a.expected=$("#a-exp").value;
       a.mobile=$("#a-mob").value; a.email=$("#a-email").value; a.resumeLink=$("#a-cv").value;
@@ -17361,7 +17448,22 @@ async function appEditor(id){
     $("#a-rffi").onclick=async()=>{ grab(); await put("applicants",a.id,a); rffiEditor(a.id); };
     $("#a-save").onclick=async()=>{
       grab(); if(!a.name){ toast("Enter the applicant's name.","err"); return; }
-      await put("applicants",a.id,a); closeModal(); render();
+      const ok=await put("applicants",a.id,a);
+      S.ui=S.ui||{};
+      S.ui.rmode="pipeline";
+      S.ui.pipelineFocus=a.id;
+      S.ui.pipelineRoleFilter="";
+      S.ui.pipelineSearch="";
+      if(window.hrRecruit){
+        window.hrRecruit.roleFilter="";
+        window.hrRecruit.pipelineSearch="";
+      }
+      closeModal();
+      render();
+      const row=document.getElementById("hr-pipeline-focus-row");
+      if(row && row.scrollIntoView) row.scrollIntoView({block:"center"});
+      if(ok===false) return;
+      toast(a.name+" is on the pipeline at "+stageLabel(a.stage)+".","ok");
     };
     const pr=$("#a-print"); if(pr) pr.onclick=async()=>{
       await persist();
