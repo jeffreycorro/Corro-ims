@@ -1478,6 +1478,54 @@
     return "prepared";
   }
 
+  /** approved = Jeffrey's slot; other = a different signatory or an unnamed file. */
+  function classifyApprovedSigFilename(filename) {
+    var key = foldSigName(filename);
+    if (!key) return "other";
+    if (/\bcorro\b/.test(key) && key.indexOf("sophie") < 0 && key.indexOf("batas") < 0) return "approved";
+    var prepared = ["prepared", "purchased", "sophie", "batas", "cristine", "belocura", "checked", "released", "finance"];
+    var approved = ["jeffrey", "approved by", "signatory", "ceo"];
+    var i;
+    for (i = 0; i < prepared.length; i++) {
+      if (key === prepared[i] || key.indexOf(prepared[i]) >= 0) return "other";
+    }
+    for (i = 0; i < approved.length; i++) {
+      if (key === approved[i] || key.indexOf(approved[i]) >= 0) return "approved";
+    }
+    return "other";
+  }
+
+  /**
+   * Jeffrey James M. Corro's e-signature prints on Approved By only after his
+   * approval. Requested, cancelled, disapproved, not-bought and duplicate
+   * forms stay blank. A rejected reserve can be indexed as Closed; that is
+   * still not his approval. Past Open/Closed/Legacy reprints are included.
+   */
+  function vrfShowsApprovedSig(entry, reserve) {
+    if (!entry) return false;
+    var st = String(entry.status || "").trim();
+    if (/^rejected$/i.test(st) || /^disapproved$/i.test(st)) return false;
+    if (spendEndStatus(st)) return false;
+    if (reserve) {
+      var rs = String(reserve.status || "").trim();
+      if (/^rejected$/i.test(rs) || /^disapproved$/i.test(rs)) return false;
+      if (reserveSpendClosed(reserve)) return false;
+    }
+    return vrfPrintWatermark(entry) === "APPROVED";
+  }
+
+  function vrfApprovedSig(entry, reserve, libraryData) {
+    if (!vrfShowsApprovedSig(entry, reserve)) return "";
+    if (entry && entry.approvedSig) return String(entry.approvedSig);
+    var rows = (entry && entry.rows) || [];
+    var i;
+    for (i = 0; i < rows.length; i++) {
+      if (rows[i] && rows[i].approvedSig) return String(rows[i].approvedSig);
+    }
+    if (reserve && reserve.approvedSig) return String(reserve.approvedSig);
+    return libraryData ? String(libraryData) : "";
+  }
+
   function photoOwnersForOpenVrf(entry, reserve, counts) {
     var owners = photoOwnersForVrf(entry).slice();
     var vrfNo = owners[0];
@@ -2665,6 +2713,9 @@
     vrfAwaitingApproval: vrfAwaitingApproval,
     vrfCanLiquidate: vrfCanLiquidate,
     classifyPreparedSigFilename: classifyPreparedSigFilename,
+    classifyApprovedSigFilename: classifyApprovedSigFilename,
+    vrfShowsApprovedSig: vrfShowsApprovedSig,
+    vrfApprovedSig: vrfApprovedSig,
     moneyNum: moneyNum,
     lineMoney: lineMoney,
     VRF_AUTO_APPROVE_UNDER: VRF_AUTO_APPROVE_UNDER,

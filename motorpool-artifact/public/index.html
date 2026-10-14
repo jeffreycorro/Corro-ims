@@ -413,7 +413,7 @@ var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
    This label is inside the page function. The shim reads window.BUILD when it
    sends a save. Without that copy every save goes out with an empty build and
    the server answers "Reload the page". */
-var BUILD = "2026-10-10 d";
+var BUILD = "2026-10-14 b";
 try { window.BUILD = BUILD; } catch (e) {}
 var DAY = 86400000, MO = 30.44;
 
@@ -1692,7 +1692,9 @@ function heldVrfShell(no, r){
     works:[], scopes:[], multi:false, confirmed:true, partial:false,
     confidence:"confirmed", why:"", total:0, project:(r&&r.project)||"",
     notes:(r&&(r.draftPurpose||r.scope))||"", odo:reserveMeter(r),
-    src:"reserve-hold", requestedBy:(r&&r.requestedBy)||"", held:true};
+    src:"reserve-hold", requestedBy:(r&&r.requestedBy)||"", held:true,
+    approvedBy:(r&&r.approvedBy)||"", approvedAt:(r&&r.approvedAt)||"",
+    approvedVia:(r&&r.approvedVia)||""};
 }
 function addHeldReserveVrfs(){
   /* An approved VRF can sit on the reserve log with a held number and never
@@ -1770,6 +1772,7 @@ function addHeldReserveVrfs(){
       total:sum,
       project:r.project, notes:r.draftPurpose||r.scope||"",
       odo:meter, preparedSig:r.preparedSig||"", preparedSigName:r.preparedSigName||"",
+      approvedBy:r.approvedBy||"", approvedAt:r.approvedAt||"", approvedVia:r.approvedVia||"",
       src:"reserve-hold", requestedBy:r.requestedBy||"", held:true,
       paperNote:r.renumberNote||"", printedAs:r.printedAs||"", unnumbered:!!unnumbered});
     have[slot]=1;
@@ -2742,6 +2745,7 @@ async function loadAll(){
   S._vrfCatalogComplete=!S.db || (Array.isArray(reserveIds)&&Array.isArray(ledgerIds));
   /* Put a printed approved number back before the counter or remint runs,
      so 6033 cannot be given to a new form and an approved hold is not renamed. */
+  try{ await ensureApprovedEsig(); }catch(e){}
   try{ await restoreMissingPaperVrfs(); }catch(e){}
   try{ await rehydrateSealedVrfs(); }catch(e){}
   try{ await reconcileVrfCounter(); }catch(e){}
@@ -6103,6 +6107,20 @@ function classifyPreparedSigFilename(filename){
   if(/\bcorro\b/.test(key) && key.indexOf("sophie")<0 && key.indexOf("batas")<0) return "other";
   return "prepared";
 }
+/* Jeffrey's file must not land in Prepared/Purchased By. This slot is his. */
+function classifyApprovedSigFilename(filename){
+  var key=foldSigName(filename);
+  if(!key) return "other";
+  if(/\bcorro\b/.test(key) && key.indexOf("sophie")<0 && key.indexOf("batas")<0) return "approved";
+  var prepared=["prepared","purchased","sophie","batas","cristine","belocura","checked","released","finance"];
+  var approved=["jeffrey","approved by","signatory","ceo"];
+  var i;
+  for(i=0;i<prepared.length;i++) if(key===prepared[i]||key.indexOf(prepared[i])>=0) return "other";
+  for(i=0;i<approved.length;i++) if(key===approved[i]||key.indexOf(approved[i])>=0) return "approved";
+  return "other";
+}
+var JEFFREY_APPROVED_SIG="/signatures/jeffrey.png";
+var _approvedSigData="";
 function preparedSignatoryName(){
   var s=SIGNATORIES.filter(function(x){ return x.cap==="Prepared/Purchased By"; })[0];
   return s?s.name:"";
@@ -6129,6 +6147,69 @@ function vrfPreparedSig(entry){
   var pack=libraryPreparedSig();
   if(pack&&pack.data) return String(pack.data);
   return "";
+}
+function libraryApprovedSig(){
+  var pack=S.esigs&&S.esigs.approved;
+  if(pack&&pack.data) return pack;
+  return {data:JEFFREY_APPROVED_SIG, name:"Jeffrey James M. Corro", title:"jeffrey.png", seeded:true};
+}
+/* His e-signature prints only after approval. Requested, cancelled and
+   disapproved forms stay blank. A rejected reserve is indexed as Closed;
+   that is not an approval. Open, Closed and Legacy reprints are. */
+function vrfShowsApprovedSig(entry, reserve){
+  if(!entry) return false;
+  if(arguments.length<2) reserve=reserveForVrf(entry);
+  var st=String(entry.status||"").trim();
+  if(/^rejected$/i.test(st)||/^disapproved$/i.test(st)) return false;
+  if(spendEndStatus(st)) return false;
+  if(reserve){
+    var rs=String(reserve.status||"").trim();
+    if(/^rejected$/i.test(rs)||/^disapproved$/i.test(rs)) return false;
+    if(reserveSpendClosed(reserve)) return false;
+  }
+  return vrfPrintWatermark(entry)==="APPROVED";
+}
+function vrfApprovedSig(entry){
+  if(!vrfShowsApprovedSig(entry)) return "";
+  if(entry.approvedSig) return String(entry.approvedSig);
+  var rows=entry.rows||[];
+  var i;
+  for(i=0;i<rows.length;i++) if(rows[i]&&rows[i].approvedSig) return String(rows[i].approvedSig);
+  var r=reserveForVrf(entry);
+  if(r&&r.approvedSig) return String(r.approvedSig);
+  var pack=libraryApprovedSig();
+  return pack&&pack.data?String(pack.data):"";
+}
+function sigToDataUrl(src){
+  src=String(src||"");
+  if(!src) return Promise.resolve("");
+  if(/^data:image\//i.test(src)) return Promise.resolve(src);
+  if(src===JEFFREY_APPROVED_SIG && _approvedSigData) return Promise.resolve(_approvedSigData);
+  return fetch(src).then(function(res){
+    if(!res.ok) throw new Error("sig");
+    return res.blob();
+  }).then(function(blob){
+    return new Promise(function(resolve,reject){
+      var fr=new FileReader();
+      fr.onerror=function(){ reject(new Error("sig")); };
+      fr.onload=function(){ resolve(String(fr.result||"")); };
+      fr.readAsDataURL(blob);
+    });
+  }).then(function(data){
+    if(!/^data:image\//i.test(data)) throw new Error("sig");
+    if(src===JEFFREY_APPROVED_SIG) _approvedSigData=data;
+    return data;
+  });
+}
+async function ensureApprovedEsig(){
+  var pack=S.esigs&&S.esigs.approved;
+  if(pack&&pack.data&&/^data:image\//i.test(pack.data)) return;
+  var data="";
+  try{ data=await sigToDataUrl(JEFFREY_APPROVED_SIG); }catch(e){ data=""; }
+  if(!/^data:image\//i.test(data)) return;
+  S.esigs=S.esigs||{};
+  S.esigs.approved={data:data, title:"jeffrey.png", name:"Jeffrey James M. Corro", at:iso(), seeded:true};
+  try{ await saveEsigs(); }catch(e){}
 }
 function vrfMarkNode(label){
   var mk=el("div","vmark");
@@ -8768,6 +8849,50 @@ function approveView(){
     toast(S.cfg.driveFolder?"Drive folder saved.":"Drive folder cleared.");
   });
   drow.appendChild(dsv);
+  var asig=el("div","field"); asig.style.marginTop="var(--space-4)";
+  asig.appendChild(el("label",null,"Approved By e-signature"));
+  var asigPrev=el("div");
+  var asigNote=el("div","hint");
+  function paintApprovedLib(){
+    asigPrev.innerHTML="";
+    var pack=libraryApprovedSig();
+    var using=pack&&pack.data?pack.data:"";
+    if(using){
+      var im=document.createElement("img");
+      im.src=using; im.alt="Approved By";
+      im.style.cssText="max-height:64px;max-width:220px;display:block;background:#fff;mix-blend-mode:multiply";
+      asigPrev.appendChild(im);
+    }
+    asigNote.textContent=(pack&&pack.title?pack.title+" · ":"")+"Jeffrey James M. Corro, CEO. Prints on Approved By when a VRF is approved, including reprints and approvals from this screen or the approve-vrf API. Requested, cancelled and disapproved forms stay blank.";
+  }
+  var asigFile=el("input");
+  asigFile.type="file";
+  asigFile.accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp";
+  asigFile.addEventListener("change",async function(){
+    var file=asigFile.files&&asigFile.files[0];
+    asigFile.value="";
+    if(!file) return;
+    if(classifyApprovedSigFilename(file.name)!=="approved"){
+      toast("That file is not the Approved By signature. Name it jeffrey, corro, ceo, or approved by.");
+      return;
+    }
+    try{
+      var sh=await shrinkSignature(file);
+      S.esigs=S.esigs||{};
+      S.esigs.approved={data:sh.data, title:file.name||"jeffrey.png", name:"Jeffrey James M. Corro", at:iso()};
+      await saveEsigs();
+      paintApprovedLib();
+      toast("Approved By e-signature saved. It prints on approved VRFs.");
+    }catch(e){
+      toast("Could not read that image.");
+    }
+  });
+  asig.appendChild(asigPrev);
+  asig.appendChild(asigNote);
+  asig.appendChild(el("label",null,"Replace e-signature"));
+  asig.appendChild(asigFile);
+  paintApprovedLib();
+  drow.appendChild(asig);
   tb2.appendChild(drow);
   tol.appendChild(tb2); g.appendChild(tol);
 
@@ -10290,13 +10415,17 @@ function buildVrfDoc(entry,photos){
 
   var sig=el("div","vsig");
   var preparedSrc=vrfPreparedSig(entry);
+  var approvedSrc=vrfApprovedSig(entry);
   SIGNATORIES.forEach(function(x){
     var c=el("div");
     c.appendChild(el("div","cap",x.cap));
     var line=el("div","line");
-    if(x.cap==="Prepared/Purchased By"&&preparedSrc){
+    var slotSrc="";
+    if(x.cap==="Prepared/Purchased By") slotSrc=preparedSrc;
+    else if(x.cap==="Approved By") slotSrc=approvedSrc;
+    if(slotSrc){
       var im=document.createElement("img");
-      im.className="sig"; im.alt=x.cap; im.src=preparedSrc;
+      im.className="sig"; im.alt=x.cap; im.src=slotSrc;
       line.appendChild(im);
     }
     c.appendChild(line);
@@ -10393,14 +10522,32 @@ function vrfDocFile(entry,photos){
     "</body></html>";
 }
 
+async function inlinePrintSig(src){
+  if(!src) return "";
+  var data=src;
+  try{ data=await sigToDataUrl(src); }catch(e){ data=src; }
+  if(/^data:image\//i.test(data)){
+    try{
+      var trimmed=await trimSignatureDataUrl(data);
+      if(trimmed) return trimmed;
+    }catch(e){}
+  }
+  return data||"";
+}
 async function entryWithPrintableSig(entry){
   if(!entry) return entry;
-  var src=vrfPreparedSig(entry);
-  if(!src) return entry;
-  var trimmed=src;
-  try{ trimmed=await trimSignatureDataUrl(src); }catch(e){ trimmed=src; }
-  if(!trimmed||trimmed===src) return entry;
-  return Object.assign({}, entry, {preparedSig:trimmed});
+  var next=entry;
+  var prepared=vrfPreparedSig(entry);
+  if(prepared){
+    var p=await inlinePrintSig(prepared);
+    if(p&&p!==entry.preparedSig) next=Object.assign({}, next, {preparedSig:p});
+  }
+  var approved=vrfApprovedSig(next);
+  if(approved){
+    var a=await inlinePrintSig(approved);
+    if(a) next=Object.assign({}, next, {approvedSig:a});
+  }
+  return next;
 }
 async function printVrf(entry,photos){
   try{ markVrfPrinted(entry); }catch(e){}
@@ -11815,7 +11962,9 @@ function vrfView(){
   pu.addEventListener("input",function(){ d.purpose=pu.value; });
   g0.appendChild(fld("Purpose",pu));
 
-  /* Prepared/Purchased By only — the other two signatories stay blank lines. */
+  /* Prepared/Purchased By is chosen here. Checked/Released By stays a blank
+     line. Approved By is Jeffrey James M. Corro and is stamped at print
+     only after the VRF is approved — not on this draft. */
   var sigBox=el("div"); sigBox.style.marginTop="var(--space-3)";
   var sigHead=el("div","hint","Prepared/Purchased By e-signature");
   sigBox.appendChild(sigHead);
@@ -14522,11 +14671,61 @@ try{
   S.voiceLang = localStorage.getItem("mp_voicelang") || "en-PH";
 }catch(e){}
 
+function samplePreparedSig(){
+  var cv=document.createElement("canvas");
+  cv.width=280; cv.height=80;
+  var cx=cv.getContext("2d");
+  if(!cx) return "";
+  cx.clearRect(0,0,280,80);
+  cx.strokeStyle="#1a1a1a";
+  cx.lineWidth=2.4;
+  cx.lineCap="round";
+  cx.lineJoin="round";
+  cx.beginPath();
+  cx.moveTo(18,52);
+  cx.bezierCurveTo(48,8,78,74,118,28);
+  cx.bezierCurveTo(150,4,188,70,248,26);
+  cx.stroke();
+  return cv.toDataURL("image/png");
+}
+function printSigSample(kind){
+  var approved=kind==="approved";
+  var row={date:"2026-10-01",veh:"DT-09",cat:"Belt",item:"Fan belt",supplier:"Auto Parts",
+    qty:1,unit:"pc",price:2500,total:2500,work:"REP"};
+  var entry={
+    vrf:approved?"5812":"5901",
+    date:"2026-10-01",
+    veh:"DT-09",
+    units:["DT-09"],
+    project:"Yard",
+    notes:"Belt replacement",
+    requestedBy:"Ana Cruz",
+    preparedSig:samplePreparedSig(),
+    preparedSigName:"Sophie V. Batas",
+    odo:45210,
+    rows:[row],
+    scopes:[{code:"REP",name:"Repair",rows:[row]}],
+    multi:false,
+    total:2500,
+    status:approved?"Open":"Requested",
+    held:!approved,
+    approvedBy:approved?"Jeffrey":"",
+    approvedVia:approved?"api":"",
+    approvedAt:approved?"2026-10-02":""
+  };
+  return printVrf(entry,[]);
+}
 render();
-boot();
+var bootP=boot();
 try{
   if(typeof location!=="undefined" && /^(localhost|127\.0\.0\.1)$/.test(location.hostname)){
-    window.__mpS=S; window.__mpRender=render;
+    window.__mpS=S; window.__mpRender=render; window.__mpPrintVrf=printVrf;
+    window.__mpPrintSample=printSigSample;
+    var sigdemo="";
+    try{ sigdemo=new URLSearchParams(location.search).get("sigdemo")||""; }catch(e){ sigdemo=""; }
+    if(sigdemo==="approved"||sigdemo==="requested"){
+      bootP.then(function(){ return printSigSample(sigdemo); },function(){ return printSigSample(sigdemo); });
+    }
   }
 }catch(e){}
 })();
