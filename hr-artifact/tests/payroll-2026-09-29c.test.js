@@ -202,7 +202,7 @@ function legacyContribInclude(ctx, e) {
 
 describe("2026-09-29c payroll roster, sites, and contributions", () => {
   it("is build 2026-10-05a and the run can filter or group by site", () => {
-    assert.match(html, /const BUILD = "2026-10-12a"/);
+    assert.match(html, /const BUILD = "2026-10-14a"/);
     const view = extractFunction(html, "viewPayrollRun");
     assert.match(view, /id="pay-site"/);
     assert.match(view, /id="pay-group"/);
@@ -213,8 +213,11 @@ describe("2026-09-29c payroll roster, sites, and contributions", () => {
     assert.match(paper, /GRAND TOTAL/);
     assert.match(paper, /pfBand/);
     assert.match(paper, /no rate/);
-    const csv = html.slice(html.indexOf('const payCsvBtn=$("#pay-csv"'));
-    assert.match(csv.slice(0, 1600), /subtotal/);
+    const csvFn = extractFunction(html, "payCsvRows");
+    assert.match(csvFn, /subtotal/);
+    assert.match(csvFn, /GRAND TOTAL/);
+    assert.match(csvFn, /TOTAL DEDUCTED/);
+    assert.match(html, /payCsvRows\(b\.kind/);
     assert.doesNotMatch(html, /payGroupSite\s*:\s*true/);
     assert.match(extractFunction(html, "payDayRow"), /dailyRowForEmp/);
     assert.doesNotMatch(extractFunction(html, "payDayRow"), /dailyPeople/);

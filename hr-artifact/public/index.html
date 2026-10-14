@@ -1886,7 +1886,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-10-12a";
+const BUILD = "2026-10-14a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -9741,7 +9741,7 @@ function mergeOtRequest(local, incoming){
     next.formUrl=otFormUrl(l);
     if(l.formTitle) next.formTitle=l.formTitle;
   }
-  ["from","to","site","reason","status"].forEach(k=>{
+  ["from","to","site","reason","status","timeFrom","timeTo"].forEach(k=>{
     if(!String(next[k]||"").trim() && String(l[k]||"").trim()) next[k]=l[k];
   });
   if((!next.empIds || !next.empIds.length) && (l.empIds||[]).length) next.empIds=l.empIds.slice();
@@ -9760,7 +9760,57 @@ function otReqNeedsRepair(local, incoming){
   if(String(merged.status||"").trim() && !String(incoming.status||"").trim()) return true;
   if((merged.empIds||[]).length && !(incoming.empIds||[]).length && !incoming.wholeSite) return true;
   if(String(merged.from||"") && !String(incoming.from||"")) return true;
+  if(String(merged.timeFrom||"") && !String(incoming.timeFrom||"")) return true;
+  if(String(merged.timeTo||"") && !String(incoming.timeTo||"")) return true;
+  if((merged.hoursEach!=null && merged.hoursEach!=="") && (incoming.hoursEach==null || incoming.hoursEach==="")) return true;
   return false;
+}
+/* Hours between two clock times. Overnight (to earlier than from) crosses midnight.
+   The same clock is not a duration. */
+function otHoursFromClock(from, to){
+  if(typeof clockMinutes!=="function") return null;
+  const a=clockMinutes(from), b=clockMinutes(to);
+  if(a==null || b==null || a===b) return null;
+  let mins=b-a;
+  if(mins<0) mins+=24*60;
+  return Math.round((mins/60)*100)/100;
+}
+/* Where this person is on that date: the Daily Manpower area when the day
+   has a row, otherwise the last area before the next morning, otherwise the
+   project on the 201 file. */
+function otPersonSite(e, date){
+  if(!e) return "";
+  const day=String(date||"").slice(0,10);
+  if(/^\d{4}-\d{2}-\d{2}$/.test(day) && typeof dailyGet==="function" && typeof dailySiteOf==="function"){
+    const rec=dailyGet(day);
+    if(rec && rec.rows && rec.rows[e.id]) return dailySiteOf(rec, e);
+  }
+  if(/^\d{4}-\d{2}-\d{2}$/.test(day) && typeof lastSiteBefore==="function"){
+    const next=typeof addDays==="function" ? addDays(day, 1) : day;
+    const prev=lastSiteBefore(e.id, next);
+    if(prev) return prev;
+  }
+  return e.project || "";
+}
+/* Active people whose area on that date is this site. A blank site has no list. */
+function otSiteRoster(site, date){
+  const want=otSiteKey(site);
+  const people=typeof atWork==="function" ? atWork()
+    : (typeof activeEmps==="function" ? activeEmps() : []);
+  const sorted=people.slice().sort(typeof cmpEmpAlpha==="function"
+    ? cmpEmpAlpha
+    : (a,b)=>String(a.name||"").localeCompare(String(b.name||"")));
+  if(!want) return [];
+  return sorted.filter(e=>otSiteKey(otPersonSite(e, date))===want);
+}
+function otDurationText(r){
+  if(!r) return "—";
+  const tf=String(r.timeFrom||"").trim(), tt=String(r.timeTo||"").trim();
+  const hasH=r.hoursEach!=null && String(r.hoursEach).trim()!=="" && Number.isFinite(Number(r.hoursEach));
+  let s="";
+  if(tf||tt) s=(tf||"—")+"–"+(tt||"—");
+  if(hasH) s=(s?s+" · ":"")+num(Number(r.hoursEach),1)+" h";
+  return s||"—";
 }
 function otRequestCovers(req, empId, date, site){
   if(!req || req.status!=="Approved" || !otFormUrl(req)) return false;
@@ -10302,6 +10352,7 @@ function viewOtRequests(){
     + '</div>'
     + '<div class="note" style="margin-bottom:12px">File the signed overtime request here. '
     + 'Every form attached to a request stays on that request. A later file is added to the list. '
+    + 'New OT request asks for the site, the employees on OT at that site, and the duration. Whole site selects everyone there. '
     + 'OT hours can be typed with no request on file. They show <b>Pending OT form</b> and are not paid until <b>Approved</b> with a form attached covers that person or that site on that date. '
     + 'By week, those hours are also listed under each site, with a column for each day. '
     + 'The next time payroll opens, those hours count. No retyping.</div>';
@@ -10310,17 +10361,20 @@ function viewOtRequests(){
   if(!reqs.length){
     h+='<div class="empty">No OT request yet. New OT request files one for a date, a site, and the people it covers.</div>';
   }else{
-    h+='<div class="tw"><table><thead><tr><th>Dates</th><th>Site</th><th>Who</th><th>Approved h</th><th>Status</th><th>Form</th><th>Reason</th><th></th></tr></thead><tbody>';
+    h+='<div class="tw"><table><thead><tr><th>Dates</th><th>Site</th><th>Who</th><th>OT duration</th><th>Status</th><th>Form</th><th>Reason</th><th></th></tr></thead><tbody>';
     reqs.forEach(r=>{
-      const who=r.wholeSite ? "Whole site" : ((r.empIds||[]).map(id=>{
+      const names=(r.empIds||[]).map(id=>{
         const e=S.employees&&S.employees[id];
         return e ? flipName(e.name) : id;
-      }).join(", ") || "—");
+      });
+      const who=r.wholeSite
+        ? ("Whole site"+(names.length?" · "+names.length+" chosen":""))
+        : (names.join(", ") || "—");
       const pill=r.status==="Approved"?"ok":r.status==="Rejected"?"crit":"warn";
       h+='<tr><td class="mono">'+esc(r.from||"")+(r.to&&r.to!==r.from?" → "+esc(r.to):"")+'</td>'
         + '<td>'+esc(r.site||"—")+'</td>'
         + '<td>'+esc(who)+'</td>'
-        + '<td class="num">'+(r.hoursEach!=null && r.hoursEach!=="" ? esc(String(r.hoursEach)) : "—")+'</td>'
+        + '<td class="num">'+esc(otDurationText(r))+'</td>'
         + '<td><span class="pill '+pill+'">'+esc(r.status||"Filed")+'</span></td>'
         + '<td>'+otFormsCell(r)+'</td>'
         + '<td>'+esc(r.reason||"")+'</td>'
@@ -10394,9 +10448,11 @@ function openOtEditor(pre){
     from: (pre&&pre.date)||((S.ui&&S.ui.dailyDate)||TODAY),
     to: (pre&&pre.date)||((S.ui&&S.ui.dailyDate)||TODAY),
     site: (pre&&pre.site)||"",
-    wholeSite: !(pre&&pre.empId),
+    wholeSite: false,
     empIds: (pre&&pre.empId)?[pre.empId]:[],
     hoursEach: "",
+    timeFrom: "",
+    timeTo: "",
     reason: "",
     status: "Filed",
     formUrl: "",
@@ -10404,17 +10460,24 @@ function openOtEditor(pre){
   };
   const picked=new Set(rec.empIds||[]);
   const sites=typeof dailySites==="function" ? dailySites() : [];
+  function rosterNow(){
+    const site=($("#ot-esite")||{}).value||rec.site||"";
+    const day=($("#ot-d1")||{}).value||rec.from||"";
+    return typeof otSiteRoster==="function" ? otSiteRoster(site, day) : [];
+  }
   function peopleHtml(){
+    const site=($("#ot-esite")||{}).value||rec.site||"";
     const q=String(($("#ot-q")||{}).value||"").trim().toLowerCase();
-    const rows=(typeof empSorted==="function"?empSorted():[]).filter(e=>{
-      if(!q) return true;
-      return ((e.name||"")+" "+(e.empNo||"")+" "+(e.project||"")).toLowerCase().indexOf(q)>=0;
-    }).slice(0, 60);
-    if(!rows.length) return '<div class="lbl">Nobody matches that search.</div>';
+    if(!site) return '<div class="lbl">Choose the site. The list is the active people at that site.</div>';
+    const roster=rosterNow();
+    const extra=(site===rec.site ? (rec.empIds||[]) : []).map(id=>S.employees&&S.employees[id]).filter(e=>e && !roster.some(x=>x.id===e.id));
+    let rows=roster.concat(extra);
+    if(q) rows=rows.filter(e=>((e.name||"")+" "+(e.empNo||"")+" "+(e.project||"")).toLowerCase().indexOf(q)>=0);
+    if(!rows.length) return '<div class="lbl">No active employee is assigned to '+esc(site)+' on this date.</div>';
     return rows.map(e=>'<label style="display:flex;gap:8px;align-items:center;padding:3px 0">'
       + '<input type="checkbox" data-otemp="'+esc(e.id)+'"'+(picked.has(e.id)?" checked":"")+'>'
       + '<span>'+esc((e.empNo?e.empNo+" · ":"")+flipName(e.name))
-      + (e.project?' <span class="lbl">'+esc(e.project)+'</span>':"")+'</span></label>').join("");
+      + (e.position?' <span class="lbl">'+esc(e.position)+'</span>':"")+'</span></label>').join("");
   }
   openModal({ title: existing ? "Edit OT request" : "New OT request", wide:true,
     body:'<div class="stack">'
@@ -10428,10 +10491,16 @@ function openOtEditor(pre){
       + ["Filed","Approved","Rejected"].map(s=>'<option'+(rec.status===s?" selected":"")+'>'+s+'</option>').join("")
       + '</select></div></div>'
       + '<label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="ot-whole"'+(rec.wholeSite?" checked":"")+'> Whole site on those dates</label>'
-      + '<div class="f"><label>Approved hours per person per day <span class="lbl">optional</span></label>'
-      + '<input id="ot-hours" type="number" step="0.5" min="0" value="'+esc(rec.hoursEach!=null?rec.hoursEach:"")+'" placeholder="left blank if the form does not state hours" style="max-width:280px"></div>'
+      + '<div class="f"><label>OT duration</label>'
+      + '<div class="row">'
+      + '<div class="f" style="width:180px"><label>Hours per person per day</label>'
+      + '<input id="ot-hours" type="number" step="0.5" min="0" value="'+esc(rec.hoursEach!=null && rec.hoursEach!==""?rec.hoursEach:"")+'" placeholder="e.g. 2"></div>'
+      + '<div class="f" style="width:140px"><label>From</label><input id="ot-t1" type="time" value="'+esc(rec.timeFrom||"")+'"></div>'
+      + '<div class="f" style="width:140px"><label>To</label><input id="ot-t2" type="time" value="'+esc(rec.timeTo||"")+'"></div>'
+      + '</div>'
+      + '<span class="hint">Hours are the duration stored on this request. From and To fill the hours when both are set.</span></div>'
       + '<div class="f"><label>Reason</label><input id="ot-why" value="'+esc(rec.reason||"")+'" placeholder="Why the overtime was requested"></div>'
-      + '<div id="ot-people-wrap"><div class="f"><label>People covered</label><input id="ot-q" placeholder="Find a name or number"></div>'
+      + '<div id="ot-people-wrap"><div class="f"><label>Employees on OT</label><input id="ot-q" placeholder="Find a name or number at this site"></div>'
       + '<div id="ot-people" style="max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px"></div></div>'
       + '<div class="f"><label>Signed OT request form</label>'
       + '<input id="ot-file" type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,.heic,.doc,.docx">'
@@ -10442,21 +10511,59 @@ function openOtEditor(pre){
             + '</div>'
           : "")
       + '</div>'
-      + '<div class="note">Each file stays on this request. Choosing another one adds it. The file is stored as a link. A form already saved on the request, including an older copy kept on the request itself, still opens. A temporary browser address is not kept. Saving Daily Manpower or payroll does not remove it.</div>'
+      + '<div class="note">Tick the people at this site who are on OT. Whole site selects all of them and still covers the site the way an older whole-site request does. Each file stays on this request. Choosing another one adds it. The file is stored as a link. A form already saved on the request, including an older copy kept on the request itself, still opens. A temporary browser address is not kept. Saving Daily Manpower or payroll does not remove it.</div>'
       + '<div class="note" id="ot-err" style="border-left-color:var(--crit)" hidden></div>'
       + '</div>',
     foot:'<button class="btn" id="ot-cancel">Cancel</button><button class="btn pri" id="ot-save">Save request</button>' });
+  const selectSite=()=>{
+    if(!($("#ot-whole")&&$("#ot-whole").checked)) return;
+    picked.clear();
+    rosterNow().forEach(e=>picked.add(e.id));
+  };
   const paint=()=>{
-    const whole=$("#ot-whole")&&$("#ot-whole").checked;
-    const wrap=$("#ot-people-wrap"); if(wrap) wrap.style.display=whole?"none":"";
-    const box=$("#ot-people"); if(box && !whole) box.innerHTML=peopleHtml();
+    if($("#ot-whole")&&$("#ot-whole").checked) selectSite();
+    const box=$("#ot-people"); if(box) box.innerHTML=peopleHtml();
+  };
+  const fillHours=()=>{
+    const el=$("#ot-hours"); if(!el) return;
+    const h=otHoursFromClock(($("#ot-t1")||{}).value, ($("#ot-t2")||{}).value);
+    if(h==null) return;
+    if(el.dataset.touched==="1" && String(el.value||"").trim()!=="") return;
+    el.value=String(h);
   };
   paint();
-  $("#ot-whole").onchange=paint;
+  $("#ot-whole").onchange=()=>{
+    if($("#ot-whole").checked) selectSite();
+    else picked.clear();
+    paint();
+  };
+  $("#ot-esite").onchange=()=>{
+    if($("#ot-whole")&&$("#ot-whole").checked) picked.clear();
+    else {
+      const allow=new Set(rosterNow().map(e=>e.id));
+      Array.from(picked).forEach(id=>{ if(!allow.has(id)) picked.delete(id); });
+    }
+    paint();
+  };
+  $("#ot-d1").onchange=()=>{
+    if(!($("#ot-whole")&&$("#ot-whole").checked)){
+      const allow=new Set(rosterNow().map(e=>e.id));
+      if((($("#ot-esite")||{}).value||"")===rec.site) (rec.empIds||[]).forEach(id=>allow.add(id));
+      Array.from(picked).forEach(id=>{ if(!allow.has(id)) picked.delete(id); });
+    }
+    paint();
+  };
   $("#ot-q").oninput=paint;
+  $("#ot-t1").onchange=fillHours;
+  $("#ot-t2").onchange=fillHours;
+  $("#ot-hours").oninput=()=>{ $("#ot-hours").dataset.touched="1"; };
   $("#ot-people").onchange=e=>{
     const el=e.target.closest("[data-otemp]"); if(!el) return;
-    if(el.checked) picked.add(el.dataset.otemp); else picked.delete(el.dataset.otemp);
+    if(el.checked) picked.add(el.dataset.otemp);
+    else {
+      picked.delete(el.dataset.otemp);
+      if($("#ot-whole")) $("#ot-whole").checked=false;
+    }
   };
   $("#ot-cancel").onclick=closeModal;
   $("#ot-save").onclick=async()=>{
@@ -10467,11 +10574,20 @@ function openOtEditor(pre){
     if(to<from){ fail("The end date is before the start date."); return; }
     const whole=!!$("#ot-whole").checked;
     const site=$("#ot-esite").value||"";
-    if(whole && !site){ fail("Choose the site this request covers."); return; }
-    if(!whole && !picked.size){ fail("Choose at least one employee, or mark the whole site."); return; }
+    if(!site){ fail("Choose the site this request covers."); return; }
+    if(whole) rosterNow().forEach(e=>picked.add(e.id));
+    if(!whole && !picked.size){ fail("Choose the employees on OT, or mark the whole site."); return; }
     let status=$("#ot-status").value||"Filed";
     if(["Filed","Approved","Rejected"].indexOf(status)<0) status="Filed";
-    const hoursRaw=String($("#ot-hours").value||"").trim();
+    const timeFrom=String(($("#ot-t1")||{}).value||"").trim();
+    const timeTo=String(($("#ot-t2")||{}).value||"").trim();
+    let hoursRaw=String($("#ot-hours").value||"").trim();
+    if(!hoursRaw && timeFrom && timeTo){
+      const computed=otHoursFromClock(timeFrom, timeTo);
+      if(computed!=null) hoursRaw=String(computed);
+    }
+    const hoursNum=hoursRaw==="" ? NaN : Number(hoursRaw);
+    if(!(hoursNum>0)){ fail("Enter the OT duration in hours, or set From and To."); return; }
     let forms=otFormFiles(rec);
     const link=String($("#ot-link").value||"").trim();
     if(link){
@@ -10495,8 +10611,10 @@ function openOtEditor(pre){
     }
     const next={
       id:rec.id, from:from, to:to, site:site, wholeSite:whole,
-      empIds: whole ? [] : Array.from(picked),
-      hoursEach: hoursRaw==="" ? "" : (Number(hoursRaw)||0),
+      empIds: Array.from(picked),
+      hoursEach: hoursNum,
+      timeFrom: timeFrom,
+      timeTo: timeTo,
       reason: String($("#ot-why").value||"").trim(),
       status: status,
       on: rec.on||TODAY
@@ -21355,8 +21473,14 @@ function payLineSum(lines){
   return (lines||[]).reduce((a,L)=>({
     gross:a.gross+(Number(L.gross)||0), ded:a.ded+(Number(L.ded)||0), net:a.net+(Number(L.net)||0),
     ot:a.ot+(Number(L.ot)||0), otPending:a.otPending+(Number(L.otPending)||Number(L.otNoForm)||0),
-    days:a.days+(Number(L.days)||0), n:a.n+1
-  }),{gross:0,ded:0,net:0,ot:0,otPending:0,days:0,n:0});
+    days:a.days+(Number(L.days)||0), n:a.n+1,
+    allowance:a.allowance+(Number(L.allowance)||0),
+    late:a.late+(Number(L.late)||0), ca:a.ca+(Number(L.ca)||0),
+    uniform:a.uniform+(Number(L.uniform)||0),
+    sssLoan:a.sssLoan+(Number(L.sssLoan)||0), hdmfLoan:a.hdmfLoan+(Number(L.hdmfLoan)||0),
+    sss:a.sss+(Number(L.sss)||0), phic:a.phic+(Number(L.phic)||0), hdmf:a.hdmf+(Number(L.hdmf)||0)
+  }),{gross:0,ded:0,net:0,ot:0,otPending:0,days:0,n:0,allowance:0,
+      late:0,ca:0,uniform:0,sssLoan:0,hdmfLoan:0,sss:0,phic:0,hdmf:0});
 }
 function paySiteGroups(lines){
   const map={};
@@ -21367,6 +21491,122 @@ function paySiteGroups(lines){
   return Object.keys(map).sort((a,b)=>a.localeCompare(b)).map(site=>({
     site:site, lines:map[site], T:payLineSum(map[site])
   }));
+}
+/* The deduction columns on a payroll line, in the order the run prints them.
+   HMIC is the semi-monthly name for the Pag-IBIG contribution. */
+function payDedParts(sum, kind){
+  const s=sum||{};
+  const rows=[
+    ["late","Late"],
+    ["ca","Cash advance"],
+    ["uniform","Uniform"],
+    ["sssLoan","SSS loan"],
+    ["hdmfLoan","Pag-IBIG loan"],
+    ["sss","SSS"],
+    ["phic","PhilHealth"],
+    ["hdmf", kind==="semi"?"HMIC":"Pag-IBIG"]
+  ];
+  return rows.map(r=>[r[1], Number(s[r[0]])||0, r[0]]);
+}
+function payBySiteHtml(groups, T, kind){
+  const rows=groups||[];
+  const parts=payDedParts(T, kind);
+  const sum=T||{};
+  let h='<div class="card" id="pay-by-site" style="margin:0 0 12px"><div class="card-h"><h3>Payroll by site</h3>'
+    + '<span class="lbl">'+rows.length+' site'+(rows.length===1?"":"s")
+    + ' · people, days, overtime, gross, deductions, and net</span></div>'
+    + '<div class="card-b" style="padding-top:0"><div class="tw"><table><thead><tr>'
+    + '<th>Site</th><th class="num">People</th><th class="num">Days</th><th class="num">OT hrs</th><th class="num">Gross</th>'
+    + parts.map(p=>'<th class="num">'+esc(p[0])+'</th>').join("")
+    + '<th class="num">Total deductions</th><th class="num">Net</th>'
+    + '</tr></thead><tbody>';
+  if(!rows.length) h+='<tr><td colspan="'+(7+parts.length)+'"><span class="lbl">No site on this run.</span></td></tr>';
+  rows.forEach(g=>{
+    const s=g.T||{};
+    const bits=payDedParts(s, kind);
+    h+='<tr data-paysite="'+esc(g.site)+'">'
+      + '<td><b>'+esc(g.site)+'</b></td>'
+      + '<td class="num mono">'+s.n+'</td>'
+      + '<td class="num mono">'+num(s.days,1)+'</td>'
+      + '<td class="num mono">'+num(s.ot,1)+'</td>'
+      + '<td class="num mono">'+num(s.gross,2)+'</td>'
+      + bits.map(p=>'<td class="num mono" data-paysite-ded="'+esc(p[2])+'">'+num(p[1],2)+'</td>').join("")
+      + '<td class="num mono"><b>'+num(s.ded,2)+'</b></td>'
+      + '<td class="num mono"><b>'+num(s.net,0)+'</b></td></tr>';
+  });
+  const grand=payDedParts(sum, kind);
+  h+='</tbody><tfoot><tr data-paygrand="1" style="font-weight:700;background:var(--surface2)">'
+    + '<td>Grand total</td>'
+    + '<td class="num mono">'+(sum.n||0)+'</td>'
+    + '<td class="num mono">'+num(sum.days||0,1)+'</td>'
+    + '<td class="num mono">'+num(sum.ot||0,1)+'</td>'
+    + '<td class="num mono">'+num(sum.gross||0,2)+'</td>'
+    + grand.map(p=>'<td class="num mono">'+num(p[1],2)+'</td>').join("")
+    + '<td class="num mono">'+num(sum.ded||0,2)+'</td>'
+    + '<td class="num mono">'+num(sum.net||0,0)+'</td></tr></tfoot></table></div></div></div>';
+  return h;
+}
+function payDeductionHtml(sum, kind, siteLabel){
+  const s=sum||{};
+  const parts=payDedParts(s, kind);
+  let h='<div class="card" id="pay-ded-total" style="margin:0 0 12px"><div class="card-h"><h3>Payroll deduction total</h3>'
+    + '<span class="lbl">'+(siteLabel?esc(siteLabel)+" only":"all sites on this run")+'</span></div><div class="card-b">'
+    + '<div class="tw"><table><thead><tr><th>Deduction</th><th class="num">Amount</th></tr></thead><tbody>';
+  parts.forEach(p=>{
+    h+='<tr data-payded="'+esc(p[2])+'"><td>'+esc(p[0])+'</td><td class="num mono">'+num(p[1],2)+'</td></tr>';
+  });
+  h+='</tbody><tfoot><tr data-payded="total" style="font-weight:700;background:var(--surface2)">'
+    + '<td>Total deducted</td><td class="num mono">'+num(s.ded||0,2)+'</td></tr></tfoot></table></div></div></div>';
+  return h;
+}
+function payDeductionPaper(sum, kind){
+  const s=sum||{};
+  const parts=payDedParts(s, kind);
+  let h=pfBand("DEDUCTION TOTAL — "+num(s.ded||0,2))
+    + '<table class="pf-t reg" style="margin-top:0"><colgroup><col style="width:70%"><col style="width:30%"></colgroup>'
+    + '<tr><td class="hd">Deduction</td><td class="hd">Amount</td></tr>';
+  parts.forEach(p=>{
+    h+='<tr data-payded="'+esc(p[2])+'"><td>'+esc(p[0])+'</td><td class="n">'+num(p[1],2)+'</td></tr>';
+  });
+  h+='<tr><td class="hd" style="text-align:left">TOTAL DEDUCTED</td>'
+    + '<td class="n" style="font-weight:700">'+num(s.ded||0,2)+'</td></tr></table>';
+  return h;
+}
+function payCsvRows(kind, lines, T, groups){
+  const semi=kind==="semi";
+  const head=["ID","Name","Position","Area","Daily","Hourly","Days","OT hrs","OT pending"]
+    .concat(["Premium days +30%","Premium days +100%","Holiday premium"])
+    .concat(semi?["Allowance"]:[])
+    .concat(["Gross","Late/Undertime","Cash advance","Uniform/Others","SSS loan","Pag-IBIG loan",
+             "SSS","PhilHealth",semi?"HMIC":"Pag-IBIG","Total deductions","NET PAY"]);
+  const money=v=>(Number(v)||0).toFixed(2);
+  const rowOf=L=>[L.empNo,flipName(L.name),L.position,L.site,
+    (Number(L.daily)||0).toFixed(2),(Number(L.hourly)||0).toFixed(2),L.days,L.ot,
+    (Number(L.otPending||L.otNoForm)>0?otPendingText(L.otPending||L.otNoForm):"")]
+    .concat([L.hol30||0, L.hol100||0, (Number(L.holPay)||0).toFixed(2)])
+    .concat(semi?[(Number(L.allowance)||0).toFixed(2)]:[])
+    .concat([(Number(L.gross)||0).toFixed(2),L.late,L.ca,L.uniform,L.sssLoan,L.hdmfLoan,
+             L.sss,L.phic,L.hdmf,(Number(L.ded)||0).toFixed(2),L.net]);
+  const sumOf=(label, sum, site)=>["", label, "", site||"",
+    "", "", sum.days||0, sum.ot||0, ""]
+    .concat(["", "", ""])
+    .concat(semi?[money(sum.allowance)]:[])
+    .concat([money(sum.gross), money(sum.late), money(sum.ca), money(sum.uniform), money(sum.sssLoan), money(sum.hdmfLoan),
+             money(sum.sss), money(sum.phic), money(sum.hdmf), money(sum.ded), sum.net]);
+  const rows=[head];
+  if(groups && groups.length){
+    groups.forEach(g=>{
+      (g.lines||[]).forEach(L=>rows.push(rowOf(L)));
+      rows.push(sumOf(g.site+" subtotal", g.T||{}, g.site));
+    });
+  }else (lines||[]).forEach(L=>rows.push(rowOf(L)));
+  if(T) rows.push(sumOf("GRAND TOTAL", T, ""));
+  rows.push([]);
+  rows.push(["Deduction total"]);
+  rows.push(["Type","Amount"]);
+  payDedParts(T||{}, kind).forEach(p=>rows.push([p[0], money(p[1])]));
+  rows.push(["TOTAL DEDUCTED", money(T&&T.ded)]);
+  return rows;
 }
 /* A leaver status counts only when the separation date is already past.
    No date is not a past date. A note about an unsigned letter is not a status. */
@@ -21545,8 +21785,21 @@ function viewPayrollRun(){
    + tile(worked.length,"On this run",idle?idle+" more with nothing recorded":"everybody has time on","acc")
    + tile(num(T.days,1),"Days paid",num(T.ot,1)+" overtime hours","acc")
    + tile(peso(T.gross),"Gross pay","before deductions","ok")
-   + tile(peso(T.net),"Net pay",peso(T.ded)+" deducted",T.net?"ok":"mut")
+   + tile(peso(T.ded),"Total deducted", siteWant?siteWant+" only":"all sites on this run", (Number(T.ded)>0.005)?"warn":"ok")
+   + tile(peso(T.net),"Net pay","after deductions",T.net?"ok":"mut")
    + '</div>';
+
+  h+='<div class="row" style="margin:12px 0 8px">'
+   + '<div class="f" style="width:240px"><label>Site</label><select id="pay-site">'
+   + '<option value="">All sites</option>'
+   + siteNames.map(s=>'<option value="'+esc(s)+'"'+(siteWant===s?" selected":"")+'>'+esc(s)+'</option>').join("")
+   + '</select></div>'
+   + '<button class="btn sm'+(grouped?" pri":"")+'" id="pay-group" type="button">'
+   + (grouped?"Grouped by site":"Group by site")+'</button>'
+   + '<span class="lbl">'+(siteWant ? esc(siteWant)+" only" : (grouped ? "each site shows people, days, OT, gross, deductions, and net" : "one list, every site — the site table totals each site"))+'</span>'
+   + '</div>';
+  h+=payDeductionHtml(T, kind, siteWant);
+  h+=payBySiteHtml(paySiteGroups(worked), T, kind);
 
   h+='<div class="row" style="margin:14px 0 8px">'
    + '<button class="btn pri" id="pay-print">Preview &amp; print the payroll</button>'
@@ -21556,15 +21809,6 @@ function viewPayrollRun(){
    + '<button class="btn" id="pay-recompute" title="Read days and overtime again from Daily Manpower, and put refused contributions back to 0 unless you have typed a figure">Recompute from attendance</button>'
    + (saved?'<span class="pill ok">saved '+esc(saved.savedOn||"")+'</span>':'<span class="lbl">not saved yet</span>')
    + '<div class="f" style="margin-left:auto;width:210px"><input id="pay-q" placeholder="Find someone in this run" autocomplete="off"></div>'
-   + '</div>'
-   + '<div class="row" style="margin:0 0 8px">'
-   + '<div class="f" style="width:240px"><label>Site</label><select id="pay-site">'
-   + '<option value="">All sites</option>'
-   + siteNames.map(s=>'<option value="'+esc(s)+'"'+(siteWant===s?" selected":"")+'>'+esc(s)+'</option>').join("")
-   + '</select></div>'
-   + '<button class="btn sm'+(grouped?" pri":"")+'" id="pay-group" type="button">'
-   + (grouped?"Grouped by site":"Group by site")+'</button>'
-   + '<span class="lbl">'+(siteWant ? esc(siteWant)+" only" : (grouped ? "each site has its own subtotal" : "one list, every site"))+'</span>'
    + '</div>';
 
   /* One list drives the heading, the cells and the footer. Three places
@@ -21656,22 +21900,26 @@ function viewPayrollRun(){
      + '<button class="btn sm" data-payslip="'+esc(L.empId)+'">Payslip</button></td></tr>';
   };
   const subtotalRow=(label, sum)=>{
-    h+='<tr style="font-weight:700;background:var(--surface2)">'
+    h+='<tr data-paysub="'+esc(label)+'" style="font-weight:700;background:var(--surface2)">'
      + '<td colspan="3">'+esc(label)+' — '+sum.n+' '+(sum.n===1?"person":"people")+'</td>'
      + '<td></td><td></td>'
      + '<td class="num mono">'+num(sum.days,1)+'</td>'
      + '<td class="num mono">'+num(sum.ot,1)+'</td>'
      + '<td></td>'
-     + (kind==="semi"?'<td></td>':'')
+     + (kind==="semi"?'<td class="num mono">'+num(sum.allowance,2)+'</td>':'')
      + '<td class="num mono">'+num(sum.gross,2)+'</td>'
-     + '<td colspan="'+used.length+'"></td>'
+     + used.map(c=>'<td class="num mono">'+num(sum[c.k]||0,2)+'</td>').join("")
      + '<td class="num mono">'+num(sum.ded,2)+'</td>'
      + '<td class="num mono">'+num(sum.net,0)+'</td><td></td></tr>';
   };
   if(grouped){
     const span=LEAD.length+used.length+TAIL.length;
     paySiteGroups(worked).forEach(g=>{
-      h+='<tr style="background:var(--surface2)"><td colspan="'+span+'"><b>'+esc(g.site)+'</b></td></tr>';
+      h+='<tr data-paysiteband="'+esc(g.site)+'" style="background:var(--surface2)"><td colspan="'+span+'"><b>'+esc(g.site)+'</b>'
+        + ' — '+g.T.n+' '+(g.T.n===1?"person":"people")
+        + ' · '+num(g.T.days,1)+' days · '+num(g.T.ot,1)+' OT hrs'
+        + ' · gross '+peso(g.T.gross)+' · deductions '+peso(g.T.ded)+' · net '+peso(g.T.net)
+        + '</td></tr>';
       g.lines.forEach(paintPayRow);
       subtotalRow(g.site+" subtotal", g.T);
     });
@@ -21749,6 +21997,11 @@ function payPaper(kind, per, lines, T, groups){
    + '<td class="n" style="font-weight:700">'+num(chunkT.gross!=null?chunkT.gross:T.gross,2)+'</td>'
    + '<td class="n" style="font-weight:700">'+num(chunkT.ded!=null?chunkT.ded:T.ded,2)+'</td>'
    + '<td class="n" style="font-weight:700">'+num(chunkT.net!=null?chunkT.net:T.net,2)+'</td><td></td></tr></table>';
+    if(chunk.title){
+      h+='<div style="font-size:8pt;margin:1px 0 6px"><b>'+esc(chunk.title)+' deductions</b> — '
+        + payDedParts(chunkT, kind).map(p=>esc(p[0])+" "+num(p[1],2)).join(" · ")
+        + ' · total '+num(chunkT.ded||0,2)+'</div>';
+    }
   });
   if(groups&&groups.length){
     h+=pfBand("GRAND TOTAL")
@@ -21765,22 +22018,39 @@ function payPaper(kind, per, lines, T, groups){
   /* by project, the way the summary page is set out */
   const byS={};
   lines.forEach(L=>{ const k=L.site||"(no area)";
-    const b=(byS[k]=byS[k]||{gross:0,stat:0,late:0,ca:0,other:0,net:0,n:0});
-    b.gross+=L.gross; b.stat+=L.sss+L.phic+L.hdmf; b.late+=L.late; b.ca+=L.ca;
-    b.other+=L.uniform+L.sssLoan+L.hdmfLoan; b.net+=L.net; b.n++; });
+    const b=(byS[k]=byS[k]||{gross:0,stat:0,late:0,ca:0,other:0,net:0,n:0,days:0,ot:0,ded:0});
+    b.gross+=Number(L.gross)||0; b.stat+=(Number(L.sss)||0)+(Number(L.phic)||0)+(Number(L.hdmf)||0);
+    b.late+=Number(L.late)||0; b.ca+=Number(L.ca)||0;
+    b.other+=(Number(L.uniform)||0)+(Number(L.sssLoan)||0)+(Number(L.hdmfLoan)||0);
+    b.net+=Number(L.net)||0; b.n++;
+    b.days+=Number(L.days)||0; b.ot+=Number(L.ot)||0; b.ded+=Number(L.ded)||0; });
   h+=pfBand("SUMMARY BY PROJECT")
    + '<table class="pf-t reg" style="margin-top:0">'
-   + '<colgroup>'+[22,7,12,17,11,11,11,9].map(w=>'<col style="width:'+w+'%">').join("")+'</colgroup><tr>'
-   + ['Project','Staff','Gross pay','SSS / Pag-IBIG / PhilHealth','Late / undertime','Cash advance','Loans & others','Net pay']
+   + '<colgroup>'+[16,6,6,6,10,12,8,8,8,10,10].map(w=>'<col style="width:'+w+'%">').join("")+'</colgroup><tr>'
+   + ['Project','Staff','Days','OT hrs','Gross pay','SSS / Pag-IBIG / PhilHealth','Late / undertime','Cash advance','Loans & others','Total deductions','Net pay']
       .map(x=>'<td class="hd">'+esc(x)+'</td>').join("")+'</tr>';
+  const projTot={gross:0,stat:0,late:0,ca:0,other:0,net:0,n:0,days:0,ot:0,ded:0};
   Object.keys(byS).sort().forEach(k=>{ const b=byS[k];
+    Object.keys(projTot).forEach(f=>{ projTot[f]+=b[f]||0; });
     h+='<tr><td class="nm">'+esc(k)+'</td><td class="n">'+b.n+'</td>'
+     + '<td class="n">'+num(b.days,1)+'</td><td class="n">'+num(b.ot,1)+'</td>'
      + '<td class="n">'+num(b.gross,2)+'</td><td class="n">'+num(b.stat,2)+'</td>'
      + '<td class="n">'+(b.late?num(b.late,2):"")+'</td>'
      + '<td class="n">'+(b.ca?num(b.ca,2):"")+'</td>'
      + '<td class="n">'+(b.other?num(b.other,2):"")+'</td>'
+     + '<td class="n">'+num(b.ded,2)+'</td>'
      + '<td class="n" style="font-weight:700">'+num(b.net,2)+'</td></tr>'; });
-  h+='</table>';
+  h+='<tr><td class="hd" style="text-align:left">GRAND TOTAL</td><td class="n" style="font-weight:700">'+projTot.n+'</td>'
+   + '<td class="n" style="font-weight:700">'+num(projTot.days,1)+'</td>'
+   + '<td class="n" style="font-weight:700">'+num(projTot.ot,1)+'</td>'
+   + '<td class="n" style="font-weight:700">'+num(projTot.gross,2)+'</td>'
+   + '<td class="n" style="font-weight:700">'+num(projTot.stat,2)+'</td>'
+   + '<td class="n" style="font-weight:700">'+num(projTot.late,2)+'</td>'
+   + '<td class="n" style="font-weight:700">'+num(projTot.ca,2)+'</td>'
+   + '<td class="n" style="font-weight:700">'+num(projTot.other,2)+'</td>'
+   + '<td class="n" style="font-weight:700">'+num(projTot.ded,2)+'</td>'
+   + '<td class="n" style="font-weight:700">'+num(projTot.net,2)+'</td></tr></table>';
+  h+=payDeductionPaper(T, kind);
 
   h+=pfSign([
     {who:"Prepared by", name:st.payrollBy||st.hrHead||"", role:st.payrollBy?(st.payrollTitle||"Safety Officer"):(st.hrTitle||"HR Officer"),
@@ -24083,29 +24353,8 @@ function wire(){
   const payCsvBtn=$("#pay-csv",v); if(payCsvBtn) payCsvBtn.onclick=()=>{
     const b=payBuild();
     const semi=b.kind==="semi";
-    const head=["ID","Name","Position","Area","Daily","Hourly","Days","OT hrs","OT pending"]
-      .concat(["Premium days +30%","Premium days +100%","Holiday premium"])
-      .concat(semi?["Allowance"]:[])
-      .concat(["Gross","Late/Undertime","Cash advance","Uniform/Others","SSS loan","Pag-IBIG loan",
-               "SSS","PhilHealth",semi?"HMIC":"Pag-IBIG","Total deductions","NET PAY"]);
-    const rowOf=L=>[L.empNo,flipName(L.name),L.position,L.site,
-      L.daily.toFixed(2),L.hourly.toFixed(2),L.days,L.ot,(Number(L.otPending||L.otNoForm)>0?otPendingText(L.otPending||L.otNoForm):"")]
-      .concat([L.hol30||0, L.hol100||0, (L.holPay||0).toFixed(2)])
-      .concat(semi?[Number(L.allowance||0).toFixed(2)]:[])
-      .concat([L.gross.toFixed(2),L.late,L.ca,L.uniform,L.sssLoan,L.hdmfLoan,
-               L.sss,L.phic,L.hdmf,L.ded.toFixed(2),L.net]);
-    const rows=[];
-    const pushLine=L=>rows.push(rowOf(L));
-    if(b.grouped && b.groups && b.groups.length){
-      b.groups.forEach(g=>{
-        g.lines.forEach(pushLine);
-        pushLine({empNo:"", name:g.site+" subtotal", position:"", site:g.site,
-          daily:0, hourly:0, days:g.T.days, ot:g.T.ot, otNoForm:0, hol30:0, hol100:0, holPay:0,
-          allowance:0, gross:g.T.gross, late:0, ca:0, uniform:0, sssLoan:0, hdmfLoan:0,
-          sss:0, phic:0, hdmf:0, ded:g.T.ded, net:g.T.net});
-      });
-    }else b.lines.forEach(pushLine);
-    saveFile(slugNo((semi?"ADMIN":"WEEKLY")+"-PAYROLL-"+b.per.from)+".csv", toCSV([head].concat(rows)));
+    const rows=payCsvRows(b.kind, b.lines, b.T, b.grouped?b.groups:null);
+    saveFile(slugNo((semi?"ADMIN":"WEEKLY")+"-PAYROLL-"+b.per.from)+".csv", toCSV(rows));
   };
   const paySiteEl=$("#pay-site",v);
   if(paySiteEl) paySiteEl.onchange=()=>{ S.ui.paySite=paySiteEl.value; render(); };
