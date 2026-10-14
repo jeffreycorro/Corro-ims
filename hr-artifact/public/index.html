@@ -10448,7 +10448,7 @@ function openOtEditor(pre){
     from: (pre&&pre.date)||((S.ui&&S.ui.dailyDate)||TODAY),
     to: (pre&&pre.date)||((S.ui&&S.ui.dailyDate)||TODAY),
     site: (pre&&pre.site)||"",
-    wholeSite: false,
+    wholeSite: !(pre&&pre.empId),
     empIds: (pre&&pre.empId)?[pre.empId]:[],
     hoursEach: "",
     timeFrom: "",
@@ -10491,6 +10491,9 @@ function openOtEditor(pre){
       + ["Filed","Approved","Rejected"].map(s=>'<option'+(rec.status===s?" selected":"")+'>'+s+'</option>').join("")
       + '</select></div></div>'
       + '<label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="ot-whole"'+(rec.wholeSite?" checked":"")+'> Whole site on those dates</label>'
+      + '<span class="hint">Whole site ticks everyone at the site. Untick a name to keep only the people who are on OT.</span>'
+      + '<div id="ot-people-wrap"><div class="f"><label>Employees on OT</label><input id="ot-q" placeholder="Find a name or number at this site"></div>'
+      + '<div id="ot-people" style="max-height:180px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px"></div></div>'
       + '<div class="f"><label>OT duration</label>'
       + '<div class="row">'
       + '<div class="f" style="width:180px"><label>Hours per person per day</label>'
@@ -10500,8 +10503,6 @@ function openOtEditor(pre){
       + '</div>'
       + '<span class="hint">Hours are the duration stored on this request. From and To fill the hours when both are set.</span></div>'
       + '<div class="f"><label>Reason</label><input id="ot-why" value="'+esc(rec.reason||"")+'" placeholder="Why the overtime was requested"></div>'
-      + '<div id="ot-people-wrap"><div class="f"><label>Employees on OT</label><input id="ot-q" placeholder="Find a name or number at this site"></div>'
-      + '<div id="ot-people" style="max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px"></div></div>'
       + '<div class="f"><label>Signed OT request form</label>'
       + '<input id="ot-file" type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,.heic,.doc,.docx">'
       + '<input id="ot-link" type="url" value="" placeholder="or paste another Google Drive link">'
@@ -21508,40 +21509,34 @@ function payDedParts(sum, kind){
   ];
   return rows.map(r=>[r[1], Number(s[r[0]])||0, r[0]]);
 }
-function payBySiteHtml(groups, T, kind){
+function payBySiteHtml(groups, T){
   const rows=groups||[];
-  const parts=payDedParts(T, kind);
   const sum=T||{};
   let h='<div class="card" id="pay-by-site" style="margin:0 0 12px"><div class="card-h"><h3>Payroll by site</h3>'
     + '<span class="lbl">'+rows.length+' site'+(rows.length===1?"":"s")
-    + ' · people, days, overtime, gross, deductions, and net</span></div>'
+    + ' · people, days, overtime, gross, total deductions, and net</span></div>'
     + '<div class="card-b" style="padding-top:0"><div class="tw"><table><thead><tr>'
     + '<th>Site</th><th class="num">People</th><th class="num">Days</th><th class="num">OT hrs</th><th class="num">Gross</th>'
-    + parts.map(p=>'<th class="num">'+esc(p[0])+'</th>').join("")
     + '<th class="num">Total deductions</th><th class="num">Net</th>'
     + '</tr></thead><tbody>';
-  if(!rows.length) h+='<tr><td colspan="'+(7+parts.length)+'"><span class="lbl">No site on this run.</span></td></tr>';
+  if(!rows.length) h+='<tr><td colspan="7"><span class="lbl">No site on this run.</span></td></tr>';
   rows.forEach(g=>{
     const s=g.T||{};
-    const bits=payDedParts(s, kind);
     h+='<tr data-paysite="'+esc(g.site)+'">'
       + '<td><b>'+esc(g.site)+'</b></td>'
       + '<td class="num mono">'+s.n+'</td>'
       + '<td class="num mono">'+num(s.days,1)+'</td>'
       + '<td class="num mono">'+num(s.ot,1)+'</td>'
       + '<td class="num mono">'+num(s.gross,2)+'</td>'
-      + bits.map(p=>'<td class="num mono" data-paysite-ded="'+esc(p[2])+'">'+num(p[1],2)+'</td>').join("")
-      + '<td class="num mono"><b>'+num(s.ded,2)+'</b></td>'
+      + '<td class="num mono" data-paysite-ded="ded"><b>'+num(s.ded,2)+'</b></td>'
       + '<td class="num mono"><b>'+num(s.net,0)+'</b></td></tr>';
   });
-  const grand=payDedParts(sum, kind);
   h+='</tbody><tfoot><tr data-paygrand="1" style="font-weight:700;background:var(--surface2)">'
     + '<td>Grand total</td>'
     + '<td class="num mono">'+(sum.n||0)+'</td>'
     + '<td class="num mono">'+num(sum.days||0,1)+'</td>'
     + '<td class="num mono">'+num(sum.ot||0,1)+'</td>'
     + '<td class="num mono">'+num(sum.gross||0,2)+'</td>'
-    + grand.map(p=>'<td class="num mono">'+num(p[1],2)+'</td>').join("")
     + '<td class="num mono">'+num(sum.ded||0,2)+'</td>'
     + '<td class="num mono">'+num(sum.net||0,0)+'</td></tr></tfoot></table></div></div></div>';
   return h;
@@ -21550,7 +21545,8 @@ function payDeductionHtml(sum, kind, siteLabel){
   const s=sum||{};
   const parts=payDedParts(s, kind);
   let h='<div class="card" id="pay-ded-total" style="margin:0 0 12px"><div class="card-h"><h3>Payroll deduction total</h3>'
-    + '<span class="lbl">'+(siteLabel?esc(siteLabel)+" only":"all sites on this run")+'</span></div><div class="card-b">'
+    + '<span class="lbl">'+(siteLabel?esc(siteLabel)+" only":"all sites on this run")+'</span>'
+    + '<b class="mono" style="margin-left:auto">'+peso(s.ded||0)+'</b></div><div class="card-b">'
     + '<div class="tw"><table><thead><tr><th>Deduction</th><th class="num">Amount</th></tr></thead><tbody>';
   parts.forEach(p=>{
     h+='<tr data-payded="'+esc(p[2])+'"><td>'+esc(p[0])+'</td><td class="num mono">'+num(p[1],2)+'</td></tr>';
@@ -21788,18 +21784,7 @@ function viewPayrollRun(){
    + tile(peso(T.ded),"Total deducted", siteWant?siteWant+" only":"all sites on this run", (Number(T.ded)>0.005)?"warn":"ok")
    + tile(peso(T.net),"Net pay","after deductions",T.net?"ok":"mut")
    + '</div>';
-
-  h+='<div class="row" style="margin:12px 0 8px">'
-   + '<div class="f" style="width:240px"><label>Site</label><select id="pay-site">'
-   + '<option value="">All sites</option>'
-   + siteNames.map(s=>'<option value="'+esc(s)+'"'+(siteWant===s?" selected":"")+'>'+esc(s)+'</option>').join("")
-   + '</select></div>'
-   + '<button class="btn sm'+(grouped?" pri":"")+'" id="pay-group" type="button">'
-   + (grouped?"Grouped by site":"Group by site")+'</button>'
-   + '<span class="lbl">'+(siteWant ? esc(siteWant)+" only" : (grouped ? "each site shows people, days, OT, gross, deductions, and net" : "one list, every site — the site table totals each site"))+'</span>'
-   + '</div>';
   h+=payDeductionHtml(T, kind, siteWant);
-  h+=payBySiteHtml(paySiteGroups(worked), T, kind);
 
   h+='<div class="row" style="margin:14px 0 8px">'
    + '<button class="btn pri" id="pay-print">Preview &amp; print the payroll</button>'
@@ -21809,7 +21794,17 @@ function viewPayrollRun(){
    + '<button class="btn" id="pay-recompute" title="Read days and overtime again from Daily Manpower, and put refused contributions back to 0 unless you have typed a figure">Recompute from attendance</button>'
    + (saved?'<span class="pill ok">saved '+esc(saved.savedOn||"")+'</span>':'<span class="lbl">not saved yet</span>')
    + '<div class="f" style="margin-left:auto;width:210px"><input id="pay-q" placeholder="Find someone in this run" autocomplete="off"></div>'
+   + '</div>'
+   + '<div class="row" style="margin:0 0 8px">'
+   + '<div class="f" style="width:240px"><label>Site</label><select id="pay-site">'
+   + '<option value="">All sites</option>'
+   + siteNames.map(s=>'<option value="'+esc(s)+'"'+(siteWant===s?" selected":"")+'>'+esc(s)+'</option>').join("")
+   + '</select></div>'
+   + '<button class="btn sm'+(grouped?" pri":"")+'" id="pay-group" type="button">'
+   + (grouped?"Grouped by site":"Group by site")+'</button>'
+   + '<span class="lbl">'+(siteWant ? esc(siteWant)+" only" : (grouped ? "each site shows people, days, OT, gross, deductions, and net" : "one list, every site"))+'</span>'
    + '</div>';
+  h+=payBySiteHtml(paySiteGroups(worked), T);
 
   /* One list drives the heading, the cells and the footer. Three places
      describing the same row is how a table ends up one column out of step. */
@@ -21899,8 +21894,9 @@ function viewPayrollRun(){
      + '<td style="white-space:nowrap"><button class="btn sm" data-payperson="'+esc(L.empId)+'" title="Status, times, overtime and holiday for each day">Days</button> '
      + '<button class="btn sm" data-payslip="'+esc(L.empId)+'">Payslip</button></td></tr>';
   };
-  const subtotalRow=(label, sum)=>{
-    h+='<tr data-paysub="'+esc(label)+'" style="font-weight:700;background:var(--surface2)">'
+  const subtotalRow=(label, sum, sticky)=>{
+    h+='<tr data-paysub="'+esc(label)+'" style="font-weight:700;background:var(--surface2)'
+     + (sticky?';position:sticky;bottom:0;z-index:3;box-shadow:0 -1px 0 var(--line)':'')+'">'
      + '<td colspan="3">'+esc(label)+' — '+sum.n+' '+(sum.n===1?"person":"people")+'</td>'
      + '<td></td><td></td>'
      + '<td class="num mono">'+num(sum.days,1)+'</td>'
@@ -21925,7 +21921,7 @@ function viewPayrollRun(){
     });
   }else worked.forEach(paintPayRow);
   h+='</tbody><tfoot>';
-  subtotalRow("TOTAL", T);
+  subtotalRow("TOTAL", T, true);
   h+='</tfoot></table></div>';
 
   if(idle){

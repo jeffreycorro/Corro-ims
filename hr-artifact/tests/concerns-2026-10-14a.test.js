@@ -155,6 +155,14 @@ describe("2026-10-14a payroll by site, deduction total, and OT duration", () => 
     assert.match(view, /payBySiteHtml/);
     assert.match(view, /payDeductionHtml/);
     assert.match(view, /Total deducted/);
+    assert.match(view, /one list, every site/);
+    const dedAt = view.indexOf("payDeductionHtml");
+    const btnAt = view.indexOf('id="pay-print"');
+    const groupAt = view.indexOf('id="pay-group"');
+    const siteAt = view.indexOf("payBySiteHtml");
+    const namesAt = view.indexOf("data-payrow");
+    assert.ok(dedAt > 0 && dedAt < btnAt, "deduction breakdown sits with the summary cards");
+    assert.ok(groupAt < siteAt && siteAt < namesAt, "site totals sit under Group by site, above the employee rows");
     assert.match(view, /data-paysub/);
     assert.match(view, /data-paysiteband/);
     const paper = extractFunction(html, "payPaper");
@@ -261,8 +269,9 @@ describe("2026-10-14a payroll by site, deduction total, and OT duration", () => 
     assert.match(editor, /timeFrom: timeFrom/);
     assert.match(editor, /timeTo: timeTo/);
     assert.match(editor, /empIds: Array\.from\(picked\)/);
-    assert.match(editor, /wholeSite: false/);
-    assert.doesNotMatch(editor, /wrap\.style\.display=whole\?"none"/);
+    assert.match(editor, /wholeSite: !\(pre&&pre\.empId\)/);
+    assert.ok(editor.indexOf("Employees on OT") < editor.indexOf('id="ot-hours"'));
+    assert.doesNotMatch(editor, /wrap\.style\.display/);
     assert.match(html, /Not paid until an approved form is on file/);
 
     const ctx = loadOt();
