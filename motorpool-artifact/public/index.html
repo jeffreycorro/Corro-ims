@@ -413,7 +413,7 @@ var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
    This label is inside the page function. The shim reads window.BUILD when it
    sends a save. Without that copy every save goes out with an empty build and
    the server answers "Reload the page". */
-var BUILD = "2026-10-14 b";
+var BUILD = "2026-10-15 a";
 try { window.BUILD = BUILD; } catch (e) {}
 var DAY = 86400000, MO = 30.44;
 
@@ -5605,13 +5605,28 @@ function lastFuel(code){
     if(lineWasNotPurchased(r)) return;
     if(r.veh!==code||!isFuel(r.cat)) return;
     var d=parseDate(r.date); if(!d) return;
-    if(!best||d>=best.d) best={d:d,date:r.date,odo:r.odo,L:r.liters||r.qty,vrf:r.vrf};
+    if(!best||d>=best.d) best={d:d,date:r.date,odo:r.odo,L:fuelLitresOf(r)||null,vrf:r.vrf};
   });
   return best;
 }
+/* Litres typed on the line. A station receipt is often qty 1 pc with the
+   pesos in the price and the litres left blank. That 1 is not one litre —
+   reading it as usage is what made a normal fuel VRF look over a limit. */
+function fuelLitresOf(r){
+  if(!r) return 0;
+  var raw=r.liters!=null&&r.liters!=="" ? r.liters : (r.litres!=null&&r.litres!=="" ? r.litres : "");
+  var L=parseFloat(raw);
+  if(isFinite(L)&&L>0) return L;
+  var unit=String(r.unit||"").trim().toLowerCase();
+  if(unit==="l"||unit==="lt"||unit==="ltr"||unit==="liter"||unit==="litre"||unit==="liters"||unit==="litres"){
+    var q=parseFloat(r.qty);
+    if(isFinite(q)&&q>0) return q;
+  }
+  return 0;
+}
 function fuelCheck(code,odo,litres){
   var rules=fuelRules();
-  var out={gates:[],meter:meterOf(code),rules:rules};
+  var out={gates:[],stops:[],meter:meterOf(code),rules:rules};
   if(!rules.enabled||!code) return out;
   var c=consumption().filter(function(x){ return x.code===code; })[0];
   var last=lastFuel(code);
@@ -5623,14 +5638,16 @@ function fuelCheck(code,odo,litres){
   if(odo==null||odo===""||isNaN(parseFloat(odo))){
     out.gates.push({level:"warn",code:"NO_METER",
       msg:"No meter reading on this request",
-      detail:"Without the "+(meter==="km"?"odometer":"hour meter")+" this fill cannot be checked, and it will not count towards consumption."});
+      detail:code+" has no odometer on this request, so usage cannot be compared with earlier fills. That does not block Send for approval."});
+    out.stops=[];
     return out;
   }
   odo=parseFloat(odo);
   if(!last||last.odo==null){
     out.gates.push({level:"warn",code:"NO_BASELINE",
-      msg:"No previous fill with a meter reading",
-      detail:"First measurable fill for "+code+" — nothing to compare against yet."});
+      msg:"No usage limit to exceed",
+      detail:code+" has no earlier fuel fill with an odometer, so there is no usage figure to go over. A normal fuel purchase can be sent."});
+    out.stops=[];
     return out;
   }
   var move=odo-last.odo;
@@ -5653,11 +5670,13 @@ function fuelCheck(code,odo,litres){
     var expected = meter==="km" ? move/c.avg : move*c.avg;
     out.expected=expected;
     if(litres>0&&expected>0&&litres>expected*(1+rules.overTol)){
+      var cap=expected*(1+rules.overTol);
       out.gates.push({level:"stop",code:"OVER_EXPECTED",
-        msg:nnum(litres,2)+" L asked for, about "+nnum(expected,2)+" L used",
-        detail:code+" averages "+c.avg.toFixed(2)+" "+meterUnit(meter)+", so "+
-          nnum(move,meter==="km"?0:1)+" "+unitLbl+" needs roughly "+nnum(expected,2)+
-          " L. Over the "+Math.round(rules.overTol*100)+"% allowance."});
+        msg:nnum(litres,2)+" L on this request, about "+nnum(expected,2)+" L used",
+        detail:code+" averages "+c.avg.toFixed(2)+" "+meterUnit(meter)+". "+
+          nnum(move,meter==="km"?0:1)+" "+unitLbl+" needs about "+nnum(expected,2)+
+          " L. The allowance is "+Math.round(rules.overTol*100)+"% over that, so the limit is "+
+          nnum(cap,2)+" L and this request is "+nnum(litres-cap,2)+" L over it. Send for approval is still open."});
     }
     if(last.L>0){
       var implied = meter==="km" ? move/last.L : last.L/move;
@@ -5678,10 +5697,49 @@ function fuelCheck(code,odo,litres){
   }else if(move>0){
     out.gates.push({level:"warn",code:"NO_BASELINE",
       msg:"No consumption baseline for "+code+" yet",
-      detail:"Nothing to measure this request against."});
+      detail:code+" has a meter movement but not enough measured fills to say what usage should be. That does not block Send for approval."});
   }
   out.stops=out.gates.filter(function(g){ return g.level==="stop"; });
   return out;
+}
+/* What the form shows beside a fuel line. blocksSend is always false: the
+   yard sends the VRF either way. The words name the unit, the litres, and
+   the allowance so “usage exceeded” is not a dead end. */
+function fuelUsageNote(code, odo, litres){
+  var chk=fuelCheck(code, odo, litres);
+  var stops=(chk&&chk.stops)||[];
+  var gates=(chk&&chk.gates)||[];
+  var title="", detail="";
+  if(!code) return {blocksSend:false, level:"info", title:"", detail:"", check:chk};
+  if(stops.length){
+    title=code+" — "+stops.map(function(s){ return s.msg; }).join("; ");
+    detail=stops.map(function(s){ return s.detail; }).join(" ")+
+      " This is a usage warning. It does not block Send for approval.";
+    return {blocksSend:false, level:"warn", title:title, detail:detail, check:chk};
+  }
+  if(gates.length){
+    title=code+" — "+gates[0].msg;
+    detail=gates[0].detail;
+    return {blocksSend:false, level:"info", title:title, detail:detail, check:chk};
+  }
+  if(chk&&chk.expected){
+    title=code+" is inside its own usage record";
+    detail=nnum(chk.move, chk.meter==="km"?0:1)+" "+(chk.meter==="km"?"km":"hours")+
+      " since "+(chk.lastDate||"the last fill")+", about "+nnum(chk.expected,2)+
+      " L expected. Send for approval is open.";
+    return {blocksSend:false, level:"info", title:title, detail:detail, check:chk};
+  }
+  title=code+" — no usage limit on this request";
+  detail="Nothing on the fuel record blocks Send for approval.";
+  return {blocksSend:false, level:"info", title:title, detail:detail, check:chk};
+}
+function plainSendError(msg){
+  var t=String(msg||"").trim();
+  if(!t) return "";
+  if(/usage\s*exceeded/i.test(t)){
+    return "“Usage exceeded” is a fuel-usage warning, not a block. It means the litres look high against this unit’s own average. The note on the form names the unit, the litres asked, the litres expected, and the allowance. Send for approval still saves a normal fuel purchase.";
+  }
+  return t;
 }
 var OVERRIDE_REASONS=["Meter not working / not readable","Unit idled or ran stationary on site",
   "Tank was run down before this fill","Meter was replaced or reset","Reading corrected after this VRF",
@@ -12039,9 +12097,26 @@ function vrfView(){
   paintPreparedSig();
   g0.appendChild(sigBox);
 
-  /* Fuel check / gauge walls do not gate this form. Office still has the
-     consumption record under Fuel economics. */
-  function refreshGate(){ }
+  /* Fuel check / gauge walls do not gate this form. The note names any usage
+     figure so the yard can see it. Send for approval stays enabled. */
+  var fuelNote=null;
+  function refreshGate(){
+    if(!fuelNote) return;
+    fuelNote.innerHTML="";
+    var lines=d.lines||[];
+    var fuelish=false, litres=0;
+    lines.forEach(function(l){
+      if(!l||!isFuel(l.cat)) return;
+      fuelish=true;
+      litres+=fuelLitresOf(l);
+    });
+    if(!d.veh||!fuelish) return;
+    var note=fuelUsageNote(d.veh, parseOdo(d.odo), litres);
+    if(!note||!note.title) return;
+    var bn=el("div","banner "+(note.level==="warn"?"warn":"info"));
+    bn.innerHTML="<b>"+esc(note.title)+"</b><br>"+esc(note.detail);
+    fuelNote.appendChild(bn);
+  }
 
   /* line items */
   var lt=el("table","lines");
@@ -12232,7 +12307,9 @@ function vrfView(){
   gh.appendChild(el("span","note","Fuel Purchase = buy from a station or supplier. Fuel Reserve = take litres from the yard drums."));
   gc.appendChild(gh);
   var gb=el("div","bd");
-  gb.appendChild(el("div","hint","Raise a fuel line the same way as any other line. Pick the real supplier for a Fuel Purchase. Use FUEL RESERVE only when the litres come off the drums."));
+  fuelNote=el("div");
+  gb.appendChild(fuelNote);
+  gb.appendChild(el("div","hint","Raise a fuel line the same way as any other line. Pick the real supplier for a Fuel Purchase. Use FUEL RESERVE only when the litres come off the drums. A usage note here does not block Send for approval."));
   gc.appendChild(gb);
   g.appendChild(gc);
 
@@ -12399,7 +12476,9 @@ async function sendForApproval(d,btn,opts){
       return (l.item||normCat(l.cat))+" ×"+(l.qty||1); }).join(", ");
     var fuelish=rows.some(function(l){ return isFuel(l.cat); });
     var litres=rows.reduce(function(a,l){
-      return a+(isFuel(l.cat)?(parseFloat(l.liters)||parseFloat(l.qty)||0):0); },0);
+      return a+(isFuel(l.cat)?fuelLitresOf(l):0); },0);
+    /* Usage notes never stop this send. A station fill with no prior odometer
+       (MC-02) is not over a limit, and a blank litres box is not 1 L. */
     /* No number yet. The server assigns one only if this row is saved. */
     hold={no:"",vrfNo:"",date:d.date||iso(),
       kind:fuelSpendKind({work:d.work,lines:rows}),veh:d.veh,work:d.work,
@@ -12468,7 +12547,7 @@ async function sendForApproval(d,btn,opts){
       return;
     }
     btn.disabled=false; btn.textContent="Send for approval";
-    toast((e&&e.message)||"Could not send it. Nothing was saved — try again.");
+    toast(plainSendError(e&&e.message)||"Could not send it. Nothing was saved — try again.");
   }finally{
     S._sendingVrf=false;
   }
@@ -14273,7 +14352,7 @@ function consumeView(){
   tBand.value=Math.round(rules.bandTol*100);
   var tKm=el("input"); tKm.type="number"; tKm.min="0"; tKm.step="1"; tKm.value=rules.minMove.km;
   lr.appendChild(lf2("Over-request allowance %",tOver,
-    "How far above the litres its own average says it needs before the request is stopped."));
+    "How far above the litres its own average says it needs before the form names the usage. It does not block Send for approval."));
   lr.appendChild(lf2("Out-of-range allowance %",tBand,
     "How far outside the unit's own best-to-worst band a fill may land."));
   lr.appendChild(lf2("Minimum km before a refill",tKm,
