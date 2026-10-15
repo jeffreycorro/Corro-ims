@@ -1886,7 +1886,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-10-14a";
+const BUILD = "2026-10-15a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -9562,6 +9562,96 @@ function savedAttendanceRow(rec, emp){
   if(direct) return direct;
   return any;
 }
+/* Filed, waiting for signature, approved, or already availed. A disapproved
+   or cancelled form does not put anyone on leave. */
+const DAILY_LEAVE_LIVE = { "Filed":1, "For signature":1, "Approved":2, "Availed":2 };
+function dailyLeaveCovering(empId, date){
+  if(!empId || !date) return null;
+  const day=String(date).slice(0,10);
+  const ls=S.leaves||{};
+  let best=null, rank=0;
+  for(const k in ls){
+    const l=ls[k];
+    if(!l || l.empId!==empId) continue;
+    const live=DAILY_LEAVE_LIVE[l.status];
+    if(!live || !l.from) continue;
+    const from=String(l.from).slice(0,10);
+    const to=String(l.to||l.from).slice(0,10);
+    if(day<from || day>to) continue;
+    if(live>rank || (live===rank && String(l.from)>String((best&&best.from)||""))){
+      best=l; rank=live;
+    }
+  }
+  return best;
+}
+function leaveRecordPays(l){
+  if(!l) return false;
+  if(l.pay===0 || l.pay===false) return false;
+  if(l.pay===1 || l.pay===true) return true;
+  if(l.type==="LWOP") return false;
+  if(typeof leaveType==="function") return !!leaveType(l.type).pay;
+  return true;
+}
+function lrfDisplay(no){
+  const m=LRF_FULL.exec(String(no||""));
+  if(m) return "LRF"+m[1]+" - "+m[2];
+  return String(no||"").trim();
+}
+function dailyLeaveStatus(l){
+  const approved=l && (l.status==="Approved" || l.status==="Availed");
+  return approved && leaveRecordPays(l) ? "Leave with Pay" : "Leave";
+}
+function dailyLeaveReason(l){
+  const approved=l && (l.status==="Approved" || l.status==="Availed");
+  const cite=lrfDisplay(l && l.no);
+  const head=approved ? "Approved Leave" : "Filed Leave";
+  return cite ? head+" ("+cite+")" : head;
+}
+/* A blank reason, the AWOL placeholder, or a citation this screen already
+   wrote can be replaced from the leave register. A reason Cassie typed stays. */
+function reasonYieldsToLeave(text){
+  const t=String(text||"").trim();
+  if(!t) return true;
+  if(/^awol$/i.test(t)) return true;
+  if(/^\(\s*not\s+filed\s*\)$/i.test(t)) return true;
+  if(/^(approved|filed)\s+leave\b/i.test(t)) return true;
+  return false;
+}
+function withLrf(text, leave){
+  const cite=lrfDisplay(leave && leave.no);
+  const base=String(text||"").trim();
+  if(!cite) return base || dailyLeaveReason(leave);
+  if(LRF_FULL.test(base)) return base;
+  return base ? base+" ("+cite+")" : dailyLeaveReason(leave);
+}
+/* Time in, time out, overtime, a late or undertime mark, a holiday, or a
+   reason Cassie typed means the row is attendance. A blank Present, an
+   unexcused Absent, or a leave mark this screen wrote follows the LRF. */
+function dailyLeaveLocked(r){
+  if(!r) return false;
+  const st=String(r.s||"");
+  if(st==="Present/Late" || st==="Undertime" || st==="Half Day" || st==="Rest Day"
+    || st==="Regular Holiday" || st==="Special Holiday") return true;
+  if(String(r.in||"").trim() || String(r.out||"").trim()) return true;
+  if(typeof dailyOtHoursOf==="function" && dailyOtHoursOf(r)>0) return true;
+  const hol=r.hol;
+  if(hol!=null && hol!=="" && hol!==0 && hol!=="0" && hol!==false) return true;
+  if((st==="Present" || st==="") && r.day!=null && String(r.day).trim()!=="") return true;
+  if((st==="Present" || st==="") && !reasonYieldsToLeave(r.r)) return true;
+  return false;
+}
+function applyDailyLeave(rec, e, r){
+  const leave=dailyLeaveCovering(e && e.id, rec && rec.date);
+  if(!leave || dailyLeaveLocked(r)) return r;
+  const st=String(r.s||"");
+  const open=!st || st==="Present" || st===STATUS_PENDING || st==="Absent"
+    || st==="Leave" || st==="Leave with Pay";
+  if(!open) return r;
+  r.s=dailyLeaveStatus(leave);
+  r.r=reasonYieldsToLeave(r.r) ? dailyLeaveReason(leave) : withLrf(r.r, leave);
+  if(leave.half && (r.day==null || String(r.day).trim()==="")) r.day=0.5;
+  return r;
+}
 function dailyRow(rec,e){
   const found=typeof savedAttendanceRow==="function" ? savedAttendanceRow(rec, e) : ((rec&&rec.rows||{})[e&&e.id]||null);
   const r=found ? Object.assign({}, found) : {s:"Present", r:"", in:"", out:"", ot:null, day:null, hol:null};
@@ -9570,6 +9660,7 @@ function dailyRow(rec,e){
   const st=typeof canonDayStatus==="function" ? canonDayStatus(r) : "";
   if(st) r.s=st;
   else if(!r.s) r.s="Present";
+  if(typeof applyDailyLeave==="function") return applyDailyLeave(rec, e, r);
   return r;
 }
 function dailyOtHoursOf(row){
@@ -9608,7 +9699,7 @@ function dailyTally(rec){
     else if(r==="Undertime") { t.present++; t.undertime=(t.undertime||0)+1; }
     else if(r===STATUS_PENDING) t.pending++;
     else if(r==="Absent") t.absent++;
-    else if(r==="Leave") t.leave++;
+    else if(r==="Leave" || r==="Leave with Pay") t.leave++;
     else if(r==="Regular Holiday") t.holiday++;
     else t.other++;
   }));
@@ -10697,7 +10788,7 @@ function viewDaily(){
   h+='<div class="strip">'
    + tile(t.present,"Present",t.late?t.late+" of them late":"nobody late","ok")
    + tile(t.absent,"Absent","",t.absent?"crit":"ok")
-   + tile(t.leave,"On leave","approved leave","acc")
+   + tile(t.leave,"On leave","filed or approved leave","acc")
    + tile(t.holiday+t.other,"Holiday or rest day","","acc")
    + tile(typeof fmtOtHrs==="function"?fmtOtHrs(otDayTotal):otDayTotal,"OT total hrs","pending hours included","acc")
    + (t.pending?tile(t.pending,STATUS_PENDING,"still to be settled before this day is filed","warn"):"")
@@ -10707,7 +10798,8 @@ function viewDaily(){
     const head=groups.reduce((n2,g)=>n2+g.people.length,0);
     h+='<div class="note" style="border-left-color:var(--warn);margin:14px 0">'
      + '<b>No report has been filed for '+esc(longDate(d))+' yet.</b> The '+head+' people below are the '
-     + 'standing list, and every one of them is showing Present because that is where the form starts — '
+     + 'standing list. Anyone with a filed leave covering this date already shows as on leave, and the '
+     + 'LRF number is in the reason. Everyone else is showing Present because that is where the form starts — '
      + 'not because anybody has said so. Save it as it stands and that is what the day will say, and what '
      + 'payroll will pay. Change the exceptions first.</div>';
   }
