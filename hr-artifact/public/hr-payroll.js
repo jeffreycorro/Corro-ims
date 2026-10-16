@@ -442,6 +442,9 @@
       var row = (rec.rows || {})[empId];
       if (!row) return;
       var emp = (ctx.employees || {})[empId];
+      var rehire = String((emp && emp.rehireDate) || "").slice(0, 10);
+      var current = /^\d{4}-\d{2}-\d{2}$/.test(rehire) && to && String(to) >= rehire;
+      if (current && String(d) < rehire) return;
       if (prehireRowHidden(emp, d, row)) return;
       if (separationBlocksDay(emp, d)) return;
       var credit = payDayCredit(row, empId, d, ctx);
@@ -1281,8 +1284,25 @@
     if (!emp || !date) return false;
     var day = String(date).slice(0, 10);
     var on = String(emp.separatedOn || "").slice(0, 10);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(on) && day >= on) return true;
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(on) && empStatusIsSeparated(emp)) return true;
+    var rehire = String(emp.rehireDate || "").slice(0, 10);
+    var dated = /^\d{4}-\d{2}-\d{2}$/.test(on);
+    var rehired = /^\d{4}-\d{2}-\d{2}$/.test(rehire);
+    if (rehired && day >= rehire && (!dated || on < rehire)) return false;
+    if (dated && day >= on) return true;
+    if (!dated && empStatusIsSeparated(emp)) return true;
+    return false;
+  }
+
+  /* A Separated status with a rehire date already reached is back at work.
+     A last day on or after the rehire date is a new separation. */
+  function stillSeparated(e) {
+    if (!empStatusIsSeparated(e)) return false;
+    var h = String((e && e.rehireDate) || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(h)) return true;
+    var today = todayISO();
+    if (today && today < h) return true;
+    var on = String((e && e.separatedOn) || "").slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(on) && on >= h) return true;
     return false;
   }
 
@@ -1300,7 +1320,7 @@
     var list = [];
     Object.keys(S.employees || {}).forEach(function (id) {
       var e = S.employees[id];
-      if (!e || !personListed(e) || empStatusIsSeparated(e)) return;
+      if (!e || !personListed(e) || stillSeparated(e)) return;
       if (payKindOf(e) !== kind) return;
       list.push(e);
     });
@@ -1359,7 +1379,7 @@
   }
 
   function markOnPeoplePay(e, source) {
-    if (!e || empStatusIsSeparated(e)) return e;
+    if (!e || stillSeparated(e)) return e;
     var today = todayISO();
     if (!e.rosterConfirmed) e.rosterConfirmed = today;
     ensureEmpRate(e, today);
@@ -1373,14 +1393,14 @@
     var have = {};
     var list = [];
     (standing || []).forEach(function (e) {
-      if (!e || !e.id || have[e.id] || empStatusIsSeparated(e)) return;
+      if (!e || !e.id || have[e.id] || stillSeparated(e)) return;
       have[e.id] = true;
       ensureEmpRate(e);
       list.push(e);
     });
     Object.keys(S.employees || {}).forEach(function (id) {
       var e = S.employees[id];
-      if (!e || have[id] || empStatusIsSeparated(e)) return;
+      if (!e || have[id] || stillSeparated(e)) return;
       if (e.rosterConfirmed || first[id]) {
         ensureEmpRate(e);
         list.push(e);

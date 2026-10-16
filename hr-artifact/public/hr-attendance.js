@@ -787,6 +787,7 @@
       Object.keys(rec.rows || {}).forEach(function (empId) {
         var row = rec.rows[empId];
         var emp = (ctx.employees || {})[empId];
+        if (beforeRehire(emp, rec.date)) return;
         if (prehireRowHidden(emp, rec.date, row)) return;
         var t = (tally[empId] = tally[empId] || blankPerson());
         tallyRow(empId, rec, row, ctx, t);
@@ -811,6 +812,7 @@
     Object.keys((rec && rec.rows) || {}).forEach(function (empId) {
       var row = rec.rows[empId] || {};
       var emp = (ctx.employees || {})[empId];
+      if (beforeRehire(emp, rec.date)) return;
       if (prehireRowHidden(emp, rec.date, row)) return;
       var st = effectiveStatus(empId, rec.date, row.s, row.r, ctx);
       if (st === "Present") t.present++;
@@ -871,6 +873,7 @@
       if (keep && !keep[monthKey(rec.date)]) return;
       var row = (rec.rows || {})[empId];
       if (!row) return;
+      if (beforeRehire((ctx.employees || {})[empId], rec.date)) return;
       if (prehireRowHidden((ctx.employees || {})[empId], rec.date, row)) return;
       allDates.push(rec.date);
       var st = effectiveStatus(empId, rec.date, row.s, row.r, ctx);
@@ -922,10 +925,33 @@
     return /^(separated|resigned|terminated|awol)$/i.test(s);
   }
 
+  function empRehireDate(e) {
+    var h = String((e && e.rehireDate) || "").slice(0, 10);
+    return /^\d{4}-\d{2}-\d{2}$/.test(h) ? h : "";
+  }
+
+  function beforeRehire(e, date) {
+    var h = empRehireDate(e);
+    var day = isoDate(date);
+    return !!(h && day && day < h);
+  }
+
+  /* Separated, or a last day before the rehire, is the previous engagement. */
+  function rehiredActiveAsOf(e, date) {
+    var h = empRehireDate(e);
+    var day = isoDate(date);
+    if (!e || !h || !day || day < h) return false;
+    var on = isoDate(e.separatedOn);
+    if (on && on < h) return true;
+    if (!on && leaverStatus(e)) return true;
+    return false;
+  }
+
   function empSeparatedAsOf(e, date) {
     if (typeof root.empSeparatedAsOf === "function" && root.empSeparatedAsOf !== empSeparatedAsOf) {
       try { return !!root.empSeparatedAsOf(e, date); } catch (err) {}
     }
+    if (rehiredActiveAsOf(e, date)) return false;
     if (!e || !leaverStatus(e)) return false;
     var on = isoDate(e.separatedOn);
     if (!on) return true;
@@ -1036,6 +1062,7 @@
       list.push(e);
     }
     standingEmployees(ctx).forEach(function (e) {
+      if (beforeRehire(e, date)) return;
       if (empSeparatedAsOf(e, date)) return;
       add(e);
     });
@@ -1059,7 +1086,10 @@
       Object.keys(emps).forEach(function (id) {
         var e = emps[id];
         var start = first[id];
+        var rh = empRehireDate(e);
+        if (rh) start = rh;
         if (!e || !start || start > date) return;
+        if (beforeRehire(e, date)) return;
         if (empSeparatedAsOf(e, date)) return;
         add(e);
       });
