@@ -73,7 +73,7 @@ function loadRoster() {
 
 describe("2026-10-03b alphabetical roster and last day of engagement", () => {
   it("is build 2026-10-05a and shows Last day of engagement on the 201 file", () => {
-    assert.match(html, /const BUILD = "2026-10-15a"/);
+    assert.match(html, /const BUILD = "2026-10-16a"/);
     assert.match(html, /Last day of engagement/);
     assert.match(html, /id="roster-sep-bottom"/);
     assert.match(html, /Leaving on /);
@@ -206,6 +206,10 @@ describe("2026-10-03b alphabetical roster and last day of engagement", () => {
       separatedOn: "2026-10-10",
       separatedOnEditedOn: "2026-10-01T00:00:00.000Z",
     };
+    /* The portal uses the Manila calendar, not the pinned TODAY in this
+       harness. Hold the clock on the day this case was written for, so a
+       last day of 2026-10-10 stays in the future. */
+    ctx.manilaToday = () => "2026-10-03";
     assert.equal(await ctx.applyEngagementStatus([future]), 0);
     assert.equal(future.status, "Regular");
     assert.match(ctx.lastDayHint({ lastDayCleared: true, status: "Separated", separatedOn: "" }), /stays Separated/);

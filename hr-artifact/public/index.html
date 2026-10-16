@@ -1008,6 +1008,21 @@ function lsPayload(){
       return;
     }
     if(c==="otreqs" && typeof shedOtMap==="function"){ d[c]=shedOtMap(S[c]); return; }
+    /* Daily signature images are tens or hundreds of kilobytes. The browser
+       copy does not need them — print reads the copies on Settings — and
+       stringifying them on every save is what made the portal hitch. */
+    if(c==="daily"){
+      const map={};
+      Object.keys(S.daily||{}).forEach(id=>{
+        const rec=S.daily[id];
+        if(!rec || typeof rec!=="object"){ map[id]=rec; return; }
+        const copy=typeof shedDailySigBytes==="function" ? shedDailySigBytes(rec) : Object.assign({}, rec);
+        if(copy && typeof copy==="object"){ delete copy._dmDirty; delete copy._dmShed; }
+        map[id]=copy;
+      });
+      d.daily=map;
+      return;
+    }
     d[c]=S[c];
   });
   return d;
@@ -1495,6 +1510,15 @@ function mergeIncomingDoc(coll, incoming, local){
       next.order=(next.order||[]).filter(id=>!drop(id));
       next.callback=(next.callback||[]).filter(id=>!omit.has(id));
     }
+    /* A list response leaves signature image bytes on the server. Do not
+       keep a previous browser copy of those bytes in the working record —
+       saving the day would otherwise try to write them back, and drawing
+       analytics would carry them around. Links stay. Small values stay. */
+    if(typeof shedDailySigBytes==="function"){
+      const light=shedDailySigBytes(next);
+      if(next._dmDirty) light._dmDirty=true;
+      return light;
+    }
     return next;
   }
   if(coll==="memos"){
@@ -1886,7 +1910,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-10-15a";
+const BUILD = "2026-10-16a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -6390,10 +6414,13 @@ function lastMonths(n){
 /* Attendance rolled up from the daily reports. */
 function attendanceByMonth(){
   const m={};
-  Object.values(S.daily).forEach(rec=>{
+  Object.values(S.daily||{}).forEach(rec=>{
+    if(!rec || typeof rec!=="object") return;
     const k=monthKey(rec.date); if(!k) return;
     const t=(m[k]=m[k]||{days:0,present:0,late:0,absent:0,leave:0,holiday:0,head:0});
-    const tal=dailyTally(rec);
+    let tal;
+    try{ tal=dailyTally(rec); }catch(err){ return; }
+    if(!tal) return;
     t.days++; t.present+=tal.present; t.late+=tal.late; t.absent+=tal.absent;
     t.leave+=tal.leave; t.holiday+=tal.holiday;
     t.head+=tal.present+tal.absent+tal.leave+tal.holiday+tal.other;
@@ -6515,15 +6542,18 @@ function effectiveStatus(empId, date, raw, reason){
 
 function offenders(months){
   const keep=new Set(months), tally={};
-  Object.values(S.daily).forEach(rec=>{
-    if(!keep.has(monthKey(rec.date))) return;
+  Object.values(S.daily||{}).forEach(rec=>{
+    if(!rec || typeof rec!=="object" || !keep.has(monthKey(rec.date))) return;
     Object.entries(rec.rows||{}).forEach(([id,r])=>{
+      try{
+      if(!r || typeof r!=="object") return;
       if(!dailyRowShown(id, rec.date, r)) return;
       const t=(tally[id]=tally[id]||{late:0,absent:0,leave:0,excused:0});
       const st=effectiveStatus(id, rec.date, r.s, r.r);
       if(st==="Present/Late"){ if(rowExcused(r)!==true) t.late++; }
       else if(st==="Absent") t.absent++;
       else if(st==="Leave"){ t.leave++; if(r.s==="Absent") t.excused++; }
+      }catch(err){}
     });
   });
   return Object.entries(tally).map(([id,t])=>({e:S.employees[id], ...t}))
@@ -6572,13 +6602,21 @@ function drillRows(o){
   o=o||{};
   const want=o.kind||"all";
   const out=[];
-  Object.values(S.daily).forEach(rec=>{
+  /* Opening one person's days used to rebuild the whole crew for every
+     report. That is what froze the page when a count or the Records button
+     was clicked. The area on the row, or the 201 project, is enough to
+     show. One bad row is skipped. */
+  Object.values(S.daily||{}).forEach(rec=>{
+    try{
+    if(!rec || typeof rec!=="object") return;
     const k=monthKey(rec.date);
     if(o.months && o.months.indexOf(k)<0) return;
     if(o.month && k!==o.month) return;
-    const siteOf={};
-    try{ dailyGroups(rec).forEach(g=>g.people.forEach(e=>{ siteOf[e.id]=g.site; })); }catch(err){}
-    Object.entries(rec.rows||{}).forEach(([id,r])=>{
+    const rows=rec.rows;
+    if(!rows || typeof rows!=="object") return;
+    Object.entries(rows).forEach(([id,r])=>{
+      try{
+      if(!r || typeof r!=="object") return;
       if(!dailyRowShown(id, rec.date, r)) return;
       if(o.empId && id!==o.empId) return;
       const raw=r.s||"";
@@ -6590,16 +6628,19 @@ function drillRows(o){
       if(want==="absent" && !isAbsent) return;
       if(want==="leave"  && !isLeave)  return;
       if(want==="all"    && !(isLate||isAbsent||isLeave)) return;
-      if(o.site && siteOf[id]!==o.site) return;
-      const e=S.employees[id]; if(!e) return;
+      const e=S.employees && S.employees[id]; if(!e) return;
+      const site=(r.site||e.project||"");
+      if(o.site && site!==o.site) return;
       out.push({ date:rec.date, name:e.name, empNo:e.empNo||"", empId:id,
                  status:st, rawStatus:raw, cover:cover||null,
                  reason: r.r||"",
                  lateExcused: st==="Present/Late" && rowExcused(r)===true,
                  excuse: cover||null,
-                 site:siteOf[id]||e.project||"",
+                 site:site,
                  source:rec.source||"", link:rec.driveLink||"" });
+      }catch(err){}
     });
+    }catch(err){}
   });
   return out.sort((a,b)=>String(b.date||"").localeCompare(String(a.date||"")));
 }
@@ -6628,7 +6669,21 @@ function statusPill(st){
 }
 function attendanceDrill(o){
   o=o||{};
-  const rows=drillRows(o);
+  let rows;
+  try{ rows=drillRows(o); }
+  catch(err){
+    console.error(err);
+    const who=o.empId && S.employees && S.employees[o.empId] ? " — "+flipName(S.employees[o.empId].name) : "";
+    openModal({ title:"Attendance records"+who, wide:true,
+      body:'<div class="note">These records could not be opened. The rest of HR Analytics is still usable. Reload the page and try this person again.</div>',
+      foot:'<button class="btn pri" id="dr-close">Close</button>'});
+    const close=$("#dr-close"); if(close) close.onclick=closeModal;
+    return;
+  }
+  const allRows=rows;
+  const DRILL_CAP=800;
+  const hidden=allRows.length>DRILL_CAP ? allRows.length-DRILL_CAP : 0;
+  if(hidden) rows=allRows.slice(0, DRILL_CAP);
   const e=o.empId?S.employees[o.empId]:null;
   const what = o.kind==="late" ? "Lates" : o.kind==="absent" ? "Absences"
              : o.kind==="leave" ? "Days on leave" : "Lates, absences and leave";
@@ -6639,9 +6694,11 @@ function attendanceDrill(o){
   let h='<div class="stack">'
    + '<div class="note">Counted from the daily manpower reports as they were read. '
    + (rows.length?'Open the scan on any row to check it against the sheet HR filed.'
-                 :'Nothing recorded for this yet.')+'</div>';
+                 :'Nothing recorded for this yet.')
+   + (hidden?' Showing the '+DRILL_CAP+' newest records. '+hidden+' older record'+(hidden===1?"":"s")+' are not listed here.':'')
+   + '</div>';
   if(rows.length){
-    h+='<div class="row"><span class="lbl">'+rows.length+' record'+(rows.length===1?"":"s")
+    h+='<div class="row"><span class="lbl">'+allRows.length+' record'+(allRows.length===1?"":"s")
      + ' across '+days+' day'+(days===1?"":"s")+'</span>'
      + '<div class="sp"><button class="btn sm" id="dr-csv"><svg><use href="#i-dl"/></svg> CSV</button></div></div>'
      + '<div class="tw" style="max-height:56vh;overflow:auto"><table><thead><tr>'
@@ -6669,7 +6726,7 @@ function attendanceDrill(o){
   const csv=$("#dr-csv");
   if(csv) csv.onclick=()=>saveFile("attendance-detail.csv", toCSV(
     [["Date","Employee no.","Employee","Status","Reason","Area","Read from"]].concat(
-      rows.map(r=>[r.date,r.empNo,flipName(r.name),r.status,r.reason,r.site,r.source]))));
+      allRows.map(r=>[r.date,r.empNo,flipName(r.name),r.status,r.reason,r.site,r.source]))));
 }
 /* A figure you can click reads as one you can check. */
 function drillCell(n, sev, o){
@@ -7024,6 +7081,7 @@ function escalateWith(empId, months, a, c, e){
 }
 
 function viewInsights(){
+  try{
   const win=S.ui.insightMonths||6;
   /* A notice is issued about a month, not about a year. When a month is picked
      everything below narrows to it — the counts, the days behind them and what
@@ -7149,14 +7207,15 @@ function viewInsights(){
   }else{
     h+='<div class="card"><div class="tw"><table><thead><tr><th>Employee</th><th style="width:130px">Area</th>'
      + '<th style="width:80px">Lates</th><th style="width:90px">Absences</th><th style="width:90px">On leave</th>'
-     + '<th style="width:96px"></th></tr></thead><tbody>'
+     + '<th style="width:168px"></th></tr></thead><tbody>'
      + off.slice(0,25).map(x=>'<tr><td><b>'+esc(flipName(x.e.name))+'</b> '
         + '<span class="mono lbl">'+esc(x.e.empNo||"")+'</span></td>'
         + '<td style="font-size:11.5px">'+esc(x.e.project||"—")+'</td>'
         + '<td class="mono">'+drillCell(x.late,"warn",{kind:"late",empId:x.e.id,months})+'</td>'
         + '<td class="mono">'+drillCell(x.absent,"crit",{kind:"absent",empId:x.e.id,months})+'</td>'
         + '<td class="mono">'+drillCell(x.leave,"mut",{kind:"leave",empId:x.e.id,months})+'</td>'
-        + '<td><button class="btn sm" data-emp-open="'+esc(x.e.id)+'" data-goto="employees">Open</button></td></tr>').join("")
+        + '<td><button class="btn sm" data-drill="'+esc(JSON.stringify({kind:"all",empId:x.e.id,months}))+'">Records</button> '
+        + '<button class="btn sm" data-emp-open="'+esc(x.e.id)+'" data-goto="employees">Open</button></td></tr>').join("")
      + '</tbody></table></div>'
      + (off.length>25?'<div class="card-b lbl">Showing 25 of '+off.length+'.</div>':"")
      + '<div class="card-b"><div class="note">The portal counts them; whether any of it warrants a notice is '
@@ -7194,9 +7253,25 @@ function viewInsights(){
      + '</div>';
   }
 
-  h+=attendanceSummaryCard(months);
-  h+=escalationPanel(months);
+  try{ h+=attendanceSummaryCard(months); }
+  catch(err){
+    console.error(err);
+    h+='<div class="card" style="margin-top:16px"><div class="empty">The manpower summary could not be drawn. The counts above are still usable.</div></div>';
+  }
+  try{ h+=escalationPanel(months); }
+  catch(err){
+    console.error(err);
+    h+='<div class="card" style="margin-top:16px"><div class="empty">Suggestions could not be drawn. The attendance counts above are still usable.</div></div>';
+  }
   return h;
+  }catch(err){
+    console.error(err);
+    try{ setCrumb("HR Analytics", "This screen hit a problem"); }catch(e){}
+    const msg=esc(String((err && (err.message||err)) || "unknown").slice(0,300));
+    return '<div class="card"><div class="card-b"><h3>HR Analytics</h3>'
+      + '<p>This screen could not finish. The rest of the portal is still open. Reload, or pick a shorter window.</p>'
+      + '<p class="lbl">'+msg+'</p></div></div>';
+  }
 }
 
 
@@ -9553,6 +9628,10 @@ function savedAttendanceRow(rec, emp){
   let alt=null, any=null;
   Object.keys(rows).forEach(k=>{
     if(k===id) return;
+    /* Another employee's own id is never an alias for this person. Skipping
+       it avoids walking the whole roster once per person per day. */
+    if(S.employees && S.employees[k]) return;
+    if(!rows[k] || typeof rows[k]!=="object") return;
     if(typeof summaryPersonId!=="function" || summaryPersonId(k, rows[k])!==id) return;
     if(!any) any=rows[k];
     if(!alt && !attendanceRowBlank(rows[k])) alt=rows[k];
@@ -9692,6 +9771,7 @@ function dailyOtTotal(rec){
 function dailyTally(rec){
   const t={present:0,late:0,absent:0,leave:0,holiday:0,pending:0,waiting:0,other:0};
   dailyGroups(rec).forEach(g=>g.people.forEach(e=>{
+    try{
     const row=dailyRow(rec,e);
     const r=effectiveStatus(e.id, rec.date, row.s, row.r);
     if(r==="Present") t.present++;
@@ -9702,6 +9782,7 @@ function dailyTally(rec){
     else if(r==="Leave" || r==="Leave with Pay") t.leave++;
     else if(r==="Regular Holiday") t.holiday++;
     else t.other++;
+    }catch(err){}
   }));
   t.waiting=t.pending;   /* PR #40 name; same count as pending */
   return t;
@@ -20918,38 +20999,63 @@ function normPersonName(s){
    stored under the employee number or the printed name instead. */
 function summaryPersonId(key, row){
   if(S.employees && S.employees[key]) return key;
-  const no=normNo(key) || normNo(row && (row.empNo||row.no));
-  if(no && typeof empList==="function"){
-    const hit=empList().find(e=>normNo(e.empNo)===no);
-    if(hit) return hit.id;
-  }
-  const nm=normPersonName(key) || normPersonName(row && (row.name||row.empName));
-  if(nm && typeof empList==="function"){
-    const hit=empList().find(e=>{
+  /* Three attendance keys are not employee ids (old foreman imports).
+     Resolving each of them used to scan every employee, once per person
+     per day, and that scan is what froze HR Analytics. The roster is
+     indexed once and reused until the employee list changes. */
+  const emps=S.employees||{};
+  let n=0;
+  for(const id in emps) n++;
+  const snap=typeof SNAP_GEN==="number" ? SNAP_GEN : 0;
+  let ix=summaryPersonId._ix;
+  if(!ix || summaryPersonId._emps!==emps || summaryPersonId._n!==n || summaryPersonId._snap!==snap){
+    const byNo={}, byName={}, buckets={};
+    const list=typeof empList==="function" ? empList() : Object.keys(emps).map(id=>emps[id]);
+    list.forEach(e=>{
+      if(!e || !e.id) return;
+      const eno=typeof normNo==="function" ? normNo(e.empNo) : "";
+      if(eno && !byNo[eno]) byNo[eno]=e.id;
       const a=normPersonName(e.name);
-      const b=typeof flipName==="function" ? normPersonName(flipName(e.name)) : "";
-      return a===nm || (b && b===nm);
+      if(a && !byName[a]) byName[a]=e.id;
+      if(typeof flipName==="function"){
+        const b=normPersonName(flipName(e.name));
+        if(b && !byName[b]) byName[b]=e.id;
+      }
+      if(typeof personMatchKey==="function"){
+        const pk=personMatchKey(e.name);
+        if(!pk) return;
+        (buckets[pk]=buckets[pk]||[]).push(e.id);
+      }
     });
-    if(hit) return hit.id;
+    const byMatch={};
+    Object.keys(buckets).forEach(pk=>{
+      const ids=[];
+      buckets[pk].forEach(id=>{ if(ids.indexOf(id)<0) ids.push(id); });
+      byMatch[pk]=ids;
+    });
+    ix={byNo:byNo, byName:byName, byMatch:byMatch};
+    summaryPersonId._ix=ix;
+    summaryPersonId._emps=emps;
+    summaryPersonId._n=n;
+    summaryPersonId._snap=snap;
   }
-  /* Printed manpower often drops the middle initial ("John Mark" vs
-     "John Mark B.") or writes First Last. Attach that row only when one
-     employee has those words. Two different given names stay apart. */
-  if(typeof personMatchKey==="function" && typeof empList==="function"){
+  const no=(typeof normNo==="function" ? normNo(key) : "") || (typeof normNo==="function" ? normNo(row && (row.empNo||row.no)) : "");
+  if(no && ix.byNo[no]) return ix.byNo[no];
+  const nm=normPersonName(key) || normPersonName(row && (row.name||row.empName));
+  if(nm && ix.byName[nm]) return ix.byName[nm];
+  if(typeof personMatchKey==="function"){
     const raws=[];
     if(key) raws.push(String(key));
     const rn=row && (row.name||row.empName);
     if(rn) raws.push(String(rn));
-    const keys=raws.map(personMatchKey).filter(Boolean);
-    if(keys.length){
-      const hits=empList().filter(e=>{
-        const pk=personMatchKey(e&&e.name);
-        return pk && keys.indexOf(pk)>=0;
-      });
-      const uniq=[];
-      hits.forEach(e=>{ if(e && e.id && !uniq.some(x=>x.id===e.id)) uniq.push(e); });
-      if(uniq.length===1) return uniq[0].id;
-    }
+    const hits=[];
+    raws.forEach(raw=>{
+      const pk=personMatchKey(raw);
+      const ids=pk && ix.byMatch[pk];
+      if(!ids) return;
+      ids.forEach(id=>{ if(hits.indexOf(id)<0) hits.push(id); });
+    });
+    if(hits.length===1) return hits[0];
   }
   return "";
 }
@@ -22606,6 +22712,29 @@ function sigBlobSame(a,b){
   if(!a || !b) return false;
   return String(a.data||"")===String(b.data||"") && String(a.link||"")===String(b.link||"");
 }
+function heavySigData(v){
+  return typeof v==="string" && /^data:/i.test(v) && v.length>4096;
+}
+/* A copy of the day with signature image bytes removed. The stored day and
+   the record on screen are left as they are. */
+function shedDailySigBytes(rec){
+  if(!rec || typeof rec!=="object") return rec;
+  const copy=Object.assign({}, rec);
+  if(heavySigData(copy.hrSigData)) delete copy.hrSigData;
+  if(copy.hrSigs && typeof copy.hrSigs==="object"){
+    const sigs={};
+    Object.keys(copy.hrSigs).forEach(k=>{
+      const p=copy.hrSigs[k];
+      if(!p || typeof p!=="object") return;
+      const slot=Object.assign({}, p);
+      if(heavySigData(slot.data)) delete slot.data;
+      if(slot.data || slot.link) sigs[k]=slot;
+    });
+    if(Object.keys(sigs).length) copy.hrSigs=sigs;
+    else delete copy.hrSigs;
+  }
+  return copy;
+}
 /* Drop e-signature image bytes that already live on settings, and drop a
    data-URL when a Drive link is enough. Returns true when the record shrank. */
 function slimDailyRecord(rec){
@@ -23602,6 +23731,8 @@ function attendanceSummaryCard(months){
     const rec=dailyRecordFor(d)||src;
     const seen={};
     Object.entries(rec.rows||{}).forEach(([key,r])=>{
+      try{
+      if(!r || typeof r!=="object") return;
       const id=summaryPersonId(key, r);
       if(!id || seen[id]) return;
       const row=dailyRowForEmp(rec, id)||r;
@@ -23619,6 +23750,7 @@ function attendanceSummaryCard(months){
       t.ot+=part.ot;
       if(holCode(row)) t.prem++;
       t.credit+=part.day;
+      }catch(err){}
     });
   });
   const rows=Object.entries(T).map(([id,t])=>Object.assign({e:S.employees[id], id}, t)).filter(x=>x.e)
@@ -24048,8 +24180,13 @@ const DOC_ACTIONS = {
   "data-ct-edit": el=>{ const [id,i]=el.dataset.ctEdit.split("|"); contractEditor(id,+i); },
   "data-ct-del":  el=>{ const [id,i]=el.dataset.ctDel.split("|"); contractEditor(id,+i); },
   "data-reg-open":el=>reopenDoc(el.dataset.regOpen),
-  "data-drill":   el=>{ try{ attendanceDrill(JSON.parse(el.dataset.drill)); }
-                        catch(err){ toast("Could not open the detail for that figure.","err"); } },
+  "data-drill":   el=>{
+    let spec=null;
+    try{ spec=JSON.parse(el.dataset.drill); }
+    catch(err){ toast("Could not open the detail for that figure.","err"); return; }
+    try{ attendanceDrill(spec); }
+    catch(err){ console.error(err); toast("Could not open the detail for that figure.","err"); }
+  },
   "data-esc":     el=>{ let m=null; try{ m=JSON.parse(el.dataset.escm); }catch(err){}
                         escalate(el.dataset.esc, m, el.dataset.esck||""); }
 };

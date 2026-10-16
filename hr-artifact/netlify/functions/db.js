@@ -7,7 +7,9 @@ const {
   deleteDoc,
   getDoc,
   listCollection,
+  preserveDailySignatures,
   setDoc,
+  shedDailySignatureBytes,
 } = require("../lib/supabase");
 const { formatManilaIso } = require("../lib/manila");
 const leaveNumbers = require("../../public/hr-leave-numbers");
@@ -195,6 +197,10 @@ exports.handler = async (event) => {
           code: leaveNumbers.DUP_CODE,
         });
       }
+      if (collection === "daily") {
+        const existing = await getDoc(collection, id);
+        payload = preserveDailySignatures(existing && existing.data, payload);
+      }
       const row = await setDoc(collection, id, payload, {
         merge: Boolean(body.merge),
       });
@@ -246,7 +252,11 @@ exports.handler = async (event) => {
       const rows = await listCollection(collection);
       return json(200, {
         collection,
-        docs: rows.map((row) => snapshotFromRow(row.id, row)),
+        docs: rows.map((row) => {
+          const snap = snapshotFromRow(row.id, row);
+          if (collection !== "daily" || !snap.data) return snap;
+          return Object.assign({}, snap, { data: shedDailySignatureBytes(snap.data) });
+        }),
         ...tz,
       });
     }

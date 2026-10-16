@@ -37,7 +37,7 @@ function requireServiceConfig() {
   return { url, key };
 }
 
-async function rest({ method, path, query, body, prefer }) {
+async function rest({ method, path, query, body, prefer, range }) {
   const { url, key } = requireServiceConfig();
   const qs = query ? `?${query}` : "";
   const headers = {
@@ -47,6 +47,7 @@ async function rest({ method, path, query, body, prefer }) {
     accept: "application/json",
   };
   if (prefer) headers.prefer = prefer;
+  if (range) headers.Range = range;
   const res = await fetch(`${url}${path}${qs}`, {
     method,
     headers,
@@ -116,13 +117,95 @@ async function deleteDoc(collection, id) {
   return { ok: true };
 }
 
+function heavySigData(v) {
+  return typeof v === "string" && /^data:/i.test(v) && v.length > 4096;
+}
+
+/* List responses omit signature image bytes. The database row is unchanged.
+   A later save puts the stored bytes back when the incoming day no longer
+   carries them (see preserveDailySignatures). */
+function shedDailySignatureBytes(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return data;
+  const copy = Object.assign({}, data);
+  if (heavySigData(copy.hrSigData)) delete copy.hrSigData;
+  if (copy.hrSigs && typeof copy.hrSigs === "object") {
+    const sigs = {};
+    Object.keys(copy.hrSigs).forEach((k) => {
+      const p = copy.hrSigs[k];
+      if (!p || typeof p !== "object") return;
+      const slot = Object.assign({}, p);
+      if (heavySigData(slot.data)) delete slot.data;
+      if (slot.data || slot.link) sigs[k] = slot;
+    });
+    if (Object.keys(sigs).length) copy.hrSigs = sigs;
+    else delete copy.hrSigs;
+  }
+  return copy;
+}
+
+/* The browser never receives those image bytes, so an ordinary Daily
+   Manpower save would otherwise replace the stored signature with nothing. */
+function preserveDailySignatures(existing, incoming) {
+  if (!incoming || typeof incoming !== "object" || Array.isArray(incoming)) return incoming;
+  const prev = existing && typeof existing === "object" && !Array.isArray(existing) ? existing : {};
+  const next = Object.assign({}, incoming);
+  delete next._dmDirty;
+  delete next._dmShed;
+  delete next._sigBytesOmitted;
+  if (heavySigData(prev.hrSigData) && !heavySigData(next.hrSigData)) {
+    next.hrSigData = prev.hrSigData;
+    if (prev.hrSigLink && !next.hrSigLink) next.hrSigLink = prev.hrSigLink;
+  }
+  if (prev.hrSigs && typeof prev.hrSigs === "object") {
+    const inc = next.hrSigs && typeof next.hrSigs === "object" ? Object.assign({}, next.hrSigs) : {};
+    Object.keys(prev.hrSigs).forEach((k) => {
+      const p = prev.hrSigs[k];
+      if (!p || typeof p !== "object" || !heavySigData(p.data)) return;
+      const slot = inc[k] && typeof inc[k] === "object" ? Object.assign({}, inc[k]) : {};
+      if (!heavySigData(slot.data)) {
+        slot.data = p.data;
+        if (p.link && !slot.link) slot.link = p.link;
+        inc[k] = slot;
+      }
+    });
+    if (Object.keys(inc).length) next.hrSigs = inc;
+  }
+  return next;
+}
+
 async function listCollection(collection) {
-  const rows = await rest({
-    method: "GET",
-    path: "/rest/v1/docs",
-    query: `collection=eq.${encodeURIComponent(collection)}&select=collection,id,data,updated_at&order=id.asc`,
-  });
-  return Array.isArray(rows) ? rows : [];
+  const pageSize = 500;
+  const all = [];
+  const seen = new Set();
+  let from = 0;
+  for (let page = 0; page < 200; page += 1) {
+    const to = from + pageSize - 1;
+    let rows;
+    try {
+      rows = await rest({
+        method: "GET",
+        path: "/rest/v1/docs",
+        query: `collection=eq.${encodeURIComponent(collection)}&select=collection,id,data,updated_at&order=id.asc`,
+        range: `${from}-${to}`,
+      });
+    } catch (err) {
+      if (err && err.statusCode === 416) break;
+      throw err;
+    }
+    if (!Array.isArray(rows) || !rows.length) break;
+    const fresh = [];
+    rows.forEach((row) => {
+      const key = `${row && row.collection}\0${row && row.id}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      fresh.push(row);
+    });
+    if (!fresh.length) break;
+    all.push(...fresh);
+    if (rows.length < pageSize) break;
+    from += pageSize;
+  }
+  return all;
 }
 
 async function acquireLock(collection, id, holder, ttlSeconds) {
@@ -220,7 +303,9 @@ module.exports = {
   getDoc,
   getProfile,
   listCollection,
+  preserveDailySignatures,
   rest,
+  shedDailySignatureBytes,
   serviceRole,
   setDoc,
   supabaseUrl,
