@@ -576,3 +576,123 @@ describe("allocate lock", () => {
     assert.match(toasts[0].msg, /reserve a leave number/);
   });
 });
+
+describe("consecutive approvals in one session", () => {
+  it("approves many leaves without reloading and still refuses a duplicate number", async () => {
+    const S = {
+      employees: { e1: emp("e1", "Santos, Ana") },
+      leaves: {},
+      advances: {},
+      docreg: {},
+      series: { LV: { key: "LV", prefix: "LRF", pad: 4, pattern: "{PREFIX}{YYYY}-{NNNN}" } },
+      settings: {
+        payrollBy: "Catherine A. Largo",
+        signatory: "Jeffrey James M. Corro",
+        hrSigs: {
+          signatory: { data: "data:image/png;base64,QQQ", name: "Jeffrey James M. Corro", slot: "signatory" },
+        },
+      },
+      ui: { view: "dash" },
+    };
+    const puts = [];
+    const host = {
+      S,
+      TODAY: "2026-10-16",
+      console,
+      Date,
+      Promise,
+      setTimeout,
+      clearTimeout,
+      JSON,
+      Object,
+      Error,
+      Intl,
+      parseInt,
+      Math,
+      String,
+      Number,
+      Array,
+      RegExp,
+      document: {
+        readyState: "complete",
+        listeners: {},
+        addEventListener(type, fn) {
+          this.listeners[type] = fn;
+        },
+        getElementById() {
+          return null;
+        },
+        querySelector() {
+          return null;
+        },
+        createElement() {
+          return { style: {}, setAttribute() {}, appendChild() {}, click() {} };
+        },
+        head: { appendChild() {} },
+        documentElement: { appendChild() {} },
+      },
+      async put(coll, id, obj) {
+        puts.push({ coll, id, no: obj && obj.no });
+        S[coll] = S[coll] || {};
+        S[coll][id] = obj;
+        return true;
+      },
+      render() {},
+      renderNav() {},
+      wire() {},
+      toast() {},
+      printLeave() {},
+      setCrumb() {},
+    };
+    host.window = host;
+    host.globalThis = host;
+    for (const file of [
+      "hr-201-checklist.js",
+      "hr-leave-numbers.js",
+      "hr-forms-fix.js",
+      "hr-approver.js",
+      "hr-ca-numbers.js",
+    ]) {
+      vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../public", file), "utf8"), host, { filename: file });
+    }
+
+    const count = 30;
+    for (let i = 0; i < count; i++) {
+      const id = "lv" + i;
+      const no = "LRF2026-" + String(i + 1).padStart(4, "0");
+      S.leaves[id] = {
+        id,
+        no,
+        empId: "e1",
+        status: "For approval",
+        evaluatedBy: "Catherine A. Largo",
+        from: "2026-10-01",
+        to: "2026-10-01",
+      };
+    }
+
+    // The portal draws the dashboard before anyone opens Approver. That first
+    // redraw used to bury the leave-number guard and wrap put again on every
+    // later approval.
+    host.render();
+    S.ui.view = "approver";
+    const putAfterBoot = host.put;
+
+    for (let i = 0; i < count; i++) {
+      await host.hrApprover.approveItem(host, "leave", "lv" + i);
+      assert.equal(host.put, putAfterBoot);
+      assert.equal(S.leaves["lv" + i].status, "Approved");
+      assert.equal(S.leaves["lv" + i].pdfIncludesSignature, true);
+    }
+
+    assert.equal(host.hrApprover.queueItems(S).length, 0);
+    await assert.rejects(
+      () => host.put("leaves", "lvDup", { id: "lvDup", no: "LRF2026-0001", empId: "e1" }),
+      /already/
+    );
+    assert.equal(S.leaves.lvDup, undefined);
+    assert.equal(puts.filter((p) => p.coll === "leaves" && p.id === "lvDup").length, 0);
+    assert.equal(S.leaves.lv0.no, "LRF2026-0001");
+    assert.equal(S.leaves["lv" + (count - 1)].no, "LRF2026-" + String(count).padStart(4, "0"));
+  });
+});
