@@ -874,9 +874,8 @@
       host.allocate._hrCa = true;
     }
 
-    if (typeof host.put === "function" && !host.put._hrCa) {
+    if (!host.__hrCaPut && typeof host.put === "function" && !host.put._hrCa) {
       var origPut = host.put;
-      host.put._hrCaOrig = origPut;
       host.put = function (coll, id, obj) {
         var self = this;
         if (coll === "series" && str(id) === CA && obj) {
@@ -895,6 +894,10 @@
           });
       };
       host.put._hrCa = true;
+      host.put._hrCaOrig = origPut;
+      host.__hrCaPut = true;
+    } else if (host.put && host.put._hrCa) {
+      host.__hrCaPut = true;
     }
 
     if (typeof host.drop === "function" && !host.drop._hrCa) {
@@ -986,7 +989,7 @@
       host.openModal._hrCa = true;
     }
 
-    if (typeof host.render === "function" && !host.render._hrCa) {
+    if (!host.__hrCaRender && typeof host.render === "function" && !host.render._hrCa) {
       var origRender = host.render;
       host.render = function () {
         var out = origRender.apply(this, arguments);
@@ -998,6 +1001,9 @@
         return out;
       };
       host.render._hrCa = true;
+      host.__hrCaRender = true;
+    } else if (host.render && host.render._hrCa) {
+      host.__hrCaRender = true;
     }
 
     return { ok: true };

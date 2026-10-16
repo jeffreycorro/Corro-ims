@@ -56,7 +56,7 @@ function loadIdentity() {
 
 describe("2026-10-16a HR Analytics stays open for James Senining", () => {
   it("is build 2026-10-16a", () => {
-    assert.match(html, /const BUILD = "2026-10-16b"/);
+    assert.match(html, /const BUILD = "2026-10-16c"/);
     assert.match(extractFunction(html, "viewInsights"), /HR Analytics/);
     assert.match(extractFunction(html, "viewInsights"), />Records</);
     assert.match(extractFunction(html, "drillRows"), /typeof r!=="object"/);

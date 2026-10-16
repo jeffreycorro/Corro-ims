@@ -479,7 +479,11 @@
 
   function wrapPut(host) {
     var orig = host.put;
-    if (typeof orig !== "function" || orig._hrFormsFix) return false;
+    if (host.__hrFormsFixPut) return false;
+    if (typeof orig !== "function" || orig._hrFormsFix) {
+      if (orig && orig._hrFormsFix) host.__hrFormsFixPut = true;
+      return false;
+    }
     host.put = function (coll, id, obj) {
       var S = storeOf(host);
       if (coll === "advances" && obj) {
@@ -489,6 +493,7 @@
       return orig.apply(this, arguments);
     };
     host.put._hrFormsFix = true;
+    host.__hrFormsFixPut = true;
     return true;
   }
 
@@ -581,7 +586,11 @@
   }
 
   function wrapRender(host) {
-    if (typeof host.render !== "function" || host.render._hrFormsFix) return false;
+    if (host.__hrFormsFixRender) return false;
+    if (typeof host.render !== "function" || host.render._hrFormsFix) {
+      if (host.render && host.render._hrFormsFix) host.__hrFormsFixRender = true;
+      return false;
+    }
     var orig = host.render;
     host.render = function () {
       var r = orig.apply(this, arguments);
@@ -592,6 +601,7 @@
       return r;
     };
     host.render._hrFormsFix = true;
+    host.__hrFormsFixRender = true;
     return true;
   }
 
@@ -615,7 +625,7 @@
   function attach(host) {
     host = host || (typeof window !== "undefined" ? window : null);
     if (!host) return api;
-    if (api.attached && host.hrFormsFix === api && host.put && host.put._hrFormsFix) {
+    if (api.attached && host.hrFormsFix === api && (host.__hrFormsFixPut || (host.put && host.put._hrFormsFix))) {
       injectChrome(host);
       return api;
     }

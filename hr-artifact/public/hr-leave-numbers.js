@@ -712,21 +712,36 @@
     return Number(err.status) === 409;
   }
 
+  /* The flag has to live on the host. Another companion wraps host.put /
+     host.render after us, so the flag on the function is hidden. Checking
+     only the function makes the next redraw wrap again, and each approval
+     redraw doubles the chain until put -> conflictForWrite overflows. */
+  function leaveWrapped(host, slot, fn) {
+    if (!host) return true;
+    if (host[slot]) return true;
+    if (typeof fn === "function" && fn._hrLeaveNo) {
+      host[slot] = true;
+      return true;
+    }
+    return false;
+  }
+
   function wrapPaperHigh(host) {
     var orig = host.paperHigh;
-    if (typeof orig !== "function" || orig._hrLeaveNo) return false;
+    if (typeof orig !== "function" || leaveWrapped(host, "__hrLeaveNoPaperHigh", orig)) return false;
     host.paperHigh = function (key, year) {
       var mx = orig.apply(this, arguments) || 0;
       if (str(key) !== LV) return mx;
       return Math.max(mx, leavePaperHigh(storeOf(host), year));
     };
     host.paperHigh._hrLeaveNo = true;
+    host.__hrLeaveNoPaperHigh = true;
     return true;
   }
 
   function wrapNextSeq(host) {
     var orig = host.nextSeq;
-    if (typeof orig !== "function" || orig._hrLeaveNo) return false;
+    if (typeof orig !== "function" || leaveWrapped(host, "__hrLeaveNoNextSeq", orig)) return false;
     host.nextSeq = function (key, year) {
       var fromOrig = orig.apply(this, arguments) | 0;
       if (str(key) !== LV) return fromOrig;
@@ -737,12 +752,13 @@
       return Math.max(1, fromOrig, fromPaper);
     };
     host.nextSeq._hrLeaveNo = true;
+    host.__hrLeaveNoNextSeq = true;
     return true;
   }
 
   function wrapPeekNo(host) {
     var orig = host.peekNo;
-    if (typeof orig !== "function" || orig._hrLeaveNo) return false;
+    if (typeof orig !== "function" || leaveWrapped(host, "__hrLeaveNoPeek", orig)) return false;
     host.peekNo = function (key) {
       var fromOrig = orig.apply(this, arguments);
       if (str(key) !== LV) return fromOrig;
@@ -757,17 +773,19 @@
       return fromOrig || next.no;
     };
     host.peekNo._hrLeaveNo = true;
+    host.__hrLeaveNoPeek = true;
     return true;
   }
 
   function wrapAllocate(host) {
     var orig = host.allocate;
-    if (typeof orig !== "function" || orig._hrLeaveNo) return false;
+    if (typeof orig !== "function" || leaveWrapped(host, "__hrLeaveNoAllocate", orig)) return false;
     host.allocate = function (key, meta) {
       if (str(key) !== LV) return orig.apply(this, arguments);
       return allocateLeave(host, orig, meta);
     };
     host.allocate._hrLeaveNo = true;
+    host.__hrLeaveNoAllocate = true;
     return true;
   }
 
@@ -831,9 +849,8 @@
 
   function wrapPut(host) {
     var orig = host.put;
-    if (typeof orig !== "function" || orig._hrLeaveNo) return false;
-    host.put._hrLeaveNoOrig = orig;
-    host.put = function (coll, id, obj) {
+    if (typeof orig !== "function" || leaveWrapped(host, "__hrLeaveNoPut", orig)) return false;
+    var wrapped = function (coll, id, obj) {
       var S = storeOf(host);
       obj = mergeTypedLeaveNo(coll, id, obj, S, host);
       var conflict = conflictForWrite(coll, id, obj, S);
@@ -870,13 +887,16 @@
         throw e;
       });
     };
-    host.put._hrLeaveNo = true;
+    wrapped._hrLeaveNo = true;
+    wrapped._hrLeaveNoOrig = orig;
+    host.put = wrapped;
+    host.__hrLeaveNoPut = true;
     return true;
   }
 
   function wrapPutMany(host) {
     var orig = host.putMany;
-    if (typeof orig !== "function" || orig._hrLeaveNo) return false;
+    if (typeof orig !== "function" || leaveWrapped(host, "__hrLeaveNoPutMany", orig)) return false;
     host.putMany = function (coll, entries, onProgress) {
       var S = storeOf(host);
       var seen = {};
@@ -914,23 +934,25 @@
       });
     };
     host.putMany._hrLeaveNo = true;
+    host.__hrLeaveNoPutMany = true;
     return true;
   }
 
   function wrapCitedLeaveJobs(host) {
     var orig = host.citedLeaveJobs;
-    if (typeof orig !== "function" || orig._hrLeaveNo) return false;
+    if (typeof orig !== "function" || leaveWrapped(host, "__hrLeaveNoCited", orig)) return false;
     host.citedLeaveJobs = function () {
       return filterCitedJobs(orig.apply(this, arguments) || [], storeOf(host));
     };
     host.citedLeaveJobs._hrLeaveNo = true;
+    host.__hrLeaveNoCited = true;
     return true;
   }
 
   function wrapImportRecords(host) {
     var name = typeof host.importRecordsPaste === "function" ? "importRecordsPaste" : "importRecords";
     var orig = host[name];
-    if (typeof orig !== "function" || orig._hrLeaveNo) return false;
+    if (typeof orig !== "function" || leaveWrapped(host, "__hrLeaveNoImport", orig)) return false;
     host[name] = function (kind) {
       var out = orig.apply(this, arguments);
       var go = host.document && host.document.getElementById("ir-go");
@@ -956,6 +978,7 @@
       return out;
     };
     host[name]._hrLeaveNo = true;
+    host.__hrLeaveNoImport = true;
     return true;
   }
 
@@ -1251,7 +1274,7 @@
 
   function wrapOpenModal(host) {
     var orig = host.openModal;
-    if (typeof orig !== "function" || orig._hrLeaveNo) return false;
+    if (typeof orig !== "function" || leaveWrapped(host, "__hrLeaveNoModal", orig)) return false;
     host.openModal = function (opts) {
       var out = orig.apply(this, arguments);
       try {
@@ -1264,11 +1287,12 @@
       return out;
     };
     host.openModal._hrLeaveNo = true;
+    host.__hrLeaveNoModal = true;
     return true;
   }
 
   function wrapRender(host) {
-    if (typeof host.render !== "function" || host.render._hrLeaveNo) return false;
+    if (typeof host.render !== "function" || leaveWrapped(host, "__hrLeaveNoRender", host.render)) return false;
     var orig = host.render;
     host.render = function () {
       var r = orig.apply(this, arguments);
@@ -1279,6 +1303,7 @@
       return r;
     };
     host.render._hrLeaveNo = true;
+    host.__hrLeaveNoRender = true;
     return true;
   }
 
@@ -1303,7 +1328,7 @@
   function attach(host) {
     host = host || (typeof window !== "undefined" ? window : null);
     if (!host) return api;
-    if (api.attached && host.hrLeaveNumbers === api && host.put && host.put._hrLeaveNo) {
+    if (api.attached && host.hrLeaveNumbers === api && (host.__hrLeaveNoPut || (host.put && host.put._hrLeaveNo))) {
       injectChrome(host);
       return api;
     }
