@@ -67,7 +67,7 @@ function emp(id) {
 
 describe("2026-10-15a daily monitoring leave from the LRF register", () => {
   it("is build 2026-10-15a", () => {
-    assert.match(html, /const BUILD = "2026-10-15a"/);
+    assert.match(html, /const BUILD = "2026-10-16a"/);
   });
 
   it("shows an approved paid leave, with the LRF in the reason, on a blank day", () => {
