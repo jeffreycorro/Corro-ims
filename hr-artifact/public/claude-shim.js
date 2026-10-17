@@ -1022,6 +1022,7 @@
     loadCompanion("/hr-ask-leave.js", "data-hr-ask-leave");
     loadCompanion("/hr-ask-attach.js", "data-hr-ask-attach");
     loadCompanion("/hr-ca-numbers.js", "data-hr-ca-numbers");
+    loadCompanion("/hr-discipline.js", "data-hr-discipline");
   }
 
   var apiObj = {

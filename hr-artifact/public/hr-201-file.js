@@ -51,6 +51,7 @@
     incident: "incidents",
     reminder: "reminders",
     wu: "writeups",
+    discipline: "discipline",
   };
 
   var FOLDER_DEFAULTS = {
@@ -262,6 +263,27 @@
         status: w.acked ? "Signed" : "Unsigned",
         source: "writeups",
         sourceId: w.id,
+        link: w.signedLink || "",
+        canPrint: true,
+      });
+    });
+
+    values(S.discipline).forEach(function (d) {
+      if (!sameId(d.empId, empId)) return;
+      var span = "";
+      if (d.action === "Suspension" && (d.days || d.from)) {
+        span = (d.days ? d.days + " day(s)" : "") + (d.from ? " " + d.from + (d.to ? "–" + d.to : "") : "");
+      }
+      push(out, {
+        date: d.date || "",
+        type: d.action || "Disciplinary action",
+        typeKey: "discipline",
+        no: d.no || "",
+        title: [d.offense || d.details || "Disciplinary action", span].filter(Boolean).join(" · "),
+        status: d.signedLink ? "Signed" : "Unsigned",
+        source: "discipline",
+        sourceId: d.id,
+        link: d.signedLink || "",
         canPrint: true,
       });
     });
@@ -492,7 +514,7 @@
     if (!n) {
       h +=
         '<div class="lbl" style="padding:4px 0">Nothing tagged to this record yet. NTEs, notices of ' +
-        "decision, write-ups, memos, incidents, leave, cash advances, certificates and other " +
+        "decision, write-ups, disciplinary actions, memos, incidents, leave, cash advances, certificates and other " +
         "register entries appear here once they name this employee — including after they separate.</div>";
     } else {
       h +=
@@ -571,6 +593,7 @@
       leaves: S.leaves,
       advances: S.advances,
       reminders: S.reminders,
+      discipline: S.discipline,
       docreg: S.docreg,
       filed: S.filed,
       genfiles: S.genfiles,
@@ -592,6 +615,10 @@
     }
     if (rec.source === "writeups") {
       call("wuEditor", rec.sourceId);
+      return true;
+    }
+    if (rec.source === "discipline") {
+      call("daEditor", rec.sourceId);
       return true;
     }
     if (rec.source === "memos") {
@@ -635,6 +662,11 @@
     }
     if (rec.source === "writeups") {
       call("wuEditor", rec.sourceId);
+      return true;
+    }
+    if (rec.source === "discipline") {
+      if (raw) call("printDiscipline", raw, raw.no || "", {});
+      else call("daEditor", rec.sourceId);
       return true;
     }
     if (rec.source === "memos") {

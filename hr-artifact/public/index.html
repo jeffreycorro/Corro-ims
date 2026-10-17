@@ -560,7 +560,7 @@ const DOCS = [
   {k:"ca",      n:"Cash Advance Request Form",                g:"Records on file", opt:1, code:"CAF"},
   {k:"nte",     n:"Notice to Explain",                        g:"Records on file", opt:1, code:"NTE"},
   {k:"ncr",     n:"Non-Conformance Report",                   g:"Records on file", opt:1, code:"NCR"},
-  {k:"darmemo", n:"DAR / Memo",                               g:"Records on file", opt:1, code:"DM"},
+  {k:"darmemo", n:"DAR / Memo (disciplinary action)",         g:"Records on file", opt:1, code:"DM"},
   {k:"reassign",n:"Reassignment",                             g:"Records on file", opt:1},
   {k:"qc23",    n:"Quitclaim 2023",                            g:"Quitclaim", opt:1},
   {k:"qc24",    n:"Quitclaim 2024",                            g:"Quitclaim", opt:1},
@@ -913,6 +913,7 @@ const S = {
   advances:{}, leaves:{}, projects:{}, incidents:{}, genfiles:{}, decisions:{}, daily:{},
   payruns:{},                       // a saved payroll run, keyed kind|from
   otreqs:{},                        // overtime requests: who may have OT, and the signed form
+  discipline:{},                    // implemented actions: reprimand, suspension, termination
   filed:{},                         // forms issued on paper before the portal, read back off Drive
   compliance:{},                    // statutory filings recorded, keyed obligation|period
   forms:{},                         // controlled-form master list (ISO 9001 cl. 7.5)
@@ -1080,7 +1081,7 @@ const clone = typeof structuredClone==="function"
 const COLLS = ["employees","nte","writeups","tasks","templates","periods",
                "memos","resources","onboarding","series","docreg","applicants","exams","roles",
                "advances","leaves","projects","incidents","genfiles","decisions","daily",
-               "payruns","otreqs","reminders","filed","compliance","forms"];
+               "payruns","otreqs","discipline","reminders","filed","compliance","forms"];
 
 /* lsSave stringifies every collection, so calling it once per write turned a
    300-record seed into 300 full serialisations of a growing megabyte. */
@@ -1357,6 +1358,15 @@ async function connect(){
           put("otreqs", id, row, {quiet:true});
         });
       }
+      /* Same as OT: an action typed before the collection was allowed stays
+         on this computer and is copied up once the list can be read. */
+      if(c==="discipline"){
+        Object.keys(S.discipline||{}).forEach(id=>{
+          const row=S.discipline[id];
+          if(!row || seen[id]) return;
+          put("discipline", id, row, {quiet:true});
+        });
+      }
       /* A manual applicant save that the shared list has not echoed yet stays
          on this device and is sent again. The list call does not delete it. */
       if(c==="applicants"){
@@ -1413,6 +1423,17 @@ async function connect(){
           if(next[id]) return;
           next[id]=S.otreqs[id];
           if(!S.otreqs[id].shared) repair.push([id, next[id], "otreqs", {quiet:true}]);
+        });
+      }
+      /* An action saved on this browser and not yet in the snapshot stays.
+         Replacing the map is how a signed reprimand would vanish when the
+         shared list was still empty — including before the collection is
+         allowed on the database. */
+      if(c==="discipline"){
+        Object.keys(S.discipline||{}).forEach(id=>{
+          if(next[id]) return;
+          next[id]=S.discipline[id];
+          repair.push([id, next[id], "discipline", {quiet:true}]);
         });
       }
       if(c==="applicants"){
@@ -1544,6 +1565,22 @@ function mergeIncomingDoc(coll, incoming, local){
     }
     if(local.link && !next.link) next.link=local.link;
     if(local.no && !String(next.no||"").trim()) next.no=local.no;
+    return next;
+  }
+  if(coll==="discipline"){
+    const next=Object.assign({}, incoming);
+    if(local.signedLink && !next.signedLink){
+      next.signedLink=local.signedLink;
+      next.signedTitle=next.signedTitle||local.signedTitle;
+      next.signedOn=next.signedOn||local.signedOn;
+    }
+    if(local.no && !String(next.no||"").trim()) next.no=local.no;
+    if(local.action && !next.action) next.action=local.action;
+    if(local.offense && !next.offense) next.offense=local.offense;
+    if(local.details && !next.details) next.details=local.details;
+    if((local.days||local.days===0) && (next.days==null || next.days==="")) next.days=local.days;
+    if(local.from && !next.from) next.from=local.from;
+    if(local.to && !next.to) next.to=local.to;
     return next;
   }
   if(coll==="employees"){
@@ -1924,7 +1961,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-10-16c";
+const BUILD = "2026-10-17a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -2256,7 +2293,7 @@ async function ensureSeriesAndTemplates(){
      prefix in the records themselves as well. */
   const numberInUse = pfx => {
     if(!pfx) return false;
-    return [S.advances,S.leaves,S.nte,S.memos,S.reminders,S.incidents,S.writeups,S.decisions,S.filed]
+    return [S.advances,S.leaves,S.nte,S.memos,S.reminders,S.incidents,S.writeups,S.discipline,S.decisions,S.filed]
       .some(c=>Object.values(c||{}).some(r=>r && r.no && String(r.no).indexOf(pfx)===0));
   };
   for(const def of DEFAULT_SERIES){
@@ -2756,6 +2793,7 @@ function compliance(e){
 }
 function empNTEs(id){ return Object.values(S.nte).filter(n=>n.empId===id).sort((a,b)=>(b.issued||"").localeCompare(a.issued||"")); }
 function empWU(id){ return Object.values(S.writeups).filter(w=>w.empId===id).sort((a,b)=>(b.date||"").localeCompare(a.date||"")); }
+function empDA(id){ return Object.values(S.discipline||{}).filter(d=>d&&d.empId===id).sort((a,b)=>(b.date||"").localeCompare(a.date||"")); }
 function openNTEs(){ return Object.values(S.nte).filter(n=>n.status!=="closed"); }
 function nteOverdue(n){
   if(n.status!=="issued") return false;
@@ -4027,6 +4065,7 @@ const VIEWS = [
   {k:"nte",      n:"NTE Register",    i:"i-warn",   g:"Discipline"},
   {k:"reminders",n:"Written Reminders",i:"i-doc",    g:"Discipline"},
   {k:"writeups", n:"Write-ups",       i:"i-gavel",  g:"Discipline"},
+  {k:"discipline", n:"Disciplinary Actions", i:"i-gavel", g:"Discipline"},
   {k:"incidents",n:"Incident Reports",i:"i-warn",   g:"Discipline"},
   {k:"daily",    n:"Daily Manpower",   i:"i-check",  g:"Payroll"},
   {k:"otreq",    n:"OT Requests",     i:"i-clock",  g:"Payroll"},
@@ -5535,6 +5574,7 @@ function printDiscipline(dm, no, opt){
        ["Policy / Rule Violated",esc(dm.rule||"")],
        ["Reference — NTE No.",  esc(dm.nteNo||"")],
        ["Reference — NCR No.",  esc(dm.ncrNo||"")+' <span style="font-size:9px">(if applicable)</span>']])
+   + (dm.details?pfNote(esc(dm.details).replace(/\n/g,"<br>")):"")
    + pfNote("Following the investigation and your written explanation, the company has decided on the "
      + "following disciplinary action:")
    + '<table class="pf-t">'
@@ -5607,6 +5647,9 @@ function printNCR(n, no, opt){
 
 /* Both are filled in before they are previewed. */
 function disciplineEditor(empId){
+  daEditor(null, empId);
+}
+function disciplineEditorForm(empId){
   const e=S.employees[empId]; if(!e) return;
   const nteFor=Object.values(S.nte).filter(x=>x.empId===empId)
     .sort((a,b)=>(b.issued||"").localeCompare(a.issued||""));
@@ -5939,7 +5982,28 @@ async function issueForm(kind, empId, confirmed){
   const entry=await allocate(SPEC.series,{ title:SPEC.title+(e?" — "+flipName(e.name):""),
     empId:empId||"", module:kind, refId:kind+":"+empId, status:"Issued", date:TODAY, tags:SPEC.tags });
   if(!entry) return;
+  if(kind==="discipline") await persistDisciplineDraft(entry.no, empId);
   SPEC.run(e, entry.no, {issued:true});
+}
+/* The memorandum preview used to print and forget the action. Taking its
+   number now also stores the reprimand or suspension, so the year count
+   includes it. The signed copy is filed later, onto the 201 checklist. */
+async function persistDisciplineDraft(no, empId){
+  const dm=S.ui&&S.ui.dmDraft; if(!dm) return null;
+  const id=dm.id||uid("da");
+  const rec=Object.assign({
+    id:id, no:no||"", empId:empId||dm.empId||"", date:TODAY, action:"Written Reprimand",
+    offense:"", details:"", incidentDate:"", rule:"", nteId:"", nteNo:"", ncrNo:"",
+    days:"", from:"", to:"", effective:"", signedLink:"", signedTitle:"", signedOn:"",
+    issuedBy:S.settings.hrHead||""
+  }, dm, { id:id, no:no||dm.no||"", empId:empId||dm.empId||"" });
+  const prev=S.discipline&&S.discipline[id];
+  if(prev&&prev.signedLink&&!rec.signedLink){
+    rec.signedLink=prev.signedLink; rec.signedTitle=prev.signedTitle; rec.signedOn=prev.signedOn;
+  }
+  await put("discipline", id, rec);
+  S.ui.dmDraft=rec;
+  return rec;
 }
 /* The footer every previewed form carries. */
 function draftFoot(opt, htmlId, printId){
@@ -12038,7 +12102,7 @@ function viewEmployees(){
   const ob=obProgress(e);
   const TABS=[["info","Personal & Employment"],["docs","201 Checklist ("+c.have+"/"+c.need+")"],
     ["onboard","Onboarding ("+ob.done+"/"+ob.need+")"],
-    ["disc","Discipline ("+(empNTEs(e.id).length+empWU(e.id).length)+")"],["pay","Pay & Attendance"]];
+    ["disc","Discipline ("+(empNTEs(e.id).length+empWU(e.id).length+empDA(e.id).length)+")"],["pay","Pay & Attendance"]];
   h+='<div class="tabs">'+TABS.map(([k,n])=>'<button class="tab'+(S.ui.tab===k?" on":"")+'" data-tab="'+k+'"'+(k==="docs"?' id="emp-docs-tab"':"")+'>'+esc(n)+'</button>').join("")+'</div>';
   h+='<div class="card-b">';
 
@@ -12261,7 +12325,7 @@ function empInfo(e,cs){
    + '<button class="btn sm" data-issue="coe" data-emp="'+esc(e.id)+'">Certificate of employment</button>'
    + '<button class="btn sm" data-alr="'+esc(e.id)+'">Accept resignation</button>'
    + '<button class="btn sm" data-newrem="'+esc(e.id)+'">Written reminder</button>'
-   + '<button class="btn sm" data-discipline="'+esc(e.id)+'">Disciplinary memo</button>'
+   + '<button class="btn sm" data-discipline="'+esc(e.id)+'">Disciplinary action</button>'
    + '<button class="btn sm" data-ncr="'+esc(e.id)+'">Non-conformance</button>'
    + '<button class="btn sm" data-quitclaim="'+esc(e.id)+'">Quitclaim</button>'
    + '<span class="hint">Each takes a control number from the register before it prints</span></div>'
@@ -12384,10 +12448,31 @@ function empDocs(e,c){
 }
 
 function empDisc(e){
-  const ns=empNTEs(e.id), ws=empWU(e.id);
+  const ns=empNTEs(e.id), ws=empWU(e.id), ds=empDA(e.id);
   let h='<div class="stack">';
-  h+='<div class="row"><button class="btn sm pri" data-new-nte="'+e.id+'"><svg><use href="#i-plus"/></svg> Issue NTE</button>'
+  h+='<div class="row"><button class="btn sm pri" data-new-da="'+e.id+'"><svg><use href="#i-plus"/></svg> Record disciplinary action</button>'
+   + '<button class="btn sm" data-new-nte="'+e.id+'"><svg><use href="#i-plus"/></svg> Issue NTE</button>'
    + '<button class="btn sm" data-new-wu="'+e.id+'"><svg><use href="#i-plus"/></svg> Record write-up</button></div>';
+  h+='<div class="note">A written reprimand or a suspension recorded here keeps its signed copy on the '
+   + '<b>DAR / Memo (disciplinary action)</b> row of this 201 checklist. You do not upload that scan again.</div>';
+
+  h+='<div class="sect-h" style="margin:4px 0 0"><h2 style="font-size:12.5px">Disciplinary actions</h2><span class="rule"></span></div>';
+  if(!ds.length) h+='<div class="empty" style="padding:16px">No written reprimand or suspension has been recorded for this employee.</div>';
+  else{
+    h+='<div class="tw"><table><thead><tr><th>Ref no.</th><th>Date</th><th>Action</th><th>Reason</th><th>Suspension</th><th>201 file</th><th></th></tr></thead><tbody>';
+    ds.forEach(d=>{
+      const span=d.action==="Suspension"
+        ? ((d.days?esc(d.days)+" day"+(String(d.days)==="1"?"":"s"):"")
+          +(d.from?" "+esc(d.from)+(d.to?" – "+esc(d.to):""):"")).trim()||"—"
+        : "—";
+      h+='<tr><td class="mono">'+esc(d.no||"—")+'</td><td class="mono">'+esc(d.date||"—")+'</td>'
+       + '<td>'+esc(d.action||"—")+'</td><td>'+esc(d.offense||d.details||"—")+'</td>'
+       + '<td class="mono">'+span+'</td>'
+       + '<td>'+(d.signedLink?'<span class="pill ok">on the checklist</span>':'<span class="pill warn">no scan yet</span>')+'</td>'
+       + '<td><button class="btn sm" data-open-da="'+d.id+'">Open</button></td></tr>';
+    });
+    h+='</tbody></table></div>';
+  }
 
   const cut=addMonths(TODAY,-(S.settings.lookbackMonths||12));
   const cats={}; ws.filter(w=>w.date>=cut).forEach(w=>{ cats[w.cat]=(cats[w.cat]||0)+1; });
@@ -12510,7 +12595,7 @@ function docNoKey(no){
   return p ? p.prefix+"|"+p.year+"|"+p.seq : String(no||"").toUpperCase().replace(/\s+/g,"");
 }
 /* the records that carry a series' numbers themselves */
-const SERIES_RECORDS = {LV:["leaves"], CA:["advances"], NTE:["nte"], RM:["reminders"], CM:["memos"], IR:["incidents"]};
+const SERIES_RECORDS = {LV:["leaves"], CA:["advances"], NTE:["nte"], RM:["reminders"], CM:["memos"], IR:["incidents"], DM:["discipline"]};
 function seriesPrefix(key){ const ser=S.series[key]; return String((ser&&ser.prefix)||key).replace(/\./g,"").toUpperCase(); }
 /* Every number of this series that exists anywhere — the register, the records
    that hold one (imported or typed), and forms read back off Drive. */
@@ -14746,6 +14831,269 @@ function wuEditor(id,presetEmp){
       if(!await askConfirm("Delete this write-up? Its number stays on the register, marked void.")) return;
       const entry=regFor("wu",w.id); if(entry) await voidNo(entry.id,"write-up deleted");
       await drop("writeups",w.id); closeModal(); render();
+    };
+  };
+  draw();
+}
+
+/* ============ disciplinary actions ============ */
+/* Written reprimand and suspension are stored here. The signed scan is not
+   a second file cabinet: fileDisciplineScan adds it to the 201 checklist
+   row DAR / Memo (darmemo), the same links list an ordinary checklist
+   upload uses. Notices to explain and write-ups stay on their own screens
+   and are still counted on the year dashboard. */
+function discYear(){
+  const y=String((S.ui&&S.ui.discYear)||"").slice(0,4);
+  if(/^\d{4}$/.test(y)) return y;
+  return String(TODAY||"").slice(0,4)||String(new Date().getFullYear());
+}
+function discSummary(){
+  const api=window.hrDiscipline;
+  if(!api||typeof api.summarize!=="function") return null;
+  return api.summarize(S, discYear(), TODAY);
+}
+function viewDiscipline(){
+  const year=discYear();
+  const sum=discSummary();
+  setCrumb("Disciplinary Actions", "implemented in "+year);
+  if(!sum){
+    return '<div class="card"><div class="empty">The yearly counts are still loading. Reload the page if this stays.</div></div>';
+  }
+  const years=sum.years&&sum.years.length?sum.years:[year];
+  let h='<div class="strip">'
+   + tile(sum.implemented,"Implemented in "+year,"reprimands, suspensions, and other actions on file",sum.implemented?"warn":"ok")
+   + tile(sum.reprimands,"Written reprimands","this year",sum.reprimands?"warn":"ok")
+   + tile(sum.suspensions,"Suspensions","this year",sum.suspensions?"crit":"ok")
+   + tile(sum.other,"Other actions","termination, write-ups, and decisions",sum.other?"warn":"ok")
+   + '</div>';
+  h+='<div class="sect-h"><h2>Implemented in '+esc(year)+'</h2><span class="rule"></span>'
+   + '<label class="lbl" for="da-year">Year</label>'
+   + '<select id="da-year" style="width:110px">'+years.map(y=>'<option value="'+esc(y)+'"'+(y===year?" selected":"")+'>'+esc(y)+'</option>').join("")+'</select>'
+   + '<button class="btn sm pri" data-new-da=""><svg><use href="#i-plus"/></svg> Record action</button></div>';
+  h+='<div class="note">This counts actions carried out in the year you pick. A written reprimand or suspension you record here is included. Write-ups already on file are included, and a notice to explain is included once it has a decision or a sanction. A notice you have already turned into one of those actions is not counted again. Company memos stay on Memos. '
+   + (sum.openNotices?('<b>'+sum.openNotices+'</b> notice'+(sum.openNotices===1?'':'s')+' to explain '+(sum.openNotices===1?'is':'are')+' still open and not counted yet.'):'No open notice is waiting in this year.')
+   + '</div>';
+
+  h+='<div class="grid2">';
+  h+='<div class="card"><div class="card-b"><div class="sect-h" style="margin:0 0 8px"><h2 style="font-size:13px">By type</h2><span class="rule"></span></div>';
+  if(!sum.byType.length) h+='<div class="empty">Nothing implemented in '+esc(year)+'.</div>';
+  else{
+    h+='<div class="tw"><table><thead><tr><th>Type</th><th class="num">Count</th></tr></thead><tbody>';
+    sum.byType.forEach(r=>{
+      h+='<tr><td>'+esc(r.type)+'</td><td class="num"><b>'+r.count+'</b></td></tr>';
+    });
+    h+='</tbody></table></div>';
+  }
+  h+='</div></div>';
+  h+='<div class="card"><div class="card-b"><div class="sect-h" style="margin:0 0 8px"><h2 style="font-size:13px">By month</h2><span class="rule"></span></div>'
+   + '<div class="tw"><table><thead><tr><th>Month</th><th class="num">Reprimand</th><th class="num">Suspension</th><th class="num">Other</th><th class="num">Total</th></tr></thead><tbody>';
+  sum.byMonth.forEach(m=>{
+    h+='<tr'+(m.total?'':' class="mut"')+'><td>'+esc(m.label)+'</td>'
+     + '<td class="num">'+m.reprimands+'</td><td class="num">'+m.suspensions+'</td>'
+     + '<td class="num">'+m.other+'</td><td class="num"><b>'+m.total+'</b></td></tr>';
+  });
+  h+='</tbody></table></div></div></div></div>';
+
+  h+='<div class="grid2" style="margin-top:12px">';
+  h+='<div class="card"><div class="card-b"><div class="sect-h" style="margin:0 0 8px"><h2 style="font-size:13px">By site</h2><span class="rule"></span></div>';
+  if(!sum.bySite.length) h+='<div class="empty">No site has an action in '+esc(year)+'.</div>';
+  else{
+    h+='<div class="tw"><table><thead><tr><th>Site</th><th class="num">Reprimand</th><th class="num">Suspension</th><th class="num">Total</th></tr></thead><tbody>';
+    sum.bySite.forEach(s=>{
+      h+='<tr><td>'+esc(s.site)+'</td><td class="num">'+s.reprimands+'</td><td class="num">'+s.suspensions+'</td><td class="num"><b>'+s.total+'</b></td></tr>';
+    });
+    h+='</tbody></table></div>';
+  }
+  h+='</div></div>';
+  h+='<div class="card"><div class="card-b"><div class="sect-h" style="margin:0 0 8px"><h2 style="font-size:13px">By employee</h2><span class="rule"></span></div>';
+  if(!sum.byEmployee.length) h+='<div class="empty">No employee has an action in '+esc(year)+'.</div>';
+  else{
+    h+='<div class="tw"><table><thead><tr><th>Employee</th><th>Site</th><th class="num">Reprimand</th><th class="num">Suspension</th><th class="num">Total</th></tr></thead><tbody>';
+    sum.byEmployee.forEach(p=>{
+      h+='<tr><td class="nm">'+(p.empId?'<button class="btn sm" data-emp-open="'+esc(p.empId)+'" data-goto="employees" data-tab="disc">'+esc(p.name)+'</button>':esc(p.name))+'</td>'
+       + '<td>'+esc(p.site)+'</td><td class="num">'+p.reprimands+'</td><td class="num">'+p.suspensions+'</td><td class="num"><b>'+p.total+'</b></td></tr>';
+    });
+    h+='</tbody></table></div>';
+  }
+  h+='</div></div></div>';
+
+  h+='<div class="sect-h" style="margin-top:14px"><h2>Actions in '+esc(year)+'</h2><span class="rule"></span></div><div class="card">';
+  if(!sum.rows.length) h+='<div class="empty">Nothing implemented in '+esc(year)+'. Record a written reprimand or a suspension to start the year.</div>';
+  else{
+    h+='<div class="tw"><table><thead><tr><th>Date</th><th>Employee</th><th>Type</th><th>What it was</th><th>Ref</th><th>201 file</th><th></th></tr></thead><tbody>';
+    sum.rows.forEach(r=>{
+      const open=r.source==="discipline"?'data-open-da="'+esc(r.sourceId)+'"'
+        :r.source==="writeups"?'data-open-wu="'+esc(r.sourceId)+'"'
+        :'data-open-nte="'+esc(r.sourceId)+'"';
+      const susp=r.type==="Suspension"&&(r.days||r.from)
+        ?(r.days?esc(r.days)+"d ":"")+(r.from?esc(r.from)+(r.to?"–"+esc(r.to):""):"")
+        :"";
+      h+='<tr><td class="mono">'+esc(r.date||"—")+'</td><td class="nm">'+esc(r.name)+'</td>'
+       + '<td>'+esc(r.type)+'</td><td>'+esc(r.detail||"—")+(susp?' <span class="lbl">'+susp+'</span>':"")+'</td>'
+       + '<td class="mono">'+esc(r.no||"—")+'</td>'
+       + '<td>'+(r.signed?'<span class="pill ok">scan on file</span>':'<span class="pill mut">—</span>')+'</td>'
+       + '<td><div class="row"><button class="btn sm" '+open+'>Open</button>'
+       + (r.empId?'<button class="btn sm" data-emp-open="'+esc(r.empId)+'" data-goto="employees" data-tab="docs">201 checklist</button>':"")
+       + '</div></td></tr>';
+    });
+    h+='</tbody></table></div>';
+  }
+  h+='</div>';
+  return h;
+}
+async function fileDisciplineScan(rec, url, title){
+  url=String(url||"").trim();
+  if(!rec||!rec.id||!url) return false;
+  rec.signedLink=url;
+  rec.signedTitle=title||rec.signedTitle||rec.action||"Signed disciplinary action";
+  if(!rec.signedOn) rec.signedOn=TODAY;
+  await put("discipline", rec.id, rec);
+  const emp=S.employees[rec.empId];
+  if(!emp) return true;
+  const key=(window.hrDiscipline&&window.hrDiscipline.DOC_KEY)||"darmemo";
+  const c=checklistSlot(emp, key);
+  if(window.hrDiscipline&&typeof window.hrDiscipline.fileOntoChecklist==="function")
+    c.docs=window.hrDiscipline.fileOntoChecklist(c.docs, key, url, rec.signedTitle, rec.date||TODAY);
+  else{
+    docAddLink(c.docs[key], url, rec.signedTitle||"");
+    if(c.docs[key].s!=="exp") c.docs[key].s="on";
+    if(!c.docs[key].filed) c.docs[key].filed=String(rec.date||TODAY).slice(0,10);
+  }
+  const ok=await put("employees", c.id, c);
+  return ok!==false;
+}
+function daEditor(id, presetEmp){
+  const blank={
+    id:uid("da"), no:"", empId:presetEmp||"", date:TODAY, action:"Written Reprimand",
+    offense:"", details:"", incidentDate:"", rule:"", nteId:"", nteNo:"", ncrNo:"",
+    days:"", from:"", to:"", effective:"", signedLink:"", signedTitle:"", signedOn:"",
+    issuedBy:S.settings.hrHead||""
+  };
+  const w=id&&S.discipline[id] ? Object.assign({}, S.discipline[id]) : Object.assign(blank, {empId:presetEmp||""});
+  if(!w.id) w.id=uid("da");
+  const actions=(window.hrDiscipline&&window.hrDiscipline.ACTIONS)||DM_ACTIONS;
+  const draw=()=>{
+    const e=S.employees[w.empId];
+    const susp=w.action==="Suspension", term=w.action==="Termination";
+    const known=!!(S.discipline&&S.discipline[w.id]&&S.discipline[w.id].no);
+    openModal({
+      title:(w.no?w.action+" "+w.no:"Record a disciplinary action")+(e?" — "+flipName(e.name):""),
+      wide:true,
+      body:'<div class="stack">'
+        + '<div class="note">This is the action that was carried out. A signed copy uploaded or pasted here is added to the <b>DAR / Memo (disciplinary action)</b> row on the employee’s 201 checklist. You do not file it a second time.</div>'
+        + '<div class="grid3">'
+        + '<div class="f"><label>Reference no.</label><input value="'+esc(w.no||"assigned when you save")+'" disabled></div>'
+        + '<div class="f"><label>Employee</label>'+empPicker("da-emp", w.empId)+'</div>'
+        + '<div class="f"><label>Date implemented</label><input id="da-date" type="date" value="'+esc(w.date||TODAY)+'"></div>'
+        + '</div>'
+        + '<div class="grid2">'
+        + '<div class="f"><label>Action</label><select id="da-action">'
+        + actions.map(x=>'<option value="'+esc(x)+'"'+(w.action===x?" selected":"")+'>'+esc(x)+'</option>').join("")
+        + '</select></div>'
+        + '<div class="f"><label>Date of incident</label><input id="da-inc" type="date" value="'+esc(w.incidentDate||"")+'"></div>'
+        + '</div>'
+        + '<div class="f"><label>Reason</label><input id="da-off" value="'+esc(w.offense||"")+'" placeholder="e.g. Unjustified absences"></div>'
+        + '<div class="f"><label>Details</label><textarea id="da-det" placeholder="What happened, and why this action follows.">'+esc(w.details||"")+'</textarea></div>'
+        + '<div class="grid2">'
+        + '<div class="f"><label>Policy / rule violated</label><input id="da-rule" value="'+esc(w.rule||"")+'" placeholder="Code of Conduct, Sec. …"></div>'
+        + '<div class="f"><label>Linked notice to explain</label><select id="da-nte"><option value="">— none —</option>'
+        + (w.empId?empNTEs(w.empId).map(n=>'<option value="'+esc(n.id)+'"'+(w.nteId===n.id?" selected":"")+'>'+esc((n.no||"Draft")+" · "+(n.issued||""))+'</option>').join(""):"")
+        + '</select></div></div>'
+        + (susp
+          ? '<div class="grid3"><div class="f"><label>Suspension — days</label><input id="da-days" type="number" min="1" value="'+esc(w.days||"")+'"><span class="hint">Leave blank to count the dates below, first day through last day.</span></div>'
+            + '<div class="f"><label>From</label><input id="da-from" type="date" value="'+esc(w.from||"")+'"></div>'
+            + '<div class="f"><label>To</label><input id="da-to" type="date" value="'+esc(w.to||"")+'"></div></div>'
+          : "")
+        + (term
+          ? '<div class="f"><label>Termination effective</label><input id="da-eff" type="date" value="'+esc(w.effective||"")+'"></div>'
+          : "")
+        + '<div class="f"><label>Issued by</label><input id="da-by" value="'+esc(w.issuedBy||S.settings.hrHead||"")+'"></div>'
+        + '<div class="f"><label>Signed copy — paste a Drive link</label><input id="da-link" type="url" value="'+esc(w.signedLink||"")+'" placeholder="https://drive.google.com/…">'
+        + '<span class="hint">Pasting the link files it on the 201 checklist. Clearing this box does not remove a file already on that row.</span></div>'
+        + (known ? signedBlock("discipline", w) : '<div class="note">Save the action first, then use <b>Upload the signed copy</b>. The upload uses the same 201 folder as the checklist.</div>')
+        + '</div>',
+      foot:(known?'<button class="btn danger" id="da-del">Delete</button>':"")
+        + '<button class="btn" id="da-print">Preview memorandum</button>'
+        + '<button class="btn pri" id="da-save">Save</button>'
+        + '<button class="btn" id="da-done">Done</button>'
+    });
+    const V=(sel,cur)=>{ const el=$(sel); return el?el.value:cur; };
+    const grab=()=>{
+      w.empId=V("#da-emp", w.empId);
+      w.date=V("#da-date", w.date);
+      w.action=V("#da-action", w.action);
+      w.incidentDate=V("#da-inc", w.incidentDate);
+      w.offense=V("#da-off", w.offense);
+      w.details=V("#da-det", w.details);
+      w.rule=V("#da-rule", w.rule);
+      w.nteId=V("#da-nte", w.nteId);
+      const nte=w.nteId&&S.nte?S.nte[w.nteId]:null;
+      w.nteNo=nte?(nte.no||""):(w.nteId?w.nteNo:"");
+      w.days=V("#da-days", w.days);
+      w.from=V("#da-from", w.from);
+      w.to=V("#da-to", w.to);
+      w.effective=V("#da-eff", w.effective);
+      w.issuedBy=V("#da-by", w.issuedBy);
+      const link=V("#da-link", w.signedLink||"");
+      if(link) w.signedLink=link.trim();
+      else if($("#da-link")) w.signedLink="";
+      if(w.action==="Suspension" && !String(w.days||"").trim() && window.hrDiscipline && w.from && w.to){
+        const n=window.hrDiscipline.inclusiveDays(w.from, w.to);
+        if(n) w.days=String(n);
+      }
+    };
+    const act=$("#da-action"); if(act) act.onchange=()=>{ grab(); draw(); };
+    const emp=$("#da-emp"); if(emp) emp.onchange=()=>{ grab(); draw(); };
+    const signedBtn=document.querySelector('[data-signed="discipline"]');
+    if(signedBtn) signedBtn.addEventListener("click", async function(ev){
+      ev.preventDefault();
+      ev.stopPropagation();
+      if(!(await save())) return;
+      pickSigned("discipline", w.id);
+    });
+    const save=async()=>{
+      grab();
+      if(!w.empId){ toast("Choose the employee.","err"); return null; }
+      if(!w.date){ toast("Set the date the action was implemented.","err"); return null; }
+      if(!String(w.offense||"").trim() && !String(w.details||"").trim()){
+        toast("Say what the action was for.","err"); return null;
+      }
+      if(w.action==="Suspension" && !String(w.days||"").trim() && !(w.from&&w.to)){
+        toast("For a suspension, set the number of days or the from and to dates.","err"); return null;
+      }
+      if(!w.no){
+        const who=S.employees[w.empId];
+        const entry=await allocate("DM",{
+          title:w.action+(who?" — "+flipName(who.name):""),
+          empId:w.empId, module:"discipline", refId:w.id, status:"Issued", date:w.date, tags:["discipline"]
+        });
+        if(!entry) return null;
+        w.no=entry.no;
+      }
+      const link=String(w.signedLink||"").trim();
+      await put("discipline", w.id, w);
+      if(link){
+        const filed=await fileDisciplineScan(w, link, w.signedTitle||w.action);
+        if(filed===false) toast("The action was saved. The 201 checklist could not be updated.","err");
+      }
+      return w;
+    };
+    $("#da-save").onclick=async()=>{
+      if(await save()){ toast("Saved as "+w.no+". The signed copy, once attached, is on the 201 checklist.","ok"); draw(); }
+    };
+    $("#da-done").onclick=()=>closeModal();
+    $("#da-print").onclick=async()=>{
+      if(!await save()) return;
+      S.ui.dmDraft=Object.assign({}, w);
+      printDiscipline(w, w.no, {issued:true});
+    };
+    const del=$("#da-del");
+    if(del) del.onclick=async()=>{
+      if(!await askConfirm("Delete this disciplinary action?\n\nIts number stays on the register, marked void. A scan already on the 201 checklist stays on that row.")) return;
+      const entry=regFor("discipline", w.id);
+      if(entry) await voidNo(entry.id, "disciplinary action deleted");
+      await drop("discipline", w.id);
+      closeModal(); render();
     };
   };
   draw();
@@ -19919,11 +20267,13 @@ const SIGNED_KIND = {
   memos:    {label:"Company Memorandum",        docKey:"",          back:(id)=>memoEditor(id),
              hint:"the signed and circulated copy", noEmp:true},
   reminders:{label:"Written Reminder",         docKey:"",          back:(id)=>remEditor(id),
-             hint:"the sheet everyone signed"}
+             hint:"the sheet everyone signed"},
+  discipline:{label:"Disciplinary action",     docKey:"darmemo",   back:(id)=>daEditor(id),
+             hint:"the signed reprimand or suspension"}
 };
 function recOf(coll,id){
   return ({leaves:S.leaves, advances:S.advances, nte:S.nte, memos:S.memos,
-           reminders:S.reminders}[coll]||{})[id];
+           reminders:S.reminders, discipline:S.discipline}[coll]||{})[id];
 }
 
 /* Printing is a state change: the form has left the building for signature. */
@@ -20019,9 +20369,13 @@ function signedBlock(coll, r){
       + '<span class="hint">'+(r.printedOn?"Printed "+esc(r.printedOn)+". ":"")
       + 'Print it, have it signed, scan it, then upload '+(k.hint||"here")+'.'
       + (coll==="memos"?' A photo or JPG scans best — the portal can read those.':'')+'</span></div>'
-      + '<div class="note">This record cannot be marked <b>Approved</b> or <b>Disapproved</b> until the signed '
-      + esc(k.label.toLowerCase())+' is on file. The scan goes into the employee’s 201 folder and also fills the '
-      + '<b>'+esc((DOCS.find(d=>d.k===k.docKey)||{}).n||k.docKey)+'</b> row on their checklist.</div>';
+      + (coll==="discipline"
+        ? '<div class="note">The scan goes into the employee’s 201 folder and is added to the <b>'
+          + esc((DOCS.find(d=>d.k===k.docKey)||{}).n||"DAR / Memo")
+          + '</b> row on their checklist. You do not upload the same file again on the 201 file.</div>'
+        : '<div class="note">This record cannot be marked <b>Approved</b> or <b>Disapproved</b> until the signed '
+          + esc(k.label.toLowerCase())+' is on file. The scan goes into the employee’s 201 folder and also fills the '
+          + '<b>'+esc((DOCS.find(d=>d.k===k.docKey)||{}).n||k.docKey)+'</b> row on their checklist.</div>');
   }
   return h;
 }
@@ -24120,6 +24474,7 @@ function render(){
   const fn = {dash:viewDash, employees:viewEmployees, contracts:viewContracts, memos:viewMemos,
     coe:viewCOE, recruit:viewRecruit, cashadv:viewCA, leave:viewLeave, incidents:viewIncidents,
     doccontrol:viewDocControl, onboarding:viewOnboarding, nte:viewNTE, writeups:viewWriteups,
+    discipline:viewDiscipline,
     attendance:viewAttendance, payroll:viewPayroll, tasks:viewTasks, general:viewGeneral, daily:viewDaily,
     salaries:viewSalaries, insights:viewInsights, filed:viewFiled, training:viewTraining,
     compliance:viewCompliance, gaps:viewGaps, reminders:viewReminders, assistant:viewAssistant,
@@ -25093,6 +25448,9 @@ function wire(){
   on("[data-open-nte]","click",e=>nteEditor(e.currentTarget.dataset.openNte));
   on("[data-new-wu]","click",e=>wuEditor(null,e.currentTarget.dataset.newWu||""));
   on("[data-open-wu]","click",e=>wuEditor(e.currentTarget.dataset.openWu));
+  on("[data-new-da]","click",e=>daEditor(null,e.currentTarget.dataset.newDa||""));
+  on("[data-open-da]","click",e=>daEditor(e.currentTarget.dataset.openDa));
+  const daYear=$("#da-year",v); if(daYear) daYear.onchange=()=>{ S.ui.discYear=daYear.value; render(); };
   on("[data-new-task]","click",()=>taskEditor(null));
   on("[data-open-task]","click",e=>taskEditor(e.currentTarget.dataset.openTask));
   on("[data-open-memo]","click",e=>memoEditor(e.currentTarget.dataset.openMemo));
@@ -25298,7 +25656,7 @@ function wire(){
   });
 
   const ea=$("#exp-all",v); if(ea) ea.onclick=()=>saveFile("corro-hr-portal-"+TODAY+".json", JSON.stringify({
-    exported:TODAY, employees:S.employees, nte:S.nte, writeups:S.writeups, memos:S.memos, tasks:S.tasks,
+    exported:TODAY, employees:S.employees, nte:S.nte, writeups:S.writeups, discipline:S.discipline, memos:S.memos, tasks:S.tasks,
     resources:S.resources, onboarding:S.onboarding, docreg:S.docreg, series:S.series, periods:S.periods,
     templates:S.templates, settings:S.settings },null,2));
   const ee=$("#exp-emp",v); if(ee) ee.onclick=()=>saveFile("employees-"+TODAY+".csv", toCSV(
