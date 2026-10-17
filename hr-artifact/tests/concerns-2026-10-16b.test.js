@@ -277,7 +277,7 @@ function loadPayroll(today) {
 
 describe("2026-10-16b rehire date on the 201 file", () => {
   it("is build 2026-10-16b and keeps the rehire date on the employee JSON", () => {
-    assert.match(html, /const BUILD = "2026-10-16c"/);
+    assert.match(html, /const BUILD = "2026-10-17a"/);
     assert.match(extractFunction(html, "newEmp"), /rehireDate:""/);
     assert.match(extractFunction(html, "empEnteredFieldNames"), /"rehireDate"/);
     assert.match(extractFunction(html, "keepEmpDateEdits"), /"rehireDate"/);

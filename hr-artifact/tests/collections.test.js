@@ -69,6 +69,7 @@ describe("collections", () => {
       "periods",
       "payruns",
       "otreqs",
+      "discipline",
       "meta",
     ];
     assert.deepEqual([...ALLOWED_COLLECTIONS], expected);
