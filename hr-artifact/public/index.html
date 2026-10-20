@@ -1961,7 +1961,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-10-17a";
+const BUILD = "2026-10-20a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -17808,16 +17808,27 @@ function interviewRunner(appId, guideId, existingIdx){
   draw();
 }
 
+/* Initial interviews are stored on the applicant (initialInterview).
+   The list and the save live in the recruitment companion so Pipeline counts,
+   the role filter, and ingest stay on the same records. */
+function viewInitialInterviews(){
+  const api=typeof window!=="undefined" && window.hrRecruit;
+  if(api && typeof api.initialInterviewsHtml==="function") return api.initialInterviewsHtml();
+  return '<div class="card" id="hr-initial-interviews-pending"><div class="empty">Initial interviews are loading. Open this tab again if the list does not appear.</div></div>';
+}
+
 function viewRecruit(){
   const mode=S.ui.rmode||"roles";
-  setCrumb("Recruitment", {roles:"Role definitions",pipeline:"Applicant pipeline",exams:"Written exams and IQ tests",guides:"Interview scripts"}[mode]);
+  setCrumb("Recruitment", {roles:"Role definitions",pipeline:"Applicant pipeline",initial:"Initial interviews",exams:"Written exams and IQ tests",guides:"Interview scripts"}[mode]);
   let h='<div class="row" style="margin-bottom:14px"><div class="seg">'
    + '<button class="'+(mode==="roles"?"on":"")+'" data-rmode="roles">Roles</button>'
    + '<button class="'+(mode==="pipeline"?"on":"")+'" data-rmode="pipeline">Pipeline</button>'
+   + '<button class="'+(mode==="initial"?"on":"")+'" data-rmode="initial">Initial interviews</button>'
    + '<button class="'+(mode==="exams"?"on":"")+'" data-rmode="exams">Exams</button>'
    + '<button class="'+(mode==="guides"?"on":"")+'" data-rmode="guides">Interview scripts</button></div></div>';
 
   if(mode==="roles") return h+viewRoles();
+  if(mode==="initial") return h+viewInitialInterviews();
 
   if(mode==="exams"){
     const xs=examList();

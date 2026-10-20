@@ -508,6 +508,53 @@ describe("applicants ingest persist", () => {
     assert.equal(saved.interviews[0].date, "2026-09-01");
   });
 
+  it("keeps an initial interview schedule when the same person is ingested again", async () => {
+    const schedule = {
+      at: "2026-10-21T09:30",
+      interviewer: "Cassie",
+      notes: "Panel room",
+      status: "Scheduled",
+      updatedAt: "2026-10-20T01:54:00.000Z",
+    };
+    const store = memoryStore({
+      applicants: {
+        a_keep: {
+          id: "a_keep",
+          name: "Monte, Domingo Jr.",
+          email: "domingo@example.com",
+          stage: "Interview",
+          appliedOn: "2026-10-01",
+          position: "Site Engineer",
+          notes: "On file",
+          exams: [],
+          interviews: [],
+          history: [],
+          initialInterview: schedule,
+        },
+      },
+    });
+    const again = await ingestApplicants(
+      [{ name: "Monte, Domingo Jr.", email: "domingo@example.com", notes: "Sent another CV" }],
+      { ...store, today: "2026-10-20" }
+    );
+    assert.equal(again.created.length, 0);
+    assert.equal(again.updated.length, 1);
+    const saved = store.docs.get("applicants/a_keep").data;
+    assert.equal(saved.stage, "Interview");
+    assert.deepEqual(saved.initialInterview, schedule);
+    assert.match(saved.notes, /On file/);
+    assert.match(saved.notes, /Sent another CV/);
+
+    const over = await ingestApplicants(
+      [{ id: "a_keep", name: "Monte, Domingo Jr.", overwrite: true, notes: "Extractor pass", stage: "Applied" }],
+      { ...store, today: "2026-10-20" }
+    );
+    assert.equal(over.updated.length, 1);
+    const saved2 = store.docs.get("applicants/a_keep").data;
+    assert.deepEqual(saved2.initialInterview, schedule);
+    assert.equal(saved2.stage, "Interview");
+  });
+
   it("replaceHrFields may move stage forward and still not backward", async () => {
     const store = memoryStore({
       applicants: {

@@ -153,6 +153,45 @@ describe("applicant merge", () => {
     assert.equal(result.extras[0].id, "old");
   });
 
+  it("keeps the later initial interview when duplicate applicants are merged", () => {
+    const result = mergeApplicantRecords(
+      [
+        {
+          id: "early",
+          name: "Monte, Domingo Jr.",
+          appliedOn: "2026-05-01",
+          stage: "Applied",
+          initialInterview: {
+            at: "2026-10-21T09:30",
+            interviewer: "Cassie",
+            notes: "First slot",
+            status: "Scheduled",
+            updatedAt: "2026-10-20T01:00:00.000Z",
+          },
+        },
+        {
+          id: "later",
+          name: "Monte, Domingo Jr.",
+          appliedOn: "2026-08-01",
+          stage: "Interview",
+          email: "domingo@example.com",
+          initialInterview: {
+            at: "2026-10-24T15:00",
+            interviewer: "Maria",
+            notes: "Moved",
+            status: "Rescheduled",
+            updatedAt: "2026-10-20T03:00:00.000Z",
+          },
+        },
+      ],
+      { today: "2026-10-20" }
+    );
+    assert.equal(result.keeper.initialInterview.at, "2026-10-24T15:00");
+    assert.equal(result.keeper.initialInterview.status, "Rescheduled");
+    assert.equal(result.keeper.initialInterview.interviewer, "Maria");
+    assert.equal(result.keeper.stage, "Interview");
+  });
+
   it("ranks Hired above Interview and Rejected above Applied", () => {
     assert.equal(furthestStage(["Applied", "Interview", "Hired"]), "Hired");
     assert.equal(furthestStage(["Rejected", "Applied"]), "Rejected");
