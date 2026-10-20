@@ -593,3 +593,238 @@ describe("hr-recruit applicant staff notes", () => {
     assert.equal(w.S.applicants.a1.notes, "Walk-in");
   });
 });
+
+describe("hr-recruit initial interviews", () => {
+  const people = {
+    a1: {
+      id: "a1",
+      name: "Monte, Domingo Jr.",
+      roleId: "ro02",
+      position: "Project Manager",
+      stage: "Applied",
+      email: "domingo@example.com",
+      interviews: [],
+    },
+    a2: {
+      id: "a2",
+      name: "Barrios, Luisa G.",
+      roleId: "ro06",
+      position: "Procurement Officer",
+      stage: "Screening",
+      interviews: [],
+    },
+    a3: {
+      id: "a3",
+      name: "Santos, Ana",
+      roleId: "",
+      position: "Project Manager",
+      stage: "Background Check",
+      interviews: [{ date: "2026-10-01", overall: "4" }],
+    },
+    a4: {
+      id: "a4",
+      name: "Reyes, Paolo",
+      roleId: "",
+      position: "",
+      stage: "For Final Interview",
+      interviews: [],
+    },
+    a5: {
+      id: "a5",
+      name: "Hired Person",
+      roleId: "ro06",
+      position: "Procurement Officer",
+      stage: "Hired",
+      interviews: [],
+    },
+  };
+
+  function copyPeople() {
+    return JSON.parse(JSON.stringify(people));
+  }
+
+  it("moves early stages to Interview and leaves later stages on the applicant", async () => {
+    const w = fakeWindow(copyPeople());
+    const hr = loadRecruit(w);
+    assert.equal(
+      hr.INITIAL_STATUSES.join("|"),
+      "Scheduled|Done/Passed|No-show|Rescheduled|Failed"
+    );
+    assert.equal(hr.stageAfterSchedule("Applied"), "Interview");
+    assert.equal(hr.stageAfterSchedule("Screening"), "Interview");
+    assert.equal(hr.stageAfterSchedule("Shortlisted"), "Interview");
+    assert.equal(hr.stageAfterSchedule("On Hold"), "Interview");
+    assert.equal(hr.stageAfterSchedule("Written Exam"), "Interview");
+    assert.equal(hr.stageAfterSchedule(""), "Interview");
+    assert.equal(hr.stageAfterSchedule("Interview"), "Interview");
+    assert.equal(hr.stageAfterSchedule("Background Check"), "Background Check");
+    assert.equal(hr.stageAfterSchedule("For Final Interview"), "For Final Interview");
+    assert.equal(hr.stageAfterSchedule("Offer"), "Offer");
+    assert.equal(hr.stageAfterSchedule("Hired"), "Hired");
+    assert.equal(hr.stageAfterSchedule("Rejected"), "Rejected");
+
+    const saved = await hr.commitInitialInterview("a1", {
+      at: "2026-10-21T09:30",
+      interviewer: "Cassie",
+      notes: "Bring the CV",
+      status: "Scheduled",
+    });
+    assert.equal(saved.ok, true);
+    assert.equal(w.S.applicants.a1.stage, "Interview");
+    assert.equal(w.S.applicants.a1.initialInterview.at, "2026-10-21T09:30");
+    assert.equal(w.S.applicants.a1.initialInterview.interviewer, "Cassie");
+    assert.equal(w.S.applicants.a1.initialInterview.notes, "Bring the CV");
+    assert.equal(w.S.applicants.a1.initialInterview.status, "Scheduled");
+    assert.equal(w.S.applicants.a1.interviews.length, 0);
+    assert.equal(hr.applicantMatchesPipeline(w.S.applicants.a1, "ro02", "domingo", w.S.roles), true);
+
+    const later = await hr.commitInitialInterview("a3", {
+      at: "2026-10-22 14:00",
+      status: "Done/Passed",
+    });
+    assert.equal(later.ok, true);
+    assert.equal(w.S.applicants.a3.stage, "Background Check");
+    assert.equal(w.S.applicants.a3.initialInterview.at, "2026-10-22T14:00");
+    assert.equal(w.S.applicants.a3.initialInterview.status, "Done/Passed");
+    assert.equal(w.S.applicants.a3.interviews.length, 1);
+
+    const alias = await hr.commitInitialInterview("a4", { at: "2026-10-23T08:00", status: "No-show" });
+    assert.equal(alias.ok, true);
+    assert.equal(w.S.applicants.a4.stage, "For Final Interview");
+
+    const missingTime = await hr.commitInitialInterview("a2", { interviewer: "Cassie" });
+    assert.equal(missingTime.ok, false);
+    assert.equal(w.S.applicants.a2.stage, "Screening");
+    assert.equal(w.S.applicants.a2.initialInterview, undefined);
+  });
+
+  it("lists scheduled interviews under the position and keeps a status change after reload", async () => {
+    const w = fakeWindow(copyPeople());
+    const hr = loadRecruit(w);
+    await hr.commitInitialInterview("a1", { at: "2026-10-21T09:30", interviewer: "Cassie", notes: "Panel room", status: "Scheduled" });
+    await hr.commitInitialInterview("a2", { at: "2026-10-21T11:00", status: "Rescheduled" });
+    await hr.commitInitialInterview("a3", { at: "2026-10-22T14:00", status: "Failed" });
+    const reloaded = fakeWindow(JSON.parse(JSON.stringify(w.S.applicants)));
+    const hr2 = loadRecruit(reloaded);
+    const html = hr2.initialInterviewsHtml();
+    assert.match(html, /id="hr-initial-interviews"/);
+    assert.match(html, /Project Manager/);
+    assert.match(html, /Procurement Officer/);
+    assert.match(html, /Monte, Domingo Jr\./);
+    assert.match(html, /21 Oct 2026, 9:30 AM/);
+    assert.match(html, /Cassie/);
+    assert.match(html, /Panel room/);
+    assert.match(html, /Barrios, Luisa G\./);
+    assert.match(html, /data-hr-iv-status="a1"/);
+    assert.match(html, /Done\/Passed/);
+    assert.match(html, /No-show/);
+    assert.match(html, /Failed/);
+    const list = html.split('id="hr-iv-save"')[1] || "";
+    const proc = list.indexOf(">Procurement Officer<");
+    const proj = list.indexOf(">Project Manager<");
+    assert.ok(proc >= 0 && proj > proc);
+    const monte = list.indexOf("Monte, Domingo Jr.");
+    const ana = list.indexOf("Santos, Ana");
+    assert.ok(monte > proj && ana > monte);
+    assert.doesNotMatch(html, /Hired Person/);
+
+    const changed = await hr2.commitInitialStatus("a1", "No-show");
+    assert.equal(changed.ok, true);
+    assert.equal(reloaded.S.applicants.a1.initialInterview.status, "No-show");
+    assert.equal(reloaded.S.applicants.a1.initialInterview.at, "2026-10-21T09:30");
+    assert.equal(reloaded.S.applicants.a1.stage, "Interview");
+    const again = hr2.initialInterviewsHtml();
+    assert.match(again, /data-hr-iv-status="a1"[\s\S]*No-show/);
+    assert.doesNotMatch(hr2.applicantOptionsHtml(
+      Object.values(reloaded.S.applicants).filter((a) => a.stage !== "Hired"),
+      "",
+      reloaded.S.roles,
+      "domingo"
+    ), /Hired Person/);
+    assert.match(hr2.applicantOptionsHtml(
+      Object.values(reloaded.S.applicants).filter((a) => a.stage !== "Hired"),
+      "",
+      reloaded.S.roles,
+      ""
+    ), /optgroup label="Project Manager"/);
+  });
+
+  it("keeps the schedule when an editor save omits it, and a newer save wins", async () => {
+    const w = fakeWindow(copyPeople());
+    const hr = loadRecruit(w);
+    await hr.commitInitialInterview("a1", { at: "2026-10-21T09:30", interviewer: "Cassie", status: "Scheduled" });
+    const stamped = w.S.applicants.a1.initialInterview.updatedAt;
+    hr.install();
+    await w.put("applicants", "a1", { id: "a1", name: "Monte, Domingo Jr.", stage: "Applied", notes: "Walk-in" });
+    assert.equal(w.S.applicants.a1.initialInterview.at, "2026-10-21T09:30");
+    assert.equal(w.S.applicants.a1.initialInterview.updatedAt, stamped);
+    assert.equal(w.S.applicants.a1.stage, "Applied");
+    assert.equal(w.S.applicants.a1.notes, "Walk-in");
+    await w.put("applicants", "a1", {
+      id: "a1",
+      name: "Monte, Domingo Jr.",
+      stage: "Interview",
+      initialInterview: {
+        at: "2026-10-24T15:00",
+        interviewer: "Maria",
+        notes: "",
+        status: "Rescheduled",
+        updatedAt: "2099-01-01T00:00:00.000Z",
+      },
+    });
+    assert.equal(w.S.applicants.a1.initialInterview.at, "2026-10-24T15:00");
+    assert.equal(w.S.applicants.a1.initialInterview.status, "Rescheduled");
+    await w.put("applicants", "a1", {
+      id: "a1",
+      name: "Monte, Domingo Jr.",
+      stage: "Interview",
+      initialInterview: {
+        at: "2026-10-01T08:00",
+        status: "Scheduled",
+        updatedAt: "2000-01-01T00:00:00.000Z",
+      },
+    });
+    assert.equal(w.S.applicants.a1.initialInterview.at, "2026-10-24T15:00");
+    assert.equal(w.S.applicants.a1.initialInterview.status, "Rescheduled");
+  });
+
+  it("adds Schedule beside Open on the pipeline and opens that applicant", () => {
+    const w = fakeWindow(copyPeople());
+    const open = w.document.createElement("button");
+    open.setAttribute("data-open-app", "a1");
+    const td = {
+      child: null,
+      appendChild(el) {
+        this.child = el;
+        el.parentNode = this;
+        return el;
+      },
+      querySelector(sel) {
+        if (sel.indexOf("data-hr-iv-open") >= 0 && this.child && this.child.getAttribute("data-hr-iv-open") === "a1") {
+          return this.child;
+        }
+        return null;
+      },
+    };
+    open.parentNode = td;
+    w.document.querySelectorAll = function (sel) {
+      if (sel === "[data-open-app]") return [open];
+      return [];
+    };
+    w.openModal = function (opts) {
+      w.modal = opts;
+    };
+    const hr = loadRecruit(w);
+    hr.injectScheduleButtons();
+    hr.injectScheduleButtons();
+    assert.equal(td.child.textContent, "Schedule");
+    assert.equal(td.child.getAttribute("data-hr-iv-open"), "a1");
+    const opened = hr.openScheduleModal("a1");
+    assert.equal(opened.id, "a1");
+    assert.match(w.modal.title, /Monte, Domingo Jr\./);
+    assert.match(w.modal.body, /data-hr-iv-for="a1"/);
+    assert.match(w.modal.body, /Project Manager/);
+    assert.match(hr.schedulePanelHtml(w.S.applicants.a1), /id="hr-recruit-iv-panel"/);
+    assert.match(hr.schedulePanelHtml(w.S.applicants.a1), /Not scheduled yet/);
+  });
+});

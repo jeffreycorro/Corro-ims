@@ -3,16 +3,17 @@
  * Loaded by claude-shim.js. Does not rewrite the artifact.
  *
  * Adds Pipeline "Bulk import JSON", "Consolidate duplicates", a
- * role filter, a live search bar, applicant exam-score rows, and a
- * "View 201 / application file" action on the applicant editor.
+ * role filter, a live search bar, applicant exam-score rows, a
+ * "View 201 / application file" action on the applicant editor, and
+ * Initial interviews: a date and time on the applicant, listed by position.
  */
 (function (root) {
   "use strict";
 
-  if (root.hrRecruit && root.hrRecruit.version === "1.6.0") return;
+  if (root.hrRecruit && root.hrRecruit.version === "1.7.0") return;
 
   var api = {
-    version: "1.6.0",
+    version: "1.7.0",
     attached: false,
     openAppId: "",
     roleFilter: "",
@@ -1622,7 +1623,10 @@
       var out = orig.call(this, opts);
       try {
         bindApplicantFileButton();
-        if (opts && isApplicantEditorModal(opts)) injectStaffNotesPanel();
+        if (opts && isApplicantEditorModal(opts)) {
+          injectStaffNotesPanel();
+          injectSchedulePanel();
+        }
       } catch (e) {}
       return out;
     };
@@ -1698,6 +1702,8 @@
             obj.exams = mergeExamScores(api.draftExamScores);
           }
           if (api.draftExamScores && api.draftExamScores.length) api.draftExamScores = [];
+          var mergedIv = mergeInitialInterview(cur && cur.initialInterview, obj.initialInterview);
+          if (mergedIv) obj.initialInterview = mergedIv;
         } catch (e) {}
       }
       return orig.apply(this, arguments);
@@ -1705,15 +1711,654 @@
     root.put.__hrRecruitDocs = true;
   }
 
+  var INITIAL_STATUSES = ["Scheduled", "Done/Passed", "No-show", "Rescheduled", "Failed"];
+  var PAGE_FIELDS = { at: "hr-iv-at", by: "hr-iv-by", notes: "hr-iv-notes", status: "hr-iv-status" };
+  var EDIT_FIELDS = { at: "hr-iv-edit-at", by: "hr-iv-edit-by", notes: "hr-iv-edit-notes", status: "hr-iv-edit-status" };
+  var MODAL_FIELDS = { at: "hr-iv-modal-at", by: "hr-iv-modal-by", notes: "hr-iv-modal-notes", status: "hr-iv-modal-status" };
+  var WHEN_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+  function canonicalStage(stage) {
+    var s = String(stage == null ? "" : stage).trim();
+    if (!s) return "Applied";
+    if (s === "For Final Interview") return "Final Interview";
+    return s;
+  }
+
+  function stageText(stage) {
+    var s = canonicalStage(stage);
+    if (s === "Final Interview") return "For Final Interview";
+    return s;
+  }
+
+  function normalizeWhen(value) {
+    var raw = String(value == null ? "" : value).trim();
+    var m = raw.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})/);
+    if (!m) return "";
+    var hh = Number(m[2]);
+    var mm = Number(m[3]);
+    if (hh > 23 || mm > 59) return "";
+    return m[1] + "T" + m[2] + ":" + m[3];
+  }
+
+  function normalizeStatus(status) {
+    var s = String(status == null ? "" : status).trim().toLowerCase();
+    var i;
+    for (i = 0; i < INITIAL_STATUSES.length; i += 1) {
+      if (INITIAL_STATUSES[i].toLowerCase() === s) return INITIAL_STATUSES[i];
+    }
+    return "Scheduled";
+  }
+
+  function normalizeInitialInterview(raw) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+    var at = normalizeWhen(raw.at || raw.when || "");
+    if (!at && raw.date) at = normalizeWhen(String(raw.date) + "T" + (raw.time || "00:00"));
+    if (!at) return null;
+    return {
+      at: at,
+      interviewer: String(raw.interviewer || "").trim(),
+      notes: String(raw.notes || "").trim(),
+      status: normalizeStatus(raw.status),
+      updatedAt: String(raw.updatedAt || "").trim(),
+    };
+  }
+
+  function mergeInitialInterview(current, incoming) {
+    var a = normalizeInitialInterview(current);
+    var b = normalizeInitialInterview(incoming);
+    if (!a) return b;
+    if (!b) return a;
+    var as = String((current && current.updatedAt) || "");
+    var bs = String((incoming && incoming.updatedAt) || "");
+    if (bs > as) return b;
+    if (bs < as) return a;
+    return b;
+  }
+
+  function stageAfterSchedule(stage) {
+    var raw = String(stage == null ? "" : stage).trim();
+    var s = canonicalStage(raw);
+    if (
+      !raw ||
+      s === "Applied" ||
+      s === "Screening" ||
+      s === "Shortlisted" ||
+      s === "On Hold" ||
+      s === "Written Exam"
+    ) {
+      return "Interview";
+    }
+    return raw;
+  }
+
+  function stampNow() {
+    return new Date().toISOString();
+  }
+
+  function scheduleInitialInterview(applicant, fields) {
+    if (!applicant || typeof applicant !== "object") return null;
+    var iv = normalizeInitialInterview(fields || {});
+    if (!iv) return null;
+    iv.updatedAt = stampNow();
+    applicant.initialInterview = iv;
+    applicant.stage = stageAfterSchedule(applicant.stage);
+    return applicant;
+  }
+
+  function setInitialInterviewStatus(applicant, status) {
+    if (!applicant) return null;
+    var iv = normalizeInitialInterview(applicant.initialInterview);
+    if (!iv) return null;
+    iv.status = normalizeStatus(status);
+    iv.updatedAt = stampNow();
+    applicant.initialInterview = iv;
+    return applicant;
+  }
+
+  function formatWhen(at) {
+    var m = String(at || "").match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+    if (!m) return "—";
+    var hh = Number(m[4]);
+    var ap = hh >= 12 ? "PM" : "AM";
+    var h12 = hh % 12 || 12;
+    var mon = WHEN_MONTHS[Number(m[2]) - 1] || m[2];
+    return Number(m[3]) + " " + mon + " " + m[1] + ", " + h12 + ":" + m[5] + " " + ap;
+  }
+
+  function statusPillClass(status) {
+    if (status === "Done/Passed") return "ok";
+    if (status === "Failed") return "crit";
+    if (status === "No-show" || status === "Rescheduled") return "warn";
+    return "acc";
+  }
+
+  function statusOptions(selected) {
+    var current = normalizeStatus(selected);
+    return INITIAL_STATUSES.map(function (s) {
+      return '<option value="' + esc(s) + '"' + (s === current ? " selected" : "") + ">" + esc(s) + "</option>";
+    }).join("");
+  }
+
+  function defaultInterviewer() {
+    var S = store() || {};
+    var settings = S.settings || {};
+    return String(settings.hrHead || settings.hrStaff || "").trim();
+  }
+
+  function groupApplicantsByPosition(list, roles) {
+    roles = roles || rolesMap();
+    var map = Object.create(null);
+    var order = [];
+    (list || []).forEach(function (a) {
+      if (!a) return;
+      var key = roleFilterKey(a, roles);
+      var label = displayRoleTitle(a, roles) || "Unlinked";
+      if (!map[key]) {
+        map[key] = { key: key, label: label, rows: [] };
+        order.push(map[key]);
+      }
+      map[key].rows.push(a);
+    });
+    order.sort(function (a, b) {
+      if (a.key === "unlinked") return 1;
+      if (b.key === "unlinked") return -1;
+      return a.label.localeCompare(b.label);
+    });
+    order.forEach(function (g) {
+      g.rows.sort(function (a, b) {
+        return String(a.name || "").localeCompare(String(b.name || "")) || String(a.id || "").localeCompare(String(b.id || ""));
+      });
+    });
+    return order;
+  }
+
+  function scheduledInterviewGroups(list, roles) {
+    roles = roles || rolesMap();
+    var scheduled = (list || []).filter(function (a) {
+      return !!normalizeInitialInterview(a && a.initialInterview);
+    });
+    var groups = groupApplicantsByPosition(scheduled, roles);
+    groups.forEach(function (g) {
+      g.rows.sort(function (a, b) {
+        var av = normalizeInitialInterview(a.initialInterview);
+        var bv = normalizeInitialInterview(b.initialInterview);
+        return (
+          String(av.at).localeCompare(String(bv.at)) ||
+          String(a.name || "").localeCompare(String(b.name || ""))
+        );
+      });
+    });
+    return groups;
+  }
+
+  function applicantOptionsHtml(list, selectedId, roles, query) {
+    roles = roles || rolesMap();
+    var q = String(query == null ? "" : query).trim().toLowerCase();
+    var filtered = (list || []).filter(function (a) {
+      if (!q) return true;
+      var hay = [a.name, displayRoleTitle(a, roles), a.email, a.position, a.mobile].join(" ").toLowerCase();
+      return q.split(/\s+/).every(function (word) {
+        return hay.indexOf(word) >= 0;
+      });
+    });
+    var html = '<option value="">— choose an applicant —</option>';
+    var seen = Object.create(null);
+    groupApplicantsByPosition(filtered, roles).forEach(function (g) {
+      html += '<optgroup label="' + esc(g.label) + '">';
+      g.rows.forEach(function (a) {
+        seen[a.id] = true;
+        var iv = normalizeInitialInterview(a.initialInterview);
+        var suffix = iv ? " · " + formatWhen(iv.at) : "";
+        html +=
+          '<option value="' +
+          esc(a.id) +
+          '"' +
+          (a.id === selectedId ? " selected" : "") +
+          ">" +
+          esc(a.name || "(no name)") +
+          esc(suffix) +
+          "</option>";
+      });
+      html += "</optgroup>";
+    });
+    if (selectedId && !seen[selectedId]) {
+      var cur = findApplicant(selectedId);
+      if (cur) {
+        html +=
+          '<option value="' +
+          esc(cur.id) +
+          '" selected>' +
+          esc(cur.name || "(no name)") +
+          "</option>";
+      }
+    }
+    return html;
+  }
+
+  function scheduleFieldsHtml(iv, ids) {
+    iv = iv || {};
+    ids = ids || PAGE_FIELDS;
+    var status = iv.status || "Scheduled";
+    return (
+      '<div class="f"><label>Date and time</label><input id="' +
+      ids.at +
+      '" type="datetime-local" value="' +
+      esc(iv.at || "") +
+      '"></div>' +
+      '<div class="f"><label>Interviewer</label><input id="' +
+      ids.by +
+      '" value="' +
+      esc(iv.interviewer || "") +
+      '" placeholder="Optional"></div>' +
+      '<div class="f"><label>Status</label><select id="' +
+      ids.status +
+      '">' +
+      statusOptions(status) +
+      "</select></div>" +
+      '<div class="f"><label>Notes</label><input id="' +
+      ids.notes +
+      '" value="' +
+      esc(iv.notes || "") +
+      '" placeholder="Optional"></div>'
+    );
+  }
+
+  function schedulableApplicants() {
+    return applicantList().filter(function (a) {
+      return canonicalStage(a.stage) !== "Hired";
+    });
+  }
+
+  function initialInterviewsHtml() {
+    var roles = rolesMap();
+    var groups = scheduledInterviewGroups(applicantList(), roles);
+    var total = 0;
+    groups.forEach(function (g) {
+      total += g.rows.length;
+    });
+    var h =
+      '<div id="hr-initial-interviews">' +
+      '<div class="note">Pick someone already on the pipeline. The date and time are Philippines time. ' +
+      "Saving moves Applied, Screening, Shortlisted, On Hold, and Written Exam to Interview. " +
+      "Someone already at Interview, Background Check, For Final Interview, Offer, Hired, or Rejected stays on that stage. " +
+      "Change the status on the list when the interview is done, missed, moved, or failed.</div>" +
+      '<div class="sect-h"><h2>Schedule an initial interview</h2><span class="rule"></span>' +
+      '<span class="lbl">' +
+      total +
+      " on the schedule</span></div>" +
+      '<div class="card"><div class="card-b"><div class="stack">' +
+      '<div class="f"><label>Find an applicant</label>' +
+      '<input type="search" id="hr-iv-find" class="search" placeholder="Name, email, mobile, or position" aria-label="Find an applicant" autocomplete="off"></div>' +
+      '<div class="grid3">' +
+      '<div class="f"><label>Applicant</label><select id="hr-iv-app">' +
+      applicantOptionsHtml(schedulableApplicants(), "", roles, "") +
+      "</select></div>" +
+      scheduleFieldsHtml({ interviewer: defaultInterviewer(), status: "Scheduled" }, PAGE_FIELDS) +
+      "</div>" +
+      '<div class="row"><button class="btn pri" id="hr-iv-save" type="button">Save schedule</button>' +
+      '<span class="lbl" id="hr-iv-form-status"></span></div>' +
+      "</div></div></div>";
+    if (!groups.length) {
+      h +=
+        '<div class="card"><div class="empty">No initial interviews scheduled yet. Pick an applicant above and set the date and time.</div></div></div>';
+      return h;
+    }
+    groups.forEach(function (g) {
+      h +=
+        '<div class="sect-h" style="margin:16px 0 9px"><h2 style="font-size:13px">' +
+        esc(g.label) +
+        '</h2><span class="rule"></span><span class="pill acc">' +
+        g.rows.length +
+        "</span></div>" +
+        '<div class="card"><div class="tw"><table><thead><tr><th>Applicant</th><th>Scheduled</th><th>Interviewer</th><th>Status</th><th>Stage</th><th></th></tr></thead><tbody>';
+      g.rows.forEach(function (a) {
+        var iv = normalizeInitialInterview(a.initialInterview);
+        h +=
+          "<tr><td class=\"nm\">" +
+          esc(a.name || "(no name)") +
+          (iv.notes
+            ? '<div style="font-size:11px;color:var(--ink3);font-weight:400">' + esc(iv.notes) + "</div>"
+            : "") +
+          "</td><td class=\"mono\">" +
+          esc(formatWhen(iv.at)) +
+          "</td><td>" +
+          esc(iv.interviewer || "—") +
+          '</td><td><span class="pill ' +
+          statusPillClass(iv.status) +
+          '">' +
+          esc(iv.status) +
+          '</span> <select data-hr-iv-status="' +
+          esc(a.id) +
+          '" aria-label="Status for ' +
+          esc(a.name || "applicant") +
+          '">' +
+          statusOptions(iv.status) +
+          "</select></td><td>" +
+          esc(stageText(a.stage)) +
+          '</td><td><button class="btn sm" type="button" data-open-app="' +
+          esc(a.id) +
+          '">Open</button></td></tr>';
+      });
+      h += "</tbody></table></div></div>";
+    });
+    h += "</div>";
+    return h;
+  }
+
+  function schedulePanelHtml(a) {
+    a = a || {};
+    var iv = normalizeInitialInterview(a.initialInterview);
+    var summary = iv
+      ? formatWhen(iv.at) + " · " + iv.status + (iv.interviewer ? " · " + iv.interviewer : "")
+      : "Not scheduled yet.";
+    var formIv = iv || { at: "", interviewer: defaultInterviewer(), notes: "", status: "Scheduled" };
+    return (
+      '<div id="hr-recruit-iv-panel">' +
+      '<div class="sect-h" style="margin:10px 0 0"><h2 style="font-size:12.5px">Initial interview</h2><span class="rule"></span>' +
+      '<span class="lbl">' +
+      esc(summary) +
+      "</span></div>" +
+      '<div class="note">Philippines time. Saving moves Applied, Screening, Shortlisted, On Hold, and Written Exam to Interview. Later stages stay as they are.</div>' +
+      '<div class="grid3">' +
+      scheduleFieldsHtml(formIv, EDIT_FIELDS) +
+      "</div>" +
+      '<div class="row"><button class="btn pri" id="hr-iv-edit-save" type="button">Save initial interview</button>' +
+      '<span class="lbl" id="hr-iv-edit-status"></span></div></div>'
+    );
+  }
+
+  async function commitInitialInterview(applicantId, fields) {
+    var a = findApplicant(applicantId);
+    if (!a) return { ok: false, error: "missing" };
+    if (!scheduleInitialInterview(a, fields || {})) return { ok: false, error: "when" };
+    await persistApplicant(a);
+    return { ok: true, applicant: a };
+  }
+
+  async function commitInitialStatus(applicantId, status) {
+    var a = findApplicant(applicantId);
+    if (!a || !normalizeInitialInterview(a.initialInterview)) return { ok: false, error: "none" };
+    var next = normalizeStatus(status);
+    if (normalizeInitialInterview(a.initialInterview).status === next && String(a.initialInterview.status || "") === next) {
+      return { ok: true, applicant: a, unchanged: true };
+    }
+    if (!setInitialInterviewStatus(a, next)) return { ok: false, error: "none" };
+    await persistApplicant(a);
+    return { ok: true, applicant: a };
+  }
+
+  function fieldValue(id) {
+    if (typeof document === "undefined" || !document.getElementById) return "";
+    var el = document.getElementById(id);
+    return el ? String(el.value || "") : "";
+  }
+
+  function reflectStageSelect(applicant) {
+    if (!applicant || typeof document === "undefined" || !document.getElementById) return;
+    if (api.openAppId && api.openAppId !== applicant.id) return;
+    var sel = document.getElementById("a-stage");
+    if (!sel) return;
+    sel.value = canonicalStage(applicant.stage);
+  }
+
+  function formError(kind) {
+    if (kind === "when") return "Set the date and time.";
+    if (kind === "missing") return "Pick an applicant already on the pipeline.";
+    return "Could not save that interview.";
+  }
+
+  async function savePageSchedule() {
+    var st = typeof document !== "undefined" && document.getElementById("hr-iv-form-status");
+    var id = fieldValue("hr-iv-app");
+    if (!id) {
+      if (st) st.textContent = "Pick an applicant.";
+      toast("Pick an applicant.", "err");
+      return;
+    }
+    var result = await commitInitialInterview(id, {
+      at: fieldValue("hr-iv-at"),
+      interviewer: fieldValue("hr-iv-by"),
+      notes: fieldValue("hr-iv-notes"),
+      status: fieldValue("hr-iv-status"),
+    });
+    if (!result.ok) {
+      var msg = formError(result.error);
+      if (st) st.textContent = msg;
+      toast(msg, "err");
+      return;
+    }
+    toast("Initial interview saved.", "ok");
+    reflectStageSelect(result.applicant);
+    if (typeof root.render === "function") root.render();
+  }
+
+  async function saveEditorSchedule() {
+    var st = typeof document !== "undefined" && document.getElementById("hr-iv-edit-status");
+    var a = applicantFromEditor();
+    if (!a) {
+      if (st) st.textContent = "Save the applicant first.";
+      toast("Save the applicant first, then schedule the interview.", "err");
+      return;
+    }
+    var result = await commitInitialInterview(a.id, {
+      at: fieldValue("hr-iv-edit-at"),
+      interviewer: fieldValue("hr-iv-edit-by"),
+      notes: fieldValue("hr-iv-edit-notes"),
+      status: fieldValue("hr-iv-edit-status"),
+    });
+    if (!result.ok) {
+      var msg = formError(result.error);
+      if (st) st.textContent = msg;
+      toast(msg, "err");
+      return;
+    }
+    reflectStageSelect(result.applicant);
+    toast("Initial interview saved.", "ok");
+    var panel = typeof document !== "undefined" && document.getElementById("hr-recruit-iv-panel");
+    if (panel && panel.parentNode) {
+      var holder = document.createElement("div");
+      holder.innerHTML = schedulePanelHtml(result.applicant);
+      if (holder.firstChild) panel.parentNode.replaceChild(holder.firstChild, panel);
+    }
+  }
+
+  function openScheduleModal(appId) {
+    var a = findApplicant(appId);
+    if (!a) {
+      toast("That applicant is not on the pipeline.", "err");
+      return null;
+    }
+    if (typeof root.openModal !== "function") return null;
+    var iv = normalizeInitialInterview(a.initialInterview) || {
+      at: "",
+      interviewer: defaultInterviewer(),
+      notes: "",
+      status: "Scheduled",
+    };
+    root.openModal({
+      title: "Initial interview — " + (a.name || "applicant"),
+      body:
+        '<div id="hr-iv-modal" data-hr-iv-for="' +
+        esc(a.id) +
+        '"><div class="note">' +
+        esc(a.name || "") +
+        " · " +
+        esc(displayRoleTitle(a) || "Unlinked") +
+        ". Philippines time. Saving moves an early stage to Interview.</div><div class=\"grid3\">" +
+        scheduleFieldsHtml(iv, MODAL_FIELDS) +
+        "</div></div>",
+      foot:
+        '<button class="btn" id="hr-iv-modal-cancel" type="button">Cancel</button>' +
+        '<button class="btn pri" id="hr-iv-modal-save" type="button">Save schedule</button>',
+    });
+    return a;
+  }
+
+  async function saveModalSchedule() {
+    if (typeof document === "undefined" || !document.getElementById) return;
+    var host = document.getElementById("hr-iv-modal");
+    var id = host && host.getAttribute ? host.getAttribute("data-hr-iv-for") : "";
+    var result = await commitInitialInterview(id, {
+      at: fieldValue("hr-iv-modal-at"),
+      interviewer: fieldValue("hr-iv-modal-by"),
+      notes: fieldValue("hr-iv-modal-notes"),
+      status: fieldValue("hr-iv-modal-status"),
+    });
+    if (!result.ok) {
+      toast(formError(result.error), "err");
+      return;
+    }
+    toast("Initial interview saved.", "ok");
+    reflectStageSelect(result.applicant);
+    if (typeof root.closeModal === "function") root.closeModal();
+    if (typeof root.render === "function") root.render();
+  }
+
+  function filterApplicantSelect(query) {
+    if (typeof document === "undefined" || !document.getElementById) return;
+    var sel = document.getElementById("hr-iv-app");
+    if (!sel) return;
+    sel.innerHTML = applicantOptionsHtml(schedulableApplicants(), sel.value, rolesMap(), query);
+  }
+
+  function fillPageForm(applicantId) {
+    if (typeof document === "undefined" || !document.getElementById) return;
+    var a = findApplicant(applicantId);
+    var iv = a && normalizeInitialInterview(a.initialInterview);
+    var at = document.getElementById("hr-iv-at");
+    var by = document.getElementById("hr-iv-by");
+    var notes = document.getElementById("hr-iv-notes");
+    var status = document.getElementById("hr-iv-status");
+    if (at) at.value = iv ? iv.at : "";
+    if (by) by.value = iv ? iv.interviewer : defaultInterviewer();
+    if (notes) notes.value = iv ? iv.notes : "";
+    if (status) status.value = iv ? iv.status : "Scheduled";
+  }
+
+  function bindInitialInterviewEvents(doc) {
+    doc = doc || (typeof document !== "undefined" ? document : null);
+    if (!doc || doc.__hrInitialIv || !doc.addEventListener) return;
+    doc.__hrInitialIv = true;
+    doc.addEventListener(
+      "click",
+      function (ev) {
+        var t = ev && ev.target;
+        var id = "";
+        while (t && t !== doc) {
+          if (t.id === "hr-iv-save" || t.id === "hr-iv-edit-save" || t.id === "hr-iv-modal-save" || t.id === "hr-iv-modal-cancel") {
+            id = t.id;
+            break;
+          }
+          if (t.getAttribute && t.getAttribute("data-hr-iv-open")) {
+            id = "open";
+            break;
+          }
+          t = t.parentNode;
+        }
+        if (!id) return;
+        if (ev.preventDefault) ev.preventDefault();
+        if (id === "hr-iv-save") savePageSchedule();
+        else if (id === "hr-iv-edit-save") saveEditorSchedule();
+        else if (id === "hr-iv-modal-save") saveModalSchedule();
+        else if (id === "hr-iv-modal-cancel") {
+          if (typeof root.closeModal === "function") root.closeModal();
+        } else if (t && t.getAttribute) {
+          if (ev.stopPropagation) ev.stopPropagation();
+          openScheduleModal(t.getAttribute("data-hr-iv-open"));
+        }
+      },
+      false
+    );
+    doc.addEventListener(
+      "change",
+      function (ev) {
+        var t = ev && ev.target;
+        if (!t) return;
+        if (t.id === "hr-iv-app") {
+          fillPageForm(t.value);
+          return;
+        }
+        if (t.getAttribute && t.getAttribute("data-hr-iv-status") != null) {
+          var appId = t.getAttribute("data-hr-iv-status");
+          commitInitialStatus(appId, t.value).then(function (result) {
+            if (!result || !result.ok) {
+              toast("Could not update that status.", "err");
+              return;
+            }
+            if (result.unchanged) return;
+            toast("Status saved.", "ok");
+            if (typeof root.render === "function") root.render();
+          });
+        }
+      },
+      false
+    );
+    doc.addEventListener(
+      "input",
+      function (ev) {
+        var t = ev && ev.target;
+        if (t && t.id === "hr-iv-find") filterApplicantSelect(t.value);
+      },
+      false
+    );
+  }
+
+  function injectScheduleButtons() {
+    if (typeof document === "undefined" || !document.getElementById || !document.querySelectorAll) return;
+    if (!document.getElementById("new-app")) return;
+    var buttons = document.querySelectorAll("[data-open-app]");
+    Array.prototype.forEach.call(buttons || [], function (openBtn) {
+      if (!openBtn || !openBtn.getAttribute || !openBtn.parentNode) return;
+      if (openBtn.closest && openBtn.closest("#hr-initial-interviews")) return;
+      var id = openBtn.getAttribute("data-open-app");
+      if (!id) return;
+      if (openBtn.parentNode.querySelector && openBtn.parentNode.querySelector('[data-hr-iv-open="' + id + '"]')) return;
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "btn sm";
+      btn.setAttribute("data-hr-iv-open", id);
+      btn.title = "Schedule an initial interview";
+      btn.textContent = "Schedule";
+      if (btn.style) btn.style.marginLeft = "6px";
+      openBtn.parentNode.appendChild(btn);
+    });
+  }
+
+  function injectSchedulePanel() {
+    if (typeof document === "undefined" || !document.getElementById) return null;
+    if (document.getElementById("hr-recruit-iv-panel")) return document.getElementById("hr-recruit-iv-panel");
+    var anchor = document.getElementById("a-anyguide");
+    if (!anchor) return null;
+    var row = anchor.parentNode;
+    var sect = row;
+    while (sect && String(sect.className || "").indexOf("sect-h") < 0) sect = sect.previousElementSibling;
+    var panel = document.createElement("div");
+    panel.innerHTML = schedulePanelHtml(applicantFromEditor() || {});
+    var node = panel.firstChild;
+    if (!node) return null;
+    if (sect && sect.parentNode) sect.parentNode.insertBefore(node, sect);
+    else if (row && row.parentNode) row.parentNode.insertBefore(node, row);
+    return document.getElementById("hr-recruit-iv-panel");
+  }
+
+  function refreshInitialView() {
+    var S = store();
+    if (!S || !S.ui || S.ui.view !== "recruit" || S.ui.rmode !== "initial") return;
+    if (typeof document !== "undefined" && document.getElementById && document.getElementById("hr-initial-interviews")) return;
+    if (typeof root.render === "function") root.render();
+  }
+
   function injectChrome() {
     try {
       wrapOpenModal();
       wrapAppEditor();
       wrapPut();
+      bindInitialInterviewEvents();
       injectButton();
       injectConsolidateButton();
       injectSearch();
       injectRoleFilter();
+      injectScheduleButtons();
     } catch (e) {}
   }
 
@@ -1736,6 +2381,9 @@
       }
     }
     api.attached = true;
+    try {
+      refreshInitialView();
+    } catch (e1) {}
     return api;
   }
 
@@ -1777,6 +2425,24 @@
   api.examScoresOf = examScoresOf;
   api.examScoreLine = examScoreLine;
   api.examScoresSummaryHtml = examScoresSummaryHtml;
+  api.INITIAL_STATUSES = INITIAL_STATUSES;
+  api.normalizeWhen = normalizeWhen;
+  api.normalizeStatus = normalizeStatus;
+  api.normalizeInitialInterview = normalizeInitialInterview;
+  api.mergeInitialInterview = mergeInitialInterview;
+  api.stageAfterSchedule = stageAfterSchedule;
+  api.scheduleInitialInterview = scheduleInitialInterview;
+  api.setInitialInterviewStatus = setInitialInterviewStatus;
+  api.commitInitialInterview = commitInitialInterview;
+  api.commitInitialStatus = commitInitialStatus;
+  api.formatWhen = formatWhen;
+  api.scheduledInterviewGroups = scheduledInterviewGroups;
+  api.applicantOptionsHtml = applicantOptionsHtml;
+  api.initialInterviewsHtml = initialInterviewsHtml;
+  api.schedulePanelHtml = schedulePanelHtml;
+  api.openScheduleModal = openScheduleModal;
+  api.injectScheduleButtons = injectScheduleButtons;
+  api.injectSchedulePanel = injectSchedulePanel;
   api.refreshApplicants = refreshApplicants;
   api.install = attach;
   root.hrRecruit = api;

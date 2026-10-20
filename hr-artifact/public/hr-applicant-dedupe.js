@@ -494,6 +494,22 @@
     }
   }
 
+  function pickInitialInterview(rows) {
+    var best = null;
+    var bestStamp = "";
+    (rows || []).forEach(function (a) {
+      var iv = a && a.initialInterview;
+      if (!iv || typeof iv !== "object" || Array.isArray(iv)) return;
+      if (!asString(iv.at)) return;
+      var stamp = asString(iv.updatedAt) || asString(iv.at);
+      if (!best || stamp >= bestStamp) {
+        best = iv;
+        bestStamp = stamp;
+      }
+    });
+    return best ? cloneRow(best) : null;
+  }
+
   function mergeApplicantRecords(applicants, opts) {
     opts = opts || {};
     var today = asString(opts.today) || "";
@@ -543,6 +559,8 @@
         return a.docs;
       })
     );
+    var pickedInterview = pickInitialInterview(rows);
+    if (pickedInterview) merged.initialInterview = pickedInterview;
     var extraIds = extras
       .map(function (a) {
         return asString(a.id);
