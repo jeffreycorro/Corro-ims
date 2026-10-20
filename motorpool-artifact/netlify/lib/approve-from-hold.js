@@ -326,7 +326,7 @@ function buildLedgerRows(hold, vrfNo, snapshot, today) {
       });
       note = note ? note + " — " + extra : extra;
     }
-    return {
+    const row = {
       month: mk,
       date: hold.date || today,
       vrf: String(vrfNo),
@@ -352,6 +352,8 @@ function buildLedgerRows(hold, vrfNo, snapshot, today) {
       bypass: !!hold.bypass,
       notes: note,
     };
+    if (hold.fuelPrevNote) row.fuelPrevNote = String(hold.fuelPrevNote);
+    return row;
   });
 }
 
@@ -774,6 +776,7 @@ function issuedEntry(hold, rows, month) {
         draftLines: hold.draftLines || [],
         budget: hold.budget,
         approvedBudget: hold.approvedBudget,
+        fuelPrevNote: hold.fuelPrevNote ? String(hold.fuelPrevNote) : "",
       },
     },
   };
@@ -932,6 +935,7 @@ async function sealApprovedNumber(store, hold, rows, month) {
         draftLines: hold.draftLines || [],
         budget: hold.budget,
         approvedBudget: hold.approvedBudget,
+        fuelPrevNote: hold.fuelPrevNote ? String(hold.fuelPrevNote) : "",
       },
     },
   };

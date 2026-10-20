@@ -413,7 +413,7 @@ var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
    This label is inside the page function. The shim reads window.BUILD when it
    sends a save. Without that copy every save goes out with an empty build and
    the server answers "Reload the page". */
-var BUILD = "2026-10-15 a";
+var BUILD = "2026-10-20 a";
 try { window.BUILD = BUILD; } catch (e) {}
 var DAY = 86400000, MO = 30.44;
 
@@ -1493,6 +1493,12 @@ function buildIndex(){
       why: nConf===rows.length?"":inf.why,
       total: sum,
       project: rows[0].project, notes: rows[0].notes, src: rows[0].src||"",
+      fuelPrevNote:(function(){
+        var saved="";
+        rows.forEach(function(r){ if(!saved&&r&&r.fuelPrevNote) saved=r.fuelPrevNote; });
+        if(!saved&&rsvRow&&rsvRow.fuelPrevNote) saved=rsvRow.fuelPrevNote;
+        return saved;
+      })(),
       requestedBy:who};
   });
   addHeldReserveVrfs();
@@ -1686,12 +1692,13 @@ function heldVrfShell(no, r){
   if(dup && String(dup).replace(/\D/g,"")!==String(no).replace(/\D/g,"")){
     if(st!=="Requested") st="Duplicate";
   }
-  return {vrf:String(no), date:(r&&r.date)||"", month:monthKey(r&&r.date)||"", rows:[],
+    return {vrf:String(no), date:(r&&r.date)||"", month:monthKey(r&&r.date)||"", rows:[],
     status:st, legacy:false, duplicateOf:dup, liq:null,
     reserve:r?String(r.no):"", units:r&&r.veh?[r.veh]:[], veh:(r&&r.veh)||"",
     works:[], scopes:[], multi:false, confirmed:true, partial:false,
     confidence:"confirmed", why:"", total:0, project:(r&&r.project)||"",
     notes:(r&&(r.draftPurpose||r.scope))||"", odo:reserveMeter(r),
+    fuelPrevNote:(r&&r.fuelPrevNote)||"",
     src:"reserve-hold", requestedBy:(r&&r.requestedBy)||"", held:true,
     approvedBy:(r&&r.approvedBy)||"", approvedAt:(r&&r.approvedAt)||"",
     approvedVia:(r&&r.approvedVia)||""};
@@ -1771,6 +1778,7 @@ function addHeldReserveVrfs(){
       confidence:"confirmed", why:"",
       total:sum,
       project:r.project, notes:r.draftPurpose||r.scope||"",
+      fuelPrevNote:r.fuelPrevNote||"",
       odo:meter, preparedSig:r.preparedSig||"", preparedSigName:r.preparedSigName||"",
       approvedBy:r.approvedBy||"", approvedAt:r.approvedAt||"", approvedVia:r.approvedVia||"",
       src:"reserve-hold", requestedBy:r.requestedBy||"", held:true,
@@ -2262,7 +2270,7 @@ async function prepareReservePost(r){
       var extra=bypassAttribution(r.fuelOverride,{unit:r.veh,litres:r.litres,by:r.approvedBy||r.requestedBy});
       note=note?note+" — "+extra:extra;
     }
-    return {month:mk, date:r.date||iso(), vrf:String(no), veh:r.veh, name:v?v.desc:"",
+    var row={month:mk, date:r.date||iso(), vrf:String(no), veh:r.veh, name:v?v.desc:"",
       cat:l.cat, sub:sp?sp.sub:(isFuel(l.cat)?"Fuel":""),
       grp:isFuel(l.cat)?"Fuel":"Maintenance",
       work:l.work||r.work||"", item:l.item||"", qty:qty, price:price, total:qty*price,
@@ -2274,6 +2282,8 @@ async function prepareReservePost(r){
       override:(r.bypass||r.fuelOverride)?(r.fuelOverride||null):null,
       bypass:!!r.bypass,
       notes:note};
+    if(r.fuelPrevNote) row.fuelPrevNote=r.fuelPrevNote;
+    return row;
   });
   return {already:false, no:String(no), prevNo:prevNo, month:mk, rows:rowsConfinedToVrf(rows, String(no))};
 }
@@ -5741,6 +5751,252 @@ function plainSendError(msg){
   }
   return t;
 }
+/* Previous fuel fill on a fuel VRF. A new request stores the sentence on the
+   reserve (fuelPrevNote) so later fills do not change it. An older VRF that
+   has no stored sentence can still show one on screen; that read does not
+   write the record. Consumption is km per liter on the road and liters per
+   hour on an hour meter, and only when both readings are real and increasing. */
+var FUEL_ODO_PLACEHOLDERS={"76260":1};
+function isPlaceholderOdo(n){
+  if(n==null||!isFinite(Number(n))) return false;
+  return !!FUEL_ODO_PLACEHOLDERS[String(Math.round(Number(n)))];
+}
+function isFuelWorkCode(work){
+  var w=String(work||"").toUpperCase();
+  return w==="FUEL-STN"||w==="FUEL-RES";
+}
+function isCancelledFuelStatus(status){
+  return spendEndStatus(status)==="Cancelled";
+}
+function fuelFillVrfOf(row){
+  var no=String((row&&(row.vrf||row.vrfNo))||"").trim();
+  if(no) return no;
+  var list=(row&&row.vrfs)||[];
+  if(list.length&&list[0]) return String(list[0]).trim();
+  return "";
+}
+function fuelFillOdoOf(row){
+  if(!row) return null;
+  var n=parseOdo(row.odo);
+  if(n!=null) return n;
+  n=parseOdo(row.draftOdo);
+  if(n!=null) return n;
+  return parseOdo(row.odoAtRequest);
+}
+function fuelFillLitresOf(row){
+  if(!row) return 0;
+  if(row.draftLines){
+    var named=parseFloat(row.litres!=null&&row.litres!==""?row.litres:"");
+    if(isFinite(named)&&named>0) return named;
+    var sum=0;
+    (row.draftLines||[]).forEach(function(line){
+      if(!line) return;
+      if(!(isFuel(line.cat)||isFuelWorkCode(line.work)||isFuelWorkCode(row.work))) return;
+      sum+=fuelLitresOf(line);
+    });
+    return sum;
+  }
+  var direct=fuelLitresOf(row);
+  if(direct>0) return direct;
+  var loose=parseFloat(row.litres!=null&&row.litres!==""?row.litres:"");
+  return (isFinite(loose)&&loose>0)?loose:0;
+}
+function reserveIsFuelFill(r){
+  if(!r) return false;
+  if(isFuelWorkCode(r.work)) return true;
+  var kind=String(r.kind||"");
+  if(kind==="fuel-issue"||kind==="fuel-bulk") return true;
+  var lines=r.draftLines||[];
+  for(var i=0;i<lines.length;i++){
+    if(lines[i]&&(isFuel(lines[i].cat)||isFuelWorkCode(lines[i].work))) return true;
+  }
+  return false;
+}
+function listFuelFills(){
+  var map={}, seq=0;
+  function ensure(veh, date, vrf){
+    var key=vrf?("v:"+vrf):null;
+    if(key&&map[key]) return map[key];
+    seq+=1;
+    var k=key||("x:"+veh+"|"+(date||"")+"|"+seq);
+    map[k]={veh:veh, date:date||"", vrf:vrf||"", litres:0, odo:null, status:"", fromLedger:false};
+    return map[k];
+  }
+  function setStatus(fill, status){
+    if(isCancelledFuelStatus(status)) fill.status="Cancelled";
+    else if(!fill.status&&status) fill.status=String(status);
+  }
+  allLines().forEach(function(r){
+    if(!r||!r.veh||r.veh==="AV") return;
+    if(!(isFuel(r.cat)||isFuelWorkCode(r.work))) return;
+    var ended=spendEndStatus(r.vstatus);
+    if(ended==="Not bought"||ended==="Duplicate") return;
+    var vrf=String(r.vrf||"").trim();
+    var fill=ensure(r.veh, r.date, vrf);
+    fill.fromLedger=true;
+    var L=fuelFillLitresOf(r);
+    if(L>0) fill.litres+=L;
+    var odo=fuelFillOdoOf(r);
+    if(fill.odo==null&&odo!=null) fill.odo=odo;
+    if(r.date&&(!fill.date||String(r.date)>String(fill.date))) fill.date=r.date;
+    setStatus(fill, r.vstatus);
+  });
+  (S.reserves||[]).forEach(function(r){
+    if(!r||!r.veh||r.veh==="AV") return;
+    var st=String(r.status||"");
+    if(r.archived||st==="Rejected"||st==="Archived") return;
+    if(!reserveIsFuelFill(r)) return;
+    var ended=spendEndStatus(st);
+    if(ended==="Not bought"||ended==="Duplicate") return;
+    var vrf=fuelFillVrfOf(r);
+    var fill=ensure(r.veh, r.date, vrf);
+    if(!fill.fromLedger||!(fill.litres>0)){
+      var asked=fuelFillLitresOf(r);
+      if(asked>0) fill.litres=asked;
+    }
+    var odoR=fuelFillOdoOf(r);
+    if(fill.odo==null&&odoR!=null) fill.odo=odoR;
+    if(!fill.date&&r.date) fill.date=r.date;
+    setStatus(fill, st);
+  });
+  return Object.keys(map).map(function(k){ return map[k]; });
+}
+function fuelVrfNum(vrf){
+  var n=parseInt(String(vrf||"").replace(/\D/g,""),10);
+  return isFinite(n)?n:0;
+}
+function previousFuelFill(code, opts){
+  opts=opts||{};
+  code=String(code||"");
+  if(!code) return null;
+  var except=String(opts.exceptVrf||"");
+  var before=opts.beforeDate?parseDate(opts.beforeDate):null;
+  var exceptN=fuelVrfNum(except);
+  var bestReal=null, bestRealD=null, bestCancel=null, bestCancelD=null;
+  function later(fill, d, best, bestD){
+    if(!bestD) return true;
+    if(d>bestD) return true;
+    return d.getTime()===bestD.getTime()&&fuelVrfNum(fill.vrf)>=fuelVrfNum(best.vrf);
+  }
+  listFuelFills().forEach(function(f){
+    if(!f||f.veh!==code) return;
+    if(except&&String(f.vrf)===except) return;
+    var d=parseDate(f.date);
+    if(!d) return;
+    if(before&&d>before) return;
+    if(before&&except&&exceptN>0&&d.getTime()===before.getTime()&&fuelVrfNum(f.vrf)>=exceptN) return;
+    if(isCancelledFuelStatus(f.status)){
+      if(later(f, d, bestCancel, bestCancelD)){ bestCancel=f; bestCancelD=d; }
+    }else if(later(f, d, bestReal, bestRealD)){
+      bestReal=f; bestRealD=d;
+    }
+  });
+  return bestReal||bestCancel;
+}
+function fuelPreviousNote(code, currentOdo, opts){
+  opts=opts||{};
+  code=String(code||"").trim();
+  var meter=meterOf(code);
+  var meterName=meter==="hr"?"hour meter":"odometer";
+  var unit=meter==="hr"?"hrs":"km";
+  var sinceWord=meter==="hr"?"hours":"km";
+  var now=parseOdo(currentOdo);
+  var prev=code?previousFuelFill(code, opts):null;
+  var lines=[];
+  if(!prev){
+    lines.push("No earlier fuel fill on file"+(code?" for "+code:"")+".");
+    lines.push("Current "+meterName+" "+(now!=null?nnum(now)+" "+unit:"—")+".");
+    lines.push("Consumption: n/a (odometer missing/unchanged)");
+    return {text:lines.join("\n"), prev:null, consumption:null, reason:"none"};
+  }
+  var prevOdo=prev.odo;
+  var litres=prev.litres;
+  var cancelled=isCancelledFuelStatus(prev.status);
+  var head="Previous fuel: "+(prev.date||"—")
+    +" · VRF "+(prev.vrf||"—")
+    +" · "+(litres>0?nnum(litres,2)+" L":"— L")
+    +" · "+meterName+" "+(prevOdo!=null?nnum(prevOdo)+" "+unit:"—");
+  if(cancelled) head+=" · Cancelled";
+  lines.push(head);
+  var delta=null;
+  if(now!=null&&prevOdo!=null&&isFinite(now)&&isFinite(prevOdo)) delta=now-prevOdo;
+  var cur="Current "+meterName+" "+(now!=null?nnum(now)+" "+unit:"—");
+  if(delta!=null) cur+=" · "+nnum(delta, meter==="hr"?1:0)+" "+sinceWord+" since";
+  lines.push(cur);
+  var reason="", rate=null;
+  if(cancelled) reason="previous fill cancelled";
+  else if(isPlaceholderOdo(now)||isPlaceholderOdo(prevOdo)) reason="placeholder reading";
+  else if(now==null||prevOdo==null||!isFinite(now)||!isFinite(prevOdo)||!(now>prevOdo)) reason="odometer missing/unchanged";
+  else if(!(litres>0)) reason="litres missing";
+  else{
+    var move=now-prevOdo;
+    rate=meter==="hr"?litres/move:move/litres;
+    if(!isFinite(rate)){ rate=null; reason="odometer missing/unchanged"; }
+  }
+  if(rate!=null){
+    lines.push("Consumption: "+rate.toFixed(2)+(meter==="hr"?" liters per hour":" km per liter"));
+  }else if(reason==="previous fill cancelled"){
+    lines.push("Consumption: n/a (previous fill cancelled)");
+  }else if(reason==="placeholder reading"){
+    lines.push("Consumption: n/a (placeholder reading)");
+  }else if(reason==="litres missing"){
+    lines.push("Consumption: n/a (litres missing)");
+  }else{
+    lines.push("Consumption: n/a (odometer missing/unchanged)");
+  }
+  return {text:lines.join("\n"), prev:prev, consumption:rate, reason:reason||"ok"};
+}
+function fuelPrevNoteForNewVrf(veh, odo, date, lines){
+  var fuelish=false;
+  (lines||[]).forEach(function(l){ if(l&&isFuel(l.cat)) fuelish=true; });
+  if(!fuelish) return "";
+  return fuelPreviousNote(veh, odo, {beforeDate:date||""}).text;
+}
+function recordHasFuelLine(rec){
+  if(!rec) return false;
+  var lines=rec.draftLines||rec.rows||rec.lines||[];
+  var i;
+  for(i=0;i<lines.length;i++) if(lines[i]&&isFuel(lines[i].cat)) return true;
+  if(isFuelWorkCode(rec.work)) return true;
+  var kind=String(rec.kind||"");
+  return kind==="fuel-issue"||kind==="fuel-bulk";
+}
+function recordFuelPrevNote(rec){
+  if(!rec) return "";
+  if(rec.fuelPrevNote) return String(rec.fuelPrevNote);
+  var rows=rec.rows||[], i;
+  for(i=0;i<rows.length;i++) if(rows[i]&&rows[i].fuelPrevNote) return String(rows[i].fuelPrevNote);
+  if(rec.reserve&&typeof reserveBy==="function"){
+    var rsv=reserveBy(rec.reserve);
+    if(rsv&&rsv.fuelPrevNote){
+      var no=String(rec.vrf||"");
+      if(!no||typeof reserveOwnsVrfNo!=="function"||reserveOwnsVrfNo(rsv, no)) return String(rsv.fuelPrevNote);
+    }
+  }
+  return "";
+}
+/* Stored sentence when this VRF was created with one. Otherwise the earlier
+   fill is described for the screen only and is not written back. */
+function shownFuelPrevNote(rec, opts){
+  var stored=recordFuelPrevNote(rec);
+  if(stored) return stored;
+  if(!recordHasFuelLine(rec)) return "";
+  opts=opts||{};
+  var code=rec.veh||(rec.units&&rec.units[0])||"";
+  var odo=opts.odo!=null?opts.odo:null;
+  if(odo==null&&rec.odo!=null&&rec.odo!=="") odo=rec.odo;
+  if(odo==null&&rec.draftOdo!=null&&rec.draftOdo!=="") odo=rec.draftOdo;
+  if(odo==null&&rec.odoAtRequest!=null&&rec.odoAtRequest!=="") odo=rec.odoAtRequest;
+  if(odo==null&&rec.rows){
+    for(var i=0;i<rec.rows.length;i++){
+      if(rec.rows[i]&&parseOdo(rec.rows[i].odo)!=null){ odo=rec.rows[i].odo; break; }
+    }
+  }
+  return fuelPreviousNote(code, odo, {
+    exceptVrf:opts.exceptVrf!=null?opts.exceptVrf:(rec.vrf||rec.vrfNo||""),
+    beforeDate:opts.beforeDate!=null?opts.beforeDate:(rec.date||"")
+  }).text;
+}
 var OVERRIDE_REASONS=["Meter not working / not readable","Unit idled or ran stationary on site",
   "Tank was run down before this fill","Meter was replaced or reset","Reading corrected after this VRF",
   "Emergency dispatch","Fuel for an attachment or generator","Other — see the note"];
@@ -8389,6 +8645,13 @@ function openReserve(no,asApprover){
   sc.appendChild(el("div","hint",rsvKind(r)==="job"?"Scope of work":"What the fuel is for"));
   sc.appendChild(el("div",null,r.scope||"—"));
   b.appendChild(sc);
+  var prevFuelText=shownFuelPrevNote(r);
+  if(prevFuelText){
+    var prevFuel=el("div","banner info");
+    prevFuel.style.cssText="margin:0 0 var(--space-4);white-space:pre-line";
+    prevFuel.innerHTML="<b>Previous fuel</b><br>"+esc(prevFuelText);
+    b.appendChild(prevFuel);
+  }
   var meterAll=reserveMeter(r);
   if(rsvKind(r)==="job"){
     var meterNote=el("div"); meterNote.style.margin="0 0 var(--space-3)";
@@ -10423,6 +10686,17 @@ function buildVrfDoc(entry,photos){
     pu.style.marginBottom="8px";
     d.appendChild(pu);
   }
+  var prevFuelText=shownFuelPrevNote(entry);
+  if(prevFuelText){
+    var pfn=el("div");
+    pfn.style.marginBottom="8px";
+    pfn.appendChild(el("div","k","Previous fuel"));
+    var pfv=el("div","v",prevFuelText);
+    pfv.style.whiteSpace="pre-line";
+    pfv.style.fontWeight="500";
+    pfn.appendChild(pfv);
+    d.appendChild(pfn);
+  }
   var printAudits=vrfAuditList(entry);
   if(printAudits.length){
     var ah=el("div"); ah.style.margin="0 0 8px";
@@ -11155,6 +11429,13 @@ function openVrf(entry,tab){
   });
   odoRow.appendChild(odoEd); odoRow.appendChild(odoSave);
   b.appendChild(odoRow);
+  var prevFuelText=shownFuelPrevNote(entry);
+  if(prevFuelText){
+    var prevFuel=el("div","banner info");
+    prevFuel.style.cssText="margin-top:var(--space-3);white-space:pre-line";
+    prevFuel.innerHTML="<b>Previous fuel</b><br>"+esc(prevFuelText);
+    b.appendChild(prevFuel);
+  }
   var audits=vrfAuditList(entry);
   if(audits.length){
     var hist=el("div"); hist.style.marginTop="var(--space-3)";
@@ -11980,7 +12261,7 @@ function vrfView(){
 
   var hb2=el("div","f3");
   var oIn=el("input"); oIn.className="mono"; oIn.inputMode="numeric"; oIn.value=d.odo;
-  oIn.addEventListener("input",function(){ d.odo=oIn.value; odoNote(); });
+  oIn.addEventListener("input",function(){ d.odo=oIn.value; odoNote(); refreshGate(); });
   var oWrap=fld("Odometer",oIn);
   var oHint=el("div","hint"); oWrap.appendChild(oHint);
   hb2.appendChild(oWrap);
@@ -12003,7 +12284,7 @@ function vrfView(){
     var v=vehicle(d.veh);
     plate.value=v?(v.plate||"—"):"";
     if(!d.odo){ var pv=lastOdo(d.veh); if(pv!=null){ d.odo=String(pv); oIn.value=d.odo; } }
-    odoNote(); fillReserves(); fillWorkRefs(); drawMeter();
+    odoNote(); fillReserves(); fillWorkRefs(); drawMeter(); refreshGate();
     var siteRow=v&&v.site?findProject(v.site):null;
     var siteVeh=siteRow&&siteRow.status!=="Archived"?{site:siteRow.code}:v;
     var next=applyVehicleProjectDefault(d,siteVeh);
@@ -12111,6 +12392,13 @@ function vrfView(){
       litres+=fuelLitresOf(l);
     });
     if(!d.veh||!fuelish) return;
+    var prevText=fuelPreviousNote(d.veh, parseOdo(d.odo), {beforeDate:d.date||""}).text;
+    if(prevText){
+      var pn=el("div","banner info");
+      pn.style.whiteSpace="pre-line";
+      pn.innerHTML="<b>Previous fuel</b><br>"+esc(prevText);
+      fuelNote.appendChild(pn);
+    }
     var note=fuelUsageNote(d.veh, parseOdo(d.odo), litres);
     if(!note||!note.title) return;
     var bn=el("div","banner "+(note.level==="warn"?"warn":"info"));
@@ -12276,10 +12564,11 @@ function vrfView(){
       return {code:k,name:workName(k),rows:byW[k],
         total:byW[k].reduce(function(a,r){return a+(r.total||0);},0)}; });
     var psigPrev=draftPreparedSig(d);
+    var fuelPrevLive=fuelPrevNoteForNewVrf(d.veh, parseOdo(d.odo), d.date, d.lines||[]);
     printVrf({vrf:"— not yet posted —",date:d.date,veh:d.veh,units:[d.veh],
       rows:rows,scopes:scopes,multi:scopes.length>1,project:d.project,notes:d.purpose,
       requestedBy:d.requestedBy, preparedSig:psigPrev.data, preparedSigName:psigPrev.name,
-      odo:parseOdo(d.odo),
+      odo:parseOdo(d.odo), fuelPrevNote:fuelPrevLive,
       total:rows.reduce(function(a,r){return a+lineMoney(r);},0)}, d.photos||[]);
   });
   foot.appendChild(pv);
@@ -12477,6 +12766,7 @@ async function sendForApproval(d,btn,opts){
     var fuelish=rows.some(function(l){ return isFuel(l.cat); });
     var litres=rows.reduce(function(a,l){
       return a+(isFuel(l.cat)?fuelLitresOf(l):0); },0);
+    var fuelPrevNote=fuelPrevNoteForNewVrf(d.veh, parseOdo(d.odo), d.date||iso(), rows);
     /* Usage notes never stop this send. A station fill with no prior odometer
        (MC-02) is not over a limit, and a blank litres box is not 1 L. */
     /* No number yet. The server assigns one only if this row is saved. */
@@ -12495,6 +12785,7 @@ async function sendForApproval(d,btn,opts){
       preparedSigName:(function(){ var s=draftPreparedSig(d); return s.data?s.name:""; })(),
       justification:"",justifiedBy:"",varianceBy:"",varianceAt:"",varianceNote:"",
       submissionId:d.submissionId};
+    if(fuelPrevNote) hold.fuelPrevNote=fuelPrevNote;
     var saved=await issueReserveConfirmed(hold);
     persisted=true;
     hold=saved;
