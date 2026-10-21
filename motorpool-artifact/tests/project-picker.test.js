@@ -132,7 +132,7 @@ describe("project near-duplicates", () => {
 
 describe("project dropdown on the page", () => {
   it("picks from the master list and adds only through the explicit action", () => {
-    assert.match(html, /var BUILD = "2026-10-20 a"/);
+    assert.match(html, /var BUILD = "2026-10-21 a"/);
     assert.match(html, /\+ Add new project…/);
     assert.match(html, /function bindProjectSelect/);
     assert.match(html, /function planProjectAdd/);

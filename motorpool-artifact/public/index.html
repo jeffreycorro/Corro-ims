@@ -413,7 +413,7 @@ var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
    This label is inside the page function. The shim reads window.BUILD when it
    sends a save. Without that copy every save goes out with an empty build and
    the server answers "Reload the page". */
-var BUILD = "2026-10-20 a";
+var BUILD = "2026-10-21 a";
 try { window.BUILD = BUILD; } catch (e) {}
 var DAY = 86400000, MO = 30.44;
 
@@ -1746,7 +1746,7 @@ function addHeldReserveVrfs(){
     if(!rows.length){
       var fallback=heldLineAmount(r, null);
       rows=[{date:r.date, month:monthKey(r.date), vrf:no, veh:r.veh, cat:"",
-        item:(r.scope||"").slice(0,80), qty:0, price:0,
+        item:(r.scope||"").slice(0,80), supplier:r.supplier||"", qty:0, price:0,
         total:fallback,
         work:r.work||"", project:r.project||"", notes:r.scope||"",
         requestedBy:r.requestedBy||"", odo:meter, reserve:String(r.no),
@@ -8621,22 +8621,29 @@ function openReserve(no,asApprover){
   if(r.needBy) ch.appendChild(el("span","chip mute","needed by "+r.needBy));
   lf.appendChild(ch);
   hd.appendChild(lf);
-  if(r.vrfNo){
+  if(r.vrfNo||supplierEditAllowed(r)){
     var topActs=el("div","row");
     topActs.style.flex="none";
-    var prHold=el("button","btn pri","Print");
-    prHold.addEventListener("click",function(){
-      var held=heldVrfEntry(r);
-      if(!held){ toast("VRF "+r.vrfNo+" is not on the log yet — refresh once."); return; }
-      printVrfNo(held);
-    });
-    var openHold=el("button","btn","Open VRF");
-    openHold.addEventListener("click",function(){
-      var held=heldVrfEntry(r);
-      if(!held){ toast("VRF "+r.vrfNo+" is not on the log yet — refresh once."); return; }
-      m.remove(); openVrf(held);
-    });
-    topActs.appendChild(prHold); topActs.appendChild(openHold);
+    if(r.vrfNo){
+      var prHold=el("button","btn pri","Print");
+      prHold.addEventListener("click",function(){
+        var held=heldVrfEntry(r);
+        if(!held){ toast("VRF "+r.vrfNo+" is not on the log yet — refresh once."); return; }
+        printVrfNo(held);
+      });
+      var openHold=el("button","btn","Open VRF");
+      openHold.addEventListener("click",function(){
+        var held=heldVrfEntry(r);
+        if(!held){ toast("VRF "+r.vrfNo+" is not on the log yet — refresh once."); return; }
+        m.remove(); openVrf(held);
+      });
+      topActs.appendChild(prHold); topActs.appendChild(openHold);
+    }
+    if(supplierEditAllowed(r)){
+      topActs.appendChild(supplierEditButton(r, function(){
+        m.remove(); render(); openReserve(no, asApprover);
+      }));
+    }
     hd.appendChild(topActs);
   }
   b.appendChild(hd);
@@ -8652,6 +8659,16 @@ function openReserve(no,asApprover){
     prevFuel.innerHTML="<b>Previous fuel</b><br>"+esc(prevFuelText);
     b.appendChild(prevFuel);
   }
+  var supChanges=(r.audit||[]).filter(function(n){ return n&&n.field==="supplier"; });
+  if(supChanges.length){
+    var supNote=el("div","banner info");
+    supNote.setAttribute("data-supplier-change","1");
+    supNote.style.cssText="margin:0 0 var(--space-4);white-space:pre-line";
+    supNote.innerHTML="<b>Supplier change</b><br>"+supChanges.map(function(n){
+      return esc(supplierChangeText(n));
+    }).join("<br>");
+    b.appendChild(supNote);
+  }
   var meterAll=reserveMeter(r);
   if(rsvKind(r)==="job"){
     var meterNote=el("div"); meterNote.style.margin="0 0 var(--space-3)";
@@ -8664,7 +8681,7 @@ function openReserve(no,asApprover){
     var fd=el("div"); fd.style.cssText="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:var(--space-3);margin-bottom:var(--space-4)";
     [["Litres asked",r.litres!=null?nnum(r.litres,2)+" L":"—"],
      ["Est. price / litre",r.pricePerL!=null?peso(r.pricePerL):"—"],
-     ["Supplier",r.supplier||"—"],
+     ["Supplier",shownReserveSupplier(r)||"—"],
      ["Meter at request",meterAll!=null?nnum(meterAll):"—"],
      [rsvKind(r)==="fuel-bulk"?"Drum level at request":"Gauge at request",
       r.gauge?gaugeLabel(r.gauge)+(r.gaugePct!=null?"  ("+r.gaugePct+"%)":""):"— not read"],
@@ -8711,9 +8728,12 @@ function openReserve(no,asApprover){
     dlh.appendChild(el("span","note",r.draftLines.length+" line"+(r.draftLines.length>1?"s":"")+
       " — exactly what the yard typed on the form"));
     dlc.appendChild(dlh);
+    var canSup=supplierEditAllowed(r);
     var dt2=el("table"), dth=el("thead"), dhr=el("tr");
-    ["#","Part category","Item","Supplier","Qty","Unit price","Total"].forEach(function(x,i){
-      var h=el("th",null,x); if(i>=4) h.style.textAlign="right"; dhr.appendChild(h); });
+    var supHeads=["#","Part category","Item","Supplier","Qty","Unit price","Total"];
+    if(canSup) supHeads.push("");
+    supHeads.forEach(function(x,i){
+      var h=el("th",null,x); if(x==="Qty"||x==="Unit price"||x==="Total") h.style.textAlign="right"; dhr.appendChild(h); });
     dth.appendChild(dhr); dt2.appendChild(dth);
     var dtb=el("tbody"), dsum=0;
     r.draftLines.forEach(function(l,i){
@@ -8726,10 +8746,17 @@ function openReserve(no,asApprover){
       tr.appendChild(el("td","num",(l.qty||"—")+" "+(l.unit||"")));
       tr.appendChild(el("td","num",pz?peso(pz):"—"));
       tr.appendChild(el("td","num mono",tt?peso(tt):"—"));
+      if(canSup){
+        var edTd=el("td");
+        edTd.appendChild(supplierEditButton(r, function(){
+          m.remove(); render(); openReserve(no, asApprover);
+        }, {small:true, lineIndex:i}));
+        tr.appendChild(edTd);
+      }
       dtb.appendChild(tr);
     });
     var ftr=el("tr");
-    var fc=el("td",null,"Estimated total"); fc.colSpan=6;
+    var fc=el("td",null,"Estimated total"); fc.colSpan=canSup?7:6;
     fc.style.cssText="text-align:right;font-weight:600";
     ftr.appendChild(fc);
     var fv=el("td","num mono",peso(dsum)); fv.style.fontWeight="600";
@@ -8755,6 +8782,7 @@ function openReserve(no,asApprover){
     (r.cancelledAt||r.liquidatedAt||"—")+" by "+(r.cancelledBy||"—")+
     (r.cancelNote?" — "+r.cancelNote:"")+" at "+peso(0)]);
   else if(r.liquidatedAt) steps.push(["Liquidated",r.liquidatedAt+" at "+peso(rv.actual)]);
+  supChanges.forEach(function(n){ steps.push(["Supplier", supplierChangeText(n)]); });
   if(r.varianceAt) steps.push(["Variance decision",r.varianceAt+" by "+(r.varianceBy||"—")+
     (r.varianceNote?" — "+r.varianceNote:"")]);
   steps.forEach(function(sx){
@@ -9223,6 +9251,8 @@ function approveView(){
         var dd=el("div");
         dd.appendChild(el("div","mono",r.vrfNo?("VRF "+r.vrfNo):"—"));
         dd.appendChild(el("div","hint","RSV-"+r.no));
+        if((r.audit||[]).some(function(n){ return n&&n.field==="supplier"; }))
+          dd.appendChild(el("div","hint","Supplier changed"));
         return dd; }},
       {h:"Date",get:function(r){return r.date;}},
       {h:"Unit",get:function(r){ return el("span","mono",r.veh); }},
@@ -11174,15 +11204,290 @@ function vrfMayEdit(entry){
   var st=String(entry.status||"");
   return st==="Open"||st==="Requested"||st==="Closed";
 }
+/* Drafts and VRFs still for approval can change supplier. Approved, open, liquidated, filed and cancelled cannot. */
+function supplierStatusKey(st){
+  return String(st==null?"":st).trim().toLowerCase().replace(/\s+/g," ");
+}
+function supplierEditAllowed(reserve){
+  if(!reserve||typeof reserve!=="object") return false;
+  if(reserve.cancelledAt||reserve.liquidatedAt) return false;
+  var st=supplierStatusKey(reserve.status);
+  if(!st) return true;
+  if(/^(approved|open|liquidated|filed|cancelled|canceled|closed|rejected|disapproved|flagged|not bought|duplicate|legacy|posted|archived)\b/.test(st)) return false;
+  if(/awaiting liquidation/.test(st)) return false;
+  if(st==="requested"||st==="for approval"||st==="sent for approval"||st==="pending") return true;
+  if(st==="draft"||st.indexOf("draft ")===0) return true;
+  if(st.indexOf("requested")===0) return true;
+  if(st.indexOf("for approval")>=0) return true;
+  return false;
+}
+function supplierEditShape(reserve){
+  var lines=reserve&&Array.isArray(reserve.draftLines)?reserve.draftLines:[];
+  var targets=[];
+  lines.forEach(function(l,i){
+    if(!l) return;
+    var cat=String(l.cat||"").trim();
+    var item=String(l.item||"").trim();
+    var supplier=String(l.supplier||"").trim();
+    if(!cat&&!item&&!supplier) return;
+    targets.push({index:i, supplier:supplier, label:item||cat||("Line "+(i+1))});
+  });
+  if(targets.length) return {mode:"line", lines:targets};
+  return {mode:"vrf", supplier:String(reserve&&reserve.supplier||"").trim()};
+}
+function shownReserveSupplier(reserve){
+  var lines=(reserve&&reserve.draftLines)||[];
+  var names=[];
+  lines.forEach(function(l){
+    var s=String(l&&l.supplier||"").trim();
+    if(s&&names.indexOf(s)<0) names.push(s);
+  });
+  if(names.length) return names.join(", ");
+  return String(reserve&&reserve.supplier||"").trim();
+}
+function supplierChangeText(n){
+  if(!n) return "";
+  var where=n.note?String(n.note)+" · ":"";
+  return where+(n.from||"—")+" → "+(n.to||"—")+" · "+(n.by||"—")+" · "+(n.at||"—");
+}
+function draftLineIndexForRow(reserve, row){
+  var lines=(reserve&&reserve.draftLines)||[];
+  var i;
+  if(row&&row.lineKey){
+    for(i=0;i<lines.length;i++){
+      if(lines[i]&&String(lines[i].lineKey||"")===String(row.lineKey)) return i;
+    }
+  }
+  var want=lineIdentity(row);
+  for(i=0;i<lines.length;i++){
+    if(lineIdentity(lines[i])===want) return i;
+  }
+  return -1;
+}
+function planSupplierEdit(reserve, spec){
+  spec=spec||{};
+  if(!reserve) return {ok:false, code:"missing", message:"That VRF is not on the reserve log."};
+  if(!supplierEditAllowed(reserve)){
+    return {ok:false, code:"locked", message:"Supplier is locked once the VRF is approved, open, liquidated, filed, or cancelled."};
+  }
+  var who=String(spec.by||"").trim();
+  if(!who) return {ok:false, code:"name", message:"Put your name on the supplier change."};
+  var at=String(spec.at||"").trim();
+  var shape=supplierEditShape(reserve);
+  var notes=[];
+  var draft=null;
+  var nextSupplier=reserve.supplier;
+  var changed=false;
+  if(shape.mode==="line"){
+    draft=(reserve.draftLines||[]).map(function(l){ return Object.assign({}, l); });
+    var byIndex={};
+    (spec.lines||[]).forEach(function(edit){
+      if(edit&&edit.index!=null) byIndex[String(edit.index)]=edit;
+    });
+    var blank=false;
+    shape.lines.forEach(function(target){
+      if(!Object.prototype.hasOwnProperty.call(byIndex, String(target.index))) return;
+      var to=String(byIndex[String(target.index)].supplier==null?"":byIndex[String(target.index)].supplier).trim();
+      var from=String(draft[target.index]&&draft[target.index].supplier||"").trim();
+      if(from===to) return;
+      if(!to){ blank=true; return; }
+      draft[target.index].supplier=to;
+      notes.push({at:at, by:who, field:"supplier", from:from||"—", to:to,
+        note:"Line "+(target.index+1)+(target.label?" · "+target.label:"")});
+      changed=true;
+    });
+    if(blank) return {ok:false, code:"blank", message:"Pick a supplier for each line you change."};
+  }else{
+    var toVrf=String(spec.supplier==null?"":spec.supplier).trim();
+    var fromVrf=String(reserve.supplier||"").trim();
+    if(fromVrf!==toVrf){
+      if(!toVrf) return {ok:false, code:"blank", message:"Pick a supplier."};
+      nextSupplier=toVrf;
+      changed=true;
+      notes.push({at:at, by:who, field:"supplier", from:fromVrf||"—", to:toVrf, note:"VRF supplier"});
+      if(Array.isArray(reserve.draftLines)&&reserve.draftLines.length===1&&reserve.draftLines[0]){
+        draft=[Object.assign({}, reserve.draftLines[0], {supplier:toVrf})];
+      }
+    }
+  }
+  return {ok:true, changed:changed, mode:shape.mode, notes:notes, draftLines:draft, supplier:nextSupplier,
+    vrfNo:reserve.vrfNo, status:reserve.status};
+}
+function applySupplierEdit(reserve, plan){
+  if(!reserve||!plan||!plan.ok||!plan.changed) return plan;
+  var keep={
+    vrfNo:reserve.vrfNo, status:reserve.status, fuelPrevNote:reserve.fuelPrevNote,
+    draftOdo:reserve.draftOdo, budget:reserve.budget, approvedBy:reserve.approvedBy,
+    approvedAt:reserve.approvedAt, approvedBudget:reserve.approvedBudget, decisionNote:reserve.decisionNote
+  };
+  if(plan.draftLines) reserve.draftLines=plan.draftLines;
+  if(plan.mode==="vrf") reserve.supplier=plan.supplier==null?"":plan.supplier;
+  else{
+    var uniq={};
+    (reserve.draftLines||[]).forEach(function(l){
+      var s=String(l&&l.supplier||"").trim();
+      if(s) uniq[s]=1;
+    });
+    var names=Object.keys(uniq);
+    if(names.length===1) reserve.supplier=names[0];
+  }
+  reserve.audit=(reserve.audit||[]).concat(plan.notes||[]);
+  reserve.vrfNo=keep.vrfNo;
+  reserve.status=keep.status;
+  if(keep.fuelPrevNote===undefined) delete reserve.fuelPrevNote;
+  else reserve.fuelPrevNote=keep.fuelPrevNote;
+  reserve.draftOdo=keep.draftOdo;
+  reserve.budget=keep.budget;
+  reserve.approvedBy=keep.approvedBy;
+  reserve.approvedAt=keep.approvedAt;
+  reserve.approvedBudget=keep.approvedBudget;
+  reserve.decisionNote=keep.decisionNote;
+  return plan;
+}
+async function saveSupplierEdit(reserve, spec){
+  var plan=planSupplierEdit(reserve, spec);
+  if(!plan.ok){
+    var err=new Error(plan.message||"Could not change the supplier.");
+    err.code=plan.code;
+    throw err;
+  }
+  if(!plan.changed) return plan;
+  var backup={
+    draftLines:reserve.draftLines, supplier:reserve.supplier, audit:reserve.audit,
+    status:reserve.status, vrfNo:reserve.vrfNo, fuelPrevNote:reserve.fuelPrevNote,
+    draftOdo:reserve.draftOdo, budget:reserve.budget, approvedBy:reserve.approvedBy,
+    approvedAt:reserve.approvedAt, approvedBudget:reserve.approvedBudget, decisionNote:reserve.decisionNote
+  };
+  applySupplierEdit(reserve, plan);
+  try{ await saveReserves(reserve.no); }
+  catch(saveErr){
+    reserve.draftLines=backup.draftLines;
+    reserve.supplier=backup.supplier;
+    reserve.audit=backup.audit;
+    reserve.status=backup.status;
+    reserve.vrfNo=backup.vrfNo;
+    if(backup.fuelPrevNote===undefined) delete reserve.fuelPrevNote;
+    else reserve.fuelPrevNote=backup.fuelPrevNote;
+    reserve.draftOdo=backup.draftOdo;
+    reserve.budget=backup.budget;
+    reserve.approvedBy=backup.approvedBy;
+    reserve.approvedAt=backup.approvedAt;
+    reserve.approvedBudget=backup.approvedBudget;
+    reserve.decisionNote=backup.decisionNote;
+    throw saveErr;
+  }
+  _vrfs=null;
+  return plan;
+}
+function supplierEditButton(reserve, after, opts){
+  opts=opts||{};
+  var bt=el("button", opts.small?"btn sm":"btn", "Edit supplier");
+  bt.type="button";
+  bt.setAttribute("data-edit-supplier", opts.lineIndex!=null?String(opts.lineIndex):"vrf");
+  bt.addEventListener("click",function(ev){
+    if(ev&&ev.stopPropagation) ev.stopPropagation();
+    openSupplierEdit(reserve.no, opts.lineIndex!=null?{lineIndex:opts.lineIndex}:{}, after);
+  });
+  return bt;
+}
+function openSupplierEdit(no, opts, after){
+  opts=opts||{};
+  var r=reserveBy(no);
+  if(!r){ toast("That VRF is not on the reserve log."); return; }
+  if(!supplierEditAllowed(r)){
+    toast("Supplier is locked once the VRF is approved, open, liquidated, filed, or cancelled.");
+    return;
+  }
+  var shape=supplierEditShape(r);
+  if(opts.lineIndex!=null&&shape.mode==="line"){
+    var only=shape.lines.filter(function(line){ return line.index===opts.lineIndex; });
+    if(only.length) shape={mode:"line", lines:only};
+  }
+  var ex=document.getElementById("supEditSheet"); if(ex) ex.remove();
+  var m=el("div","modal"); m.id="supEditSheet";
+  var sheet=el("div","sheet"); sheet.style.maxWidth="560px";
+  var b=el("div"); b.style.padding="var(--space-5) var(--space-6)";
+  var title=r.vrfNo?("Edit supplier · VRF "+r.vrfNo):"Edit supplier";
+  if(shape.mode==="line"&&shape.lines.length===1) title+=" · "+shape.lines[0].label;
+  b.appendChild(el("h3",null,title));
+  b.appendChild(el("div","hint",
+    "Changes the supplier only. VRF "+(r.vrfNo||"number")+" stays the same, nothing is approved, and this stays "+
+    (r.status||"a draft")+"."));
+  var picks=[];
+  if(shape.mode==="line"){
+    shape.lines.forEach(function(line){
+      var f=el("div","field"); f.style.marginTop="var(--space-3)";
+      f.appendChild(el("label",null,"Line "+(line.index+1)+" · "+line.label));
+      var sel=el("select");
+      var slot={index:line.index, value:line.supplier};
+      bindSupplierSelect(sel, "vrf", line.supplier, function(name){ slot.value=name; });
+      f.appendChild(sel);
+      b.appendChild(f);
+      picks.push(slot);
+    });
+  }else{
+    var fV=el("div","field"); fV.style.marginTop="var(--space-3)";
+    fV.appendChild(el("label",null,"Supplier"));
+    var selV=el("select");
+    var slotV={value:shape.supplier||""};
+    bindSupplierSelect(selV, "vrf", shape.supplier||"", function(name){ slotV.value=name; });
+    fV.appendChild(selV);
+    b.appendChild(fV);
+    picks.push(slotV);
+  }
+  var byF=el("div","field"); byF.style.cssText="margin-top:var(--space-3);max-width:280px";
+  byF.appendChild(el("label",null,"Your name"));
+  var byIn=el("input"); byIn.value=signedInName(); byIn.placeholder="your name";
+  byF.appendChild(byIn); b.appendChild(byF);
+  var prior=(r.audit||[]).filter(function(n){ return n&&n.field==="supplier"; });
+  if(prior.length){
+    var old=el("div"); old.style.marginTop="var(--space-3)";
+    old.appendChild(el("div","hint","Supplier changes already on this VRF"));
+    prior.forEach(function(n){ old.appendChild(el("div",null,supplierChangeText(n))); });
+    b.appendChild(old);
+  }
+  var msg=el("div","hint"); msg.style.marginTop="var(--space-2)";
+  b.appendChild(msg);
+  var acts=el("div"); acts.style.cssText="display:flex;gap:var(--space-2);justify-content:flex-end;margin-top:var(--space-5)";
+  var back=el("button","btn","Cancel");
+  back.addEventListener("click",function(){ m.remove(); });
+  var go=el("button","btn pri","Save supplier");
+  go.addEventListener("click",async function(){
+    var spec={by:byIn.value.trim(), at:iso()};
+    if(shape.mode==="line") spec.lines=picks.map(function(p){ return {index:p.index, supplier:p.value}; });
+    else spec.supplier=picks[0]?picks[0].value:"";
+    go.disabled=true; go.textContent="Saving…";
+    var plan=null;
+    try{ plan=await saveSupplierEdit(r, spec); }
+    catch(saveErr){
+      go.disabled=false; go.textContent="Save supplier";
+      msg.style.color="var(--danger)";
+      msg.textContent=(saveErr&&saveErr.message)||"Could not save the supplier.";
+      return;
+    }
+    m.remove();
+    toast(plan.changed
+      ? ((r.vrfNo?"VRF "+r.vrfNo:"This request")+" is still "+(r.status||"pending")+" — supplier updated.")
+      : "Supplier was not changed.");
+    if(after) after();
+  });
+  acts.appendChild(back); acts.appendChild(go);
+  b.appendChild(acts);
+  sheet.appendChild(b); m.appendChild(sheet);
+  m.addEventListener("click",function(e){ if(e.target===m) m.remove(); });
+  document.body.appendChild(m);
+  try{ byIn.focus(); }catch(eFocus){}
+}
 function auditLineText(n){
   if(!n) return "";
+  if(n.field==="supplier") return supplierChangeText(n);
   return (n.at||"—")+" · "+(n.by||"—")+" · "+n.field+" · "+(n.from||"—")+" → "+(n.to||"—")+(n.note?" · "+n.note:"");
 }
 function vrfAuditList(entry){
   var seen={}, out=[];
   function add(n){
     if(!n||!n.field) return;
-    var k=[n.at,n.by,n.field,n.from,n.to].join("|");
+    var k=[n.at,n.by,n.field,n.from,n.to,n.note||""].join("|");
     if(seen[k]) return;
     seen[k]=1; out.push(n);
   }
@@ -11447,10 +11752,14 @@ function openVrf(entry,tab){
   }
 
   var waiting=vrfAwaitingApproval(entry);
+  var supReserveTop=reserveForVrf(entry);
   if(waiting){
     var wait=el("div","banner warn"); wait.style.marginTop="var(--space-3)";
     wait.innerHTML="<b>Sent for approval — VRF "+esc(String(entry.vrf))+" is held.</b> "+
-      "Photos and print work now. The office still has to approve before it posts.";
+      "Photos and print work now. The office still has to approve before it posts."+
+      (supplierEditAllowed(supReserveTop)
+        ?" Edit supplier if the shop was different — that keeps this VRF for approval."
+        :"");
     b.appendChild(wait);
     if(tab==="liq") tab="photos";
   }
@@ -11492,6 +11801,12 @@ function openVrf(entry,tab){
     });
     tabs.appendChild(edTop);
   }
+  if(supplierEditAllowed(supReserveTop)){
+    tabs.appendChild(supplierEditButton(supReserveTop, function(){
+      var fresh=vrfByNo(entry.vrf)||entry;
+      openVrf(fresh, tab);
+    }));
+  }
   var pr=el("button","btn","Print / save as PDF");
   pr.addEventListener("click",async function(){
     pr.disabled=true; pr.textContent="Preparing…";
@@ -11514,6 +11829,7 @@ function openVrf(entry,tab){
     }
     var codes=entry.rows.map(function(r){ return lineWork(r); });
     var sels=[];
+    var canLineSup=supplierEditAllowed(supReserveTop);
     var bulk=el("div","row"); bulk.style.margin="var(--space-4) 0";
     var ball=workSelect("","— set every line to… —");
     ball.style.maxWidth="300px";
@@ -11526,8 +11842,10 @@ function openVrf(entry,tab){
     body.appendChild(bulk);
 
     var wrap=el("div","scroll"), t=el("table"), th=el("thead"), hr=el("tr");
-    ["Part category","Item on the line","Qty","Total","Why","Job this line belongs to"]
-      .forEach(function(x,i){ var h=el("th",null,x); if(i===2||i===3) h.style.textAlign="right"; hr.appendChild(h); });
+    var lineHeads=["Part category","Item on the line","Supplier","Qty","Total","Why","Job this line belongs to"];
+    if(canLineSup) lineHeads.push("");
+    lineHeads.forEach(function(x){
+      var h=el("th",null,x); if(x==="Qty"||x==="Total") h.style.textAlign="right"; hr.appendChild(h); });
     th.appendChild(hr); t.appendChild(th);
     var tb=el("tbody");
     entry.rows.forEach(function(r,i){
@@ -11537,6 +11855,7 @@ function openVrf(entry,tab){
       if(isAmbiguous(r.cat)||!r.cat) c1.appendChild(el("span","chip mute","says nothing about the job"));
       tr.appendChild(c1);
       tr.appendChild(el("td",null,r.item||"—"));
+      tr.appendChild(el("td",null,r.supplier||"—"));
       tr.appendChild(el("td","num",lineWasNotPurchased(r)?"0.00":(r.qty!=null?nnum(r.qty,2):"—")));
       tr.appendChild(el("td","num",lineWasNotPurchased(r)?peso(0):(r.total!=null?peso(r.total):"—")));
       tr.appendChild(el("td","hint",lineWhy(r)||"—"));
@@ -11544,6 +11863,15 @@ function openVrf(entry,tab){
       var sl=workSelect(codes[i],"— unclassified —");
       sl.addEventListener("change",function(){ codes[i]=sl.value; });
       sels.push(sl); c6.appendChild(sl); tr.appendChild(c6);
+      if(canLineSup){
+        var lineIdx=draftLineIndexForRow(supReserveTop, r);
+        var cSup=el("td");
+        cSup.appendChild(supplierEditButton(supReserveTop, function(){
+          var fresh=vrfByNo(entry.vrf)||entry;
+          openVrf(fresh, "lines");
+        }, lineIdx<0?{small:true}:{small:true, lineIndex:lineIdx}));
+        tr.appendChild(cSup);
+      }
       tb.appendChild(tr);
     });
     t.appendChild(tb); wrap.appendChild(t); body.appendChild(wrap);
