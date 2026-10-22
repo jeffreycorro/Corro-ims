@@ -56,8 +56,8 @@ function loadFuel() {
 }
 
 describe("2026-10-15a MC-02 fuel VRF is not blocked by usage", () => {
-  it("is build 2026-10-22 a", () => {
-    assert.match(html, /var BUILD = "2026-10-22 a"/);
+  it("is build 2026-10-22 b", () => {
+    assert.match(html, /var BUILD = "2026-10-22 b"/);
   });
 
   it("does not read a 1 pc station line as one litre of usage", () => {
