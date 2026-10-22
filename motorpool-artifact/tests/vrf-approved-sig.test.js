@@ -150,7 +150,7 @@ describe("seeded signature file and print markup", () => {
     assert.match(html, /x\.cap==="Approved By"\) slotSrc=approvedSrc/);
     assert.match(html, /function classifyPreparedSigFilename/);
     assert.match(html, /var other=\["jeffrey","approved by","cristine"/);
-    assert.match(html, /var BUILD = "2026-10-22 a"/);
+    assert.match(html, /var BUILD = "2026-10-22 b"/);
     assert.doesNotMatch(html, /img\.sig\{display:block;max-height:34px/);
   });
 });

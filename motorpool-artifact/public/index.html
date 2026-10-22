@@ -416,7 +416,7 @@ var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
    This label is inside the page function. The shim reads window.BUILD when it
    sends a save. Without that copy every save goes out with an empty build and
    the server answers "Reload the page". */
-var BUILD = "2026-10-22 a";
+var BUILD = "2026-10-22 b";
 try { window.BUILD = BUILD; } catch (e) {}
 var DAY = 86400000, MO = 30.44;
 
@@ -8704,6 +8704,9 @@ function openReserve(no,asApprover){
       topActs.appendChild(supplierEditButton(r, function(){
         m.remove(); render(); openReserve(no, asApprover);
       }));
+      topActs.appendChild(amountEditButton(r, function(){
+        m.remove(); render(); openReserve(no, asApprover);
+      }));
     }
     hd.appendChild(topActs);
   }
@@ -8730,6 +8733,16 @@ function openReserve(no,asApprover){
     }).join("<br>");
     b.appendChild(supNote);
   }
+  var amtChanges=(r.audit||[]).filter(function(n){ return n&&amountAuditField(n.field); });
+  if(amtChanges.length){
+    var amtNote=el("div","banner info");
+    amtNote.setAttribute("data-amount-change","1");
+    amtNote.style.cssText="margin:0 0 var(--space-4);white-space:pre-line";
+    amtNote.innerHTML="<b>Amount change</b><br>"+amtChanges.map(function(n){
+      return esc(pendingAmountText(n));
+    }).join("<br>");
+    b.appendChild(amtNote);
+  }
   var meterAll=reserveMeter(r);
   if(rsvKind(r)==="job"){
     var meterNote=el("div"); meterNote.style.margin="0 0 var(--space-3)";
@@ -8739,8 +8752,9 @@ function openReserve(no,asApprover){
   }
 
   if(rsvKind(r)!=="job"){
+    var fuelAsked=reserveFuelLitres(r);
     var fd=el("div"); fd.style.cssText="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:var(--space-3);margin-bottom:var(--space-4)";
-    [["Litres asked",r.litres!=null?nnum(r.litres,2)+" L":"—"],
+    [["Litres asked",fuelAsked>0?nnum(fuelAsked,2)+" L":(r.litres!=null?nnum(r.litres,2)+" L":"—")],
      ["Est. price / litre",r.pricePerL!=null?peso(r.pricePerL):"—"],
      ["Supplier",shownReserveSupplier(r)||"—"],
      ["Meter at request",meterAll!=null?nnum(meterAll):"—"],
@@ -8752,8 +8766,8 @@ function openReserve(no,asApprover){
       var vv=el("div",null,pp[1]); vv.style.fontWeight="500"; cc.appendChild(vv); fd.appendChild(cc);
     });
     b.appendChild(fd);
-    if(rsvKind(r)==="fuel-issue"&&r.veh){
-      var chk=fuelCheck(r.veh,meterAll,r.litres);
+    if((rsvKind(r)==="fuel-issue"||rsvKind(r)==="fuel-bulk")&&r.veh){
+      var chk=fuelCheck(r.veh,meterAll,fuelAsked);
       if(chk.gates&&chk.gates.length){
         var cw=el("div"); cw.style.marginBottom="var(--space-3)";
         cw.appendChild(el("div","hint","What the consumption record says about this request"));
@@ -8777,7 +8791,7 @@ function openReserve(no,asApprover){
       fo.innerHTML=(r.bypass
         ?"<b>Bypass — VRF logged without office approval.</b> "
         :"<b>The fuel check was overridden when this was raised.</b> ")+
-        esc(bypassAttribution(r.fuelOverride,{unit:r.veh,litres:r.litres,by:r.requestedBy||r.approvedBy}));
+        esc(bypassAttribution(r.fuelOverride,{unit:r.veh,litres:fuelAsked||r.litres,by:r.requestedBy||r.approvedBy}));
       b.appendChild(fo);
     }
   }
@@ -8809,9 +8823,14 @@ function openReserve(no,asApprover){
       tr.appendChild(el("td","num mono",tt?peso(tt):"—"));
       if(canSup){
         var edTd=el("td");
-        edTd.appendChild(supplierEditButton(r, function(){
+        var edRow=el("div"); edRow.style.cssText="display:flex;gap:4px;flex-wrap:wrap";
+        edRow.appendChild(supplierEditButton(r, function(){
           m.remove(); render(); openReserve(no, asApprover);
         }, {small:true, lineIndex:i}));
+        edRow.appendChild(amountEditButton(r, function(){
+          m.remove(); render(); openReserve(no, asApprover);
+        }, {small:true, lineIndex:i}));
+        edTd.appendChild(edRow);
         tr.appendChild(edTd);
       }
       dtb.appendChild(tr);
@@ -8844,6 +8863,7 @@ function openReserve(no,asApprover){
     (r.cancelNote?" — "+r.cancelNote:"")+" at "+peso(0)]);
   else if(r.liquidatedAt) steps.push(["Liquidated",r.liquidatedAt+" at "+peso(rv.actual)]);
   supChanges.forEach(function(n){ steps.push(["Supplier", supplierChangeText(n)]); });
+  amtChanges.forEach(function(n){ steps.push(["Amount", pendingAmountText(n)]); });
   if(r.varianceAt) steps.push(["Variance decision",r.varianceAt+" by "+(r.varianceBy||"—")+
     (r.varianceNote?" — "+r.varianceNote:"")]);
   steps.forEach(function(sx){
@@ -9314,6 +9334,9 @@ function approveView(){
         dd.appendChild(el("div","hint","RSV-"+r.no));
         if((r.audit||[]).some(function(n){ return n&&n.field==="supplier"; }))
           dd.appendChild(el("div","hint","Supplier changed"));
+        (r.audit||[]).forEach(function(n){
+          if(n&&amountAuditField(n.field)) dd.appendChild(el("div","hint",pendingAmountText(n)));
+        });
         return dd; }},
       {h:"Date",get:function(r){return r.date;}},
       {h:"Unit",get:function(r){ return el("span","mono",r.veh); }},
@@ -11498,7 +11521,8 @@ function vrfMayEdit(entry){
   var st=String(entry.status||"");
   return st==="Open"||st==="Requested"||st==="Closed";
 }
-/* Drafts and VRFs still for approval can change supplier. Approved, open, liquidated, filed and cancelled cannot. */
+/* Drafts and VRFs still for approval can change supplier, quantity, and amount.
+   Approved, open, liquidated, filed and cancelled cannot. */
 function supplierStatusKey(st){
   return String(st==null?"":st).trim().toLowerCase().replace(/\s+/g," ");
 }
@@ -11772,9 +11796,576 @@ function openSupplierEdit(no, opts, after){
   document.body.appendChild(m);
   try{ byIn.focus(); }catch(eFocus){}
 }
+function moneyRound(v){
+  return Math.round(moneyNum(v)*100)/100;
+}
+function priceFromAmount(qty, amount){
+  var q=moneyNum(qty), a=moneyRound(amount);
+  if(!(q>0)) return 0;
+  var raw=a/q;
+  var p4=Math.round(raw*10000)/10000;
+  if(Math.round(p4*q*100)===Math.round(a*100)) return p4;
+  var p6=Math.round(raw*1000000)/1000000;
+  if(Math.round(p6*q*100)===Math.round(a*100)) return p6;
+  return raw;
+}
+function isLitreUnit(unit){
+  var u=String(unit||"").trim().toLowerCase();
+  return u==="l"||u==="lt"||u==="ltr"||u==="liter"||u==="litre"||u==="liters"||u==="litres";
+}
+function lineIsFuelSpend(reserve, line){
+  if(!line) return false;
+  return !!(isFuel(line.cat)||isFuelWorkCode(line.work));
+}
+/* Litres the usage check should see. Line litres win over a stored reserve
+   total so a pending edit is what the limit is measured against. */
+function reserveFuelLitres(reserve){
+  if(!reserve) return 0;
+  var lines=reserve.draftLines||[];
+  var sum=0, any=false;
+  lines.forEach(function(line){
+    if(!line) return;
+    if(!(isFuel(line.cat)||isFuelWorkCode(line.work)||isFuelWorkCode(reserve.work))) return;
+    any=true;
+    sum+=fuelLitresOf(line);
+  });
+  if(any) return sum;
+  var named=parseFloat(reserve.litres!=null&&reserve.litres!==""?reserve.litres:"");
+  return (isFinite(named)&&named>0)?named:0;
+}
+function amountAuditField(field){
+  return field==="qty"||field==="price"||field==="amount"||field==="liters";
+}
+function formatAmountAudit(field, v){
+  var n=moneyNum(v);
+  if(field==="price"||field==="amount") return n.toFixed(2);
+  var r=Math.round(n*10000)/10000;
+  var s=String(r);
+  if(s.indexOf("e")>=0||s.indexOf("E")>=0) s=r.toFixed(4);
+  if(s.indexOf(".")>=0) s=s.replace(/0+$/,"").replace(/\.$/,"");
+  return s;
+}
+function amountSame(field, a, b){
+  if(field==="price"||field==="amount") return Math.round(moneyNum(a)*100)===Math.round(moneyNum(b)*100);
+  return Math.round(moneyNum(a)*10000)===Math.round(moneyNum(b)*10000);
+}
+function pendingAmountText(n){
+  if(!n) return "";
+  var where=n.note?String(n.note)+" · ":"";
+  var label=n.field==="qty"?"qty":n.field==="price"?"price":n.field==="amount"?"amount":n.field==="liters"?"litres":(n.field||"");
+  return where+label+" "+(n.from||"—")+" → "+(n.to||"—")+" · "+(n.by||"—")+" · "+(n.at||"—");
+}
+function lineAmountLabel(line, index){
+  var item=String(line&&line.item||"").trim();
+  var cat=String(line&&line.cat||"").trim();
+  var short=item||cat||"";
+  return "Line "+(index+1)+(short?" · "+short:"");
+}
+function amountEditShape(reserve){
+  var lines=reserve&&Array.isArray(reserve.draftLines)?reserve.draftLines:[];
+  var targets=[];
+  lines.forEach(function(l,i){
+    if(!l) return;
+    var cat=String(l.cat||"").trim();
+    var item=String(l.item||"").trim();
+    if(!cat&&!item&&!moneyNum(l.qty)&&!moneyNum(l.price)&&!moneyNum(l.total)) return;
+    targets.push({
+      index:i,
+      label:item||cat||("Line "+(i+1)),
+      qty:moneyNum(l.qty),
+      price:moneyNum(l.price),
+      amount:lineMoney(l),
+      unit:String(l.unit||""),
+      liters:fuelLitresOf(l),
+      fuel:lineIsFuelSpend(reserve, l)
+    });
+  });
+  if(targets.length) return {mode:"line", lines:targets};
+  var kind=String(reserve&&reserve.kind||"");
+  return {
+    mode:"vrf",
+    amount:moneyNum(reserve&&reserve.budget),
+    litres:moneyNum(reserve&&reserve.litres),
+    price:moneyNum(reserve&&reserve.pricePerL),
+    fuel:!!(reserve&&(isFuelWorkCode(reserve.work)||kind==="fuel-issue"||kind==="fuel-bulk"||moneyNum(reserve.litres)>0))
+  };
+}
+function pushAmountNote(notes, field, from, to, at, who, note){
+  if(amountSame(field, from, to)) return;
+  notes.push({at:at, by:who, field:field, from:formatAmountAudit(field, from), to:formatAmountAudit(field, to), note:note||""});
+}
+function draftFuelMeta(reserve, lines){
+  var sum=0, any=false, pricedL=0, fuelAmt=0;
+  (lines||[]).forEach(function(line){
+    if(!line) return;
+    var counted=isFuel(line.cat)||isFuelWorkCode(line.work)||isFuelWorkCode(reserve&&reserve.work);
+    if(!counted) return;
+    any=true;
+    sum+=fuelLitresOf(line);
+    if(isFuel(line.cat)||isFuelWorkCode(line.work)){
+      pricedL+=fuelLitresOf(line);
+      fuelAmt+=lineMoney(line);
+    }
+  });
+  return {any:any, litres:sum, pricedLitres:pricedL, fuelAmount:fuelAmt};
+}
+function planLineAmountEdit(reserve, spec){
+  spec=spec||{};
+  if(!reserve) return {ok:false, code:"missing", message:"That VRF is not on the reserve log."};
+  if(!supplierEditAllowed(reserve)){
+    return {ok:false, code:"locked", message:"Quantity and amount are locked once the VRF is approved, open, liquidated, filed, or cancelled."};
+  }
+  var who=String(spec.by||"").trim();
+  if(!who) return {ok:false, code:"name", message:"Put your name on the amount change."};
+  var at=String(spec.at||"").trim();
+  var shape=amountEditShape(reserve);
+  var notes=[];
+  var changed=false;
+  if(shape.mode==="line"){
+    var draft=(reserve.draftLines||[]).map(function(l){ return l?Object.assign({}, l):l; });
+    var byIndex={};
+    (spec.lines||[]).forEach(function(edit){
+      if(edit&&edit.index!=null) byIndex[String(edit.index)]=edit;
+    });
+    var bad=null;
+    shape.lines.forEach(function(target){
+      if(bad) return;
+      if(!Object.prototype.hasOwnProperty.call(byIndex, String(target.index))) return;
+      var edit=byIndex[String(target.index)];
+      var line=draft[target.index];
+      if(!line){ bad={code:"missing", message:"That line is not on this VRF."}; return; }
+      var oldQty=moneyNum(line.qty);
+      var oldPrice=moneyNum(line.price);
+      var oldAmt=lineMoney(line);
+      var fuel=lineIsFuelSpend(reserve, line);
+      var litreUnit=isLitreUnit(line.unit);
+      var oldLitres=fuel?fuelLitresOf(line):0;
+      var nextQty=moneyNum(edit.qty);
+      var nextPrice=moneyNum(edit.price);
+      var nextAmt=moneyRound(edit.amount!=null?edit.amount:(nextQty*nextPrice));
+      if(!(nextQty>0)){ bad={code:"zero", message:"Quantity has to be more than zero."}; return; }
+      if(!(nextAmt>0)){ bad={code:"zero", message:"Amount has to be more than zero."}; return; }
+      if(Math.round(nextQty*nextPrice*100)!==Math.round(nextAmt*100)){
+        nextPrice=priceFromAmount(nextQty, nextAmt);
+        nextAmt=moneyRound(nextQty*nextPrice);
+      }
+      if(!(nextAmt>0)){ bad={code:"zero", message:"Amount has to be more than zero."}; return; }
+      var nextLitres=oldLitres;
+      if(fuel&&litreUnit) nextLitres=nextQty;
+      else if(fuel&&edit.liters!=null&&edit.liters!=="") nextLitres=moneyNum(edit.liters);
+      if(fuel&&!litreUnit&&oldLitres>0&&!(nextLitres>0)){
+        bad={code:"zero", message:"Litres has to be more than zero."};
+        return;
+      }
+      var where=lineAmountLabel(line, target.index);
+      var before=notes.length;
+      pushAmountNote(notes, "qty", oldQty, nextQty, at, who, where);
+      pushAmountNote(notes, "price", oldPrice, nextPrice, at, who, where);
+      pushAmountNote(notes, "amount", oldAmt, nextAmt, at, who, where);
+      if(fuel&&!amountSame("liters", oldLitres, nextLitres)){
+        var sameAsQty=amountSame("qty", oldLitres, oldQty)&&amountSame("qty", nextLitres, nextQty);
+        if(!sameAsQty) pushAmountNote(notes, "liters", oldLitres, nextLitres, at, who, where);
+      }
+      line.qty=nextQty;
+      line.price=nextPrice;
+      line.total=nextAmt;
+      if(fuel&&(litreUnit||(line.liters!=null&&line.liters!=="")||(line.litres!=null&&line.litres!=="")||nextLitres>0)){
+        line.liters=nextLitres;
+        if(line.litres!=null&&line.litres!=="") line.litres=nextLitres;
+      }
+      if(notes.length>before) changed=true;
+    });
+    if(bad) return {ok:false, code:bad.code, message:bad.message};
+    var nextBudget=moneyRound(vrfSpendTotal(draft));
+    if(!(nextBudget>0)){
+      nextBudget=moneyRound((draft||[]).reduce(function(a,l){ return a+lineMoney(l); },0));
+    }
+    if(!(nextBudget>0)) return {ok:false, code:"zero", message:"Amount has to be more than zero."};
+    var fuelMeta=draftFuelMeta(reserve, draft);
+    var planLitres, planPrice;
+    if(fuelMeta.any){
+      planLitres=Math.round(fuelMeta.litres*10000)/10000;
+      if(fuelMeta.pricedLitres>0) planPrice=Math.round((fuelMeta.fuelAmount/fuelMeta.pricedLitres)*10000)/10000;
+    }
+    if(changed) pushAmountNote(notes, "amount", reserve.budget, nextBudget, at, who, "VRF total");
+    return {ok:true, changed:changed, mode:"line", notes:notes, draftLines:changed?draft:null,
+      budget:changed?nextBudget:reserve.budget, litres:changed&&fuelMeta.any?planLitres:undefined,
+      pricePerL:changed&&planPrice!=null?planPrice:undefined,
+      vrfNo:reserve.vrfNo, status:reserve.status};
+  }
+  var oldBudget=moneyNum(reserve.budget);
+  var oldLitres=moneyNum(reserve.litres);
+  var oldPriceL=moneyNum(reserve.pricePerL);
+  var nextBudgetV=spec.amount!=null?moneyRound(spec.amount):oldBudget;
+  var nextLitresV=spec.liters!=null&&spec.liters!==""?moneyNum(spec.liters):oldLitres;
+  var nextPriceV=spec.price!=null&&spec.price!==""?moneyNum(spec.price):oldPriceL;
+  if(!(nextBudgetV>0)) return {ok:false, code:"zero", message:"Amount has to be more than zero."};
+  if(shape.fuel&&oldLitres>0&&!(nextLitresV>0)) return {ok:false, code:"zero", message:"Litres has to be more than zero."};
+  if(shape.fuel&&nextLitresV>0&&spec.amount!=null){
+    if(Math.round(nextLitresV*nextPriceV*100)!==Math.round(nextBudgetV*100)){
+      nextPriceV=priceFromAmount(nextLitresV, nextBudgetV);
+      nextBudgetV=moneyRound(nextLitresV*nextPriceV);
+    }
+  }
+  if(!(nextBudgetV>0)) return {ok:false, code:"zero", message:"Amount has to be more than zero."};
+  pushAmountNote(notes, "price", oldPriceL, nextPriceV, at, who, "Price / litre");
+  pushAmountNote(notes, "liters", oldLitres, nextLitresV, at, who, "Litres");
+  pushAmountNote(notes, "amount", oldBudget, nextBudgetV, at, who, "VRF total");
+  changed=notes.length>0;
+  return {ok:true, changed:changed, mode:"vrf", notes:notes, draftLines:null,
+    budget:changed?nextBudgetV:reserve.budget,
+    litres:changed&&(shape.fuel||oldLitres>0)?nextLitresV:undefined,
+    pricePerL:changed&&(shape.fuel||oldPriceL>0)?nextPriceV:undefined,
+    vrfNo:reserve.vrfNo, status:reserve.status};
+}
+function applyLineAmountEdit(reserve, plan){
+  if(!reserve||!plan||!plan.ok||!plan.changed) return plan;
+  var keep={
+    vrfNo:reserve.vrfNo, status:reserve.status, fuelPrevNote:reserve.fuelPrevNote,
+    draftOdo:reserve.draftOdo, approvedBy:reserve.approvedBy,
+    approvedAt:reserve.approvedAt, approvedBudget:reserve.approvedBudget, decisionNote:reserve.decisionNote
+  };
+  if(plan.draftLines) reserve.draftLines=plan.draftLines;
+  if(plan.budget!=null) reserve.budget=plan.budget;
+  if(plan.litres!==undefined) reserve.litres=plan.litres;
+  if(plan.pricePerL!==undefined) reserve.pricePerL=plan.pricePerL;
+  reserve.audit=(reserve.audit||[]).concat(plan.notes||[]);
+  reserve.vrfNo=keep.vrfNo;
+  reserve.status=keep.status;
+  if(keep.fuelPrevNote===undefined) delete reserve.fuelPrevNote;
+  else reserve.fuelPrevNote=keep.fuelPrevNote;
+  reserve.draftOdo=keep.draftOdo;
+  reserve.approvedBy=keep.approvedBy;
+  reserve.approvedAt=keep.approvedAt;
+  reserve.approvedBudget=keep.approvedBudget;
+  reserve.decisionNote=keep.decisionNote;
+  return plan;
+}
+async function saveLineAmountEdit(reserve, spec){
+  var plan=planLineAmountEdit(reserve, spec);
+  if(!plan.ok){
+    var err=new Error(plan.message||"Could not change the amount.");
+    err.code=plan.code;
+    throw err;
+  }
+  if(!plan.changed) return plan;
+  var backup={
+    draftLines:reserve.draftLines, audit:reserve.audit,
+    status:reserve.status, vrfNo:reserve.vrfNo, fuelPrevNote:reserve.fuelPrevNote,
+    draftOdo:reserve.draftOdo, budget:reserve.budget, litres:reserve.litres, pricePerL:reserve.pricePerL,
+    approvedBy:reserve.approvedBy, approvedAt:reserve.approvedAt,
+    approvedBudget:reserve.approvedBudget, decisionNote:reserve.decisionNote
+  };
+  applyLineAmountEdit(reserve, plan);
+  try{ await saveReserves(reserve.no); }
+  catch(saveErr){
+    reserve.draftLines=backup.draftLines;
+    reserve.audit=backup.audit;
+    reserve.status=backup.status;
+    reserve.vrfNo=backup.vrfNo;
+    if(backup.fuelPrevNote===undefined) delete reserve.fuelPrevNote;
+    else reserve.fuelPrevNote=backup.fuelPrevNote;
+    reserve.draftOdo=backup.draftOdo;
+    reserve.budget=backup.budget;
+    if(backup.litres===undefined) delete reserve.litres;
+    else reserve.litres=backup.litres;
+    if(backup.pricePerL===undefined) delete reserve.pricePerL;
+    else reserve.pricePerL=backup.pricePerL;
+    reserve.approvedBy=backup.approvedBy;
+    reserve.approvedAt=backup.approvedAt;
+    reserve.approvedBudget=backup.approvedBudget;
+    reserve.decisionNote=backup.decisionNote;
+    throw saveErr;
+  }
+  _vrfs=null;
+  return plan;
+}
+function trimPlainNum(n){
+  var x=moneyNum(n);
+  var r=Math.round(x*10000)/10000;
+  var s=String(r);
+  if(s.indexOf("e")>=0||s.indexOf("E")>=0) s=r.toFixed(4).replace(/0+$/,"").replace(/\.$/,"");
+  return s;
+}
+function trimPriceNum(n){
+  var x=moneyNum(n);
+  var cents=Math.round(x*100)/100;
+  if(Math.abs(x-cents)<1e-8) return cents.toFixed(2);
+  var p4=Math.round(x*10000)/10000;
+  if(Math.abs(x-p4)<1e-8) return String(p4);
+  return String(Math.round(x*1000000)/1000000);
+}
+function amountEditButton(reserve, after, opts){
+  opts=opts||{};
+  var bt=el("button", opts.small?"btn sm":"btn", "Edit amount");
+  bt.type="button";
+  bt.setAttribute("data-edit-amount", opts.lineIndex!=null?String(opts.lineIndex):"vrf");
+  bt.addEventListener("click",function(ev){
+    if(ev&&ev.stopPropagation) ev.stopPropagation();
+    openAmountEdit(reserve.no, opts.lineIndex!=null?{lineIndex:opts.lineIndex}:{}, after);
+  });
+  return bt;
+}
+function openAmountEdit(no, opts, after){
+  opts=opts||{};
+  var r=reserveBy(no);
+  if(!r){ toast("That VRF is not on the reserve log."); return; }
+  if(!supplierEditAllowed(r)){
+    toast("Quantity and amount are locked once the VRF is approved, open, liquidated, filed, or cancelled.");
+    return;
+  }
+  var shape=amountEditShape(r);
+  if(opts.lineIndex!=null&&shape.mode==="line"){
+    var only=shape.lines.filter(function(line){ return line.index===opts.lineIndex; });
+    if(!only.length){ toast("That line is not on this VRF."); return; }
+    shape={mode:"line", lines:only};
+  }
+  var ex=document.getElementById("amtEditSheet"); if(ex) ex.remove();
+  var m=el("div","modal"); m.id="amtEditSheet";
+  var sheet=el("div","sheet"); sheet.style.maxWidth="640px";
+  var b=el("div"); b.style.padding="var(--space-5) var(--space-6)";
+  var title=r.vrfNo?("Edit amount · VRF "+r.vrfNo):"Edit amount";
+  if(shape.mode==="line"&&shape.lines.length===1) title+=" · "+shape.lines[0].label;
+  b.appendChild(el("h3",null,title));
+  b.appendChild(el("div","hint",
+    "Changes quantity, unit price, and amount only. VRF "+(r.vrfNo||"number")+" stays the same, nothing is approved, and this stays "+
+    (r.status||"a draft")+"."));
+  var slots=[];
+  var usage=null;
+  function paintUsage(){
+    if(!usage) return;
+    var asked=0;
+    if(shape.mode==="line"){
+      var lines=(r.draftLines||[]).map(function(l){ return l?Object.assign({}, l):l; });
+      slots.forEach(function(s){
+        var line=lines[s.index];
+        if(!line) return;
+        line.qty=s.qty;
+        line.price=s.price;
+        if(s.fuel) line.liters=s.litreUnit?s.qty:s.liters;
+      });
+      asked=reserveFuelLitres({draftLines:lines, litres:r.litres, work:r.work, veh:r.veh});
+    }else{
+      asked=slots[0]?moneyNum(slots[0].liters):reserveFuelLitres(r);
+    }
+    try{
+      var note=fuelUsageNote(r.veh, reserveMeter(r), asked);
+      usage.textContent=note&&note.title?(note.title+(note.detail?" — "+note.detail:"")):"";
+    }catch(err){ usage.textContent=""; }
+  }
+  if(shape.mode==="line"){
+    shape.lines.forEach(function(line){
+      var src=(r.draftLines||[])[line.index]||{};
+      var slot={
+        index:line.index,
+        fuel:line.fuel,
+        litreUnit:isLitreUnit(src.unit),
+        qty:moneyNum(line.qty),
+        price:moneyNum(line.price),
+        amount:moneyRound(line.amount),
+        liters:line.fuel?fuelLitresOf(src):0
+      };
+      var box=el("div"); box.style.marginTop="var(--space-3)";
+      box.appendChild(el("div",null,"Line "+(line.index+1)+" · "+line.label));
+      var grid=el("div");
+      grid.style.cssText="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:var(--space-2);margin-top:var(--space-2)";
+      function field(label, input){
+        var f=el("div","field");
+        f.appendChild(el("label",null,label));
+        input.inputMode="decimal";
+        input.autocomplete="off";
+        f.appendChild(input);
+        grid.appendChild(f);
+        return input;
+      }
+      var qtyIn=field("Quantity"+(src.unit?" ("+src.unit+")":""), el("input"));
+      var priceIn=field("Unit price", el("input"));
+      var amtIn=field("Amount", el("input"));
+      var litIn=null;
+      if(line.fuel) litIn=field(slot.litreUnit?"Litres (same as quantity)":"Litres", el("input"));
+      var lock=false;
+      function show(){
+        lock=true;
+        qtyIn.value=trimPlainNum(slot.qty);
+        priceIn.value=trimPriceNum(slot.price);
+        amtIn.value=moneyRound(slot.amount).toFixed(2);
+        if(litIn) litIn.value=trimPlainNum(slot.litreUnit?slot.qty:slot.liters);
+        lock=false;
+      }
+      qtyIn.addEventListener("input",function(){
+        if(lock) return;
+        slot.qty=moneyNum(qtyIn.value);
+        if(slot.litreUnit) slot.liters=slot.qty;
+        slot.amount=moneyRound(slot.qty*slot.price);
+        lock=true;
+        amtIn.value=slot.amount.toFixed(2);
+        if(litIn&&slot.litreUnit) litIn.value=trimPlainNum(slot.qty);
+        lock=false;
+        paintUsage();
+      });
+      priceIn.addEventListener("input",function(){
+        if(lock) return;
+        slot.price=moneyNum(priceIn.value);
+        slot.amount=moneyRound(slot.qty*slot.price);
+        lock=true;
+        amtIn.value=slot.amount.toFixed(2);
+        lock=false;
+        paintUsage();
+      });
+      amtIn.addEventListener("input",function(){
+        if(lock) return;
+        slot.amount=moneyRound(amtIn.value);
+        if(slot.qty>0) slot.price=priceFromAmount(slot.qty, slot.amount);
+        lock=true;
+        priceIn.value=trimPriceNum(slot.price);
+        lock=false;
+        paintUsage();
+      });
+      if(litIn) litIn.addEventListener("input",function(){
+        if(lock) return;
+        slot.liters=moneyNum(litIn.value);
+        if(slot.litreUnit){
+          slot.qty=slot.liters;
+          slot.amount=moneyRound(slot.qty*slot.price);
+          lock=true;
+          qtyIn.value=trimPlainNum(slot.qty);
+          amtIn.value=slot.amount.toFixed(2);
+          lock=false;
+        }
+        paintUsage();
+      });
+      show();
+      box.appendChild(grid);
+      b.appendChild(box);
+      slots.push(slot);
+    });
+  }else{
+    var slotV={
+      fuel:shape.fuel,
+      qty:shape.fuel?shape.litres:0,
+      price:shape.price,
+      amount:moneyRound(shape.amount),
+      liters:shape.litres
+    };
+    var gridV=el("div");
+    gridV.style.cssText="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:var(--space-2);margin-top:var(--space-3)";
+    function fieldV(label, input){
+      var f=el("div","field");
+      f.appendChild(el("label",null,label));
+      input.inputMode="decimal";
+      input.autocomplete="off";
+      f.appendChild(input);
+      gridV.appendChild(f);
+      return input;
+    }
+    var litV=shape.fuel?fieldV("Litres", el("input")):null;
+    var priceV=shape.fuel?fieldV("Unit price", el("input")):null;
+    var amtV=fieldV("Amount", el("input"));
+    var lockV=false;
+    function showV(){
+      lockV=true;
+      if(litV) litV.value=trimPlainNum(slotV.liters);
+      if(priceV) priceV.value=trimPriceNum(slotV.price);
+      amtV.value=moneyRound(slotV.amount).toFixed(2);
+      lockV=false;
+    }
+    if(litV) litV.addEventListener("input",function(){
+      if(lockV) return;
+      slotV.liters=moneyNum(litV.value);
+      slotV.qty=slotV.liters;
+      if(slotV.price>0) slotV.amount=moneyRound(slotV.liters*slotV.price);
+      lockV=true;
+      amtV.value=slotV.amount.toFixed(2);
+      lockV=false;
+      paintUsage();
+    });
+    if(priceV) priceV.addEventListener("input",function(){
+      if(lockV) return;
+      slotV.price=moneyNum(priceV.value);
+      if(slotV.liters>0) slotV.amount=moneyRound(slotV.liters*slotV.price);
+      lockV=true;
+      amtV.value=slotV.amount.toFixed(2);
+      lockV=false;
+      paintUsage();
+    });
+    amtV.addEventListener("input",function(){
+      if(lockV) return;
+      slotV.amount=moneyRound(amtV.value);
+      if(slotV.liters>0) slotV.price=priceFromAmount(slotV.liters, slotV.amount);
+      lockV=true;
+      if(priceV) priceV.value=trimPriceNum(slotV.price);
+      lockV=false;
+      paintUsage();
+    });
+    showV();
+    b.appendChild(gridV);
+    slots.push(slotV);
+  }
+  var fuelish=shape.mode==="vrf"?shape.fuel:shape.lines.some(function(line){ return line.fuel; });
+  if(fuelish||reserveFuelLitres(r)>0){
+    usage=el("div","hint");
+    usage.style.cssText="margin-top:var(--space-3);white-space:pre-line";
+    b.appendChild(usage);
+    paintUsage();
+  }
+  var byF=el("div","field"); byF.style.cssText="margin-top:var(--space-3);max-width:280px";
+  byF.appendChild(el("label",null,"Your name"));
+  var byIn=el("input"); byIn.value=signedInName(); byIn.placeholder="your name";
+  byF.appendChild(byIn); b.appendChild(byF);
+  var prior=(r.audit||[]).filter(function(n){ return n&&amountAuditField(n.field); });
+  if(prior.length){
+    var old=el("div"); old.style.marginTop="var(--space-3)";
+    old.appendChild(el("div","hint","Amount changes already on this VRF"));
+    prior.forEach(function(n){ old.appendChild(el("div",null,pendingAmountText(n))); });
+    b.appendChild(old);
+  }
+  var msg=el("div","hint"); msg.style.marginTop="var(--space-2)";
+  b.appendChild(msg);
+  var acts=el("div"); acts.style.cssText="display:flex;gap:var(--space-2);justify-content:flex-end;margin-top:var(--space-5)";
+  var back=el("button","btn","Cancel");
+  back.addEventListener("click",function(){ m.remove(); });
+  var go=el("button","btn pri","Save amount");
+  go.addEventListener("click",async function(){
+    var spec={by:byIn.value.trim(), at:iso()};
+    if(shape.mode==="line"){
+      spec.lines=slots.map(function(s){
+        var one={index:s.index, qty:s.qty, price:s.price, amount:s.amount};
+        if(s.fuel) one.liters=s.litreUnit?s.qty:s.liters;
+        return one;
+      });
+    }else{
+      spec.amount=slots[0]?slots[0].amount:0;
+      if(shape.fuel){
+        spec.liters=slots[0]?slots[0].liters:0;
+        spec.price=slots[0]?slots[0].price:0;
+      }
+    }
+    go.disabled=true; go.textContent="Saving…";
+    var plan=null;
+    try{ plan=await saveLineAmountEdit(r, spec); }
+    catch(saveErr){
+      go.disabled=false; go.textContent="Save amount";
+      msg.style.color="var(--danger)";
+      msg.textContent=(saveErr&&saveErr.message)||"Could not save the amount.";
+      return;
+    }
+    m.remove();
+    toast(plan.changed
+      ? ((r.vrfNo?"VRF "+r.vrfNo:"This request")+" is still "+(r.status||"pending")+" — quantity and amount updated.")
+      : "Quantity and amount were not changed.");
+    if(after) after();
+  });
+  acts.appendChild(back); acts.appendChild(go);
+  b.appendChild(acts);
+  sheet.appendChild(b); m.appendChild(sheet);
+  m.addEventListener("click",function(e){ if(e.target===m) m.remove(); });
+  document.body.appendChild(m);
+  try{ byIn.focus(); }catch(eFocus){}
+}
 function auditLineText(n){
   if(!n) return "";
   if(n.field==="supplier") return supplierChangeText(n);
+  if(amountAuditField(n.field)) return pendingAmountText(n);
   return (n.at||"—")+" · "+(n.by||"—")+" · "+n.field+" · "+(n.from||"—")+" → "+(n.to||"—")+(n.note?" · "+n.note:"");
 }
 function vrfAuditList(entry){
@@ -12052,7 +12643,7 @@ function openVrf(entry,tab){
     wait.innerHTML="<b>Sent for approval — VRF "+esc(String(entry.vrf))+" is held.</b> "+
       "Photos and print work now. The office still has to approve before it posts."+
       (supplierEditAllowed(supReserveTop)
-        ?" Edit supplier if the shop was different — that keeps this VRF for approval."
+        ?" Edit supplier if the shop was different, or Edit amount if the quantity or price changed — that keeps this VRF for approval."
         :"");
     b.appendChild(wait);
     if(tab==="liq") tab="photos";
@@ -12097,6 +12688,10 @@ function openVrf(entry,tab){
   }
   if(supplierEditAllowed(supReserveTop)){
     tabs.appendChild(supplierEditButton(supReserveTop, function(){
+      var fresh=vrfByNo(entry.vrf)||entry;
+      openVrf(fresh, tab);
+    }));
+    tabs.appendChild(amountEditButton(supReserveTop, function(){
       var fresh=vrfByNo(entry.vrf)||entry;
       openVrf(fresh, tab);
     }));
@@ -12157,10 +12752,16 @@ function openVrf(entry,tab){
       if(canLineSup){
         var lineIdx=draftLineIndexForRow(supReserveTop, r);
         var cSup=el("td");
-        cSup.appendChild(supplierEditButton(supReserveTop, function(){
+        var cRow=el("div"); cRow.style.cssText="display:flex;gap:4px;flex-wrap:wrap";
+        cRow.appendChild(supplierEditButton(supReserveTop, function(){
           var fresh=vrfByNo(entry.vrf)||entry;
           openVrf(fresh, "lines");
         }, lineIdx<0?{small:true}:{small:true, lineIndex:lineIdx}));
+        cRow.appendChild(amountEditButton(supReserveTop, function(){
+          var fresh=vrfByNo(entry.vrf)||entry;
+          openVrf(fresh, "lines");
+        }, lineIdx<0?{small:true}:{small:true, lineIndex:lineIdx}));
+        cSup.appendChild(cRow);
         tr.appendChild(cSup);
       }
       tb.appendChild(tr);
