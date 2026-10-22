@@ -298,6 +298,9 @@ svg text{font-family:var(--font-body)}
 .vrfdoc .vgrid figure{margin:0;break-inside:avoid}
 .vrfdoc .vgrid img{width:100%;border:1px solid #999;display:block}
 .vrfdoc .vgrid figcaption{font-size:9px;color:#444;margin-top:3px}
+.vrfdoc .vwait,.vrfdoc .vmiss{border:1px dashed #999;padding:10px 8px;font-size:10px;color:#333;background:#f7f7f7;min-height:72px}
+.vrfdoc .vmiss{border-style:solid;background:#fff6f6}
+.vrfdoc .vretry{margin-top:6px}
 .vrfdoc .vfoot{margin-top:10px;font-size:8.5px;color:#666;border-top:1px solid #ddd;padding-top:5px}
 
 /* photo strip in the app */
@@ -413,7 +416,7 @@ var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
    This label is inside the page function. The shim reads window.BUILD when it
    sends a save. Without that copy every save goes out with an empty build and
    the server answers "Reload the page". */
-var BUILD = "2026-10-21 a";
+var BUILD = "2026-10-22 a";
 try { window.BUILD = BUILD; } catch (e) {}
 var DAY = 86400000, MO = 30.44;
 
@@ -4791,8 +4794,11 @@ async function listPhotosMany(owners){
   }
   return mergePhotoLists(lists);
 }
-/* Two picture files at a time. The Approvals sheet must not wait on these. */
+/* Gallery thumbnails, two at a time, so Approvals does not download every
+   picture at once. Print fetches the open VRF directly and does not use
+   this queue. A hung get must release its slot. */
 var PHOTO_FETCH_LIMIT=2;
+var PHOTO_GET_MS=20000;
 var PHOTO_THUMB_PX=160;
 var photoDocCache={};
 var photoDocFlight={};
@@ -4861,22 +4867,34 @@ function runPhotoJob(fn){
     pumpPhotoJobs();
   });
 }
-function loadPhotoDoc(id){
+function fetchPhotoRow(id){
+  var getP=S.db.doc("photos/"+id).get();
+  var timed=new Promise(function(resolve,reject){
+    var timer=setTimeout(function(){ reject(new Error("timeout")); }, PHOTO_GET_MS);
+    getP.then(function(v){ clearTimeout(timer); resolve(v); }, function(e){ clearTimeout(timer); reject(e); });
+  });
+  return timed.then(function(snap){
+    var data=snap&&snap.exists&&snap.data?snap.data():null;
+    if(!data) return photoDocCache[id]||null;
+    var row=Object.assign({id:id}, data);
+    photoDocCache[id]=row;
+    return row;
+  }).catch(function(){ return photoDocCache[id]||null; });
+}
+/* opts.direct skips the gallery queue so one VRF's print is not stuck
+   behind other thumbnails, and one slow file does not hold the rest. */
+function loadPhotoDoc(id, opts){
   id=String(id||"");
   if(!id) return Promise.resolve(null);
   if(photoDocCache[id]&&photoDocCache[id].data) return Promise.resolve(photoDocCache[id]);
   if(photoDocFlight[id]) return photoDocFlight[id];
   if(!S.db) return Promise.resolve(photoDocCache[id]||null);
-  var p=runPhotoJob(function(){
+  var job=function(){
     if(photoDocCache[id]&&photoDocCache[id].data) return photoDocCache[id];
-    return S.db.doc("photos/"+id).get().then(function(snap){
-      var data=snap&&snap.exists&&snap.data?snap.data():null;
-      if(!data) return photoDocCache[id]||null;
-      var row=Object.assign({id:id}, data);
-      photoDocCache[id]=row;
-      return row;
-    }).catch(function(){ return photoDocCache[id]||null; });
-  }).then(function(row){
+    return fetchPhotoRow(id);
+  };
+  var started=(opts&&opts.direct)?Promise.resolve().then(job):runPhotoJob(job);
+  var p=started.then(function(row){
     delete photoDocFlight[id];
     return row;
   },function(err){
@@ -4934,6 +4952,22 @@ function downscaleDataUrl(dataUrl, maxPx){
     img.src=dataUrl;
   });
 }
+function paintPhotoFailure(ph, retry){
+  if(!ph) return;
+  ph.textContent="";
+  var box=el("div");
+  box.style.cssText="display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center";
+  box.appendChild(el("div",null,"Picture failed"));
+  var b=el("button","btn sm","Retry");
+  b.addEventListener("click",function(ev){
+    ev.preventDefault();
+    ev.stopPropagation();
+    ph.textContent="Photo";
+    retry();
+  });
+  box.appendChild(b);
+  ph.appendChild(box);
+}
 function paintLazyThumb(ph, x){
   var preset=thumbSrcFor(x);
   if(preset){
@@ -4949,23 +4983,35 @@ function paintLazyThumb(ph, x){
     ph.textContent="Video — tap to play";
     return Promise.resolve(ph);
   }
+  ph.textContent="Photo";
   return loadPhotoDoc(x.id).then(function(doc){
-    if(!doc||!doc.data){ ph.textContent="Photo unavailable"; return ph; }
+    if(!ph.isConnected) return ph;
+    if(!doc||!doc.data){
+      paintPhotoFailure(ph, function(){ paintLazyThumb(ph, x); });
+      return ph;
+    }
     if(isVideoAttachment(doc)||isVideoMeta(x)){
       ph.textContent="Video — tap to play";
       return ph;
     }
     return downscaleDataUrl(doc.data, PHOTO_THUMB_PX).then(function(thumb){
-      if(!thumb||!ph.parentNode){ if(!thumb) ph.textContent="Photo"; return ph; }
+      if(!ph.isConnected) return ph;
+      if(!thumb){
+        paintPhotoFailure(ph, function(){ paintLazyThumb(ph, x); });
+        return ph;
+      }
       var im=document.createElement("img");
       im.setAttribute("loading","lazy");
       im.setAttribute("decoding","async");
       im.alt=x.caption||"photo";
       im.src=thumb;
-      ph.replaceWith(im);
+      if(ph.parentNode) ph.replaceWith(im);
       return im;
     });
-  }).catch(function(){ ph.textContent="Photo unavailable"; return ph; });
+  }).catch(function(){
+    if(ph.isConnected) paintPhotoFailure(ph, function(){ paintLazyThumb(ph, x); });
+    return ph;
+  });
 }
 function openPhotoFull(x){
   return loadPhotoDoc(x&&x.id).then(function(doc){
@@ -4979,7 +5025,10 @@ function mountLazyCell(x, opts){
   var ph=el("div","photo-ph");
   ph.textContent=isVideoMeta(x)?"Video — tap to play":"Photo";
   c.appendChild(ph);
-  if(!isVideoMeta(x)) whenVisible(c, function(){ paintLazyThumb(ph, x); });
+  if(!isVideoMeta(x)){
+    if(opts.eager) paintLazyThumb(ph, x);
+    else whenVisible(c, function(){ paintLazyThumb(ph, x); });
+  }
   c.addEventListener("click",function(){ openPhotoFull(x); });
   var cp=el("div","cap");
   cp.appendChild(el("div",null,x.caption||(opts.captionFallback||"attachment")));
@@ -5038,17 +5087,29 @@ function fillLazyGallery(pgal, owners, opts){
       });
       pgal.appendChild(lw);
     }
-  }).catch(function(){});
+  }).catch(function(){
+    if(!pgal.isConnected) return;
+    pgal.innerHTML="";
+    var nb=el("div","banner warn");
+    nb.appendChild(el("b",null,"The picture list did not load."));
+    nb.appendChild(document.createTextNode(" The count above can still be right. "));
+    var retry=el("button","btn sm","Retry");
+    retry.addEventListener("click",function(){ fillLazyGallery(pgal, owners, opts); });
+    nb.appendChild(retry);
+    pgal.appendChild(nb);
+  });
 }
-/* Call this only after the sheet is on the page. The first argument is the
-   empty grid; names start on the next turn, and image bytes wait until a
-   cell is on screen. */
+/* Call this only after the sheet is on the page. Names start on the next
+   turn. Approvals loads image bytes when a cell is on screen. The VRF sheet
+   passes eager so every attachment starts at once. */
 function mountLazyGallery(pgal, owners, opts){
   opts=opts||{};
   var n=photoCountMany(owners);
   pgal.innerHTML="";
   pgal.appendChild(el("div","hint", n
-    ? (n+" picture"+(n===1?"":"s")+" — they load when you reach them.")
+    ? (opts.eager
+        ? (n+" picture"+(n===1?"":"s")+" — loading.")
+        : (n+" picture"+(n===1?"":"s")+" — they load when you reach them."))
     : "Picture names load in the background."));
   setTimeout(function(){ fillLazyGallery(pgal, owners, opts); }, 0);
 }
@@ -5071,7 +5132,7 @@ function guessLinkKind(u){
   return "other";
 }
 async function addLink(owner,rec){
-  var existing=await listPhotos(owner);
+  var existing=await listPhotoMeta(owner);
   var idx=existing.reduce(function(a,x){ return Math.max(a,x.idx||0); },0)+1;
   var body={vrf:String(owner), idx:idx, kind:"link", url:rec.url,
     linkKind:rec.linkKind||guessLinkKind(rec.url),
@@ -5087,7 +5148,7 @@ async function addLink(owner,rec){
   return idx;
 }
 async function addPhoto(vrf,rec){
-  var existing=await listPhotos(vrf);
+  var existing=await listPhotoMeta(vrf);
   if(existing.length>=PHOTO_PER_VRF) throw new Error("This record already has "+PHOTO_PER_VRF+" attachments.");
   var idx=existing.reduce(function(a,x){ return Math.max(a,x.idx||0); },0)+1;
   var body={vrf:String(vrf),idx:idx,caption:rec.caption||"",by:rec.by||"",at:iso(),
@@ -10797,16 +10858,37 @@ function buildVrfDoc(entry,photos){
   });
   d.appendChild(sig);
 
-  var linkList=(photos||[]).filter(function(x){ return x.kind==="link"; });
-  photos=(photos||[]).filter(function(x){ return x.kind!=="link"&&x.data; });
-  if(photos.length){
+  var linkList=(photos||[]).filter(function(x){ return x&&x.kind==="link"; });
+  var files=(photos||[]).filter(function(x){ return x&&x.kind!=="link"; });
+  if(files.length){
     var ph=el("div","vph");
     ph.appendChild(vrfMarkNode(mark));
-    ph.appendChild(el("h4",null,"Attachments — VRF "+entry.vrf+"  ("+photos.length+")"));
+    ph.appendChild(el("h4",null,"Attachments — VRF "+entry.vrf+"  ("+files.length+")"));
     var gr=el("div","vgrid");
-    photos.forEach(function(x,n){
+    files.forEach(function(x,n){
       var f=document.createElement("figure");
-      var im=document.createElement("img"); im.src=x.data; f.appendChild(im);
+      if(x.id) f.setAttribute("data-photo-id", String(x.id));
+      if(isVideoMeta(x)){
+        var vnote=document.createElement("div");
+        vnote.className="vmiss";
+        vnote.textContent="Video attached"+(x.caption?": "+x.caption:"")+" — play it on the VRF. It is not embedded in this print.";
+        f.appendChild(vnote);
+      }else if(x.data){
+        var im=document.createElement("img");
+        im.alt=x.caption||"attachment";
+        im.src=x.data;
+        f.appendChild(im);
+      }else if(x._failed){
+        var miss=document.createElement("div");
+        miss.className="vmiss";
+        miss.textContent="Picture failed to load"+(x.caption?": "+x.caption:"")+". It is not on this print.";
+        f.appendChild(miss);
+      }else{
+        var wait=document.createElement("div");
+        wait.className="vwait";
+        wait.textContent="Loading picture…";
+        f.appendChild(wait);
+      }
       var cp=document.createElement("figcaption");
       cp.textContent=(n+1)+". "+(x.caption||"attachment")+
         (x.by?"  —  "+x.by:"")+(x.at?"  ·  "+x.at:"");
@@ -10870,6 +10952,10 @@ var VRFDOC_CSS = [
 ".vgrid figure{margin:0;break-inside:avoid}",
 ".vgrid img{width:100%;border:1px solid #999;display:block}",
 ".vgrid figcaption{font-size:9px;color:#444;margin-top:3px}",
+".vwait,.vmiss{border:1px dashed #999;padding:10px 8px;font-size:10px;color:#333;background:#f7f7f7}",
+".vmiss{border-style:solid;background:#fff6f6}",
+".vretry{margin-top:6px}",
+"@media print{.vretry{display:none}}",
 ".vfoot{margin-top:10px;font-size:8.5px;color:#666;border-top:1px solid #ddd;padding-top:5px}",
 "@media screen{body{background:#eee;padding:14px}.vrfdoc{background:#fff;padding:14mm 12mm;box-shadow:0 2px 12px rgba(0,0,0,.2)}}"
 ].join("\n");
@@ -10911,9 +10997,107 @@ async function entryWithPrintableSig(entry){
   }
   return next;
 }
+function printPhotoFiles(list){
+  return (list||[]).filter(function(x){ return x&&x.kind!=="link"&&!isVideoMeta(x); });
+}
+function whenImgReady(im){
+  return new Promise(function(resolve){
+    if(!im){ resolve(false); return; }
+    if(im.complete&&im.naturalWidth){ resolve(true); return; }
+    var finish=function(ok){
+      im.removeEventListener("load",onLoad);
+      im.removeEventListener("error",onErr);
+      resolve(!!ok);
+    };
+    function onLoad(){ finish(im.naturalWidth>0); }
+    function onErr(){ finish(false); }
+    im.addEventListener("load",onLoad);
+    im.addEventListener("error",onErr);
+  });
+}
+function printFigure(page, id){
+  if(!page||id==null||id==="") return null;
+  var nodes=page.querySelectorAll("figure[data-photo-id]");
+  for(var i=0;i<nodes.length;i++){
+    if(nodes[i].getAttribute("data-photo-id")===String(id)) return nodes[i];
+  }
+  return null;
+}
+function setPrintFigureBody(fig, node){
+  var cap=fig.querySelector("figcaption");
+  while(fig.firstChild) fig.removeChild(fig.firstChild);
+  fig.appendChild(node);
+  if(cap) fig.appendChild(cap);
+}
+function markPrintFigureFailed(fig, x, retry){
+  var wrap=document.createElement("div");
+  var miss=document.createElement("div");
+  miss.className="vmiss";
+  miss.textContent="Picture failed to load"+(x&&x.caption?": "+x.caption:"")+". It stays off the print until it loads.";
+  var b=document.createElement("button");
+  b.type="button";
+  b.className="btn sm vretry";
+  b.textContent="Retry";
+  b.addEventListener("click",function(ev){
+    ev.preventDefault();
+    ev.stopPropagation();
+    retry();
+  });
+  wrap.appendChild(miss);
+  wrap.appendChild(b);
+  setPrintFigureBody(fig, wrap);
+}
+/* One picture, by its id. A miss is marked on that figure only. */
+function pullPrintPhoto(x, page, onDone){
+  if(!x||x.kind==="link"||isVideoMeta(x)||x.data){
+    if(onDone) onDone();
+    return Promise.resolve(!!(x&&x.data));
+  }
+  x._failed=false;
+  var fig=printFigure(page, x.id);
+  if(fig){
+    var wait=document.createElement("div");
+    wait.className="vwait";
+    wait.textContent="Loading picture…";
+    setPrintFigureBody(fig, wait);
+  }
+  return loadPhotoDoc(x.id,{direct:true}).then(function(doc){
+    fig=printFigure(page, x.id);
+    if(doc&&doc.data&&!isVideoAttachment(doc)){
+      x.data=doc.data;
+      if(doc.mime) x.mime=doc.mime;
+      x._failed=false;
+      if(fig){
+        var im=document.createElement("img");
+        im.alt=x.caption||"attachment";
+        im.src=x.data;
+        setPrintFigureBody(fig, im);
+        return whenImgReady(im).then(function(ok){
+          if(!ok){
+            x._failed=true;
+            x.data="";
+            if(x.id&&photoDocCache[x.id]) delete photoDocCache[x.id];
+            markPrintFigureFailed(fig, x, function(){ pullPrintPhoto(x, page, onDone); });
+          }
+          if(onDone) onDone();
+          return ok;
+        });
+      }
+      if(onDone) onDone();
+      return true;
+    }
+    x._failed=true;
+    if(fig) markPrintFigureFailed(fig, x, function(){ pullPrintPhoto(x, page, onDone); });
+    if(onDone) onDone();
+    return false;
+  });
+}
 async function printVrf(entry,photos){
   try{ markVrfPrinted(entry); }catch(e){}
   try{ entry=await entryWithPrintableSig(entry); }catch(e){}
+  var supplied=Array.isArray(photos);
+  var live=supplied?photos.slice():[];
+  var listReady=supplied;
   var ex=document.getElementById("pvSheet"); if(ex) ex.remove();
   var m=el("div","modal"); m.id="pvSheet";
   var sheet=el("div","sheet");
@@ -10922,13 +11106,58 @@ async function printVrf(entry,photos){
   bar.style.cssText="display:flex;gap:var(--space-2);align-items:center;padding:var(--space-3) var(--space-4);border-bottom:1px solid var(--rule);position:sticky;top:0;background:var(--surface);z-index:2;flex-wrap:wrap";
   bar.appendChild(el("strong",null,"VRF "+entry.vrf));
   bar.appendChild(el("span","chip "+(vrfPrintWatermark(entry)==="APPROVED"?"ok":"warn"),vrfPrintWatermark(entry)));
-  bar.appendChild(el("span","hint",(photos&&photos.length?photos.length+" attachment"+(photos.length>1?"s":"")+" included":"no attachments")));
+  var hint=el("span","hint","Opening the form…");
+  bar.appendChild(hint);
   var sp=el("div"); sp.style.flex="1"; bar.appendChild(sp);
-
+  var pageBox={node:null};
   var saveb=el("button","btn pri","Save printable file");
+  var printb=el("button","btn","Print");
+
+  function syncBar(){
+    if(!m.isConnected) return;
+    var files=printPhotoFiles(live);
+    var ready=files.filter(function(x){ return x.data; }).length;
+    var failed=files.filter(function(x){ return x._failed&&!x.data; }).length;
+    var pending=files.length-ready-failed;
+    var links=(live||[]).filter(function(x){ return x&&x.kind==="link"; }).length;
+    if(!listReady){
+      hint.textContent="Loading the attachment list…";
+      printb.disabled=true; saveb.disabled=true;
+      printb.textContent="Print";
+      saveb.textContent="Save printable file";
+      return;
+    }
+    if(!files.length){
+      hint.textContent=links?(links+" linked file"+(links>1?"s":"")):"no attachments";
+      printb.disabled=false; saveb.disabled=false;
+      printb.textContent="Print";
+      saveb.textContent="Save printable file";
+      return;
+    }
+    if(pending>0){
+      hint.textContent=files.length+" attachment"+(files.length>1?"s":"")+" — "+ready+" of "+files.length+" pictures ready";
+      printb.disabled=true; saveb.disabled=true;
+      printb.textContent="Waiting for pictures ("+ready+"/"+files.length+")";
+      saveb.textContent="Save printable file";
+      return;
+    }
+    if(failed>0){
+      hint.textContent=ready+" of "+files.length+" pictures ready — "+failed+" failed. Retry that picture, or print with it marked missing.";
+      printb.disabled=false; saveb.disabled=false;
+      printb.textContent="Print — "+failed+" picture"+(failed>1?"s":"")+" missing";
+      saveb.textContent="Save printable file";
+      return;
+    }
+    hint.textContent=files.length+" attachment"+(files.length>1?"s":"")+" included";
+    printb.disabled=false; saveb.disabled=false;
+    printb.textContent="Print";
+    saveb.textContent="Save printable file";
+  }
+
   saveb.addEventListener("click",async function(){
+    if(saveb.disabled) return;
     saveb.disabled=true; saveb.textContent="Preparing…";
-    var html=vrfDocFile(entry,photos);
+    var html=vrfDocFile(entry,live);
     var dl=null;
     try{ dl=await claude.use("downloads"); }catch(e){ dl=null; }
     if(dl){
@@ -10943,15 +11172,19 @@ async function printVrf(entry,photos){
         else toast("Could not open a window — allow pop-ups, or use Print below.");
       }catch(e){ toast("Could not open the file here."); }
     }
-    saveb.disabled=false; saveb.textContent="Save printable file";
+    syncBar();
   });
   bar.appendChild(saveb);
 
-  var printb=el("button","btn","Print");
-  printb.addEventListener("click",function(){
+  printb.addEventListener("click",async function(){
+    if(printb.disabled) return;
     var host=document.getElementById("printArea");
     if(!host){ host=el("div"); host.id="printArea"; document.body.appendChild(host); }
-    host.innerHTML=""; host.appendChild(buildVrfDoc(entry,photos));
+    host.innerHTML="";
+    var doc=buildVrfDoc(entry,live);
+    host.appendChild(doc);
+    var imgs=host.querySelectorAll("img");
+    try{ await Promise.all(Array.prototype.map.call(imgs, whenImgReady)); }catch(e){}
     document.body.classList.add("printing");
     var done=function(){ document.body.classList.remove("printing");
       window.removeEventListener("afterprint",done); };
@@ -10973,14 +11206,77 @@ async function printVrf(entry,photos){
 
   var scrollBox=el("div");
   scrollBox.style.cssText="background:#e9eaeb;padding:var(--space-4)";
-  var page=buildVrfDoc(entry,photos);
-  page.style.boxShadow="0 2px 12px rgba(0,0,0,.18)";
-  scrollBox.appendChild(page);
+  function show(list){
+    var next=buildVrfDoc(entry, list);
+    next.style.boxShadow="0 2px 12px rgba(0,0,0,.18)";
+    if(pageBox.node&&pageBox.node.parentNode) pageBox.node.replaceWith(next);
+    else scrollBox.appendChild(next);
+    pageBox.node=next;
+  }
   sheet.appendChild(scrollBox);
+  show(live);
 
   m.appendChild(sheet);
   m.addEventListener("click",function(e){ if(e.target===m) m.remove(); });
   document.body.appendChild(m);
+  syncBar();
+
+  function loadAll(){
+    return Promise.all(printPhotoFiles(live).map(function(x){
+      return pullPrintPhoto(x, pageBox.node, syncBar);
+    })).then(function(){
+      /* The same picture can sit on the VRF number and the reserve.
+         Once the bytes are here, keep one copy — the same rule as the ledger. */
+      var merged=mergePhotoLists([live]);
+      if(merged.length!==live.length){
+        live=merged;
+        show(live);
+        printPhotoFiles(live).forEach(function(x){
+          if(!x._failed||x.data) return;
+          var fig=printFigure(pageBox.node, x.id);
+          if(fig) markPrintFigureFailed(fig, x, function(){ pullPrintPhoto(x, pageBox.node, syncBar); });
+        });
+      }
+      syncBar();
+    }, syncBar);
+  }
+  function takeList(list){
+    if(!m.isConnected) return;
+    live=list||[];
+    listReady=true;
+    show(live);
+    syncBar();
+    return loadAll();
+  }
+  if(!supplied){
+    listPhotoMetaMany(photoOwnersForOpenVrf(entry)).then(takeList).catch(function(){
+      if(!m.isConnected) return;
+      listReady=true;
+      live=[];
+      hint.textContent="The attachment list did not load. Printing now leaves the pictures off the form.";
+      printb.disabled=false; saveb.disabled=false;
+      printb.textContent="Print — pictures not loaded";
+      var retry=el("button","btn sm","Retry pictures");
+      retry.addEventListener("click",function(){
+        retry.disabled=true;
+        listReady=false;
+        syncBar();
+        listPhotoMetaMany(photoOwnersForOpenVrf(entry)).then(function(list){
+          retry.remove();
+          return takeList(list);
+        }).catch(function(){
+          listReady=true;
+          retry.disabled=false;
+          printb.disabled=false; saveb.disabled=false;
+          printb.textContent="Print — pictures not loaded";
+          hint.textContent="The attachment list did not load. Printing now leaves the pictures off the form.";
+        });
+      });
+      bar.insertBefore(retry, sp);
+    });
+  }else{
+    loadAll();
+  }
 }
 function lightbox(src){
   var b=el("div","lightbox");
@@ -11062,10 +11358,8 @@ function askDriveLink(entry,after){
   m.addEventListener("click",function(e){ if(e.target===m) m.remove(); });
   document.body.appendChild(m);
 }
-async function printVrfNo(entry){
-  var ph=[];
-  try{ ph=await listPhotosMany(photoOwnersForOpenVrf(entry)); }catch(e){}
-  printVrf(entry,ph);
+function printVrfNo(entry){
+  printVrf(entry);
 }
 function askMarkDuplicate(entry, after){
   if(!entry) return;
@@ -11808,11 +12102,8 @@ function openVrf(entry,tab){
     }));
   }
   var pr=el("button","btn","Print / save as PDF");
-  pr.addEventListener("click",async function(){
-    pr.disabled=true; pr.textContent="Preparing…";
-    var ph=await listPhotosMany(photoOwnersForOpenVrf(entry));
-    pr.disabled=false; pr.textContent="Print / save as PDF";
-    printVrf(entry,ph);
+  pr.addEventListener("click",function(){
+    printVrf(entry);
   });
   tabs.appendChild(pr);
   b.appendChild(tabs);
@@ -12385,6 +12676,7 @@ function openVrf(entry,tab){
   document.body.appendChild(m);
   if(lazyGal){
     mountLazyGallery(lazyGal, photoOwnersForOpenVrf(entry), {
+      eager:true,
       emptyHtml:"<b>Nothing attached to this VRF yet.</b>",
       captionFallback:"attachment",
       onRemove:function(x){

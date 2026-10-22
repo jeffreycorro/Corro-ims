@@ -821,15 +821,51 @@ function photoMetaSelect() {
   ].join(",");
 }
 
+/**
+ * Photo ids are `vrf-{owner}__{n}` (same rule as photoKey in the page).
+ * Keep the character class in step with that function.
+ */
+function photoIdPrefix(owner) {
+  const safe = String(owner == null ? "" : owner).replace(/[^A-Za-z0-9_.~:@+-]/g, "_");
+  return "vrf-" + safe + "__";
+}
+
+/** Exclusive upper bound so `id >= prefix AND id < upper` is that owner's photos. */
+function photoIdUpper(prefix) {
+  const last = String(prefix || "").charCodeAt(String(prefix || "").length - 1);
+  if (!prefix || !Number.isFinite(last)) return String(prefix || "") + "\uffff";
+  return String(prefix).slice(0, -1) + String.fromCharCode(last + 1);
+}
+
+/**
+ * Lookup by primary key (collection, id). Filtering `data->>vrf` instead
+ * seq-scans every photo and detoasts the image blobs (~144MB) before it
+ * can return the three pictures on one VRF.
+ */
 function photoMetaQuery(owner) {
   const select = photoMetaSelect();
+  const prefix = photoIdPrefix(owner);
+  const upper = photoIdUpper(prefix);
   return (
     "collection=eq.photos" +
-    "&data->>vrf=eq." +
-    encodeURIComponent(String(owner)) +
+    "&id=gte." +
+    encodeURIComponent(prefix) +
+    "&id=lt." +
+    encodeURIComponent(upper) +
     "&select=" +
     encodeURIComponent(select) +
     "&order=id.asc"
+  );
+}
+
+function photoIdRangeQuery(owner) {
+  const prefix = photoIdPrefix(owner);
+  const upper = photoIdUpper(prefix);
+  return (
+    "&id=gte." +
+    encodeURIComponent(prefix) +
+    "&id=lt." +
+    encodeURIComponent(upper)
   );
 }
 
@@ -929,8 +965,19 @@ async function deleteDoc(collection, id) {
 }
 
 async function listCollection(collection, filters) {
-  const { listFilterQuery, rowMatchesFilters } = require("./collections");
-  const extra = listFilterQuery(filters);
+  const { listFilterQuery, rowMatchesFilters, normalizeListFilters } = require("./collections");
+  const norm = normalizeListFilters(filters);
+  let extra = listFilterQuery(filters);
+  /* One VRF's pictures, by id. data->>vrf would read every photo blob. */
+  if (
+    collection === "photos" &&
+    norm.length === 1 &&
+    norm[0].field === "vrf" &&
+    norm[0].op === "eq" &&
+    norm[0].value
+  ) {
+    extra = photoIdRangeQuery(norm[0].value);
+  }
   const rows = await rest({
     method: "GET",
     path: "/rest/v1/motorpool_docs",
@@ -1047,6 +1094,9 @@ module.exports = {
   listCollection,
   listIds,
   listPhotoMeta,
+  photoIdPrefix,
+  photoIdRangeQuery,
+  photoIdUpper,
   photoMetaQuery,
   photoMetaRow,
   photoMetaSelect,
