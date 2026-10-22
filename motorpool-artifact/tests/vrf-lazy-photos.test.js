@@ -4,7 +4,13 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs");
 const path = require("path");
-const { photoMetaQuery, photoMetaRow, photoMetaSelect } = require("../netlify/lib/supabase");
+const {
+  photoIdPrefix,
+  photoIdUpper,
+  photoMetaQuery,
+  photoMetaRow,
+  photoMetaSelect,
+} = require("../netlify/lib/supabase");
 const { applyVrfAutoApproval, VRF_AUTO_APPROVE_UNDER } = require("./lib/rules");
 
 const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
@@ -28,9 +34,26 @@ describe("photo meta omits the image blob", () => {
     assert.match(select, /vrf:data->>vrf/);
     assert.match(select, /thumb:data->>thumb/);
     const query = decodeURIComponent(photoMetaQuery("RSV-12"));
+    const prefix = photoIdPrefix("RSV-12");
+    const upper = photoIdUpper(prefix);
+    assert.equal(prefix, "vrf-RSV-12__");
     assert.match(query, /collection=eq\.photos/);
-    assert.match(query, /data->>vrf=eq\.RSV-12/);
+    assert.match(query, new RegExp("id=gte\\." + prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.ok(query.includes("id=lt." + upper));
+    assert.doesNotMatch(query, /data->>vrf=eq/);
     assert.equal(query.includes(",data,") || query.includes("select=data"), false);
+    assert.equal(photoIdPrefix("5887"), "vrf-5887__");
+    const hit = "vrf-5887__10";
+    const other = "vrf-58870__1";
+    const next = "vrf-5888__1";
+    const bound = photoIdUpper(photoIdPrefix("5887"));
+    assert.ok(hit >= photoIdPrefix("5887") && hit < bound);
+    assert.ok(!(other >= photoIdPrefix("5887") && other < bound));
+    assert.ok(!(next >= photoIdPrefix("5887") && next < bound));
+    assert.match(
+      fs.readFileSync(path.join(__dirname, "../netlify/lib/supabase.js"), "utf8"),
+      /photoIdRangeQuery\(norm\[0\]\.value\)/
+    );
   });
 
   it("drops a blob if one is present on the row", () => {
@@ -74,7 +97,7 @@ describe("Approvals renders before any picture fetch", () => {
     assert.match(painted, /el\("button","btn","Reject"\)/);
     assert.doesNotMatch(painted, /listPhotos|mountLazyGallery|S\.db\.photoMeta|signedUrl|createSignedUrl/);
     assert.ok(body.indexOf("document.body.appendChild(m)") < body.indexOf("mountLazyGallery(pgal"));
-    assert.match(html, /var BUILD = "2026-10-21 a"/);
+    assert.match(html, /var BUILD = "2026-10-22 a"/);
   });
 
   it("opens a VRF sheet without fetching pictures, and prints only when asked", () => {
@@ -82,16 +105,18 @@ describe("Approvals renders before any picture fetch", () => {
     assert.doesNotMatch(html, /async function openVrf\(entry,tab\)/);
     const body = sliceFn(html, "function openVrf(entry,tab)", "function blankLine()");
     const painted = body.slice(0, body.indexOf("document.body.appendChild(m)"));
-    const printAt = painted.indexOf('pr.addEventListener("click",async function()');
+    const printAt = painted.indexOf('pr.addEventListener("click",function()');
     const printEnd = painted.indexOf("tabs.appendChild(pr)", printAt);
     assert.ok(printAt > 0 && printEnd > printAt);
     const withoutPrint = painted.slice(0, printAt) + painted.slice(printEnd);
-    assert.match(painted.slice(printAt, printEnd), /await listPhotosMany\(photoOwnersForOpenVrf\(entry\)\)/);
+    assert.match(painted.slice(printAt, printEnd), /printVrf\(entry\)/);
+    assert.doesNotMatch(painted.slice(printAt, printEnd), /listPhotos/);
     assert.doesNotMatch(withoutPrint, /listPhotos/);
     assert.doesNotMatch(painted, /mountLazyGallery/);
     assert.match(body, /if\(lazyGal\)/);
     assert.match(body, /mountLazyGallery\(lazyGal/);
-    assert.equal((body.match(/listPhotosMany/g) || []).length, 1);
+    assert.match(body, /eager:true/);
+    assert.equal((body.match(/listPhotosMany/g) || []).length, 0);
   });
 });
 
@@ -106,12 +131,41 @@ describe("pictures load small, later, and full size only on tap", () => {
     assert.match(html, /function thumbSrcFor/);
     assert.match(html, /PHOTO_THUMB_PX/);
     assert.match(html, /Video — tap to play/);
+    assert.match(html, /function paintPhotoFailure/);
+    assert.match(html, /Picture failed/);
+    assert.match(html, /function fetchPhotoRow/);
+    assert.match(html, /PHOTO_GET_MS/);
     assert.match(html, /function lightboxVideo/);
     assert.match(html, /setTimeout\(function\(\)\{ fillLazyGallery/);
     const meta = sliceFn(html, "async function listPhotoMeta(owner)", "async function listPhotoMetaMany(");
     assert.match(meta, /S\.db\.photoMeta/);
     assert.doesNotMatch(meta, /listPhotos\(/);
     assert.match(meta, /return meta/);
+  });
+});
+
+describe("print opens before picture bytes and keeps every attachment", () => {
+  it("loads names first, then each picture on its own, and will not print early", () => {
+    const print = sliceFn(html, "function pullPrintPhoto(x, page, onDone)", "function lightbox(src)");
+    assert.match(print, /listPhotoMetaMany\(photoOwnersForOpenVrf\(entry\)\)/);
+    assert.match(print, /loadPhotoDoc\(x\.id,\{direct:true\}\)/);
+    assert.match(print, /Waiting for pictures/);
+    assert.match(print, /Print — /);
+    assert.match(print, /whenImgReady/);
+    assert.match(print, /markPrintFigureFailed/);
+    assert.match(html, /Picture failed to load/);
+    assert.match(print, /Retry pictures/);
+    assert.doesNotMatch(print, /listPhotosMany|collection\("photos"\)/);
+    assert.match(html, /function printVrfNo\(entry\)\{\n  printVrf\(entry\);\n\}/);
+    const doc = sliceFn(html, "function buildVrfDoc(entry,photos)", "var VRFDOC_CSS");
+    assert.match(doc, /data-photo-id/);
+    assert.match(doc, /Loading picture…/);
+    assert.match(doc, /shownFuelPrevNote\(/);
+    assert.match(doc, /vrfApprovedSig\(entry\)/);
+    assert.doesNotMatch(doc, /kind!=="link"&&x\.data/);
+    const reserve = sliceFn(html, "function openReserve(no,asApprover)", "function approveView()");
+    assert.match(reserve, /mountLazyGallery\(pgal/);
+    assert.doesNotMatch(reserve, /eager:true/);
   });
 });
 
