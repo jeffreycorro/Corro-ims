@@ -434,7 +434,9 @@
         else if (typeof Uint8Array !== "undefined" && data instanceof Uint8Array)
           blob = new Blob([data]);
         else if (typeof data === "string")
-          blob = new Blob([data], { type: "text/plain;charset=utf-8" });
+          blob = new Blob([data], {
+            type: (/\.csv$/i.test(filename) ? "text/csv" : "text/plain") + ";charset=utf-8",
+          });
         else if (data && typeof data === "object" && data.content != null)
           blob = new Blob([data.content], {
             type: data.mimeType || data.type || "application/octet-stream",
@@ -450,8 +452,8 @@
         a.rel = "noopener";
         document.body.appendChild(a);
         a.click();
-        a.remove();
         setTimeout(function () {
+          if (a.parentNode) a.parentNode.removeChild(a);
           URL.revokeObjectURL(url);
         }, 1500);
         return Promise.resolve({ ok: true, filename: filename });

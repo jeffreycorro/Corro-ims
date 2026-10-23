@@ -391,6 +391,8 @@ describe("hr-recruit pipeline search", () => {
     assert.equal(hr.applicantMatchesSearch(applicants.a1, "luisa", roles), true);
     assert.equal(hr.applicantMatchesSearch(applicants.a1, "Luisa Barrios", roles), true);
     assert.equal(hr.applicantMatchesSearch(applicants.a1, "luisa@example", roles), true);
+    assert.equal(hr.applicantMatchesSearch(applicants.a1, "Barrios,", roles), true);
+    assert.equal(hr.applicantMatchesSearch(applicants.a1, "!!!", roles), false);
     assert.equal(hr.applicantMatchesSearch(applicants.a1, "0917", roles), true);
     assert.equal(hr.applicantMatchesSearch(applicants.a1, "09170000000", roles), true);
     assert.equal(hr.applicantMatchesSearch(applicants.a1, "procurement", roles), true);
@@ -826,5 +828,96 @@ describe("hr-recruit initial interviews", () => {
     assert.match(w.modal.body, /Project Manager/);
     assert.match(hr.schedulePanelHtml(w.S.applicants.a1), /id="hr-recruit-iv-panel"/);
     assert.match(hr.schedulePanelHtml(w.S.applicants.a1), /Not scheduled yet/);
+  });
+
+  it("schedules a name stored as Last, First and adds someone who is not on the pipeline", async () => {
+    const w = fakeWindow(copyPeople());
+    w.S.applicants.a6 = {
+      id: "a6",
+      name: "Lagamon, Cyrence",
+      roleId: "",
+      position: "Helper",
+      stage: "Applied",
+      interviews: [],
+    };
+    w.S.applicants.a7 = {
+      id: "a7",
+      name: "Lagamon, Cyrence",
+      roleId: "",
+      position: "Helper",
+      stage: "Screening",
+      interviews: [],
+    };
+    const hr = loadRecruit(w);
+    assert.equal(hr.exactNameMatches("Cyrence Lagamon").length, 2);
+    assert.equal(hr.resolveInterviewTarget("", "", "Cyrence Lagamon").error, "several");
+    delete w.S.applicants.a7;
+
+    const found = hr.resolveInterviewTarget("", "", "Cyrence Lagamon");
+    assert.equal(found.create, false);
+    assert.equal(found.id, "a6");
+    assert.equal(hr.applicantMatchesSearch(w.S.applicants.a6, "Lagamon,", w.S.roles), true);
+    assert.equal(hr.applicantFuzzyMatch(w.S.applicants.a6, "Cyrene Lagamon", w.S.roles), true);
+    const hired = hr.resolveInterviewTarget("", "", "Hired Person");
+    assert.equal(hired.id, "a5");
+    const partial = hr.resolveInterviewTarget("", "", "Lagamon");
+    assert.equal(partial.error, "close");
+    assert.equal(Object.keys(w.S.applicants).length, 6);
+
+    const scheduled = await hr.commitManualInterview(
+      { name: "Cyrence Lagamon", position: "Helper", mobile: "0917 111 2222" },
+      { at: "2026-10-23T09:00", interviewer: "Cassie", status: "Scheduled" }
+    );
+    assert.equal(scheduled.ok, true);
+    assert.equal(scheduled.created, false);
+    assert.equal(w.S.applicants.a6.initialInterview.at, "2026-10-23T09:00");
+    assert.equal(w.S.applicants.a6.stage, "Interview");
+    assert.equal(Object.keys(w.S.applicants).filter((id) => /lagamon/i.test(w.S.applicants[id].name)).length, 1);
+
+    const missingDate = await hr.commitManualInterview({ name: "Nobody On File" }, { interviewer: "Cassie" });
+    assert.equal(missingDate.ok, false);
+    assert.equal(missingDate.error, "when");
+    assert.equal(hr.exactNameMatches("Nobody On File").length, 0);
+
+    const created = await hr.commitManualInterview(
+      { name: "Nobody On File", position: "Procurement Officer", mobile: "0918 000 1111", email: "nobody@example.com" },
+      { at: "2026-10-23T09:00", interviewer: "Cassie", notes: "Walk-in", status: "Scheduled" }
+    );
+    assert.equal(created.ok, true);
+    assert.equal(created.created, true);
+    assert.equal(created.applicant.stage, "Interview");
+    assert.equal(created.applicant.source, "Walk-in");
+    assert.equal(created.applicant.roleId, "ro06");
+    assert.equal(created.applicant.dept, "Procurement");
+    assert.equal(created.applicant.mobile, "0918 000 1111");
+    assert.equal(created.applicant.email, "nobody@example.com");
+    assert.equal(created.applicant.notes, "Added when the initial interview was scheduled.");
+    assert.equal(w.S.applicants[created.applicant.id].initialInterview.status, "Scheduled");
+    const again = await hr.commitManualInterview(
+      { name: "Nobody On File", position: "Other" },
+      { at: "2026-10-24T10:00", status: "Rescheduled" }
+    );
+    assert.equal(again.created, false);
+    assert.equal(again.applicant.id, created.applicant.id);
+    assert.equal(again.applicant.position, "Procurement Officer");
+    assert.match(hr.initialInterviewsHtml(), /Nobody On File/);
+    assert.match(hr.initialInterviewsHtml(), /id="hr-iv-new-name"/);
+    assert.match(hr.initialInterviewsHtml(), /Add someone who is not on the pipeline/);
+
+    const sel = w.document.createElement("select");
+    sel.setAttribute("id", "hr-iv-app");
+    sel.value = "";
+    const hint = w.document.createElement("span");
+    hint.setAttribute("id", "hr-iv-find-hint");
+    const name = w.document.createElement("input");
+    name.setAttribute("id", "hr-iv-new-name");
+    name.value = "";
+    hr.filterApplicantSelect("Cyrence Lagamon");
+    assert.equal(sel.value, "a6");
+    assert.match(hint.textContent, /Lagamon, Cyrence/);
+    hr.filterApplicantSelect("Totally Unknown Person");
+    assert.equal(sel.value, "");
+    assert.equal(name.value, "Totally Unknown Person");
+    assert.equal(name.getAttribute("data-from-find"), "1");
   });
 });

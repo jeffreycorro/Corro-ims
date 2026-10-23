@@ -6,14 +6,15 @@
  * role filter, a live search bar, applicant exam-score rows, a
  * "View 201 / application file" action on the applicant editor, and
  * Initial interviews: a date and time on the applicant, listed by position.
+ * A name that is not on the pipeline can be typed in and is added there.
  */
 (function (root) {
   "use strict";
 
-  if (root.hrRecruit && root.hrRecruit.version === "1.7.0") return;
+  if (root.hrRecruit && root.hrRecruit.version === "1.8.0") return;
 
   var api = {
-    version: "1.7.0",
+    version: "1.8.0",
     attached: false,
     openAppId: "",
     roleFilter: "",
@@ -552,7 +553,11 @@
       .toLowerCase();
     if (!q) return true;
     var hay = searchHaystack(a, roles);
-    return q.split(/\s+/).every(function (word) {
+    var words = q.split(/\s+/).map(function (word) {
+      return word.replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, "");
+    }).filter(Boolean);
+    if (!words.length) return false;
+    return words.every(function (word) {
       return hay.indexOf(word) >= 0;
     });
   }
@@ -1891,15 +1896,199 @@
     return groups;
   }
 
+  function foldText(s) {
+    return String(s == null ? "" : s)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function nameTokens(s) {
+    return foldText(s).split(" ").filter(function (t) {
+      return t.length >= 2;
+    });
+  }
+
+  function editDistance(a, b) {
+    if (a === b) return 0;
+    var la = a.length;
+    var lb = b.length;
+    if (Math.abs(la - lb) > 2) return 3;
+    var prev = [];
+    var i;
+    var j;
+    for (j = 0; j <= lb; j += 1) prev[j] = j;
+    for (i = 1; i <= la; i += 1) {
+      var cur = [i];
+      var rowMin = i;
+      for (j = 1; j <= lb; j += 1) {
+        var cost = a.charAt(i - 1) === b.charAt(j - 1) ? 0 : 1;
+        cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+        if (cur[j] < rowMin) rowMin = cur[j];
+      }
+      if (rowMin > 2) return 3;
+      prev = cur;
+    }
+    return prev[lb];
+  }
+
+  function tokenClose(a, b) {
+    if (a === b) return true;
+    if (a.length < 5 || b.length < 5) return false;
+    return editDistance(a, b) <= 1;
+  }
+
+  function applicantFuzzyMatch(a, query, roles) {
+    if (applicantMatchesSearch(a, query, roles)) return true;
+    var qTokens = nameTokens(query);
+    if (!qTokens.length) return false;
+    var hay = [a && a.name, a && a.position, displayRoleTitle(a, roles)].filter(Boolean).join(" ");
+    return qTokens.every(function (qt) {
+      return nameTokens(hay).some(function (ht) {
+        return tokenClose(qt, ht);
+      });
+    });
+  }
+
+  function nameTokenKey(s) {
+    return nameTokens(s).slice().sort().join(" ");
+  }
+
+  function exactNameMatches(name) {
+    var want = nameTokenKey(name);
+    if (!want) return [];
+    return applicantList().filter(function (a) {
+      return nameTokenKey(a && a.name) === want;
+    });
+  }
+
+  function isClosedStage(a) {
+    var s = canonicalStage(a && a.stage);
+    return s === "Hired" || s === "Rejected";
+  }
+
+  function applicantsForSchedule(query) {
+    var q = String(query == null ? "" : query).trim();
+    var roles = rolesMap();
+    var all = applicantList();
+    if (!q) return schedulableApplicants();
+    var open = all.filter(function (a) {
+      return !isClosedStage(a);
+    });
+    var hit = open.filter(function (a) {
+      return applicantMatchesSearch(a, q, roles);
+    });
+    if (hit.length) return hit;
+    hit = open.filter(function (a) {
+      return applicantFuzzyMatch(a, q, roles);
+    });
+    if (hit.length) return hit;
+    return all.filter(function (a) {
+      return isClosedStage(a) && (applicantMatchesSearch(a, q, roles) || applicantFuzzyMatch(a, q, roles));
+    });
+  }
+
+  function newApplicantId() {
+    if (typeof root.uid === "function") return root.uid("a");
+    return "a_" + Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);
+  }
+
+  function roleForPosition(position) {
+    var want = String(position || "").trim().toLowerCase();
+    if (!want) return null;
+    var roles = rolesMap();
+    var id;
+    for (id in roles) {
+      if (!Object.prototype.hasOwnProperty.call(roles, id)) continue;
+      var role = roles[id];
+      var title = String((role && role.title) || "").trim().toLowerCase();
+      if (title && title === want) return { id: id, role: role };
+    }
+    return null;
+  }
+
+  function manualApplicant(fields) {
+    fields = fields || {};
+    var position = String(fields.position || "").trim();
+    var linked = roleForPosition(position);
+    var S = store() || {};
+    var settings = S.settings || {};
+    return {
+      id: newApplicantId(),
+      name: String(fields.name || "").trim(),
+      roleId: linked ? linked.id : "",
+      position: position,
+      dept: (linked && linked.role && linked.role.dept) || "Technical",
+      source: "Walk-in",
+      appliedOn: today(),
+      stage: "Applied",
+      mobile: String(fields.mobile || "").trim(),
+      email: String(fields.email || "").trim(),
+      resumeLink: "",
+      expected: "",
+      notes: "Added when the initial interview was scheduled.",
+      exams: [],
+      interviews: [],
+      aiSummary: "",
+      aiVerdict: "",
+      aiOn: "",
+      education: "",
+      years: "",
+      history: [],
+      background: [],
+      rffiNote: "",
+      hrVerdict: "",
+      hrRating: "3",
+      hrNotes: "",
+      hrBy: String(settings.hrHead || ""),
+      hrOn: "",
+      hiredEmpId: "",
+    };
+  }
+
+  async function commitManualInterview(fields, interview) {
+    fields = fields || {};
+    var name = String(fields.name || "").trim();
+    if (!name) return { ok: false, error: "name" };
+    var exact = exactNameMatches(name);
+    if (exact.length > 1) return { ok: false, error: "several" };
+    if (exact.length === 1) {
+      var existing = await commitInitialInterview(exact[0].id, interview || {});
+      if (existing.ok) existing.created = false;
+      return existing;
+    }
+    var created = manualApplicant(fields);
+    if (!scheduleInitialInterview(created, interview || {})) return { ok: false, error: "when" };
+    await persistApplicant(created);
+    return { ok: true, created: true, applicant: created };
+  }
+
+  function resolveInterviewTarget(selectedId, manualName, findText) {
+    var selected = String(selectedId || "").trim();
+    if (selected && findApplicant(selected)) return { ok: true, id: selected, create: false };
+    var typed = String(manualName || "").trim();
+    var find = String(findText || "").trim();
+    if (typed) {
+      var exactTyped = exactNameMatches(typed);
+      if (exactTyped.length === 1) return { ok: true, id: exactTyped[0].id, create: false };
+      if (exactTyped.length > 1) return { ok: false, error: "several" };
+      return { ok: true, create: true, name: typed };
+    }
+    if (find) {
+      var exactFind = exactNameMatches(find);
+      if (exactFind.length === 1) return { ok: true, id: exactFind[0].id, create: false };
+      if (exactFind.length > 1) return { ok: false, error: "several" };
+      if (applicantsForSchedule(find).length) return { ok: false, error: "close" };
+      return { ok: true, create: true, name: find };
+    }
+    return { ok: false, error: "missing" };
+  }
+
   function applicantOptionsHtml(list, selectedId, roles, query) {
     roles = roles || rolesMap();
-    var q = String(query == null ? "" : query).trim().toLowerCase();
     var filtered = (list || []).filter(function (a) {
-      if (!q) return true;
-      var hay = [a.name, displayRoleTitle(a, roles), a.email, a.position, a.mobile].join(" ").toLowerCase();
-      return q.split(/\s+/).every(function (word) {
-        return hay.indexOf(word) >= 0;
-      });
+      return applicantMatchesSearch(a, query, roles);
     });
     var html = '<option value="">— choose an applicant —</option>';
     var seen = Object.create(null);
@@ -1978,7 +2167,7 @@
     });
     var h =
       '<div id="hr-initial-interviews">' +
-      '<div class="note">Pick someone already on the pipeline. The date and time are Philippines time. ' +
+      '<div class="note">Pick someone already on the pipeline, or type a name under Add someone who is not on the pipeline. The date and time are Philippines time. ' +
       "Saving moves Applied, Screening, Shortlisted, On Hold, and Written Exam to Interview. " +
       "Someone already at Interview, Background Check, For Final Interview, Offer, Hired, or Rejected stays on that stage. " +
       "Change the status on the list when the interview is done, missed, moved, or failed.</div>" +
@@ -1988,19 +2177,28 @@
       " on the schedule</span></div>" +
       '<div class="card"><div class="card-b"><div class="stack">' +
       '<div class="f"><label>Find an applicant</label>' +
-      '<input type="search" id="hr-iv-find" class="search" placeholder="Name, email, mobile, or position" aria-label="Find an applicant" autocomplete="off"></div>' +
+      '<input type="search" id="hr-iv-find" class="search" placeholder="Name, email, mobile, or position" aria-label="Find an applicant" autocomplete="off">' +
+      '<span class="lbl" id="hr-iv-find-hint"></span></div>' +
       '<div class="grid3">' +
       '<div class="f"><label>Applicant</label><select id="hr-iv-app">' +
       applicantOptionsHtml(schedulableApplicants(), "", roles, "") +
       "</select></div>" +
       scheduleFieldsHtml({ interviewer: defaultInterviewer(), status: "Scheduled" }, PAGE_FIELDS) +
       "</div>" +
+      '<div class="f" id="hr-iv-manual" style="margin-top:8px"><label>Add someone who is not on the pipeline</label>' +
+      '<div class="grid3">' +
+      '<div class="f"><label>Name</label><input id="hr-iv-new-name" placeholder="Full name" autocomplete="off"></div>' +
+      '<div class="f"><label>Position</label><input id="hr-iv-new-pos" placeholder="Optional" autocomplete="off"></div>' +
+      '<div class="f"><label>Mobile</label><input id="hr-iv-new-mob" placeholder="Optional" autocomplete="off"></div>' +
+      '<div class="f"><label>Email</label><input id="hr-iv-new-email" placeholder="Optional" autocomplete="off"></div>' +
+      "</div>" +
+      '<span class="hint">Leave this blank to schedule someone already chosen above. A name here is added to the pipeline when you save, unless that exact name is already on file.</span></div>' +
       '<div class="row"><button class="btn pri" id="hr-iv-save" type="button">Save schedule</button>' +
       '<span class="lbl" id="hr-iv-form-status"></span></div>' +
       "</div></div></div>";
     if (!groups.length) {
       h +=
-        '<div class="card"><div class="empty">No initial interviews scheduled yet. Pick an applicant above and set the date and time.</div></div></div>';
+        '<div class="card"><div class="empty">No initial interviews scheduled yet. Pick an applicant above, or type a name, and set the date and time.</div></div></div>';
       return h;
     }
     groups.forEach(function (g) {
@@ -2103,31 +2301,47 @@
 
   function formError(kind) {
     if (kind === "when") return "Set the date and time.";
-    if (kind === "missing") return "Pick an applicant already on the pipeline.";
+    if (kind === "name") return "Type the applicant's name.";
+    if (kind === "several") return "More than one applicant has that name. Choose them in the list.";
+    if (kind === "close") return "Choose the applicant in the list, or type the full name under Add someone who is not on the pipeline.";
+    if (kind === "missing") return "Pick an applicant, or type a name to add someone who is not on the pipeline.";
     return "Could not save that interview.";
   }
 
   async function savePageSchedule() {
     var st = typeof document !== "undefined" && document.getElementById("hr-iv-form-status");
-    var id = fieldValue("hr-iv-app");
-    if (!id) {
-      if (st) st.textContent = "Pick an applicant.";
-      toast("Pick an applicant.", "err");
+    var target = resolveInterviewTarget(fieldValue("hr-iv-app"), fieldValue("hr-iv-new-name"), fieldValue("hr-iv-find"));
+    if (!target.ok) {
+      var early = formError(target.error);
+      if (st) st.textContent = early;
+      toast(early, "err");
       return;
     }
-    var result = await commitInitialInterview(id, {
+    var fields = {
       at: fieldValue("hr-iv-at"),
       interviewer: fieldValue("hr-iv-by"),
       notes: fieldValue("hr-iv-notes"),
       status: fieldValue("hr-iv-status"),
-    });
+    };
+    var result = target.create
+      ? await commitManualInterview(
+          {
+            name: target.name,
+            position: fieldValue("hr-iv-new-pos"),
+            mobile: fieldValue("hr-iv-new-mob"),
+            email: fieldValue("hr-iv-new-email"),
+          },
+          fields
+        )
+      : await commitInitialInterview(target.id, fields);
     if (!result.ok) {
       var msg = formError(result.error);
       if (st) st.textContent = msg;
       toast(msg, "err");
       return;
     }
-    toast("Initial interview saved.", "ok");
+    if (result.created) toast((result.applicant.name || "That applicant") + " is on the pipeline and the interview is saved.", "ok");
+    else toast("Initial interview saved.", "ok");
     reflectStageSelect(result.applicant);
     if (typeof root.render === "function") root.render();
   }
@@ -2214,11 +2428,76 @@
     if (typeof root.render === "function") root.render();
   }
 
+  function setFindHint(text) {
+    if (typeof document === "undefined" || !document.getElementById) return;
+    var hint = document.getElementById("hr-iv-find-hint");
+    if (hint) hint.textContent = text || "";
+  }
+
+  function clearAutoName() {
+    if (typeof document === "undefined" || !document.getElementById) return;
+    var nameBox = document.getElementById("hr-iv-new-name");
+    if (nameBox && nameBox.getAttribute && nameBox.getAttribute("data-from-find") === "1") {
+      nameBox.value = "";
+      if (nameBox.removeAttribute) nameBox.removeAttribute("data-from-find");
+    }
+  }
+
   function filterApplicantSelect(query) {
     if (typeof document === "undefined" || !document.getElementById) return;
     var sel = document.getElementById("hr-iv-app");
     if (!sel) return;
-    sel.innerHTML = applicantOptionsHtml(schedulableApplicants(), sel.value, rolesMap(), query);
+    var trimmed = String(query == null ? "" : query).trim();
+    var roles = rolesMap();
+    var list = applicantsForSchedule(trimmed);
+    var ids = Object.create(null);
+    list.forEach(function (a) {
+      ids[a.id] = true;
+    });
+    var keep = String(sel.value || "");
+    if (keep && !ids[keep]) keep = "";
+    var exact = trimmed ? exactNameMatches(trimmed) : [];
+    var substring = trimmed
+      ? list.filter(function (a) {
+          return applicantMatchesSearch(a, trimmed, roles);
+        })
+      : [];
+    var pick = keep;
+    if (exact.length === 1) pick = exact[0].id;
+    else if (substring.length === 1) pick = substring[0].id;
+    else if (list.length === 1 && substring.length === 0) pick = "";
+    sel.innerHTML = applicantOptionsHtml(list, pick, roles, "");
+    sel.value = pick;
+    if (!trimmed) {
+      setFindHint("");
+      return;
+    }
+    if (exact.length === 1 || substring.length === 1) {
+      var chosen = exact.length === 1 ? exact[0] : substring[0];
+      clearAutoName();
+      setFindHint("Matched " + (chosen.name || "that applicant") + " on the pipeline.");
+      return;
+    }
+    if (list.length === 1) {
+      clearAutoName();
+      setFindHint(
+        "Closest name is " +
+          (list[0].name || "someone on the pipeline") +
+          ". Choose them in the list, or type a new name below."
+      );
+      return;
+    }
+    if (list.length > 1) {
+      clearAutoName();
+      setFindHint("Several people match. Open the list and choose one.");
+      return;
+    }
+    var nameBox = document.getElementById("hr-iv-new-name");
+    if (nameBox && nameBox.getAttribute && nameBox.getAttribute("data-from-find") !== "typed") {
+      nameBox.value = trimmed;
+      if (nameBox.setAttribute) nameBox.setAttribute("data-from-find", "1");
+    }
+    setFindHint("No one on the pipeline has that name. Save schedule will add them.");
   }
 
   function fillPageForm(applicantId) {
@@ -2298,6 +2577,11 @@
       function (ev) {
         var t = ev && ev.target;
         if (t && t.id === "hr-iv-find") filterApplicantSelect(t.value);
+        if (t && t.id === "hr-iv-new-name") {
+          if (String(t.value || "").trim()) {
+            if (t.setAttribute) t.setAttribute("data-from-find", "typed");
+          } else if (t.removeAttribute) t.removeAttribute("data-from-find");
+        }
       },
       false
     );
@@ -2403,7 +2687,14 @@
   api.applicantMatchesRole = applicantMatchesRole;
   api.applicantMatchesSearch = applicantMatchesSearch;
   api.applicantMatchesPipeline = applicantMatchesPipeline;
+  api.applicantFuzzyMatch = applicantFuzzyMatch;
   api.searchHaystack = searchHaystack;
+  api.exactNameMatches = exactNameMatches;
+  api.applicantsForSchedule = applicantsForSchedule;
+  api.manualApplicant = manualApplicant;
+  api.commitManualInterview = commitManualInterview;
+  api.resolveInterviewTarget = resolveInterviewTarget;
+  api.filterApplicantSelect = filterApplicantSelect;
   api.openPasteDoor = openPasteDoor;
   api.openConsolidateDoor = openConsolidateDoor;
   api.openApplicationFile = openApplicationFile;
