@@ -1961,7 +1961,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-10-20a";
+const BUILD = "2026-10-23a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -6785,6 +6785,100 @@ function statusPill(st){
   if(st==="Leave")        return '<span class="pill mut">On leave</span>';
   return '<span class="pill mut">'+esc(st||"—")+'</span>';
 }
+function attendanceStatusText(st){
+  if(st==="Absent") return "Absent";
+  if(st==="Present/Late") return "Late";
+  if(st===STATUS_PENDING) return STATUS_PENDING;
+  if(st==="Leave") return "On leave";
+  return st||"—";
+}
+function leaveVerdictText(r){
+  r=r||{};
+  const x=r.excuse;
+  if(x && x.kind==="register") return x.no||"approved leave";
+  if(x && x.kind==="reason") return "excused on the report";
+  if(x && x.kind==="report") return (x.no||"cited leave")+" — not on file";
+  const ref = r.rawStatus==="Absent" ? citedLeaveRef(r.reason) : null;
+  if(ref) return ref.no;
+  if(r.rawStatus==="Absent" && reportSaysNotFiled(r.reason)) return "no form filed";
+  return "—";
+}
+function attendanceSpanLabel(rows){
+  const dates=(rows||[]).map(r=>r.date).filter(Boolean).sort();
+  if(!dates.length) return "—";
+  const a=dates[0], b=dates[dates.length-1];
+  if(a===b) return longDate(a);
+  return longDate(a)+" – "+longDate(b);
+}
+function attendanceKindTitle(o){
+  o=o||{};
+  if(o.kind==="late") return "Lates";
+  if(o.kind==="absent") return "Absences";
+  if(o.kind==="leave") return "Days on leave";
+  return "Lates, absences and leave";
+}
+function attendanceRecordFilename(o, rows){
+  const e=o&&o.empId&&S.employees?S.employees[o.empId]:null;
+  const who=e?flipName(e.name):(rows&&rows[0]&&rows[0].name?flipName(rows[0].name):"attendance");
+  return "attendance-"+slugNo(who||"records");
+}
+function attendanceRecordSheet(o, rows){
+  o=o||{}; rows=rows||[];
+  const e=o.empId&&S.employees?S.employees[o.empId]:null;
+  const name=e?flipName(e.name):(rows[0]?flipName(rows[0].name):"Several employees");
+  const empNo=e?(e.empNo||"—"):"—";
+  return pfHead()
+   + pfTitle(attendanceKindTitle(o).toUpperCase(), "Attendance records read from the daily manpower reports.")
+   + pfRows([["Employee", name],
+             ["Employee no.", empNo],
+             ["Date range", attendanceSpanLabel(rows)],
+             ["Records", String(rows.length)],
+             ["Prepared", longDate(TODAY)]])
+   + pfBand("RECORDS")
+   + '<table class="pf-t" style="margin:6px 0 10px">'
+   + '<tr><td style="width:16%"><b>Date</b></td><td style="width:14%"><b>Status</b></td>'
+   + '<td style="width:28%"><b>Reason as written</b></td><td style="width:24%"><b>Leave cited</b></td>'
+   + '<td><b>Area</b></td></tr>'
+   + rows.map(r=>'<tr><td>'+esc(r.date||"—")+'</td><td>'+esc(attendanceStatusText(r.status))+'</td>'
+      + '<td>'+esc(r.reason||"none written")+'</td><td>'+esc(leaveVerdictText(r))+'</td>'
+      + '<td>'+esc(r.site||"—")+'</td></tr>').join("")
+   + '</table>'
+   + pfSign([["Prepared by", hrStaffName(), "HR Staff"],
+             ["Noted by", (S.settings&&S.settings.hrHead)||"", (S.settings&&S.settings.hrTitle)||"HR Officer"]])
+   + pfISO("attrec");
+}
+async function saveAttendancePdf(o, rows){
+  const base=attendanceRecordFilename(o, rows);
+  const name=base+".pdf";
+  const body=attendanceRecordSheet(o, rows);
+  if(typeof window.showSaveFilePicker==="function"){
+    let handle=null;
+    try{
+      handle=await window.showSaveFilePicker({
+        suggestedName:name,
+        types:[{description:"PDF", accept:{"application/pdf":[".pdf"]}}]
+      });
+    }catch(e){
+      if(e && (e.name==="AbortError" || e.code===20)) return false;
+      handle=null;
+    }
+    if(handle){
+      try{
+        const blob=await savePDF(base, body, "blob");
+        if(!(blob instanceof Blob)) return false;
+        const writable=await handle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+        toast("Saved "+name,"ok");
+        return true;
+      }catch(e){
+        toast("The PDF could not be saved ("+((e&&e.message)||"unknown")+").","err");
+        return false;
+      }
+    }
+  }
+  return savePDF(base, body);
+}
 function attendanceDrill(o){
   o=o||{};
   let rows;
@@ -6818,7 +6912,8 @@ function attendanceDrill(o){
   if(rows.length){
     h+='<div class="row"><span class="lbl">'+allRows.length+' record'+(allRows.length===1?"":"s")
      + ' across '+days+' day'+(days===1?"":"s")+'</span>'
-     + '<div class="sp"><button class="btn sm" id="dr-csv"><svg><use href="#i-dl"/></svg> CSV</button></div></div>'
+     + '<div class="sp"><button class="btn sm" type="button" id="dr-csv"><svg><use href="#i-dl"/></svg> CSV</button>'
+     + '<button class="btn sm" type="button" id="dr-pdf"><svg><use href="#i-dl"/></svg> PDF</button></div></div>'
      + '<div class="tw" style="max-height:56vh;overflow:auto"><table><thead><tr>'
      + '<th style="width:104px">Date</th>'
      + (e?"":'<th>Employee</th>')
@@ -6842,9 +6937,11 @@ function attendanceDrill(o){
   const b201=$("#dr-201");
   if(b201) b201.onclick=()=>{ closeModal(); S.ui.view="employees"; S.ui.openEmp=o.empId; render(); };
   const csv=$("#dr-csv");
-  if(csv) csv.onclick=()=>saveFile("attendance-detail.csv", toCSV(
+  if(csv) csv.onclick=()=>saveFile(attendanceRecordFilename(o, allRows)+".csv", toCSV(
     [["Date","Employee no.","Employee","Status","Reason","Area","Read from"]].concat(
       allRows.map(r=>[r.date,r.empNo,flipName(r.name),r.status,r.reason,r.site,r.source]))));
+  const pdf=$("#dr-pdf");
+  if(pdf) pdf.onclick=()=>saveAttendancePdf(o, allRows);
 }
 /* A figure you can click reads as one you can check. */
 function drillCell(n, sev, o){
@@ -13132,7 +13229,8 @@ const FORM_MASTER_SEED = [
  {k:"hirepack",  no:"",    title:"Recruitment Record",                       rev:"1.0", eff:"", owner:"HR"},
  {k:"training",  no:"",    title:"Role Training Record",                     rev:"1.0", eff:"", owner:"HR"},
  {k:"gapreport", no:"",    title:"201 File Completion Report",                rev:"1.0", eff:"", owner:"HR"},
- {k:"reminder",  no:"",    title:"Written Reminder",                         rev:"1.0", eff:"", owner:"HR"}
+ {k:"reminder",  no:"",    title:"Written Reminder",                         rev:"1.0", eff:"", owner:"HR"},
+ {k:"attrec",    no:"",    title:"Attendance Records",                       rev:"1.0", eff:"", owner:"HR"}
 ];
 function formMaster(k){
   return (S.forms && S.forms[k]) || FORM_MASTER_SEED.find(f=>f.k===k) || null;
@@ -13631,10 +13729,9 @@ async function savePDF(no, body, preview){
        which is exactly why the file would not open. */
     const blob=pdf.output("blob");
     const kb=Math.round(blob.size/1024);
+    if(preview==="blob") return blob;
     if(preview===false){
-      const dl=await window.claude.use("downloads");
-      if(!dl) throw new Error("saving files is not available in this view");
-      await dl.save({filename:name, data:blob});
+      downloadBlob(name, blob);
       toast("Saved "+name,"ok");
       return true;
     }
@@ -13671,16 +13768,13 @@ function pdfPreview(canvas, o){
       + '<button class="btn pri" id="pv-save">Save the PDF</button>'});
   $("#pv-back").onclick=closeModal;
   $("#pv-print").onclick=()=>{ closeModal(); printDoc(o.no, o.body); };
-  $("#pv-save").onclick=async()=>{
+  $("#pv-save").onclick=()=>{
     const b=$("#pv-save"); b.disabled=true; b.textContent="Saving…";
     try{
-      const dl=await window.claude.use("downloads");
-      if(!dl) throw new Error("saving files is not available in this view");
-      await dl.save({filename:o.name, data:o.blob});
+      downloadBlob(o.name, o.blob);
       closeModal(); toast("Saved "+o.name,"ok");
     }catch(e){
-      if(e && e.code==="declined"){ closeModal(); return; }
-      toast("Could not save ("+((e&&e.code)||(e&&e.message)||"error")+").","err");
+      toast("Could not save ("+((e&&e.message)||"error")+").","err");
       b.disabled=false; b.textContent="Save the PDF";
     }
   };
@@ -13729,8 +13823,29 @@ function printDoc(no, body, kind){
   }, 1200);
   return ok;
 }
+function downloadBlob(filename, data){
+  const name=String(filename||"download");
+  let blob;
+  if(data instanceof Blob) blob=data;
+  else if(typeof data==="string"){
+    const csv=/\.csv$/i.test(name);
+    blob=new Blob([data], {type:(csv?"text/csv":"text/plain")+";charset=utf-8"});
+  }else blob=new Blob([String(data==null?"":data)], {type:"application/octet-stream"});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.href=url; a.download=name; a.rel="noopener";
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(()=>{ if(a.parentNode) a.parentNode.removeChild(a); URL.revokeObjectURL(url); }, 1500);
+  return true;
+}
 async function saveFile(filename,data){
-  let dl=null; try{ dl = await window.claude.use("downloads"); }catch(e){}
+  try{
+    downloadBlob(filename, data);
+    toast("Saved "+filename,"ok");
+    return;
+  }catch(e){}
+  let dl=null; try{ dl = await window.claude.use("downloads"); }catch(e2){}
   if(!dl){ toast("Saving files is not available in this view. Use Print instead.","err"); return; }
   try{ await dl.save({filename,data}); toast("Saved "+filename,"ok"); }
   catch(e){
