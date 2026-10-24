@@ -1961,7 +1961,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-10-23a";
+const BUILD = "2026-10-24a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -6762,6 +6762,49 @@ function drillRows(o){
   });
   return out.sort((a,b)=>String(b.date||"").localeCompare(String(a.date||"")));
 }
+/* Active / Resigned / All on the attendance lists. Resigned is every leaver
+   status — separated, terminated, and AWOL included — so a name that left
+   can still be opened and saved. Default is everyone. */
+function attendanceRosterMode(){
+  const v=String((S.ui&&S.ui.attRoster)||"all").toLowerCase();
+  if(v==="active"||v==="resigned") return v;
+  return "all";
+}
+function attendanceIsLeaver(e){
+  if(!e) return false;
+  /* A rehire date puts them back at work even when the old status still says Separated. */
+  if(typeof rehiredActiveAsOf==="function" && rehiredActiveAsOf(e, typeof TODAY!=="undefined"?TODAY:"")) return false;
+  return typeof statusTextIsSeparated==="function" && statusTextIsSeparated(e.status);
+}
+function attendanceRosterMatches(e){
+  if(!e) return false;
+  const f=attendanceRosterMode();
+  if(f==="all") return true;
+  const gone=attendanceIsLeaver(e);
+  return f==="resigned" ? gone : !gone;
+}
+function attendanceRosterSeg(){
+  const f=attendanceRosterMode();
+  const btn=(k,n)=>'<button type="button" class="'+(f===k?"on":"")+'" data-aroster="'+k+'">'+n+'</button>';
+  return '<div class="seg" title="Resigned includes separated and terminated">'
+    + btn("active","Active")+btn("resigned","Resigned")+btn("all","All")+'</div>';
+}
+function attendanceStatusNote(e){
+  if(!attendanceIsLeaver(e)) return "";
+  return ' <span class="pill mut">'+esc(String(e.status||"Separated"))+'</span>';
+}
+/* A per-employee PDF is the whole window: lates, absences and leave.
+   A list that is not one person keeps the rows already on screen. */
+function attendancePdfRequest(o, screenRows){
+  o=o||{};
+  screenRows=screenRows||[];
+  if(!o.empId) return {spec:o, rows:screenRows};
+  const spec=Object.assign({}, o, {kind:"all"});
+  let rows=screenRows;
+  try{ rows=drillRows(spec); }
+  catch(err){ rows=screenRows; }
+  return {spec:spec, rows:rows};
+}
 /* What the portal makes of the leave number written on the report. */
 function leaveVerdictCell(r){
   const x=r.excuse;
@@ -6827,11 +6870,24 @@ function attendanceRecordSheet(o, rows){
   const e=o.empId&&S.employees?S.employees[o.empId]:null;
   const name=e?flipName(e.name):(rows[0]?flipName(rows[0].name):"Several employees");
   const empNo=e?(e.empNo||"—"):"—";
+  let range=attendanceSpanLabel(rows);
+  if(range==="—" && (o.months||o.month)){
+    const months=(o.months||[o.month]).filter(Boolean).slice().sort();
+    if(months.length){
+      const start=months[0]+"-01";
+      const last=months[months.length-1];
+      const p=String(last).split("-");
+      const dim=new Date(+p[0], +p[1], 0).getDate();
+      const end=last+"-"+String(dim).padStart(2,"0");
+      range=longDate(start)+" – "+longDate(end);
+    }
+  }
   return pfHead()
    + pfTitle(attendanceKindTitle(o).toUpperCase(), "Attendance records read from the daily manpower reports.")
    + pfRows([["Employee", name],
              ["Employee no.", empNo],
-             ["Date range", attendanceSpanLabel(rows)],
+             ["Employment", e?(e.status||"not set"):"—"],
+             ["Date range", range],
              ["Records", String(rows.length)],
              ["Prepared", longDate(TODAY)]])
    + pfBand("RECORDS")
@@ -6907,14 +6963,17 @@ function attendanceDrill(o){
    + '<div class="note">Counted from the daily manpower reports as they were read. '
    + (rows.length?'Open the scan on any row to check it against the sheet HR filed.'
                  :'Nothing recorded for this yet.')
-   + (hidden?' Showing the '+DRILL_CAP+' newest records. '+hidden+' older record'+(hidden===1?"":"s")+' are not listed here.':'')
+   + (e?' The PDF saves lates, absences and leave for this person in this window.':'')
+   + (hidden?' Showing the '+DRILL_CAP+' newest records. '+hidden+' older record'+(hidden===1?"":"s")+' are not listed here. The PDF still has every record.':'')
    + '</div>';
-  if(rows.length){
+  if(rows.length || e){
     h+='<div class="row"><span class="lbl">'+allRows.length+' record'+(allRows.length===1?"":"s")
      + ' across '+days+' day'+(days===1?"":"s")+'</span>'
      + '<div class="sp"><button class="btn sm" type="button" id="dr-csv"><svg><use href="#i-dl"/></svg> CSV</button>'
-     + '<button class="btn sm" type="button" id="dr-pdf"><svg><use href="#i-dl"/></svg> PDF</button></div></div>'
-     + '<div class="tw" style="max-height:56vh;overflow:auto"><table><thead><tr>'
+     + '<button class="btn sm" type="button" id="dr-pdf" title="'+(e?"Lates, absences and leave for this person":"PDF of these records")+'"><svg><use href="#i-dl"/></svg> PDF</button></div></div>';
+  }
+  if(rows.length){
+    h+='<div class="tw" style="max-height:56vh;overflow:auto"><table><thead><tr>'
      + '<th style="width:104px">Date</th>'
      + (e?"":'<th>Employee</th>')
      + '<th style="width:92px">Status</th><th>Reason as written</th>'
@@ -6941,7 +7000,10 @@ function attendanceDrill(o){
     [["Date","Employee no.","Employee","Status","Reason","Area","Read from"]].concat(
       allRows.map(r=>[r.date,r.empNo,flipName(r.name),r.status,r.reason,r.site,r.source]))));
   const pdf=$("#dr-pdf");
-  if(pdf) pdf.onclick=()=>saveAttendancePdf(o, allRows);
+  if(pdf) pdf.onclick=()=>{
+    const req=attendancePdfRequest(o, allRows);
+    saveAttendancePdf(req.spec, req.rows);
+  };
 }
 /* A figure you can click reads as one you can check. */
 function drillCell(n, sev, o){
@@ -7413,28 +7475,39 @@ function viewInsights(){
   });
   h+='</tbody></table></div></div>';
 
-  /* the people it keeps happening to */
-  const off=offenders(months);
+  /* the people it keeps happening to. The first 25 used to be all that
+     was drawn, which is why the rest of the names never appeared. */
+  const offAll=offenders(months);
+  const off=offAll.filter(x=>attendanceRosterMatches(x.e));
   h+='<div class="sect-h" style="margin-top:22px"><h2>Where it keeps happening</h2><span class="rule"></span>'
-   + '<span class="lbl">'+off.length+' with a late or an absence</span></div>';
+   + '<span class="lbl">All '+off.length+' with a late or an absence</span></div>'
+   + '<div class="row" style="margin-bottom:8px;flex-wrap:wrap;gap:8px">'
+   + attendanceRosterSeg()
+   + '<div class="f" style="width:260px;margin:0"><input id="att-off-q" placeholder="Name or number — either order" autocomplete="off"></div>'
+   + '<span class="lbl" id="att-off-count"></span>'
+   + '<span class="hint">Resigned includes separated, terminated, and AWOL.</span></div>';
   if(!off.length){
-    h+='<div class="card"><div class="empty">Nobody has a late or an absence on record in this window.</div></div>';
+    h+='<div class="card"><div class="empty">'+(offAll.length
+      ? 'Nobody in this status has a late or an absence in this window.'
+      : 'Nobody has a late or an absence on record in this window.')+'</div></div>';
   }else{
     h+='<div class="card"><div class="tw"><table><thead><tr><th>Employee</th><th style="width:130px">Area</th>'
      + '<th style="width:80px">Lates</th><th style="width:90px">Absences</th><th style="width:90px">On leave</th>'
-     + '<th style="width:168px"></th></tr></thead><tbody>'
-     + off.slice(0,25).map(x=>'<tr><td><b>'+esc(flipName(x.e.name))+'</b> '
-        + '<span class="mono lbl">'+esc(x.e.empNo||"")+'</span></td>'
+     + '<th style="width:230px"></th></tr></thead><tbody>'
+     + off.map(x=>'<tr data-attoff="1" data-hay="'+esc((x.e.name+" "+flipName(x.e.name)+" "+(x.e.empNo||"")+" "+(x.e.status||"")).toLowerCase())+'"><td><b>'+esc(flipName(x.e.name))+'</b> '
+        + '<span class="mono lbl">'+esc(x.e.empNo||"")+'</span>'+attendanceStatusNote(x.e)+'</td>'
         + '<td style="font-size:11.5px">'+esc(x.e.project||"—")+'</td>'
         + '<td class="mono">'+drillCell(x.late,"warn",{kind:"late",empId:x.e.id,months})+'</td>'
         + '<td class="mono">'+drillCell(x.absent,"crit",{kind:"absent",empId:x.e.id,months})+'</td>'
         + '<td class="mono">'+drillCell(x.leave,"mut",{kind:"leave",empId:x.e.id,months})+'</td>'
         + '<td><button class="btn sm" data-drill="'+esc(JSON.stringify({kind:"all",empId:x.e.id,months}))+'">Records</button> '
+        + '<button class="btn sm" type="button" data-attpdf="'+esc(x.e.id)+'" data-attmonths="'+esc(JSON.stringify(months))+'">PDF</button> '
         + '<button class="btn sm" data-emp-open="'+esc(x.e.id)+'" data-goto="employees">Open</button></td></tr>').join("")
      + '</tbody></table></div>'
-     + (off.length>25?'<div class="card-b lbl">Showing 25 of '+off.length+'.</div>':"")
-     + '<div class="card-b"><div class="note">The portal counts them; whether any of it warrants a notice is '
-     + 'a judgement, not a rule. The section below sets out what the record would support.</div></div>'
+     + '<div class="card-b"><div class="note">All '+off.length+' name'+(off.length===1?"":"s")+' in this window '
+     + (attendanceRosterMode()==="all"?"are listed":"for this status are listed")
+     + '. Every one of those names is on this page. The PDF on a row is that person\'s lates, absences and leave. '
+     + 'Whether any of it warrants a notice is a judgement, not a rule. The section below sets out what the record would support.</div></div>'
      + '</div>';
   }
   /* Attendance is edited after it is filed — overtime typed in, a status
@@ -24348,23 +24421,29 @@ function attendanceSummaryCard(months){
       }catch(err){}
     });
   });
-  const rows=Object.entries(T).map(([id,t])=>Object.assign({e:S.employees[id], id}, t)).filter(x=>x.e)
+  const rows=Object.entries(T).map(([id,t])=>Object.assign({e:S.employees[id], id}, t))
+    .filter(x=>x.e && attendanceRosterMatches(x.e))
     .sort((a,b)=>String(a.e.empNo||"").localeCompare(String(b.e.empNo||"")));
   let h='<div class="sect-h" style="margin-top:22px"><h2>Manpower attendance summary</h2><span class="rule"></span>'
-   + '<span class="lbl">'+rows.length+' people on the reports</span></div>';
-  if(!rows.length) return h+'<div class="card"><div class="empty">No manpower report in this window.</div></div>';
-  h+='<div class="card"><div class="card-b" style="padding-bottom:6px"><div class="row">'
+   + '<span class="lbl">All '+rows.length+' people on the reports</span></div>';
+  if(!rows.length) return h+'<div class="row" style="margin-bottom:8px">'+attendanceRosterSeg()+'</div>'
+    + '<div class="card"><div class="empty">No manpower report in this window for this status.</div></div>';
+  h+='<div class="card"><div class="card-b" style="padding-bottom:6px"><div class="row" style="flex-wrap:wrap;gap:8px">'
+   + attendanceRosterSeg()
    + '<div class="f" style="width:260px;margin:0"><input id="att-sum-q" placeholder="Name or number — either order" autocomplete="off"></div>'
    + '<span class="lbl" id="att-sum-count"></span></div>'
-   + '<div class="note" style="margin-top:8px">Late and undertime are a full day of credit. An absence excused by '
+   + '<div class="note" style="margin-top:8px">All '+rows.length+' people on a daily report in this window are in this table, on this page. '
+   + 'Resigned includes separated and terminated. '
+   + 'Late and undertime are a full day of credit. An absence excused by '
    + 'approved leave, a leave number on the report or an excused reason counts under leave, not absent. '
-   + 'Holiday premium days are the ones HR chose, not the ones that were eligible.</div></div>'
-   + '<div class="tw" style="max-height:52vh;overflow:auto"><table><thead><tr>'
+   + 'Holiday premium days are the ones HR chose, not the ones that were eligible. '
+   + 'PDF is that person\'s lates, absences and leave.</div></div>'
+   + '<div class="tw"><table><thead><tr>'
    + '<th style="width:60px">No.</th><th>Employee</th><th class="num">Days credited</th><th class="num">Present</th>'
    + '<th class="num">Late</th><th class="num">Undertime</th><th class="num">Not yet in</th><th class="num">Absent</th><th class="num">Leave</th>'
-   + '<th class="num">OT hrs</th><th class="num">Premium days</th></tr></thead><tbody>'
-   + rows.map(x=>'<tr data-attsum="1" data-hay="'+esc((x.e.name+" "+flipName(x.e.name)+" "+(x.e.empNo||"")).toLowerCase())+'">'
-      + '<td class="mono">'+esc(x.e.empNo||"—")+'</td><td class="nm">'+esc(flipName(x.e.name))+'</td>'
+   + '<th class="num">OT hrs</th><th class="num">Premium days</th><th style="width:64px"></th></tr></thead><tbody>'
+   + rows.map(x=>'<tr data-attsum="1" data-hay="'+esc((x.e.name+" "+flipName(x.e.name)+" "+(x.e.empNo||"")+" "+(x.e.status||"")).toLowerCase())+'">'
+      + '<td class="mono">'+esc(x.e.empNo||"—")+'</td><td class="nm">'+esc(flipName(x.e.name))+attendanceStatusNote(x.e)+'</td>'
       + '<td class="num">'+num(x.credit,1)+'</td><td class="num">'+x.present+'</td>'
       + '<td class="num">'+(x.late?drillCell(x.late,"warn",{kind:"late",empId:x.id,months}):"0")+'</td>'
       + '<td class="num">'+x.ut+'</td>'
@@ -24372,7 +24451,8 @@ function attendanceSummaryCard(months){
       + '<td class="num">'+(x.absent?drillCell(x.absent,"crit",{kind:"absent",empId:x.id,months}):"0")+'</td>'
       + '<td class="num">'+(x.leave?drillCell(x.leave,"mut",{kind:"leave",empId:x.id,months}):"0")
       + (x.excused?'<div class="lbl">'+x.excused+' excused</div>':'')+'</td>'
-      + '<td class="num">'+(x.ot?num(x.ot,1):"0")+'</td><td class="num">'+x.prem+'</td></tr>').join("")
+      + '<td class="num">'+(x.ot?num(x.ot,1):"0")+'</td><td class="num">'+x.prem+'</td>'
+      + '<td><button class="btn sm" type="button" data-attpdf="'+esc(x.id)+'" data-attmonths="'+esc(JSON.stringify(months))+'">PDF</button></td></tr>').join("")
    + '</tbody></table></div></div>';
   return h;
 }
@@ -24776,6 +24856,16 @@ const DOC_ACTIONS = {
   "data-ct-edit": el=>{ const [id,i]=el.dataset.ctEdit.split("|"); contractEditor(id,+i); },
   "data-ct-del":  el=>{ const [id,i]=el.dataset.ctDel.split("|"); contractEditor(id,+i); },
   "data-reg-open":el=>reopenDoc(el.dataset.regOpen),
+  "data-attpdf": el=>{
+    let months=null;
+    try{ months=JSON.parse(el.dataset.attmonths||"null"); }catch(err){ months=null; }
+    if(!months){
+      const one=S.ui&&S.ui.insightMonth;
+      months = one ? [one] : lastMonths((S.ui&&S.ui.insightMonths)||6);
+    }
+    const req=attendancePdfRequest({kind:"all", empId:el.dataset.attpdf, months:months}, []);
+    saveAttendancePdf(req.spec, req.rows);
+  },
   "data-drill":   el=>{
     let spec=null;
     try{ spec=JSON.parse(el.dataset.drill); }
@@ -25430,6 +25520,8 @@ function wire(){
     await drop("daily",dailyId(d)); render();
   };
   on("[data-imonths]","click",e=>{ S.ui.insightMonths=+e.currentTarget.dataset.imonths; S.ui.insightMonth=""; render(); });
+  on("[data-aroster]","click",e=>{ S.ui.attRoster=e.currentTarget.dataset.aroster||"all"; render(); });
+  wireListFilter("att-off-q","[data-attoff]","att-off-count");
   wireListFilter("att-sum-q","[data-attsum]","att-sum-count");
   const ias=$("#ia-start",v); if(ias) ias.onclick=importAttendancePick;
   const dadd=$("#dm-add",v); if(dadd) dadd.onclick=dailyAddPerson;

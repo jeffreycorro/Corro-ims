@@ -29,7 +29,7 @@ function extractFunction(src, name) {
 
 describe("Cassie concerns 2026-10-23a", () => {
   it("is build 2026-10-23a and keeps the earlier build note", () => {
-    assert.match(html, /const BUILD = "2026-10-23a"/);
+    assert.match(html, /const BUILD = "2026-10-24a"/);
     const readme = fs.readFileSync(path.join(__dirname, "../README.md"), "utf8");
     assert.match(readme, /build 2026-10-23a/);
     assert.match(readme, /build 2026-10-20a/);
