@@ -28,7 +28,7 @@ function extractFunction(src, name) {
 
 describe("initial interviews 2026-10-20a", () => {
   it("is build 2026-10-20a and adds the Initial interviews tab without a new collection", () => {
-    assert.match(html, /const BUILD = "2026-10-23a"/);
+    assert.match(html, /const BUILD = "2026-10-24a"/);
     assert.match(html, /data-rmode="initial">Initial interviews/);
     assert.match(html, /function viewInitialInterviews\(/);
     assert.match(html, /window\.hrRecruit/);
