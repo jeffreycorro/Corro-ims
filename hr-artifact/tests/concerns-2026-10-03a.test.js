@@ -84,7 +84,7 @@ function loadPay() {
 
 describe("2026-10-03a pending OT and late", () => {
   it("is build 2026-10-05a and keeps the OT box editable", () => {
-    assert.match(html, /const BUILD = "2026-10-24a"/);
+    assert.match(html, /const BUILD = "2026-10-26a"/);
     assert.match(html, /Pending OT form/);
     assert.match(html, /OT pending: /);
     assert.match(html, /data-otfile=/);
@@ -97,7 +97,7 @@ describe("2026-10-03a pending OT and late", () => {
     assert.match(extractFunction(html, "payLine"), /payLateForDays/);
     assert.match(html, /if\(!line\.lateTouched\) delete line\.late/);
     assert.match(html, /data-latemin=/);
-    assert.match(html, /daily rate ÷ 8 ÷ 60/);
+    assert.match(html, /after 8:15/);
   });
 
   it("pays uncovered OT only before 2026-10-01, and withholds it after", () => {

@@ -461,7 +461,7 @@ button.pill.drill:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
   </div>
 </div>
 <div id="modal-root"></div>
-
+<script src="/hr-payroll-sheet.js"></script>
 <script>
 "use strict";
 
@@ -606,7 +606,8 @@ const SEED_PROJECTS = [
   "24HH0103 Buhisan FMR","24HH0120 Toong Pamutan","24HH0128 ABC Building SRP",
   "24HH0134 Pardo MPB","24HH0147 Labangon Road","25HH0023 Tagbao 3",
   "CTU Barili Dormitory","CTU Barili Vet Med","CTU Dumanjug HM Bldg.",
-  "BFP San Remigio","Pagsabongan","Main Office / Motorpool"
+  "BFP San Remigio","Pagsabongan","Main Office / Motorpool",
+  "24HH0142 Labangon Chapel (Package B)"
 ];
 
 /* Progressive discipline. Each category carries its own ladder — a
@@ -1961,7 +1962,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-10-24a";
+const BUILD = "2026-10-26a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -2416,6 +2417,20 @@ async function seedIfEmpty(){
     await putMany("exams", SEED_EXAMS.map(x=>[x.id,x]));
   if(Object.keys(S.roles).length===0)
     await putMany("roles", SEED_ROLES.map(r=>[r.id,r]));
+  await ensurePayrollProjects();
+}
+
+/* One additive project. Existing project, employee, attendance, and pay-run
+   records are left as they are. Proposed employee numbers are not applied. */
+async function ensurePayrollProjects(){
+  const name="24HH0142 Labangon Chapel (Package B)";
+  const have=Object.values(S.projects||{}).some(p=>p && String(p.name||"").trim()===name);
+  if(have) return;
+  const id=uid("pj");
+  const doc={id, name, status:"Active"};
+  S.projects=S.projects||{};
+  S.projects[id]=doc;
+  try{ await put("projects", id, doc); }catch(e){}
 }
 
 /* ============ derived ============ */
@@ -12426,6 +12441,10 @@ function empInfo(e,cs){
   h+='<div class="sect-h" style="margin:4px 0 0"><h2 style="font-size:13px">Identification</h2><span class="rule"></span></div><div class="grid2">'
    + fld("File name (Last, First M.)","name",e.name)
    + fld("Employee no.","empNo",e.empNo)
+   + '<div class="f"><label for="f-employeeId">Employee ID</label>'
+   + '<input id="f-employeeId" data-ef="employeeId" value="'+esc(e.employeeId||"")+'" placeholder="'+esc(e.empNo?("CCD"+String(e.empNo).replace(/\D/g,"")):"CCD")+ '">'
+   + '<span class="hint">Printed as CCD plus the employee number when this box is blank. HR confirms the number before it is saved.</span></div>'
+   + fld("Pay type","payType",e.payType||"","select",["","Weekly","Semi-monthly"])
    + fld("Nickname","nickname",e.nickname)
    + fld("Date of birth","birthdate",e.birthdate,"date")
    + fld("Sex","sex",e.sex,"select",["","Male","Female"])
@@ -12461,6 +12480,31 @@ function empInfo(e,cs){
    + fld("Daily rate","dailyRate",e.dailyRate,"number",null,' step="0.01" min="0"')
    + fld("Rate basis","rateType",e.rateType,"select",["Daily","Monthly","Hourly"])
    + fld("Allowance","allowance",e.allowance,"number",null,' step="0.01" min="0"')
+   + '<div class="f"><label>Government deductions enrolled</label><div class="row" style="gap:12px;margin-top:6px">'
+   + ["sss","phic","hdmf"].map(k=>{
+       const on=!(e.govEnroll && e.govEnroll[k]===false);
+       const label=k==="sss"?"SSS":k==="phic"?"PhilHealth":"Pag-IBIG";
+       return '<label style="font-size:12px"><input type="checkbox" data-ef="govEnroll.'+k+'"'+(on?" checked":"")+'> '+label+'</label>';
+     }).join("")
+   + '</div><span class="hint">Unchecked stores 0 for that item. Leave them checked to keep the company figure, or the amount on the 201.</span></div>'
+   + '<div class="f"><label for="f-recur-uniform-amount">Uniform / shoes each run</label>'
+   + '<input id="f-recur-uniform-amount" data-ef="recur.uniform.amount" type="number" step="0.01" min="0" value="'+esc((e.recur&&e.recur.uniform&&e.recur.uniform.amount)||"")+'">'
+   + '</div>'
+   + '<div class="f"><label for="f-recur-uniform-balance">Uniform balance left</label>'
+   + '<input id="f-recur-uniform-balance" data-ef="recur.uniform.balance" type="number" step="0.01" min="0" value="'+esc((e.recur&&e.recur.uniform&&e.recur.uniform.balance)||"")+'">'
+   + '</div>'
+   + '<div class="f"><label for="f-recur-sss-amount">SSS loan each run</label>'
+   + '<input id="f-recur-sss-amount" data-ef="recur.sssLoan.amount" type="number" step="0.01" min="0" value="'+esc((e.recur&&e.recur.sssLoan&&e.recur.sssLoan.amount)||"")+'">'
+   + '</div>'
+   + '<div class="f"><label for="f-recur-sss-balance">SSS loan balance left</label>'
+   + '<input id="f-recur-sss-balance" data-ef="recur.sssLoan.balance" type="number" step="0.01" min="0" value="'+esc((e.recur&&e.recur.sssLoan&&e.recur.sssLoan.balance)||"")+'">'
+   + '</div>'
+   + '<div class="f"><label for="f-recur-hdmf-amount">Pag-IBIG loan each run</label>'
+   + '<input id="f-recur-hdmf-amount" data-ef="recur.hdmfLoan.amount" type="number" step="0.01" min="0" value="'+esc((e.recur&&e.recur.hdmfLoan&&e.recur.hdmfLoan.amount)||"")+'">'
+   + '</div>'
+   + '<div class="f"><label for="f-recur-hdmf-balance">Pag-IBIG loan balance left</label>'
+   + '<input id="f-recur-hdmf-balance" data-ef="recur.hdmfLoan.balance" type="number" step="0.01" min="0" value="'+esc((e.recur&&e.recur.hdmfLoan&&e.recur.hdmfLoan.balance)||"")+'">'
+   + '</div>'
    + (e.rateProposed
       ? '<div class="f"><label>Approved increase (not yet effective)</label>'
         + '<input value="'+esc(peso(e.rateProposed))+'" disabled>'
@@ -13903,6 +13947,9 @@ function downloadBlob(filename, data){
   else if(typeof data==="string"){
     const csv=/\.csv$/i.test(name);
     blob=new Blob([data], {type:(csv?"text/csv":"text/plain")+";charset=utf-8"});
+  }else if(data instanceof Uint8Array || data instanceof ArrayBuffer){
+    const xlsx=/\.xlsx$/i.test(name);
+    blob=new Blob([data], {type:xlsx?"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":"application/octet-stream"});
   }else blob=new Blob([String(data==null?"":data)], {type:"application/octet-stream"});
   const url=URL.createObjectURL(blob);
   const a=document.createElement("a");
@@ -21558,6 +21605,8 @@ function payRate(e, kind){
 /* Which run a person belongs on — the rate they are on, not the department
    they sit in. A monthly-rated person is on the semi-monthly admin sheet. */
 function payKindOf(e){
+  if(typeof hrPaySheet!=="undefined" && hrPaySheet && typeof hrPaySheet.payKindOf==="function")
+    return hrPaySheet.payKindOf(e);
   return String((e||{}).rateType||"").toLowerCase()==="monthly" ? "semi" : "weekly";
 }
 /* A name with no number, no status, no hire date and no rate is an old
@@ -21827,6 +21876,8 @@ function payDayAmount(r, empId, date){
   if(typeof effectiveStatus==="function")
     st=effectiveStatus(empId, date, st||"Present", (r&&(r.r||r.reason))||"") || st || "Present";
   else if(!st) st="Present";
+  if(st==="Leave with Pay" && typeof hrPaySheet!=="undefined" && hrPaySheet && typeof hrPaySheet.leaveDayCredit==="function")
+    return hrPaySheet.leaveDayCredit(empId, date);
   if(st==="Half Day") return 0.5;
   const credit=dayCredit({s:st, r:(r&&r.r)||""});
   if(credit===1 && sessionIsHalf(r, st)) return 0.5;
@@ -21878,6 +21929,8 @@ function payLateAmount(dailyRate, minutes){
   return Math.round((m * (daily/8/60)) * 100) / 100;
 }
 function payLateForDays(dailyRate, days){
+  if(typeof hrPaySheet!=="undefined" && hrPaySheet && typeof hrPaySheet.lateForRows==="function")
+    return hrPaySheet.lateForRows(days, dailyRate);
   let minutes=0, amount=0;
   (days||[]).forEach(x=>{
     if(typeof dayCountsLate==="function" && !dayCountsLate(x)) return;
@@ -21890,7 +21943,7 @@ function payLateForDays(dailyRate, days){
 }
 function payLateHint(L){
   const hit=(L&&L.rows||[]).filter(r=>(Number(r.lateMin)||0)>0);
-  const rule="Late is time in minus 8:00 AM, or minus 1:00 PM when time in is at or after noon. No grace. Minutes × (daily rate ÷ 8 ÷ 60). A number typed here, including 0, stays.";
+  const rule="Time in after 8:15 counts from 8:00 at ₱1 per minute. Time in after 1:15 counts from 1:00 at ₱1. Undertime on a full day before 5:00 is ₱1 per minute up to 60, then the hourly rate times the nearest hour. An excused reason is 0. A number typed here, including 0, stays.";
   if(!hit.length) return rule;
   const mins=hit.reduce((n,r)=>n+(Number(r.lateMin)||0),0);
   return mins+" min · "+hit.map(r=>String(r.date||"").slice(5)+" "+(r.in||"")+" ("+r.lateMin+" min)").join(", ")+" · "+rule;
@@ -22004,8 +22057,33 @@ function payLine(e, kind, dates, saved, per){
     })()
   };
   L.otPending=L.otNoForm;
+  if(rate.monthly) L.monthlyAmount=Number(e.dailyRate)||0;
   if(!(Number(rate.daily)>0) && ((Number(L.days)||0)>0 || (Number(L.ot)||0)>0))
     L.payWarn="No daily rate on the 201 file, so this attendance pays 0 until a rate is set.";
+  if(typeof hrPaySheet!=="undefined" && hrPaySheet && typeof hrPaySheet.decorateLine==="function"){
+    const caDetail=typeof payCaDetail==="function" ? payCaDetail(e.id, per, kind) : null;
+    if(caDetail) L.caDetail=caDetail;
+    const missing=[];
+    (dates||[]).forEach(d=>{
+      const rec=typeof dailyRecordFor==="function" ? dailyRecordFor(d) : null;
+      if(!rec) missing.push(d);
+    });
+    hrPaySheet.decorateLine(L, {
+      emp:e, kind:kind, per:per||{}, saved:sv,
+      otreqs:(S.otreqs||{}),
+      covers:typeof otRequestCovers==="function"?otRequestCovers:null,
+      formUrl:typeof otFormUrl==="function"?otFormUrl:null,
+      projects:S.projects||{},
+      leaveCover:typeof dailyLeaveCovering==="function"?dailyLeaveCovering:null,
+      leavePays:typeof leaveRecordPays==="function"?leaveRecordPays:null,
+      separatedOn:typeof empSeparationDate==="function"?empSeparationDate(e):(e.separatedOn||""),
+      caItems:caDetail?caDetail.items:[],
+      caDue:caDetail?caDetail.amount:L.ca,
+      missingDates:missing,
+      otMultiplier:Number((S.settings&&S.settings.otPolicy)||1),
+      runId:kind+"|"+((per&&per.from)||"")
+    });
+  }
   return payTotals(L);
 }
 /* The statutory slice for the length of the period. The settings figures are
@@ -22169,9 +22247,10 @@ function payCaTakenBefore(empId, period, kind){
   });
   return n;
 }
-function payCaDue(empId, period, kind){
+function payCaDetail(empId, period, kind){
   const hasPeriod=!!(period && period.from && period.to);
   let planDue=0, lump=0;
+  const items=[];
   caList().forEach(a=>{
     if(!a || a.empId!==empId) return;
     if(payCaClosed(a)) return;
@@ -22182,27 +22261,36 @@ function payCaDue(empId, period, kind){
     const plan=Number(a.deductPerPeriod)||0;
     if(plan>0){
       const hits=payCaInstallments(a, hasPeriod?period:null);
-      if(hits>0) planDue+=Math.min(plan*hits, bal);
+      if(!(hits>0)) return;
+      const take=Math.min(plan*hits, bal);
+      planDue+=take;
+      items.push({id:a.id||"", no:a.no||"", amount:Math.round(take*100)/100,
+        balanceBefore:Math.round(bal*100)/100, balanceAfter:Math.round((bal-take)*100)/100,
+        installment:hits, kind:"plan"});
       return;
     }
-    /* No plan rate. Only an approved outstanding balance, and only for the
-       period that contains it — or the first later run if payroll has never
-       deducted anything for this person yet. */
     if(!hasPeriod || !payCaApproved(a)) return;
-    /* A date inside this cut-off is due now. A missing date, or a date from
-       an earlier cut-off, is due only on the first run that has not already
-       saved a cash-advance deduction for this person — otherwise the same
-       balance would come off every week. */
-    if(anchor && anchor>=period.from && anchor<=period.to){ lump+=bal; return; }
-    if((!anchor || anchor<period.from) && payCaTakenBefore(empId, period, kind)<0.005) lump+=bal;
+    let take=0;
+    if(anchor && anchor>=period.from && anchor<=period.to) take=bal;
+    else if((!anchor || anchor<period.from) && payCaTakenBefore(empId, period, kind)<0.005) take=bal;
+    if(!(take>0)) return;
+    lump+=take;
+    items.push({id:a.id||"", no:a.no||"", amount:Math.round(take*100)/100,
+      balanceBefore:Math.round(bal*100)/100, balanceAfter:Math.round((bal-take)*100)/100,
+      installment:1, kind:"lump"});
   });
-  return Math.round((planDue+lump)*100)/100;
+  return {amount:Math.round((planDue+lump)*100)/100, items:items};
+}
+function payCaDue(empId, period, kind){
+  return payCaDetail(empId, period, kind).amount;
 }
 function payTotals(L){
-  L.basic   = L.days * L.daily;
-  L.otPay   = L.ot   * L.hourly * (Number(S.settings.otPolicy)||1);
-  /* 30% or 100% of the day, per day chosen, on top of the day already in basic */
-  L.holPay  = (L.holFactor!=null ? L.holFactor : L.hol*HOL_PREMIUM) * L.daily;
+  if(!L.rateSplit){
+    L.basic   = L.days * L.daily;
+    L.otPay   = L.ot   * L.hourly * (Number(S.settings.otPolicy)||1);
+    /* 30% or 100% of the day, per day chosen, on top of the day already in basic */
+    L.holPay  = (L.holFactor!=null ? L.holFactor : L.hol*HOL_PREMIUM) * L.daily;
+  }
   L.gross   = L.basic + L.otPay + L.holPay + L.allowance + L.incentive;
   L.ded     = L.late + L.ca + L.uniform + L.sssLoan + L.hdmfLoan + L.sss + L.phic + L.hdmf;
   L.net     = pesoCeil(L.gross - L.ded);
@@ -22596,7 +22684,7 @@ function viewPayrollRun(){
    + 'A run is not locked when it is printed, so this wait applies to periods ending on or after October 1, 2026. Earlier periods still pay every saved hour. '
    + '<button class="btn sm" type="button" data-goto="otreq">OT requests</button> '
    + 'Allowance, loans and contributions are typed here and kept with the run. '
-   + '<b>Late fills from Daily Manpower time in</b> (minutes after 8:00 AM, or after 1:00 PM when time in is noon or later, times the daily rate divided by 8 divided by 60; no grace). '
+   + '<b>Late fills from Daily Manpower time in</b> (after 8:15, counted from 8:00 at ₱1 per minute; after 1:15, counted from 1:00 at ₱1). '
    + '<b>Cash advance fills from approved balances</b> for this period (a repayment plan uses its rate; otherwise the outstanding amount). A number you type in Late or Cash adv., including 0, stays.'
    + ' <button class="btn sm" id="pay-toattend">Open Daily Manpower</button>'
    + ' <button class="btn sm" id="pay-tocontrib">Contributions per head</button>'
@@ -22654,8 +22742,10 @@ function viewPayrollRun(){
   h+='<div class="row" style="margin:14px 0 8px">'
    + '<button class="btn pri" id="pay-print">Preview &amp; print the payroll</button>'
    + '<button class="btn" id="pay-csv"><svg><use href="#i-dl"/></svg> CSV</button>'
+   + '<button class="btn" id="pay-xlsx"><svg><use href="#i-dl"/></svg> Excel</button>'
    + '<button class="btn" id="pay-slips">Payslips for everyone</button>'
    + '<button class="btn" id="pay-save">Save this run</button>'
+   + '<button class="btn" id="pay-finalize">Finalize</button>'
    + '<button class="btn" id="pay-recompute" title="Read days and overtime again from Daily Manpower, and put refused contributions back to 0 unless you have typed a figure">Recompute from attendance</button>'
    + (saved?'<span class="pill ok">saved '+esc(saved.savedOn||"")+'</span>':'<span class="lbl">not saved yet</span>')
    + '<div class="f" style="margin-left:auto;width:210px"><input id="pay-q" placeholder="Find someone in this run" autocomplete="off"></div>'
@@ -22671,6 +22761,23 @@ function viewPayrollRun(){
    + '</div>';
   h+=payBySiteHtml(paySiteGroups(worked), T);
 
+  if(typeof hrPaySheet!=="undefined" && hrPaySheet && typeof hrPaySheet.screenHTML==="function"){
+    const release=payRelease(kind, per);
+    h+=hrPaySheet.screenHTML({
+      kind:kind, from:per.from, to:per.to,
+      release:release||"",
+      lines:worked,
+      ack:(saved&&saved.exceptionsAck)||{},
+      runId:payRunKey(kind, per.from, per.to)
+    });
+    if(idle){
+      h+='<div class="note" style="margin-top:10px">'+idle+' '+(idle===1?'person is':'people are')
+       + ' on the '+esc(payKind(kind).n.toLowerCase())+' list with no day recorded in this period, so they are '
+       + 'not on the run. If somebody worked and is missing here, the manpower report for their day is what to fix.</div>';
+    }
+    return h;
+  }
+
   /* One list drives the heading, the cells and the footer. Three places
      describing the same row is how a table ends up one column out of step. */
   const LEAD = [{n:"ID",w:56},{n:"Employee",w:196},{n:"Area",w:124},
@@ -22680,7 +22787,7 @@ function viewPayrollRun(){
     .concat([{n:"Gross",w:106,r:1}]);
   const DED = [
     {k:"late",     n:"Late",        w:92, always:1,
-      t:"From Daily Manpower time in. Minutes after 8:00 AM, or after 1:00 PM when time in is noon or later, × daily rate ÷ 8 ÷ 60. No grace. A number you type, including 0, stays."},
+      t:"From Daily Manpower time in. After 8:15, counted from 8:00 at ₱1 per minute. After 1:15, counted from 1:00 at ₱1. A number you type, including 0, stays."},
     {k:"ca",       n:"Cash adv.",   w:98, always:1},
     {k:"uniform",  n:"Uniform",     w:92},
     {k:"sssLoan",  n:"SSS loan",    w:94},
@@ -22960,7 +23067,8 @@ function payslipBody(L, kind, per){
    + pfTitle("PAYSLIP", payKind(kind).n.replace(/ —.*/,"") + " — " + payLabel(per.from,per.to))
    + '<table class="pf-t" style="margin:0">'
    + '<tr><td class="pf-l">EMPLOYEE</td><td class="pf-v fill" style="font-weight:700">'+esc(flipName(L.name))+'</td>'
-   +     '<td class="pf-l">ID NO.</td><td class="pf-v fill">'+esc(L.empNo||"—")+'</td></tr>'
+   +     '<td class="pf-l">ID NO.</td><td class="pf-v fill">'+esc(L.empNo||"—")
+   +       (L.employeeId?' · '+esc(L.employeeId):"")+'</td></tr>'
    + '<tr><td class="pf-l">POSITION</td><td class="pf-v fill">'+esc(L.position||"—")+'</td>'
    +     '<td class="pf-l">AREA</td><td class="pf-v fill">'+esc(L.site||"—")+'</td></tr>'
    + '<tr><td class="pf-l">PERIOD</td><td class="pf-v fill">'+esc(payLabel(per.from,per.to))+'</td>'
@@ -22985,8 +23093,15 @@ function payslipBody(L, kind, per){
 
   /* An advance is the one figure a person will want to check, so say what is
      left of it rather than only what was taken. */
+  h+='<div style="font-size:9px;color:#555;margin:2px 0 4px">Net pay is ROUNDUP of gross less total deductions, to the next peso. Release '
+   + esc(payRelease(kind, per) ? longDate(payRelease(kind, per)) : "date follows the cut-off")+'.</div>';
   const bal=payslipCaNote(L);
   if(bal) h+='<div style="font-size:9px;color:#555;margin:2px 0 4px">'+esc(bal)+'</div>';
+  if(L.src && L.src.length){
+    h+='<div style="font-size:8.5px;color:#555;margin:2px 0 4px">Sources: '
+     + L.src.slice(0,8).map(s=>esc(s.item)+(s.date?" "+esc(s.date):"")+(s.source_id?" "+esc(s.source_collection)+"/"+esc(s.source_id):"")).join(" · ")
+     + (L.src.length>8?" · …":"")+'</div>';
+  }
   const pendOt=Number(L.otPending||L.otNoForm)||0;
   if(pendOt>0 && typeof otPendingText==="function")
     h+='<div style="font-size:9px;color:#555;margin:2px 0 4px">'+esc(otPendingText(pendOt))+' — not included in overtime pay until an approved OT request with a form covers those hours.</div>';
@@ -24230,10 +24345,12 @@ function payPersonDays(empId){
     if(!rec) return '<tr>'+day+'<td colspan="7"><span class="lbl">No report filed for this day</span></td></tr>';
     if(!r) return '<tr>'+day+'<td colspan="7"><span class="lbl">Not on this day’s report — add them on Daily Manpower</span></td></tr>';
     const elig=holEligible(d, r) || holCode(r);
-    const lateMin=(typeof lateMinutesOf==="function" && (typeof dayCountsLate!=="function" || dayCountsLate(r))) ? lateMinutesOf(r.in) : 0;
+    const latePart=(typeof hrPaySheet!=="undefined" && hrPaySheet && typeof hrPaySheet.lateForRow==="function")
+      ? hrPaySheet.lateForRow(r, (e&&e.dailyRate)||0) : null;
+    const lateMin=latePart ? (latePart.amount||0) : ((typeof lateMinutesOf==="function" && (typeof dayCountsLate!=="function" || dayCountsLate(r))) ? lateMinutesOf(r.in) : 0);
     const lateTip=lateMin
-      ? (lateMin+" min after "+lateStartLabel(r.in)+" · deduction is minutes × (daily rate ÷ 8 ÷ 60)")
-      : "On time, or no time in. Start is 8:00 AM, or 1:00 PM when time in is at or after noon. No grace.";
+      ? (latePart ? (latePart.amount+" late or undertime at the company rule") : (lateMin+" min after "+lateStartLabel(r.in)))
+      : "On time. Morning late starts after 8:15, counted from 8:00 at ₱1 per minute.";
     return '<tr data-pdrow="'+esc(d)+'">'+day
       + '<td><select data-pd="s" style="'+sty+'">'+DAY_STATUS.map(x=>'<option'+(r.s===x?" selected":"")+'>'+x+'</option>').join("")+'</select></td>'
       + '<td><input data-pd="in" value="'+esc(r.in||"")+'" placeholder="8:00 AM" title="'+esc(lateTip)+'" style="'+sty+'"></td>'
@@ -24245,8 +24362,8 @@ function payPersonDays(empId){
   }).join("");
   openModal({ title:flipName(e.name)+" — "+payLabel(per.from, per.to), wide:true,
     body:'<div class="stack"><div class="note">Present/Late needs <b>Time In</b>. Undertime needs <b>Time Out</b>. '
-      + 'Late minutes are time in versus <b>8:00 AM</b>, or <b>1:00 PM</b> when time in is at or after noon. No grace. '
-      + 'They fill the Late column on the run (minutes × daily rate ÷ 8 ÷ 60) unless you type over that box. '
+      + 'Late starts after <b>8:15</b>, counted from 8:00 at <b>₱1</b> per minute, or after <b>1:15</b> counted from 1:00. '
+      + 'Undertime on a full day before 5:00 is ₱1 per minute up to 60, then the hourly rate times the nearest hour. An excused reason is 0. '
       + 'Holiday is per day: <b>+30%</b>, <b>+100%</b> or <b>As is</b>. Each change is written onto that day’s '
       + 'manpower report with its change history.</div>'
       + '<div class="tw"><table><thead><tr><th style="width:150px">Day</th><th style="width:130px">Status</th>'
@@ -24262,11 +24379,16 @@ function payPersonDays(empId){
     const paint=()=>{
       const st=(tr.querySelector('[data-pd="s"]')||{}).value||"";
       const row={s:st, in:inn.value};
-      const m=(typeof dayCountsLate!=="function" || dayCountsLate(row)) ? lateMinutesOf(inn.value) : 0;
-      cell.textContent=m ? m+" min" : "—";
+      const outEl=tr.querySelector('[data-pd="out"]');
+      const reasonEl=tr.querySelector('[data-pd="r"]');
+      const preview=(typeof hrPaySheet!=="undefined" && hrPaySheet && typeof hrPaySheet.lateForRow==="function")
+        ? hrPaySheet.lateForRow({s:st, in:inn.value, out:outEl?outEl.value:"", r:reasonEl?reasonEl.value:"", day:1}, (e&&e.dailyRate)||0)
+        : null;
+      const m=preview ? (preview.amount||0) : ((typeof dayCountsLate!=="function" || dayCountsLate(row)) ? lateMinutesOf(inn.value) : 0);
+      cell.textContent=m ? (preview ? String(preview.amount) : m+" min") : "—";
       const tip=m
-        ? (m+" min after "+lateStartLabel(inn.value)+" · deduction is minutes × (daily rate ÷ 8 ÷ 60)")
-        : "On time, or no time in. Start is 8:00 AM, or 1:00 PM when time in is at or after noon. No grace.";
+        ? (preview ? (preview.amount+" late or undertime at the company rule") : (m+" min after "+lateStartLabel(inn.value)))
+        : "On time. Morning late starts after 8:15, counted from 8:00 at ₱1 per minute.";
       inn.title=tip; cell.title=tip;
     };
     inn.addEventListener("input", paint);
@@ -25227,7 +25349,10 @@ function wire(){
     const b=payBuild();
     if(!b.lines.length){ toast("Nobody has a day recorded in this period.","err"); return; }
     if(blockCompanyPrint([(S.settings.payrollBy?"evaluated":"dept"),"signatory"])) return;
-    const body=payPaper(b.kind,b.per,b.lines,b.T,b.grouped?b.groups:null);
+    const release=payRelease(b.kind, b.per);
+    const body=(typeof hrPaySheet!=="undefined" && hrPaySheet && typeof hrPaySheet.printHTML==="function")
+      ? hrPaySheet.printHTML({kind:b.kind, from:b.per.from, to:b.per.to, release:release||"", lines:b.lines, runId:payRunKey(b.kind,b.per.from,b.per.to)})
+      : payPaper(b.kind,b.per,b.lines,b.T,b.grouped?b.groups:null);
     const no=(b.kind==="semi"?"ADMIN":"WEEKLY")+" PAYROLL "+payLabel(b.per.from,b.per.to);
     openModal({ title:no, wide:true, body:pfWrap(body,{land:true}),
       foot:'<button class="btn" id="pyp-back">Back</button>'
@@ -25261,6 +25386,68 @@ function wire(){
     slipShow(b.lines, b, "Payslips — "+b.lines.length+" people, "+payLabel(b.per.from,b.per.to),
       slugNo("PAYSLIPS-"+(b.kind==="semi"?"ADMIN":"WEEKLY")+"-"+b.per.from));
   };
+  const payXlsxBtn=$("#pay-xlsx",v); if(payXlsxBtn) payXlsxBtn.onclick=()=>{
+    if(typeof hrPaySheet==="undefined" || !hrPaySheet || typeof hrPaySheet.toXlsx!=="function"){
+      toast("The company workbook is not loaded.","err"); return;
+    }
+    const b=payBuild();
+    if(!b.lines.length){ toast("Nobody has a day recorded in this period.","err"); return; }
+    const release=payRelease(b.kind, b.per);
+    const book=hrPaySheet.workbook({
+      kind:b.kind, from:b.per.from, to:b.per.to, release:release||"",
+      lines:b.lines, runId:payRunKey(b.kind, b.per.from, b.per.to)
+    });
+    const bytes=hrPaySheet.toXlsx(book);
+    const semi=b.kind==="semi";
+    saveFile(slugNo((semi?"ADMIN":"WEEKLY")+"-PAYROLL-"+b.per.from)+".xlsx", bytes);
+  };
+  const payFinBtn=$("#pay-finalize",v); if(payFinBtn) payFinBtn.onclick=async()=>{
+    const b=payBuild();
+    if(!b.lines.length){ toast("Nobody has a day recorded in this period.","err"); return; }
+    const savedRun=payRunGet(b.kind, b.per.from, b.per.to);
+    const ack=(savedRun&&savedRun.exceptionsAck)||{};
+    const open=(typeof hrPaySheet!=="undefined" && hrPaySheet) ? hrPaySheet.openExceptions(b.lines, ack) : [];
+    if(open.length){
+      toast(open.length+" exception"+(open.length===1?"":"s")+" still open. Acknowledge them before finalize.","err");
+      return;
+    }
+    const key=payRunKey(b.kind, b.per.from, b.per.to);
+    const run=clone(savedRun || {id:key, kind:b.kind, from:b.per.from, to:b.per.to, lines:{}});
+    run.finalizedOn=TODAY;
+    S.payruns=S.payruns||{};
+    S.payruns[key]=run;
+    await put("payruns", key, run);
+    toast("Run finalized.","ok");
+    render();
+  };
+  const payAckBtn=$("#pay-ack",v); if(payAckBtn) payAckBtn.onclick=async()=>{
+    const b=payBuild();
+    const key=payRunKey(b.kind, b.per.from, b.per.to);
+    const savedRun=payRunGet(b.kind, b.per.from, b.per.to);
+    const run=clone(savedRun || {id:key, kind:b.kind, from:b.per.from, to:b.per.to, lines:{}});
+    const open=(typeof hrPaySheet!=="undefined" && hrPaySheet) ? hrPaySheet.openExceptions(b.lines, {}) : [];
+    run.exceptionsAck=run.exceptionsAck||{};
+    open.forEach(ex=>{ run.exceptionsAck[ex.id]=TODAY; });
+    S.payruns=S.payruns||{};
+    S.payruns[key]=run;
+    await put("payruns", key, run);
+    toast("Exceptions acknowledged. Finalize is available.","ok");
+    render();
+  };
+  const payAuditBtn=$("#pay-audit",v); if(payAuditBtn) payAuditBtn.onclick=()=>{
+    const card=document.getElementById("pay-audit-card");
+    if(card && card.scrollIntoView) card.scrollIntoView({behavior:"smooth", block:"start"});
+  };
+  on("[data-payaudit]","click",e=>{
+    const raw=e.currentTarget.dataset.payaudit||"";
+    const cut=raw.indexOf("|");
+    const kind=cut<0?raw:raw.slice(0,cut);
+    const id=cut<0?"":raw.slice(cut+1);
+    if(kind==="daily"){ openDailyDate(id); return; }
+    if(kind==="otreqs" && typeof openOtEditor==="function"){ openOtEditor({id:id}); return; }
+    if(kind==="leaves" && typeof lvEditor==="function"){ lvEditor(id); return; }
+    if(kind==="advances" && typeof caEditor==="function"){ caEditor(id); return; }
+  });
   const payCsvBtn=$("#pay-csv",v); if(payCsvBtn) payCsvBtn.onclick=()=>{
     const b=payBuild();
     const semi=b.kind==="semi";
@@ -25897,19 +26084,37 @@ function wire(){
   };
 
   /* field bindings */
-  const EMP_RENDER_FIELDS={name:1,empNo:1,dept:1,status:1,position:1,project:1,dateHired:1,rehireDate:1,contractEnd:1,supervisorId:1};
+  const EMP_RENDER_FIELDS={name:1,empNo:1,dept:1,status:1,position:1,project:1,dateHired:1,rehireDate:1,contractEnd:1,supervisorId:1,payType:1,employeeId:1};
+  function empPathGet(emp, path){
+    return String(path||"").split(".").reduce((o,key)=>o==null?undefined:o[key], emp);
+  }
+  function empPathSet(emp, path, value){
+    const parts=String(path||"").split(".");
+    let cur=emp;
+    for(let i=0;i<parts.length-1;i++){
+      if(!cur[parts[i]] || typeof cur[parts[i]]!=="object") cur[parts[i]]={};
+      cur=cur[parts[i]];
+    }
+    cur[parts[parts.length-1]]=value;
+  }
   function applyEmpField(el){
     const emp=S.employees[S.ui.emp]; if(!emp || !el) return null;
     const k=el.dataset.ef; if(!k) return null;
+    const dotted=k.indexOf(".")>=0;
     /* A date control reports YYYY-MM-DD, or nothing while the day is still
        being chosen. Writing the partial value, or redrawing on it, is what
        froze Date hired. An unchanged day must not count as an edit — the
        browser fires change again when a redraw puts the same day back. */
-    if(el.type==="date"){
+    if(el.type==="checkbox"){
+      const next=!!el.checked;
+      const prev=empPathGet(emp, k);
+      if(prev===next) return null;
+      empPathSet(emp, k, next);
+    }else if(el.type==="date"){
       const next=dateInputValue(el.value);
-      const prev=dateInputValue(emp[k]);
-      if(next===prev && String(emp[k]==null?"":emp[k])===next) return null;
-      emp[k]=next;
+      const prev=dateInputValue(dotted?empPathGet(emp,k):emp[k]);
+      if(next===prev && String((dotted?empPathGet(emp,k):emp[k])==null?"": (dotted?empPathGet(emp,k):emp[k]))===next) return null;
+      if(dotted) empPathSet(emp, k, next); else emp[k]=next;
       if(el.value!==next) el.value=next;
     }else if(el.tagName==="SELECT"){
       /* A stored status that is not in the option list shows as the blank
@@ -25923,9 +26128,10 @@ function wire(){
         if(!known) return null;
       }
       if(next===prev) return null;
-      emp[k]=next;
+      if(dotted) empPathSet(emp, k, next); else emp[k]=next;
     }else{
-      emp[k] = el.type==="number" ? (parseFloat(el.value)||0) : el.value;
+      const next=el.type==="number" ? (parseFloat(el.value)||0) : el.value;
+      if(dotted) empPathSet(emp, k, next); else emp[k]=next;
     }
     /* the picker stores an id; keep the readable name in step so contracts and
        reports that print "supervisor" still read */
