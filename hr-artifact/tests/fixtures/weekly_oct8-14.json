@@ -1,0 +1,3406 @@
+[
+  {
+    "name": "Arsua, Jonard",
+    "position": "Driver",
+    "daily": 570.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 500.0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 162.5,
+    "hdmf": 0,
+    "phic": 65.62,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "7:29",
+        "out": "18:28",
+        "day": 1.0,
+        "ot": 1.5,
+        "site": "CTU DUMANJUG P3"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "7:31",
+        "out": "17:19",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU DUMANJUG P3"
+      },
+      {
+        "date": "2026-10-10",
+        "in": "7:23",
+        "out": "17:50",
+        "day": 1.0,
+        "ot": 1.0,
+        "site": "CTU DUMANJUG P3"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-12",
+        "in": "7:59",
+        "out": "17:01",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU DUMANJUG P3"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "7:20",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU DUMANJUG P3"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "6:30",
+        "out": "17:04",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU DUMANJUG P3"
+      }
+    ]
+  },
+  {
+    "name": "Jacaban, Edmon",
+    "position": "Truckboy/Labor",
+    "daily": 500.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 162.5,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "6:40",
+        "out": "21:15",
+        "day": 1.0,
+        "ot": 3.0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "6:27",
+        "out": "20:05",
+        "day": 1.0,
+        "ot": 3.0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-10",
+        "in": "6:31",
+        "out": "20:09",
+        "day": 1.0,
+        "ot": 3.0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-12",
+        "in": "7:27",
+        "out": "19:19",
+        "day": 1.0,
+        "ot": 2.0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "6:50",
+        "out": "21:14",
+        "day": 1.0,
+        "ot": 3.0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "6:01",
+        "out": "20:08",
+        "day": 1.0,
+        "ot": 3.0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      }
+    ]
+  },
+  {
+    "name": "Celestial, Clifford Jan",
+    "position": "STAFF/Partime",
+    "daily": 300.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 0,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "7:34",
+        "out": "17:19",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU DUMANJUG P3"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "7:32",
+        "out": "17:01",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU DUMANJUG P3"
+      },
+      {
+        "date": "2026-10-10",
+        "in": "7:48",
+        "out": "17:01",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU DUMANJUG P3"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-12",
+        "in": "Absent",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-13",
+        "in": "7:40",
+        "out": "17:02",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU DUMANJUG P3"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "Absent",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      }
+    ]
+  },
+  {
+    "name": "Nelson Camus Jr.",
+    "position": "Warehouseman",
+    "daily": 540.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 0,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "7:45",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU DUMANJUG P3"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "7:58",
+        "out": "20:00",
+        "day": 1.0,
+        "ot": 3.0,
+        "site": "CTU DUMANJUG P3"
+      },
+      {
+        "date": "2026-10-10",
+        "in": "7:41",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU DUMANJUG P3"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-12",
+        "in": "7:48",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU DUMANJUG P3"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "7:48",
+        "out": "20:00",
+        "day": 1.0,
+        "ot": 3.0,
+        "site": "CTU DUMANJUG P3"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "7:30",
+        "out": "18:00",
+        "day": 1.0,
+        "ot": 1.0,
+        "site": "CTU DUMANJUG P3"
+      }
+    ]
+  },
+  {
+    "name": "Rio Raquiza",
+    "position": "Labor/Helper",
+    "daily": 468.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 0,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:00",
+        "out": "19:00",
+        "day": 1.0,
+        "ot": 2.0,
+        "site": "26HH0078 Tagbao FMR P3"
+      }
+    ]
+  },
+  {
+    "name": "James Sanining",
+    "position": "Mechanic",
+    "daily": 650.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 0,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-12",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-13",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-14",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      }
+    ]
+  },
+  {
+    "name": "Rios, Virgelio Jr.",
+    "position": "Labor",
+    "daily": 480.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 0,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "18:30",
+        "day": 1.0,
+        "ot": 1.5,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "18:00",
+        "day": 1.0,
+        "ot": 1.0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 13.0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      }
+    ]
+  },
+  {
+    "name": "Morales, Jonas",
+    "position": "Driver",
+    "daily": 570.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 162.5,
+    "hdmf": 50.0,
+    "phic": 65.62,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 3.0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 5.0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 2.0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 13.0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 2.0,
+        "site": "26HH0078 Tagbao FMR P3"
+      }
+    ]
+  },
+  {
+    "name": "Arminio, Toribio",
+    "position": "Driver",
+    "daily": 570.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 0,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 3.0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      }
+    ]
+  },
+  {
+    "name": "De Asis, Antonio Jr.",
+    "position": "Driver",
+    "daily": 570.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 162.5,
+    "hdmf": 50.0,
+    "phic": 65.62,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 3.5,
+        "site": "DANAO GUINACOT RD."
+      },
+      {
+        "date": "2026-10-09",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 10.0,
+        "site": "DANAO GUINACOT RD."
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "DANAO GUINACOT RD."
+      },
+      {
+        "date": "2026-10-11",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 7.0,
+        "site": "DANAO GUINACOT RD."
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 10.5,
+        "site": "DANAO GUINACOT RD."
+      },
+      {
+        "date": "2026-10-14",
+        "in": "7:00",
+        "out": "18:00",
+        "day": 1.0,
+        "ot": 1.0,
+        "site": "DANAO GUINACOT RD."
+      }
+    ]
+  },
+  {
+    "name": "Monilla, Jaeve",
+    "position": "Truckboy/Labor",
+    "daily": 480.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 500.0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 162.5,
+    "hdmf": 50.0,
+    "phic": 65.62,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 3.5,
+        "site": "DANAO GUINACOT RD."
+      },
+      {
+        "date": "2026-10-09",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 10.0,
+        "site": "DANAO GUINACOT RD."
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "DANAO GUINACOT RD."
+      },
+      {
+        "date": "2026-10-11",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "DANAO GUINACOT RD."
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 7.0,
+        "site": "DANAO GUINACOT RD."
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 10.5,
+        "site": "DANAO GUINACOT RD."
+      },
+      {
+        "date": "2026-10-14",
+        "in": "7:00",
+        "out": "18:00",
+        "day": 1.0,
+        "ot": 1.0,
+        "site": "DANAO GUINACOT RD."
+      }
+    ]
+  },
+  {
+    "name": "Raffy Manolong",
+    "position": "Timkeeper/Labor",
+    "daily": 468.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 0,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "TAWASON"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "TAWASON"
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "TAWASON"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "TAWASON"
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "TAWASON"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 2.0,
+        "site": "TAWASON"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "TAWASON"
+      }
+    ]
+  },
+  {
+    "name": "Bangquiao, Epimaco",
+    "position": "Operator/Driver",
+    "daily": 600.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 162.5,
+    "hdmf": 50.0,
+    "phic": 65.62,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU DUMANJUG P3"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU DUMANJUG P3"
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU DUMANJUG P3"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "18:00",
+        "day": 1.0,
+        "ot": 1.0,
+        "site": "CTU DUMANJUG P3"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU DUMANJUG P3"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:00",
+        "out": "20:00",
+        "day": 1.0,
+        "ot": 3.0,
+        "site": "CTU DUMANJUG P3"
+      }
+    ]
+  },
+  {
+    "name": "Bevencio Villa Carlos",
+    "position": "Caretaker",
+    "daily": 550.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 500.0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 0,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 5.0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 5.0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 4.0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "18:00",
+        "day": 1.0,
+        "ot": 1.0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 4.0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:00",
+        "out": "20:00",
+        "day": 1.0,
+        "ot": 3.0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      }
+    ]
+  },
+  {
+    "name": "Margarito Carcudo",
+    "position": "Foreman",
+    "daily": 800.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 0,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-09",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 4.0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "18:00",
+        "day": 1.0,
+        "ot": 1.0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:00",
+        "out": "20:00",
+        "day": 1.0,
+        "ot": 3.0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      }
+    ]
+  },
+  {
+    "name": "Asildo, Jorge",
+    "position": "Timekeeper",
+    "daily": 560.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 100.0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 162.5,
+    "hdmf": 0,
+    "phic": 65.62,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "18:00",
+        "day": 1.0,
+        "ot": 1.0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:50",
+        "out": "20:00",
+        "day": 1.0,
+        "ot": 3.0,
+        "site": "26HH0078 Tagbao FMR P3"
+      }
+    ]
+  },
+  {
+    "name": "John Paul Tomara",
+    "position": "Labor",
+    "daily": 450.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 0,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-09",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 4.0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "18:00",
+        "day": 1.0,
+        "ot": 1.0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:00",
+        "out": "20:00",
+        "day": 1.0,
+        "ot": 3.0,
+        "site": "26HH0078 Tagbao FMR P3"
+      }
+    ]
+  },
+  {
+    "name": "John Mark Cabarubisa",
+    "position": "Caretaker",
+    "daily": 500.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 0,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "18:00",
+        "day": 1.0,
+        "ot": 1.0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "Absent",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-14",
+        "in": "Absent",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      }
+    ]
+  },
+  {
+    "name": "Baguio, Alvin",
+    "position": "Driver",
+    "daily": 550.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 70.0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 0,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "20:00",
+        "day": 1.0,
+        "ot": 3.0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "8:40",
+        "out": "20:00",
+        "day": 1.0,
+        "ot": 3.0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:30",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 3.0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      }
+    ]
+  },
+  {
+    "name": "Monares, Vicente",
+    "position": "LABOR",
+    "daily": 480.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 0,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 4.0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 4.0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 4.0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 4.0,
+        "site": "UP SHE SHELTER"
+      }
+    ]
+  },
+  {
+    "name": "Jeyrick Maurecio",
+    "position": "Timekeeper",
+    "daily": 501.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 162.5,
+    "hdmf": 0,
+    "phic": 65.62,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-12",
+        "in": "Absent",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-13",
+        "in": "Absent",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-14",
+        "in": "Absent",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      }
+    ]
+  },
+  {
+    "name": "Bornea, Sercio",
+    "position": "MASON/PANDAY",
+    "daily": 550.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 162.5,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 4.0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 4.0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 4.0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 4.0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 4.0,
+        "site": "UP SHE SHELTER"
+      }
+    ]
+  },
+  {
+    "name": "Reyes, Teofilo",
+    "position": "PAINTER",
+    "daily": 590.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 162.5,
+    "hdmf": 50.0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "Absent",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      }
+    ]
+  },
+  {
+    "name": "Albura, Gregorio Jr.",
+    "position": "LEADMAN/PAINTER",
+    "daily": 650.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 162.5,
+    "hdmf": 50.0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      }
+    ]
+  },
+  {
+    "name": "Albura, Lowell",
+    "position": "PAINTER",
+    "daily": 550.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 0,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      }
+    ]
+  },
+  {
+    "name": "Agustin, Mercado",
+    "position": "MASON/PANDAY",
+    "daily": 550.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 0,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      }
+    ]
+  },
+  {
+    "name": "Abapo, Jean",
+    "position": "PAINTER",
+    "daily": 550.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 0,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "Absent",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      }
+    ]
+  },
+  {
+    "name": "Reneboy, Taburada",
+    "position": "Labor/Helper",
+    "daily": 450.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 0,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      }
+    ]
+  },
+  {
+    "name": "Dexter Papa",
+    "position": "Labor/Helper",
+    "daily": 450.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 0,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "Absent",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "UP SHE SHELTER"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-12",
+        "in": "Absent",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-13",
+        "in": "Absent",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-14",
+        "in": "Absent",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      }
+    ]
+  },
+  {
+    "name": "Kiamco, Jophil",
+    "position": "MASON/PANDAY",
+    "daily": 580.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 500.0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 0,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 4.0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 4.0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "18:00",
+        "day": 1.0,
+        "ot": 1.0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 4.0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 4.0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "26HH0078 Tagbao FMR P3"
+      }
+    ]
+  },
+  {
+    "name": "Ramas, Danilo",
+    "position": "Operator/Driver",
+    "daily": 600.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 0,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 4.0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 4.0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 4.0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 4.0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "26HH0078 Tagbao FMR P3"
+      }
+    ]
+  },
+  {
+    "name": "Junryl Gabutin",
+    "position": "Driver",
+    "daily": 550.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 0,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "26HH0078 Tagbao FMR P3"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "26HH0078 Tagbao FMR P3"
+      }
+    ]
+  },
+  {
+    "name": "Ronnie Dugaduga",
+    "position": "MASON/PANDAY",
+    "daily": 550.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 0,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "19:00",
+        "day": 1.0,
+        "ot": 2.0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "8:00",
+        "out": "19:00",
+        "day": 1.0,
+        "ot": 2.0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 4.0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 13.0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      }
+    ]
+  },
+  {
+    "name": "Ben Pasion",
+    "position": "MASON/PANDAY",
+    "daily": 550.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 0,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "19:00",
+        "day": 1.0,
+        "ot": 2.0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "8:00",
+        "out": "19:00",
+        "day": 1.0,
+        "ot": 2.0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 4.0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 13.0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "24HH0142 Labangon Chapel (Package B)"
+      }
+    ]
+  },
+  {
+    "name": "Francisco, Romar",
+    "position": "Timnekeeper",
+    "daily": 480.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 25.0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 0,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "13:25",
+        "out": "17:00",
+        "day": 0.5,
+        "ot": 4.0,
+        "site": "DANAO GUINACOT RD."
+      },
+      {
+        "date": "2026-10-09",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "DANAO GUINACOT RD."
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "DANAO GUINACOT RD."
+      },
+      {
+        "date": "2026-10-11",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "DANAO GUINACOT RD."
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "DANAO GUINACOT RD."
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 4.0,
+        "site": "DANAO GUINACOT RD."
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "DANAO GUINACOT RD."
+      }
+    ]
+  },
+  {
+    "name": "Olandag, Remart",
+    "position": "OPERATOR",
+    "daily": 600.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 0,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 4.0,
+        "site": "DANAO GUINACOT RD."
+      },
+      {
+        "date": "2026-10-09",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "DANAO GUINACOT RD."
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "DANAO GUINACOT RD."
+      },
+      {
+        "date": "2026-10-11",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "DANAO GUINACOT RD."
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "DANAO GUINACOT RD."
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 4.0,
+        "site": "DANAO GUINACOT RD."
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "DANAO GUINACOT RD."
+      }
+    ]
+  },
+  {
+    "name": "Gomez, Boogie",
+    "position": "Driver",
+    "daily": 550.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 0,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 4.0,
+        "site": "DANAO GUINACOT RD."
+      },
+      {
+        "date": "2026-10-09",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "DANAO GUINACOT RD."
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "DANAO GUINACOT RD."
+      },
+      {
+        "date": "2026-10-11",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "DANAO GUINACOT RD."
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "DANAO GUINACOT RD."
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 4.0,
+        "site": "DANAO GUINACOT RD."
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "DANAO GUINACOT RD."
+      }
+    ]
+  },
+  {
+    "name": "Reywell Andoy",
+    "position": "Operator",
+    "daily": 600.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 500.0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 0,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU BARILI DORM P2"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU BARILI DORM P2"
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU BARILI DORM P2"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU BARILI DORM P2"
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU BARILI DORM P2"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 1.0,
+        "site": "CTU BARILI DORM P2"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU BARILI DORM P2"
+      }
+    ]
+  },
+  {
+    "name": "Lacauren, Jewelson",
+    "position": "Labor",
+    "daily": 480.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 0,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 3.0,
+        "site": "CTU BARILI DORM P2"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 4.0,
+        "site": "CTU BARILI DORM P2"
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU BARILI DORM P2"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU BARILI DORM P2"
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU BARILI DORM P2"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 3.0,
+        "site": "CTU BARILI DORM P2"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 2.0,
+        "site": "CTU BARILI DORM P2"
+      }
+    ]
+  },
+  {
+    "name": "John Mark Alquizalas",
+    "position": "Labor",
+    "daily": 480.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 100.0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 0,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 2.0,
+        "site": "CTU BARILI DORM P2"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU BARILI DORM P2"
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU BARILI DORM P2"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 2.0,
+        "site": "CTU BARILI DORM P2"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 4.0,
+        "site": "CTU BARILI DORM P2"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 2.0,
+        "site": "CTU BARILI DORM P2"
+      }
+    ]
+  },
+  {
+    "name": "John Louie Alquizalas",
+    "position": "Labor",
+    "daily": 450.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 0,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU BARILI DORM P2"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 4.0,
+        "site": "CTU BARILI DORM P2"
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU BARILI DORM P2"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU BARILI DORM P2"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 1.0,
+        "site": "CTU BARILI DORM P2"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU BARILI DORM P2"
+      }
+    ]
+  },
+  {
+    "name": "Glenn Paul Zapanta",
+    "position": "Labor",
+    "daily": 450.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 0,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-09",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-10",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-11",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU BARILI DORM P2"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 3.0,
+        "site": "CTU BARILI DORM P2"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:12",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU BARILI DORM P2"
+      }
+    ]
+  },
+  {
+    "name": "Pascual Navares",
+    "position": "Labor",
+    "daily": 450.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 0,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-09",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-10",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-11",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-12",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 3.0,
+        "site": "CTU BARILI DORM P2"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:12",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU BARILI DORM P2"
+      }
+    ]
+  },
+  {
+    "name": "Ronnie Medina",
+    "position": "Labor",
+    "daily": 450.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 0,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-09",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-10",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-11",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU DUMANJUG P3"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 4.0,
+        "site": "CTU DUMANJUG P3"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU DUMANJUG P3"
+      }
+    ]
+  },
+  {
+    "name": "Albert Zapanta",
+    "position": "Labor",
+    "daily": 450.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 0,
+    "hdmf": 0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-09",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-10",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-11",
+        "in": "",
+        "out": "",
+        "day": 0,
+        "ot": 0,
+        "site": ""
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU DUMANJUG P3"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 4.0,
+        "site": "CTU DUMANJUG P3"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU DUMANJUG P3"
+      }
+    ]
+  },
+  {
+    "name": "Fajardo, John Lewel",
+    "position": "Timekeeper",
+    "daily": 500.0,
+    "monthly": false,
+    "allowance": 0,
+    "addl": 0,
+    "late_sheet": 0,
+    "ca": 0,
+    "uniform": 0,
+    "hdmfLoan": 0,
+    "sssLoan": 0,
+    "sss": 162.5,
+    "hdmf": 50.0,
+    "phic": 0,
+    "days": [
+      {
+        "date": "2026-10-08",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 4.0,
+        "site": "CTU DUMANJUG P3"
+      },
+      {
+        "date": "2026-10-09",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 7.0,
+        "site": "CTU DUMANJUG P3"
+      },
+      {
+        "date": "2026-10-10",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU DUMANJUG P3"
+      },
+      {
+        "date": "2026-10-11",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU DUMANJUG P3"
+      },
+      {
+        "date": "2026-10-12",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU DUMANJUG P3"
+      },
+      {
+        "date": "2026-10-13",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 5.0,
+        "site": "CTU DUMANJUG P3"
+      },
+      {
+        "date": "2026-10-14",
+        "in": "8:00",
+        "out": "17:00",
+        "day": 1.0,
+        "ot": 0,
+        "site": "CTU DUMANJUG P3"
+      }
+    ]
+  }
+]
