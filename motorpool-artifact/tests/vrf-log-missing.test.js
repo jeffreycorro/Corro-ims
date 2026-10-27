@@ -153,7 +153,7 @@ describe("artifact HTML — VRF log shows every number", () => {
 
   it("keeps the search, the badges, and the guard against a short re-read", () => {
     assert.match(html, /var BUILD = "2026-10-22 b"/);
-    assert.match(html, /placeholder="VRF number, unit, item, supplier…"/);
+    assert.match(html, /placeholder="VRF number, unit, project, item, supplier…"/);
     assert.match(html, /var numberQuery=/);
     assert.match(html, /function vrfLogStatus/);
     assert.match(html, /"FOR APPROVAL"/);

@@ -159,6 +159,7 @@ tbody tr.vrf-dup{background:var(--grey-100);color:var(--grey-700)}
 tbody tr.vrf-dup:hover{background:var(--grey-200)}
 .num{text-align:right;white-space:nowrap}
 th.num{text-align:right}
+.vrf-log-project{display:block;max-width:14rem;line-height:1.35;overflow-wrap:break-word}
 .scroll{overflow-x:auto}
 .empty{padding:var(--space-7) var(--space-4);text-align:center;color:var(--text-muted);font-size:14px}
 .hint{font-size:12px;color:var(--text-muted)}
@@ -252,6 +253,7 @@ svg text{font-family:var(--font-body)}
   .split,.f3,.f2{grid-template-columns:1fr}
   .content{padding:var(--space-4)}
   h2{font-size:24px} .stat .v{font-size:26px}
+  .vrf-log-project{max-width:9.5rem}
 }
 /* the printable VRF form */
 #printArea{display:none}
@@ -10191,16 +10193,76 @@ function vrfLogVisible(list){
   });
   return kept;
 }
+/* Project the VRF is billed to, from data already on the row. Aliases fold
+   to the pick-list name. A reserve project is used only when the form itself
+   has none. No extra reads. */
+function vrfBilledProjectCodes(v, reserveProject){
+  var seen={}, out=[];
+  function add(raw){
+    var code=normProj(raw);
+    if(!code||seen[code]) return;
+    seen[code]=1;
+    out.push(code);
+  }
+  add(v&&v.project);
+  var rows=(v&&v.rows)||[];
+  for(var i=0;i<rows.length;i++) add(rows[i]&&rows[i].project);
+  if(!out.length) add(reserveProject);
+  return out;
+}
+function vrfLogProjectIndex(){
+  var labels={}, reserves={};
+  (S.projects||[]).forEach(function(p){
+    var row=asProject(p);
+    if(!row) return;
+    labels[row.code]=projectOptionLabel(row);
+  });
+  (S.reserves||[]).forEach(function(r){
+    if(!r||r.no==null) return;
+    var code=normProj(r.project||"");
+    if(code) reserves[String(r.no)]=code;
+  });
+  return {labels:labels, reserves:reserves};
+}
+function vrfLogProjects(v, idx){
+  var reserveCode="";
+  if(v&&v.reserve&&idx&&idx.reserves) reserveCode=idx.reserves[String(v.reserve)]||"";
+  return vrfBilledProjectCodes(v, reserveCode);
+}
+function vrfLogProjectText(v, idx){
+  var codes=vrfLogProjects(v, idx);
+  if(!codes.length) return "—";
+  var labels=(idx&&idx.labels)||{};
+  var parts=[];
+  for(var i=0;i<codes.length;i++) parts.push(labels[codes[i]]||codes[i]);
+  return parts.join(" · ");
+}
+function vrfLogTextHit(v, term, idx){
+  if(!term) return true;
+  if(((v&&v.units)||[]).join(" ").toLowerCase().indexOf(term)>=0) return true;
+  var codes=vrfLogProjects(v, idx);
+  var i, label;
+  for(i=0;i<codes.length;i++){
+    if(String(codes[i]).toLowerCase().indexOf(term)>=0) return true;
+    label=(idx&&idx.labels&&idx.labels[codes[i]])||"";
+    if(label&&String(label).toLowerCase().indexOf(term)>=0) return true;
+  }
+  if(String((v&&v.project)||"").toLowerCase().indexOf(term)>=0) return true;
+  return ((v&&v.rows)||[]).some(function(r){
+    if(!r) return false;
+    return ((r.item||"")+" "+(r.supplier||"")+" "+(r.cat||"")+" "+(r.sub||"")+" "+(r.project||"")).toLowerCase().indexOf(term)>=0;
+  });
+}
 function vrfLogView(){
   var w=el("div");
   w.appendChild(pageHead("VRF log","Newest first",
-    "Latest VRF is at the top. Type a VRF number to go straight to it. Print gives you the A4 form with its attachments; the Drive button opens the signed copy, or searches for it when no link has been saved yet."));
+    "Latest VRF is at the top. The project each form is billed to is on the row. Type a VRF number to go straight to it. Print gives you the A4 form with its attachments; the Drive button opens the signed copy, or searches for it when no link has been saved yet."));
   var g=el("div","grid"); g.style.gap="var(--space-4)";
 
   var bar=el("div","f3");
   function f2(l,n,h){ var x=el("div","field"); x.appendChild(el("label",null,l)); x.appendChild(n);
     if(h) x.appendChild(el("div","hint",h)); return x; }
-  var q=el("input"); q.placeholder="VRF number, unit, item, supplier…"; q.value=S.logQ||"";
+  var q=el("input"); q.placeholder="VRF number, unit, project, item, supplier…"; q.value=S.logQ||"";
   q.className="mono";
   var fw=workSelect(S.regWork,"— every job —");
   var fs2=el("select");
@@ -10241,6 +10303,7 @@ function vrfLogView(){
 
   function draw(){
     host.innerHTML="";
+    var projIdx=vrfLogProjectIndex();
     if(!vrfRecorded("6033")){
       var gone=el("div","banner crit");
       var twins6033=matchingPaperPurchase(allLines(), paperVrf6033());
@@ -10275,15 +10338,12 @@ function vrfLogView(){
       if(!(numberQuery && byNumber)){
         if(S.regWork&&(v.works||[]).indexOf(S.regWork)<0) return false;
         if(S.regStatus&&v.status!==S.regStatus) return false;
-        if(S.logProject&&normProj(v.project)!==S.logProject) return false;
+        if(S.logProject&&vrfLogProjects(v,projIdx).indexOf(S.logProject)<0) return false;
       }
       if(!term) return true;
       if(byNumber) return true;
       if(numberQuery) return false;
-      if((v.units||[]).join(" ").toLowerCase().indexOf(term)>=0) return true;
-      if((v.project||"").toLowerCase().indexOf(term)>=0) return true;
-      return (v.rows||[]).some(function(r){
-        return ((r.item||"")+" "+(r.supplier||"")+" "+(r.cat||"")+" "+(r.sub||"")).toLowerCase().indexOf(term)>=0; });
+      return vrfLogTextHit(v, term, projIdx);
     });
     if(!list.length && term){
       var loose=vrfIndex().filter(function(v){
@@ -10314,6 +10374,11 @@ function vrfLogView(){
         return wrap; }},
       {h:"Date",get:function(v){return v.date;}},
       {h:"Unit",get:function(v){ return el("span","mono",v.units.join(", ")||"—"); }},
+      {h:"Project",get:function(v){
+        var text=vrfLogProjectText(v, projIdx);
+        var s=el("span","vrf-log-project",text);
+        if(text!=="—") s.title=text;
+        return s; }},
       {h:"Odometer",num:true,get:function(v){
         var n=vrfOdo(v); return n!=null?nnum(n):"—"; }},
       {h:"Jobs",get:function(v){
