@@ -53,7 +53,7 @@ function store(extra) {
 
 describe("disciplinary actions 2026-10-17a", () => {
   it("is build 2026-10-17a and the shared store accepts discipline", () => {
-    assert.match(html, /const BUILD = "2026-10-26a"/);
+    assert.match(html, /const BUILD = "2026-10-27a"/);
     assert.ok(ALLOWED_COLLECTIONS.includes("discipline"));
     assert.match(html, /discipline:\{\}/);
     assert.match(html, /"discipline"/);

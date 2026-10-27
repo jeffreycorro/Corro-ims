@@ -5,16 +5,18 @@
  * Adds Pipeline "Bulk import JSON", "Consolidate duplicates", a
  * role filter, a live search bar, applicant exam-score rows, a
  * "View 201 / application file" action on the applicant editor, and
- * Initial interviews: a date and time on the applicant, listed by position.
- * A name that is not on the pipeline can be typed in and is added there.
+ * Initial interviews: HR adds the applicant here (name, position, contact,
+ * date and time). Saving creates the pipeline record at Interview, or
+ * links an existing one by email, mobile, or name and position.
+ * Someone already on the pipeline can still be scheduled from the list.
  */
 (function (root) {
   "use strict";
 
-  if (root.hrRecruit && root.hrRecruit.version === "1.8.0") return;
+  if (root.hrRecruit && root.hrRecruit.version === "1.9.0") return;
 
   var api = {
-    version: "1.8.0",
+    version: "1.9.0",
     attached: false,
     openAppId: "",
     roleFilter: "",
@@ -1717,6 +1719,7 @@
   }
 
   var INITIAL_STATUSES = ["Scheduled", "Done/Passed", "No-show", "Rescheduled", "Failed"];
+  var APPLICANT_SOURCES = ["Walk-in", "Email", "Referral", "Facebook / Online", "JobStreet", "PESO / LGU", "School", "Agency"];
   var PAGE_FIELDS = { at: "hr-iv-at", by: "hr-iv-by", notes: "hr-iv-notes", status: "hr-iv-status" };
   var EDIT_FIELDS = { at: "hr-iv-edit-at", by: "hr-iv-edit-by", notes: "hr-iv-edit-notes", status: "hr-iv-edit-status" };
   var MODAL_FIELDS = { at: "hr-iv-modal-at", by: "hr-iv-modal-by", notes: "hr-iv-modal-notes", status: "hr-iv-modal-status" };
@@ -2008,19 +2011,163 @@
     return null;
   }
 
+  function contactKeys() {
+    var d = dedupe();
+    return {
+      emailKey: typeof d.emailKey === "function" ? d.emailKey : function (value) {
+        var s = String(value == null ? "" : value).trim().toLowerCase();
+        if (!s || s.indexOf("@") < 1) return "";
+        return s;
+      },
+      phoneKey: typeof d.phoneKey === "function" ? d.phoneKey : function (value) {
+        var digits = String(value == null ? "" : value).replace(/\D/g, "");
+        if (digits.length >= 10) return digits.slice(-10);
+        if (digits.length >= 7) return digits;
+        return "";
+      },
+    };
+  }
+
+  function positionKey(value) {
+    return foldText(value);
+  }
+
+  function applicantPositionKey(a) {
+    return positionKey(displayRoleTitle(a)) || positionKey(a && a.position);
+  }
+
+  function wantedPositionKey(fields) {
+    fields = fields || {};
+    var roleId = String(fields.roleId || "").trim();
+    var roles = rolesMap();
+    if (roleId && roles[roleId] && roles[roleId].title) return positionKey(roles[roleId].title);
+    return positionKey(fields.position);
+  }
+
+  function emailConflicts(applicant, fields, keys) {
+    var want = keys.emailKey(fields && fields.email);
+    var have = keys.emailKey(applicant && applicant.email);
+    return !!(want && have && want !== have);
+  }
+
+  function phoneConflicts(applicant, fields, keys) {
+    var want = keys.phoneKey(fields && (fields.mobile || fields.phone));
+    var have = keys.phoneKey(applicant && (applicant.mobile || applicant.phone));
+    return !!(want && have && want !== have);
+  }
+
+  function samePosition(applicant, fields) {
+    var roleId = String((fields && fields.roleId) || "").trim();
+    if (roleId && applicant && String(applicant.roleId || "") === roleId) return true;
+    var want = wantedPositionKey(fields);
+    if (!want) return false;
+    var titled = applicantPositionKey(applicant);
+    if (titled && titled === want) return true;
+    return positionKey(applicant && applicant.position) === want;
+  }
+
+  /* Email, then mobile, then one matching name, then name plus position
+     when several people share the name. A different email or mobile on
+     that same name is a different person. */
+  function matchExistingApplicant(fields) {
+    fields = fields || {};
+    var list = applicantList();
+    var keys = contactKeys();
+    var email = keys.emailKey(fields.email);
+    var phone = keys.phoneKey(fields.mobile || fields.phone);
+    if (email) {
+      var byEmail = list.filter(function (a) {
+        return keys.emailKey(a && a.email) === email;
+      });
+      if (byEmail.length === 1) return { applicant: byEmail[0], by: "email" };
+      if (byEmail.length > 1) return { error: "several", by: "email" };
+    }
+    if (phone) {
+      var byPhone = list.filter(function (a) {
+        if (keys.phoneKey(a && (a.mobile || a.phone)) !== phone) return false;
+        if (emailConflicts(a, fields, keys)) return false;
+        return true;
+      });
+      if (byPhone.length === 1) return { applicant: byPhone[0], by: "phone" };
+      if (byPhone.length > 1) return { error: "several", by: "phone" };
+    }
+    var named = exactNameMatches(fields.name);
+    if (!named.length) return null;
+    var pool = named.filter(function (a) {
+      return !emailConflicts(a, fields, keys) && !phoneConflicts(a, fields, keys);
+    });
+    if (!pool.length) return null;
+    if (pool.length === 1) {
+      return { applicant: pool[0], by: samePosition(pool[0], fields) ? "name-position" : "name" };
+    }
+    var posHits = pool.filter(function (a) {
+      return samePosition(a, fields);
+    });
+    if (posHits.length === 1) return { applicant: posHits[0], by: "name-position" };
+    if (posHits.length > 1) return { error: "several", by: "name-position" };
+    if (wantedPositionKey(fields)) return null;
+    return { error: "several", by: "name" };
+  }
+
+  function linkedRole(fields) {
+    fields = fields || {};
+    var roles = rolesMap();
+    var roleId = String(fields.roleId || "").trim();
+    if (roleId && roles[roleId]) return { id: roleId, role: roles[roleId] };
+    return roleForPosition(fields.position);
+  }
+
+  function fillBlankContact(existing, fields) {
+    if (!existing) return existing;
+    fields = fields || {};
+    var email = String(fields.email || "").trim();
+    var mobile = String(fields.mobile || fields.phone || "").trim();
+    var source = String(fields.source || "").trim();
+    var position = String(fields.position || "").trim();
+    var linked = linkedRole(fields);
+    if (email && !String(existing.email || "").trim()) existing.email = email;
+    if (mobile && !String(existing.mobile || "").trim()) existing.mobile = mobile;
+    if (source && !String(existing.source || "").trim()) existing.source = source;
+    if (!String(existing.position || "").trim()) {
+      if (position) existing.position = position;
+      else if (linked && linked.role && linked.role.title) existing.position = String(linked.role.title).trim();
+    }
+    if (!String(existing.roleId || "").trim() && linked) {
+      existing.roleId = linked.id;
+      var dept = linked.role && linked.role.dept;
+      if (dept && (!existing.dept || existing.dept === "Technical")) existing.dept = dept;
+    }
+    return existing;
+  }
+
+  function revealOnPipeline(applicant) {
+    if (!applicant || !applicant.id) return;
+    var S = store();
+    if (S) {
+      S.ui = S.ui || {};
+      S.ui.pipelineFocus = applicant.id;
+      S.ui.pipelineRoleFilter = "";
+      S.ui.pipelineSearch = "";
+    }
+    api.roleFilter = "";
+    api.pipelineSearch = "";
+  }
+
   function manualApplicant(fields) {
     fields = fields || {};
+    var linked = linkedRole(fields);
     var position = String(fields.position || "").trim();
-    var linked = roleForPosition(position);
+    if (!position && linked && linked.role && linked.role.title) position = String(linked.role.title).trim();
     var S = store() || {};
     var settings = S.settings || {};
+    var source = String(fields.source || "Walk-in").trim() || "Walk-in";
     return {
       id: newApplicantId(),
       name: String(fields.name || "").trim(),
       roleId: linked ? linked.id : "",
       position: position,
       dept: (linked && linked.role && linked.role.dept) || "Technical",
-      source: "Walk-in",
+      source: source,
       appliedOn: today(),
       stage: "Applied",
       mobile: String(fields.mobile || "").trim(),
@@ -2051,34 +2198,73 @@
     fields = fields || {};
     var name = String(fields.name || "").trim();
     if (!name) return { ok: false, error: "name" };
-    var exact = exactNameMatches(name);
-    if (exact.length > 1) return { ok: false, error: "several" };
-    if (exact.length === 1) {
-      var existing = await commitInitialInterview(exact[0].id, interview || {});
-      if (existing.ok) existing.created = false;
+    var hit = matchExistingApplicant(fields);
+    if (hit && hit.error) return { ok: false, error: hit.error };
+    if (hit && hit.applicant) {
+      if (!normalizeInitialInterview(interview || {})) return { ok: false, error: "when" };
+      fillBlankContact(hit.applicant, fields);
+      var existing = await commitInitialInterview(hit.applicant.id, interview || {});
+      if (existing.ok) {
+        existing.created = false;
+        existing.matchedBy = hit.by;
+        revealOnPipeline(existing.applicant);
+      }
       return existing;
     }
     var created = manualApplicant(fields);
+    if (!normalizeInitialInterview(interview || {})) return { ok: false, error: "when" };
+    if (!String(created.position || "").trim()) return { ok: false, error: "position" };
     if (!scheduleInitialInterview(created, interview || {})) return { ok: false, error: "when" };
     await persistApplicant(created);
-    return { ok: true, created: true, applicant: created };
+    revealOnPipeline(created);
+    return { ok: true, created: true, matchedBy: "", applicant: created };
   }
 
-  function resolveInterviewTarget(selectedId, manualName, findText) {
-    var selected = String(selectedId || "").trim();
-    if (selected && findApplicant(selected)) return { ok: true, id: selected, create: false };
+  function resolveInterviewTarget(selectedId, manualName, findText, extra) {
+    extra = extra || {};
     var typed = String(manualName || "").trim();
-    var find = String(findText || "").trim();
+    var fields = {
+      name: typed,
+      position: extra.position,
+      roleId: extra.roleId,
+      email: extra.email,
+      mobile: extra.mobile,
+      source: extra.source,
+    };
     if (typed) {
-      var exactTyped = exactNameMatches(typed);
-      if (exactTyped.length === 1) return { ok: true, id: exactTyped[0].id, create: false };
-      if (exactTyped.length > 1) return { ok: false, error: "several" };
+      var hit = matchExistingApplicant(fields);
+      if (hit && hit.applicant) return { ok: true, id: hit.applicant.id, create: false, by: hit.by };
+      if (hit && hit.error) return { ok: false, error: hit.error };
       return { ok: true, create: true, name: typed };
     }
+    var selected = String(selectedId || "").trim();
+    if (selected && findApplicant(selected)) return { ok: true, id: selected, create: false };
+    if (String(extra.email || "").trim() || String(extra.mobile || "").trim()) {
+      var contactHit = matchExistingApplicant(fields);
+      if (contactHit && contactHit.applicant) {
+        return { ok: true, id: contactHit.applicant.id, create: false, by: contactHit.by };
+      }
+      if (contactHit && contactHit.error) return { ok: false, error: contactHit.error };
+      return { ok: false, error: "name" };
+    }
+    var find = String(findText || "").trim();
     if (find) {
       var exactFind = exactNameMatches(find);
       if (exactFind.length === 1) return { ok: true, id: exactFind[0].id, create: false };
-      if (exactFind.length > 1) return { ok: false, error: "several" };
+      if (exactFind.length > 1) {
+        var narrowed = matchExistingApplicant({
+          name: find,
+          position: extra.position,
+          roleId: extra.roleId,
+          email: extra.email,
+          mobile: extra.mobile,
+        });
+        if (narrowed && narrowed.applicant) {
+          return { ok: true, id: narrowed.applicant.id, create: false, by: narrowed.by };
+        }
+        if (narrowed && narrowed.error) return { ok: false, error: narrowed.error };
+        return { ok: true, create: true, name: find };
+      }
       if (applicantsForSchedule(find).length) return { ok: false, error: "close" };
       return { ok: true, create: true, name: find };
     }
@@ -2158,6 +2344,55 @@
     });
   }
 
+  function sourceOptionsHtml(selected) {
+    var current = String(selected || "Walk-in");
+    return APPLICANT_SOURCES.map(function (s) {
+      return '<option value="' + esc(s) + '"' + (s === current ? " selected" : "") + ">" + esc(s) + "</option>";
+    }).join("");
+  }
+
+  function roleOptionsHtml(selectedId) {
+    var roles = rolesMap();
+    var rows = Object.keys(roles).map(function (id) {
+      return { id: id, title: String((roles[id] && roles[id].title) || "").trim(), dept: String((roles[id] && roles[id].dept) || "").trim() };
+    }).filter(function (row) {
+      return row.title;
+    });
+    rows.sort(function (a, b) {
+      return a.title.localeCompare(b.title) || a.id.localeCompare(b.id);
+    });
+    var html = '<option value="">— not linked to a role —</option>';
+    rows.forEach(function (row) {
+      html +=
+        '<option value="' +
+        esc(row.id) +
+        '"' +
+        (row.id === selectedId ? " selected" : "") +
+        ">" +
+        esc(row.title) +
+        (row.dept ? " (" + esc(row.dept) + ")" : "") +
+        "</option>";
+    });
+    return html;
+  }
+
+  function manualFieldsFromPage() {
+    var roleId = fieldValue("hr-iv-new-role");
+    var position = String(fieldValue("hr-iv-new-pos") || "").trim();
+    var roles = rolesMap();
+    if (!position && roleId && roles[roleId] && roles[roleId].title) {
+      position = String(roles[roleId].title).trim();
+    }
+    return {
+      name: fieldValue("hr-iv-new-name"),
+      position: position,
+      roleId: roleId,
+      mobile: fieldValue("hr-iv-new-mob"),
+      email: fieldValue("hr-iv-new-email"),
+      source: fieldValue("hr-iv-new-src") || "Walk-in",
+    };
+  }
+
   function initialInterviewsHtml() {
     var roles = rolesMap();
     var groups = scheduledInterviewGroups(applicantList(), roles);
@@ -2167,38 +2402,48 @@
     });
     var h =
       '<div id="hr-initial-interviews">' +
-      '<div class="note">Pick someone already on the pipeline, or type a name under Add someone who is not on the pipeline. The date and time are Philippines time. ' +
+      '<div class="note">Add the applicant here. Saving puts them on the applicant pipeline at Interview — the initial interview is scheduled — under the position they applied for. ' +
+      "The same email, the same mobile, or the same name and position uses the person already on file instead of adding a second record. " +
+      "The date and time are Philippines time. " +
       "Saving moves Applied, Screening, Shortlisted, On Hold, and Written Exam to Interview. " +
       "Someone already at Interview, Background Check, For Final Interview, Offer, Hired, or Rejected stays on that stage. " +
       "Change the status on the list when the interview is done, missed, moved, or failed.</div>" +
-      '<div class="sect-h"><h2>Schedule an initial interview</h2><span class="rule"></span>' +
+      '<div class="sect-h"><h2>Add an applicant and schedule the initial interview</h2><span class="rule"></span>' +
       '<span class="lbl">' +
       total +
       " on the schedule</span></div>" +
       '<div class="card"><div class="card-b"><div class="stack">' +
+      '<div class="f" id="hr-iv-manual"><label>Add someone who is not on the pipeline</label>' +
+      '<div class="grid3">' +
+      '<div class="f"><label>Name</label><input id="hr-iv-new-name" placeholder="Full name" autocomplete="name"></div>' +
+      '<div class="f"><label>Position applied for</label><input id="hr-iv-new-pos" placeholder="Position they applied for" autocomplete="off"></div>' +
+      '<div class="f"><label>Role, if it is already defined</label><select id="hr-iv-new-role">' +
+      roleOptionsHtml("") +
+      "</select></div>" +
+      '<div class="f"><label>Mobile</label><input id="hr-iv-new-mob" placeholder="Mobile" autocomplete="tel"></div>' +
+      '<div class="f"><label>Email</label><input id="hr-iv-new-email" type="email" placeholder="Email" autocomplete="email"></div>' +
+      '<div class="f"><label>Source</label><select id="hr-iv-new-src">' +
+      sourceOptionsHtml("Walk-in") +
+      "</select></div>" +
+      "</div>" +
+      '<span class="hint">A name and a position here are added to the pipeline when you save. The same email, the same mobile, or the same name and position links to the person already on file. Leave the name blank to schedule someone chosen below.</span></div>' +
+      '<div class="grid3">' +
+      scheduleFieldsHtml({ interviewer: defaultInterviewer(), status: "Scheduled" }, PAGE_FIELDS) +
+      "</div>" +
+      '<div class="sect-h" style="margin-top:8px"><h2 style="font-size:12.5px">Or schedule someone already on the pipeline</h2><span class="rule"></span></div>' +
       '<div class="f"><label>Find an applicant</label>' +
       '<input type="search" id="hr-iv-find" class="search" placeholder="Name, email, mobile, or position" aria-label="Find an applicant" autocomplete="off">' +
       '<span class="lbl" id="hr-iv-find-hint"></span></div>' +
-      '<div class="grid3">' +
       '<div class="f"><label>Applicant</label><select id="hr-iv-app">' +
       applicantOptionsHtml(schedulableApplicants(), "", roles, "") +
       "</select></div>" +
-      scheduleFieldsHtml({ interviewer: defaultInterviewer(), status: "Scheduled" }, PAGE_FIELDS) +
-      "</div>" +
-      '<div class="f" id="hr-iv-manual" style="margin-top:8px"><label>Add someone who is not on the pipeline</label>' +
-      '<div class="grid3">' +
-      '<div class="f"><label>Name</label><input id="hr-iv-new-name" placeholder="Full name" autocomplete="off"></div>' +
-      '<div class="f"><label>Position</label><input id="hr-iv-new-pos" placeholder="Optional" autocomplete="off"></div>' +
-      '<div class="f"><label>Mobile</label><input id="hr-iv-new-mob" placeholder="Optional" autocomplete="off"></div>' +
-      '<div class="f"><label>Email</label><input id="hr-iv-new-email" placeholder="Optional" autocomplete="off"></div>' +
-      "</div>" +
-      '<span class="hint">Leave this blank to schedule someone already chosen above. A name here is added to the pipeline when you save, unless that exact name is already on file.</span></div>' +
-      '<div class="row"><button class="btn pri" id="hr-iv-save" type="button">Save schedule</button>' +
+      '<span class="hint">Leave the name above blank. The date and time already entered are used for this person too.</span>' +
+      '<div class="row"><button class="btn pri" id="hr-iv-save" type="button">Save and add to pipeline</button>' +
       '<span class="lbl" id="hr-iv-form-status"></span></div>' +
       "</div></div></div>";
     if (!groups.length) {
       h +=
-        '<div class="card"><div class="empty">No initial interviews scheduled yet. Pick an applicant above, or type a name, and set the date and time.</div></div></div>';
+        '<div class="card"><div class="empty">No initial interviews scheduled yet. Enter the name, the position, and the date and time above.</div></div></div>';
       return h;
     }
     groups.forEach(function (g) {
@@ -2302,15 +2547,17 @@
   function formError(kind) {
     if (kind === "when") return "Set the date and time.";
     if (kind === "name") return "Type the applicant's name.";
-    if (kind === "several") return "More than one applicant has that name. Choose them in the list.";
+    if (kind === "position") return "Enter the position they applied for.";
+    if (kind === "several") return "More than one applicant matches. Choose them in the list.";
     if (kind === "close") return "Choose the applicant in the list, or type the full name under Add someone who is not on the pipeline.";
-    if (kind === "missing") return "Pick an applicant, or type a name to add someone who is not on the pipeline.";
+    if (kind === "missing") return "Type a name to add someone who is not on the pipeline, or pick an applicant already on it.";
     return "Could not save that interview.";
   }
 
   async function savePageSchedule() {
     var st = typeof document !== "undefined" && document.getElementById("hr-iv-form-status");
-    var target = resolveInterviewTarget(fieldValue("hr-iv-app"), fieldValue("hr-iv-new-name"), fieldValue("hr-iv-find"));
+    var manual = manualFieldsFromPage();
+    var target = resolveInterviewTarget(fieldValue("hr-iv-app"), manual.name, fieldValue("hr-iv-find"), manual);
     if (!target.ok) {
       var early = formError(target.error);
       if (st) st.textContent = early;
@@ -2323,25 +2570,33 @@
       notes: fieldValue("hr-iv-notes"),
       status: fieldValue("hr-iv-status"),
     };
-    var result = target.create
-      ? await commitManualInterview(
-          {
-            name: target.name,
-            position: fieldValue("hr-iv-new-pos"),
-            mobile: fieldValue("hr-iv-new-mob"),
-            email: fieldValue("hr-iv-new-email"),
-          },
-          fields
-        )
-      : await commitInitialInterview(target.id, fields);
+    var linked = target.id ? findApplicant(target.id) : null;
+    var result =
+      target.create || target.by
+        ? await commitManualInterview(
+            {
+              name: target.name || manual.name || (linked && linked.name) || "",
+              position: manual.position,
+              roleId: manual.roleId,
+              mobile: manual.mobile,
+              email: manual.email,
+              source: manual.source,
+            },
+            fields
+          )
+        : await commitInitialInterview(target.id, fields);
     if (!result.ok) {
       var msg = formError(result.error);
       if (st) st.textContent = msg;
       toast(msg, "err");
       return;
     }
-    if (result.created) toast((result.applicant.name || "That applicant") + " is on the pipeline and the interview is saved.", "ok");
-    else toast("Initial interview saved.", "ok");
+    revealOnPipeline(result.applicant);
+    var who = (result.applicant && result.applicant.name) || "That applicant";
+    var stage = stageText(result.applicant && result.applicant.stage);
+    if (result.created) toast(who + " is on the pipeline at " + stage + ".", "ok");
+    else if (result.matchedBy) toast(who + " is already on the pipeline at " + stage + ". The interview is saved on that record.", "ok");
+    else toast(who + " is on the pipeline at " + stage + ".", "ok");
     reflectStageSelect(result.applicant);
     if (typeof root.render === "function") root.render();
   }
@@ -2497,7 +2752,7 @@
       nameBox.value = trimmed;
       if (nameBox.setAttribute) nameBox.setAttribute("data-from-find", "1");
     }
-    setFindHint("No one on the pipeline has that name. Save schedule will add them.");
+    setFindHint("No one on the pipeline has that name. Enter the position and save, and they are added to the pipeline.");
   }
 
   function fillPageForm(applicantId) {
@@ -2555,6 +2810,12 @@
         if (!t) return;
         if (t.id === "hr-iv-app") {
           fillPageForm(t.value);
+          return;
+        }
+        if (t.id === "hr-iv-new-role") {
+          var picked = rolesMap()[t.value];
+          var pos = doc && doc.getElementById ? doc.getElementById("hr-iv-new-pos") : null;
+          if (picked && picked.title && pos && !String(pos.value || "").trim()) pos.value = picked.title;
           return;
         }
         if (t.getAttribute && t.getAttribute("data-hr-iv-status") != null) {
@@ -2690,10 +2951,13 @@
   api.applicantFuzzyMatch = applicantFuzzyMatch;
   api.searchHaystack = searchHaystack;
   api.exactNameMatches = exactNameMatches;
+  api.matchExistingApplicant = matchExistingApplicant;
   api.applicantsForSchedule = applicantsForSchedule;
   api.manualApplicant = manualApplicant;
   api.commitManualInterview = commitManualInterview;
   api.resolveInterviewTarget = resolveInterviewTarget;
+  api.revealOnPipeline = revealOnPipeline;
+  api.savePageSchedule = savePageSchedule;
   api.filterApplicantSelect = filterApplicantSelect;
   api.openPasteDoor = openPasteDoor;
   api.openConsolidateDoor = openConsolidateDoor;

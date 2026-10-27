@@ -108,7 +108,7 @@ const NAMES = [
 
 describe("2026-10-09a TOR/Diploma onboarding requirement", () => {
   it("is build 2026-10-09a and keeps one tor row named TOR/Diploma", () => {
-    assert.match(html, /const BUILD = "2026-10-26a"/);
+    assert.match(html, /const BUILD = "2026-10-27a"/);
     assert.equal(html.match(/k:"tor"/g).length, 1);
     assert.match(html, /n:"TOR\/Diploma", aka:"Transcript of Records or Diploma"/);
     assert.match(html, /Onboarding requirements/);
