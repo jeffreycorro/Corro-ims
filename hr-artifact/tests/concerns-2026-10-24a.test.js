@@ -52,7 +52,7 @@ function rosterCtx(mode) {
 
 describe("Cassie concerns 2026-10-24a", () => {
   it("is build 2026-10-24a and keeps the earlier attendance PDF note", () => {
-    assert.match(html, /const BUILD = "2026-10-26a"/);
+    assert.match(html, /const BUILD = "2026-10-27a"/);
     assert.match(readme, /build 2026-10-26a/);
     assert.match(readme, /build 2026-10-23a/);
     assert.match(readme, /No new database collection/);

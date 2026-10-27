@@ -147,7 +147,7 @@ const LINES = [
 
 describe("2026-10-14a payroll by site, deduction total, and OT duration", () => {
   it("is build 2026-10-14a and keeps the site filter, group control, and pipeline stages", () => {
-    assert.match(html, /const BUILD = "2026-10-26a"/);
+    assert.match(html, /const BUILD = "2026-10-27a"/);
     const view = extractFunction(html, "viewPayrollRun");
     assert.match(view, /id="pay-site"/);
     assert.match(view, /id="pay-group"/);
