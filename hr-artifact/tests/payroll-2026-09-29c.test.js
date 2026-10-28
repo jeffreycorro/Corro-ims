@@ -160,6 +160,8 @@ function loadPay() {
     "payRunStatValue",
     "payStatKept",
     "payStat",
+    "statServiceStart",
+    "statTenureOk",
     "payStatForLine",
     "payTotals",
     "payLine",

@@ -22043,9 +22043,9 @@ function payLine(e, kind, dates, saved, per){
     uniform:   Number(sv.uniform)||0,
     sssLoan:   Number(sv.sssLoan)||0,
     hdmfLoan:  Number(sv.hdmfLoan)||0,
-    sss:       payStatForLine(kind, "sss", e, sv),
-    phic:      payStatForLine(kind, "phic", e, sv),
-    hdmf:      payStatForLine(kind, "hdmf", e, sv),
+    sss:       payStatForLine(kind, "sss", e, sv, per),
+    phic:      payStatForLine(kind, "phic", e, sv, per),
+    hdmf:      payStatForLine(kind, "hdmf", e, sv, per),
     rows:days, auto,
     otNoForm: (function(){
       if(typeof otPaidHours!=="function"){
@@ -22101,9 +22101,27 @@ function docSlotRefused(v){
   })) return true;
   return false;
 }
+/* Only a KASABUTAN (govrefuse / legacy kasabutan slot) is a refusal.
+   "benefack" (Gov Benefit Deduction — acknowledged) means the employee
+   AGREED to the deductions (HR, 2026-10-27). */
 function govDeductionRefused(e){
   const docs=(e&&e.docs)||{};
-  return ["govrefuse","kasabutan","benefack"].some(k=>docSlotRefused(docs[k]));
+  return ["govrefuse","kasabutan"].some(k=>docSlotRefused(docs[k]));
+}
+/* SSS / PhilHealth / Pag-IBIG start once the employee has 3 months of
+   service (HR, 2026-10-27). Reached = dateHired + 3 months falls on or
+   before the last day of the cutoff. No hire date on file: no gate. */
+function statServiceStart(e){
+  const h=String((e&&e.dateHired)||"").slice(0,10);
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(h)) return "";
+  const t=new Date(h+"T00:00:00"); const day=t.getDate();
+  t.setMonth(t.getMonth()+3); if(t.getDate()<day) t.setDate(0);
+  return t.getFullYear()+"-"+String(t.getMonth()+1).padStart(2,"0")+"-"+String(t.getDate()).padStart(2,"0");
+}
+function statTenureOk(e, per){
+  const start=statServiceStart(e);
+  if(!start || !per || !per.to) return true;
+  return String(per.to).slice(0,10) >= start;
 }
 /* Explicit 0 is a number on the 201. Blank / missing is not set. */
 function empStatSet(e, which){
@@ -22146,9 +22164,10 @@ function payStatKept(saved, key, fallback){
 /* A run saved before the refusal was recognised still holds the company
    SSS / PhilHealth / Pag-IBIG. That snapshot is not an edit. Reopening the
    draft uses the refusal (0) until HR types a figure for this run. */
-function payStatForLine(kind, which, e, saved){
-  const fallback=payStat(kind, which, e);
+function payStatForLine(kind, which, e, saved, per){
   const touched=!!(saved && saved.statTouched);
+  if(e && per && !touched && !statTenureOk(e, per)) return 0;
+  const fallback=payStat(kind, which, e);
   if(govDeductionRefused(e) && !empStatSet(e, which) && !touched) return fallback;
   return payStatKept(saved, which, fallback);
 }

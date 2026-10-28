@@ -115,7 +115,7 @@ describe("weekly statutory half drops the leftover centavo", () => {
     assert.equal(semi.hdmf, 80);
   });
 
-  it("keeps an explicit 0 and zeros a signed Kasabutan or benefack refusal", () => {
+  it("keeps an explicit 0 and zeros a signed Kasabutan refusal; benefack means agreed", () => {
     const settings = { ded: { sss: 325, phic: 131.25, hdmf: 100 } };
     const zero = P.statutoryOf({ ded: { sss: 0, phic: 0, hdmf: 0 } }, "semi", settings);
     assert.equal(zero.sss, 0);
@@ -129,10 +129,10 @@ describe("weekly statutory half drops the leftover centavo", () => {
     assert.equal(refused.sss, 0);
     assert.equal(refused.phic, 0);
     assert.equal(refused.hdmf, 0);
-    const decline = P.statutoryOf({ docs: { benefack: { s: "on" } } }, "semi", settings);
-    assert.equal(decline.sss, 0);
-    assert.equal(decline.phic, 0);
-    assert.equal(decline.hdmf, 0);
+    const agreed = P.statutoryOf({ docs: { benefack: { s: "on" } } }, "semi", settings);
+    assert.equal(agreed.sss, 325);
+    assert.equal(agreed.phic, 131.25);
+    assert.equal(agreed.hdmf, 100);
   });
 });
 
