@@ -1,4 +1,4 @@
-<!doctype html><html><head><script src="/claude-shim.js"></script><link rel="manifest" href="/manifest.json"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/favicon.svg"><link rel="stylesheet" href="/pwa.css"><script src="/pwa.js"></script><script src="/vrf-report.js"></script><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1"><title>Corcondev Motorpool</title>
+<!doctype html><html><head><script src="/claude-shim.js"></script><link rel="manifest" href="/manifest.json"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/favicon.svg"><link rel="stylesheet" href="/pwa.css"><script src="/pwa.js"></script><script src="/vrf-report.js"></script><script src="/fuel-audit.js"></script><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1"><title>Corcondev Motorpool</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600&family=Archivo+Narrow:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
@@ -416,7 +416,7 @@ var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
    This label is inside the page function. The shim reads window.BUILD when it
    sends a save. Without that copy every save goes out with an empty build and
    the server answers "Reload the page". */
-var BUILD = "2026-10-22 b";
+var BUILD = "2026-10-29 a";
 try { window.BUILD = BUILD; } catch (e) {}
 var DAY = 86400000, MO = 30.44;
 
@@ -1702,6 +1702,11 @@ function heldVrfShell(no, r){
     confidence:"confirmed", why:"", total:0, project:(r&&r.project)||"",
     notes:(r&&(r.draftPurpose||r.scope))||"", odo:reserveMeter(r),
     fuelPrevNote:(r&&r.fuelPrevNote)||"",
+    driver:(r&&r.driver)||"", gauge:(r&&r.gauge)||"",
+    fuelPhotos:(r&&r.fuelPhotos)||null,
+    encoderChecklist:(r&&r.encoderChecklist)||null,
+    odoOverride:(r&&r.odoOverride)||null,
+    receipt:(r&&(r.receipt||r.receiptNo))||"",
     src:"reserve-hold", requestedBy:(r&&r.requestedBy)||"", held:true,
     approvedBy:(r&&r.approvedBy)||"", approvedAt:(r&&r.approvedAt)||"",
     approvedVia:(r&&r.approvedVia)||""};
@@ -1742,7 +1747,7 @@ function addHeldReserveVrfs(){
         cat:l.cat, item:l.item, supplier:l.supplier, qty:qty, price:price,
         total:amt, work:l.work||r.work||"", project:r.project||"",
         notes:r.draftPurpose||r.scope||"", requestedBy:r.requestedBy||"",
-        odo:meter, reserve:String(r.no), notBought:deadHold||!!l.notBought,
+        odo:meter, liters:l.liters, reserve:String(r.no), notBought:deadHold||!!l.notBought,
         vstatus:heldVrfStatus(r,"Open"),
         src:"reserve-hold"};
     });
@@ -1782,6 +1787,9 @@ function addHeldReserveVrfs(){
       total:sum,
       project:r.project, notes:r.draftPurpose||r.scope||"",
       fuelPrevNote:r.fuelPrevNote||"",
+      driver:r.driver||"", gauge:r.gauge||"", fuelPhotos:r.fuelPhotos||null,
+      encoderChecklist:r.encoderChecklist||null, odoOverride:r.odoOverride||null,
+      receipt:r.receipt||r.receiptNo||"",
       odo:meter, preparedSig:r.preparedSig||"", preparedSigName:r.preparedSigName||"",
       approvedBy:r.approvedBy||"", approvedAt:r.approvedAt||"", approvedVia:r.approvedVia||"",
       src:"reserve-hold", requestedBy:r.requestedBy||"", held:true,
@@ -6058,6 +6066,444 @@ function shownFuelPrevNote(rec, opts){
     beforeDate:opts.beforeDate!=null?opts.beforeDate:(rec.date||"")
   }).text;
 }
+/* Fuel audit. The rules live in fuel-audit.js. Old records that never stored
+   the new fields read as n/a. Nothing here changes who may approve. */
+function fuelAudit(){
+  try{ if(typeof FuelAudit!=="undefined" && FuelAudit && FuelAudit.mayPrint) return FuelAudit; }catch(e){}
+  try{ if(window.FuelAudit && window.FuelAudit.mayPrint) return window.FuelAudit; }catch(e2){}
+  return null;
+}
+function entryIsFuel(entry){
+  if(!entry) return false;
+  try{ if(recordHasFuelLine(entry)) return true; }catch(e){}
+  var rows=entry.rows||entry.draftLines||entry.lines||[];
+  for(var i=0;i<rows.length;i++) if(rows[i]&&isFuel(rows[i].cat)) return true;
+  var kind=String(entry.kind||"");
+  return kind==="fuel-issue"||kind==="fuel-bulk";
+}
+function shortGapKmSetting(){
+  var n=parseFloat(S.cfg&&S.cfg.fuel&&S.cfg.fuel.shortGapKm);
+  if(isFinite(n)&&n>=0) return n;
+  var api=fuelAudit();
+  return api?api.SHORT_GAP_KM_DEFAULT:50;
+}
+function draftFuelLitres(lines){
+  var n=0;
+  (lines||[]).forEach(function(l){ if(l&&isFuel(l.cat)) n+=fuelLitresOf(l); });
+  return n;
+}
+function draftFuelAmount(lines){
+  var n=0;
+  (lines||[]).forEach(function(l){
+    if(!l||!isFuel(l.cat)) return;
+    n+=(parseFloat(l.qty)||0)*(parseFloat(l.price)||0);
+  });
+  return n;
+}
+function unitProjectNow(code){
+  var v=vehicle(code);
+  if(v&&v.site){
+    var row=null;
+    try{ row=findProject(v.site); }catch(e){ row=null; }
+    if(row&&row.status!=="Archived"&&row.code) return row.code;
+    if(String(v.site||"").trim()) return String(v.site).trim();
+  }
+  var best="", bd=null;
+  allLines().forEach(function(r){
+    if(!r||r.veh!==code||!String(r.project||"").trim()) return;
+    var d=parseDate(r.date); if(!d) return;
+    if(!bd||d>=bd){ bd=d; best=r.project; }
+  });
+  return best||"";
+}
+function lastOdoOnOrBefore(code, date, exceptVrf){
+  var before=date?parseDate(date):null;
+  var best=null, bd=null;
+  function take(n, d){
+    if(n==null||!d) return;
+    if(before&&d>before) return;
+    if(!bd||d>=bd){ bd=d; best=n; }
+  }
+  allLines().forEach(function(r){
+    if(!r||r.veh!==code) return;
+    if(exceptVrf&&String(r.vrf)===String(exceptVrf)) return;
+    take(parseOdo(r.odo), parseDate(r.date));
+  });
+  (S.reserves||[]).forEach(function(r){
+    if(!r||r.veh!==code) return;
+    if(exceptVrf&&String(r.vrfNo||"")===String(exceptVrf)) return;
+    var st=String(r.status||"");
+    if(st==="Rejected"||st==="Cancelled"||st==="Archived") return;
+    take(reserveMeter(r), parseDate(r.date));
+  });
+  return best;
+}
+function fuelAuditRows(){
+  var out=[];
+  allLines().forEach(function(r){
+    if(!r||!(isFuel(r.cat)||isFuelWorkCode(r.work))) return;
+    var L=fuelLitresOf(r), amt=lineMoney(r);
+    out.push({veh:r.veh, date:r.date, liters:L, amount:amt, vrf:r.vrf,
+      receipt:r.receipt||r.receiptNo||"", status:r.vstatus||r.status||"",
+      supplier:r.supplier||"", odo:parseOdo(r.odo),
+      pricePerL:(L>0&&amt>0)?amt/L:null});
+  });
+  (S.reserves||[]).forEach(function(r){
+    if(!r||!reserveIsFuelFill(r)) return;
+    var L=reserveFuelLitres(r);
+    var amt=Number(r.budget)||0;
+    out.push({veh:r.veh, date:r.date, liters:L, amount:amt, vrf:r.vrfNo||"",
+      receipt:r.receipt||r.receiptNo||"", status:r.status||"",
+      supplier:(typeof shownReserveSupplier==="function"?shownReserveSupplier(r):"")||"",
+      odo:reserveMeter(r), pricePerL:(L>0&&amt>0)?amt/L:null});
+  });
+  return out;
+}
+function supplierRecentFuelPrices(name, exceptVrf){
+  var key=String(name||"").trim().toLowerCase();
+  if(!key) return [];
+  var rows=[];
+  fuelAuditRows().forEach(function(r){
+    if(String(r.supplier||"").trim().toLowerCase()!==key) return;
+    if(exceptVrf&&String(r.vrf)===String(exceptVrf)) return;
+    var st=String(r.status||"");
+    if(st==="Cancelled"||st==="Duplicate"||st==="Not bought"||st==="Rejected") return;
+    if(!(r.pricePerL>0)) return;
+    rows.push(r);
+  });
+  rows.sort(function(a,b){ return String(b.date||"").localeCompare(String(a.date||"")); });
+  return rows.slice(0,8).map(function(r){ return r.pricePerL; });
+}
+function fuelRequestReview(spec){
+  spec=spec||{};
+  var api=fuelAudit();
+  var empty={fuel:false, badges:[], notes:[], blocks:[], needsNote:{}, benchmark:null};
+  if(!api) return empty;
+  var lines=spec.lines||[];
+  var fuel=!!spec.fuel;
+  if(!fuel) lines.forEach(function(l){ if(l&&isFuel(l.cat)) fuel=true; });
+  if(!fuel) return empty;
+  var out={fuel:true, badges:[], notes:[], blocks:[], needsNote:{}, benchmark:api.benchmarkPanel(spec.veh)};
+  var photos=spec.photos;
+  var photoSt=photos?api.fuelPhotoStatus(photos):{known:false, label:"n/a", missing:false, gauge:null, meter:null};
+  out.photos=photoSt;
+  if(photoSt.known&&photoSt.missing){
+    out.badges.push("missing photos");
+    out.blocks.push("Add a fuel-gauge photo and an odometer or hour-meter photo.");
+    out.needsNote.photo=true;
+  }else if(!photoSt.known && spec.photoCount===0){
+    out.badges.push("missing photos");
+  }
+  var last=lastOdoOnOrBefore(spec.veh, spec.date, spec.vrf);
+  var odo=api.odoLowerThanLast(spec.odo, last);
+  out.odo=odo;
+  if(odo.known&&odo.lower){
+    out.badges.push("odometer lower");
+    out.notes.push(odo.label+" ("+nnum(odo.reading)+" vs "+nnum(odo.last)+").");
+    if(!String(spec.odoOverrideReason||"").trim()) out.blocks.push("This reading is lower than the last one. Add an override reason to continue.");
+  }
+  var prev=spec.veh?previousFuelFill(spec.veh, {beforeDate:spec.date||"", exceptVrf:spec.vrf||""}):null;
+  var gap=api.shortGapFlag({
+    date:spec.date, lastDate:prev&&prev.date, odo:spec.odo, lastOdo:prev&&prev.odo,
+    meter:meterOf(spec.veh), shortGapKm:spec.shortGapKm!=null?spec.shortGapKm:shortGapKmSetting()
+  });
+  out.shortGap=gap;
+  if(gap.flag){ out.badges.push("short gap"); out.notes.push(gap.label+"."); out.needsNote.km=true; }
+  var alloc=api.allocationFlags({unit:spec.veh, date:spec.date, lastDate:prev&&prev.date, liters:spec.liters});
+  out.allocation=alloc;
+  if(alloc.flag){ out.badges.push("allocation"); out.notes.push(alloc.label+"."); out.needsNote.km=true; }
+  var dup=api.duplicateFuelHits(fuelAuditRows(), {
+    veh:spec.veh, date:spec.date, liters:spec.liters, amount:spec.amount,
+    vrf:spec.vrf||"", receipt:spec.receipt||""
+  });
+  out.duplicate=dup;
+  if(dup.flag){ out.badges.push("duplicate"); out.notes.push(dup.label+"."); out.needsNote.duplicate=true; }
+  var proj=api.projectMismatch(spec.project, unitProjectNow(spec.veh));
+  out.project=proj;
+  if(proj.flag){ out.badges.push("project"); out.notes.push(proj.label+"."); out.needsNote.project=true; }
+  if(!String(spec.gauge||"").trim()) out.needsNote.gauge=true;
+  var drv=api.driverState({driver:spec.driver}, {fuel:true, entering:!!spec.entering});
+  out.driver=drv;
+  if(spec.entering && !drv.ok) out.blocks.push(drv.label);
+  out.amounts=[];
+  (lines||[]).forEach(function(l){
+    if(!l||!isFuel(l.cat)) return;
+    var L=fuelLitresOf(l);
+    var qty=parseFloat(l.qty)||0, price=parseFloat(l.price)||0, amount=qty*price;
+    var ppl=isLitreUnit(l.unit)?price:numOrNull(l.pricePerL);
+    var chk=api.amountCheck({liters:L, pricePerL:ppl, amount:amount});
+    if(chk.known&&!chk.ok){ out.badges.push("amount"); out.notes.push(chk.label+"."); out.amounts.push(chk); }
+    var pesos=api.pesosAsLiters({liters:L, maxPerFill:alloc.max, unit:spec.veh});
+    if(pesos.flag){ out.badges.push("litres"); out.notes.push(pesos.label+"."); }
+    var recent=supplierRecentFuelPrices(l.supplier, spec.vrf);
+    var implied=(L>0&&amount>0)?amount/L:ppl;
+    var range=api.priceOutsideRange(implied, recent);
+    if(range.flag){ out.badges.push("price"); out.notes.push((l.supplier?l.supplier+": ":"")+range.label+"."); }
+  });
+  var seen={};
+  out.badges=out.badges.filter(function(b){ if(seen[b]) return false; seen[b]=1; return true; });
+  return out;
+}
+function numOrNull(v){
+  if(v==null||String(v).trim()==="") return null;
+  var n=parseFloat(v);
+  return isFinite(n)?n:null;
+}
+function auditChip(text, kind){
+  return el("span","chip "+(kind||"warn"), text);
+}
+function missingPhotosChip(entry){
+  if(!entryIsFuel(entry)) return null;
+  var api=fuelAudit();
+  if(!api) return null;
+  var label=api.missingPhotoBadge({
+    fuel:true,
+    fuelPhotos:entry.fuelPhotos||null,
+    photoCount:(function(){ try{ return photoCountMany(photoOwnersForOpenVrf(entry)); }catch(e){ return photoCount(entry&&entry.vrf); } })()
+  });
+  if(!label) return null;
+  return auditChip(label, "crit");
+}
+function vrfPrintGate(entry){
+  var api=fuelAudit();
+  if(!api) return {ok:true, message:""};
+  return api.mayPrint(entry);
+}
+function showPrintBlocked(message){
+  var ex=document.getElementById("printBlockSheet"); if(ex) ex.remove();
+  var m=el("div","modal"); m.id="printBlockSheet";
+  var sheet=el("div","sheet"); sheet.style.maxWidth="480px";
+  var b=el("div"); b.style.padding="var(--space-5) var(--space-6)";
+  b.appendChild(el("h3",null,"Not approved — cannot print"));
+  b.appendChild(el("div","hint", message&&message!=="Not approved — cannot print"
+    ? message
+    : "This VRF is not approved yet. Printing stays closed until the office approves it. An approved VRF can be reprinted, including its e-signature."));
+  var acts=el("div"); acts.style.cssText="display:flex;justify-content:flex-end;margin-top:var(--space-4)";
+  var cb=el("button","btn pri","Close");
+  cb.addEventListener("click",function(){ m.remove(); });
+  acts.appendChild(cb); b.appendChild(acts);
+  sheet.appendChild(b); m.appendChild(sheet);
+  m.addEventListener("click",function(e){ if(e.target===m) m.remove(); });
+  document.body.appendChild(m);
+}
+function paintFuelAuditNote(host, d){
+  if(!host) return;
+  var review=fuelRequestReview({
+    veh:d.veh, date:d.date, odo:d.odo, liters:draftFuelLitres(d.lines),
+    amount:draftFuelAmount(d.lines), lines:d.lines, photos:d.photos||[],
+    project:d.project, driver:d.driver, vrf:"", receipt:d.receipt||"",
+    gauge:d.gauge, entering:true, shortGapKm:shortGapKmSetting()
+  });
+  d._fuelReview=review;
+  if(!review.fuel) return;
+  if(review.benchmark){
+    var box=el("div","banner info");
+    var bits=(review.benchmark.lines||[]).map(function(ln){ return "<b>"+esc(ln.k)+".</b> "+esc(ln.v); }).join("<br>");
+    box.innerHTML="<b>Unit benchmark</b>"+(review.benchmark.known?"":" — n/a")+"<br>"+bits;
+    host.appendChild(box);
+  }
+  if(review.notes.length){
+    var wn=el("div","banner warn");
+    wn.innerHTML="<b>Fuel checks</b><br>"+review.notes.map(function(t){ return esc(t); }).join("<br>");
+    host.appendChild(wn);
+  }
+  if(review.blocks.length){
+    var bn=el("div","banner crit");
+    bn.innerHTML=review.blocks.map(function(t){ return esc(t); }).join("<br>");
+    host.appendChild(bn);
+  }
+}
+function fuelChecklistNeeds(review){
+  var need={};
+  if(!review) return need;
+  if(review.needsNote) Object.keys(review.needsNote).forEach(function(k){ if(review.needsNote[k]) need[k]=true; });
+  return need;
+}
+function askEncoderChecklist(d, btn, opts, review){
+  var api=fuelAudit();
+  var ex=document.getElementById("encSheet"); if(ex) ex.remove();
+  var m=el("div","modal"); m.id="encSheet";
+  var sheet=el("div","sheet"); sheet.style.maxWidth="640px";
+  var b=el("div"); b.style.padding="var(--space-5) var(--space-6)";
+  b.appendChild(el("h3",null,"Encoder checklist"));
+  b.appendChild(el("div","hint","Tick each item before this fuel VRF goes for approval. A flagged item needs a note. The ticks are stored on the VRF and shown to the approver."));
+  var items=(api?api.checklistItems():[]);
+  var inputs=[];
+  items.forEach(function(item){
+    var row=el("div"); row.style.cssText="margin-top:var(--space-3);padding-top:var(--space-2);border-top:1px solid var(--rule)";
+    var lab=el("label","checkline");
+    var cb=el("input"); cb.type="checkbox";
+    lab.appendChild(cb);
+    lab.appendChild(document.createTextNode(" "+item.label));
+    row.appendChild(lab);
+    if(review&&review.needsNote&&review.needsNote[item.id]){
+      row.appendChild(el("div","hint","This one is flagged — write what you saw."));
+    }
+    var note=el("input"); note.placeholder="note"; note.style.marginTop="6px";
+    row.appendChild(note);
+    inputs.push({id:item.id, cb:cb, note:note});
+    b.appendChild(row);
+  });
+  var msg=el("div","hint"); msg.style.marginTop="var(--space-3)";
+  b.appendChild(msg);
+  var acts=el("div"); acts.style.cssText="display:flex;gap:var(--space-2);justify-content:flex-end;margin-top:var(--space-4)";
+  var back=el("button","btn","Back");
+  back.addEventListener("click",function(){ m.remove(); });
+  var go=el("button","btn pri","Send for approval");
+  go.addEventListener("click",function(){
+    var packed={by:(d.requestedBy||"").trim(), at:iso(), items:inputs.map(function(x){
+      return {id:x.id, checked:!!x.cb.checked, note:x.note.value.trim()};
+    })};
+    if(!api){ d.encoderChecklist=packed; m.remove(); sendForApproval(d, btn, Object.assign({}, opts||{}, {checklistDone:true})); return; }
+    var ready=api.checklistReady(packed, fuelChecklistNeeds(review));
+    if(!ready.ok){ msg.textContent=ready.message; msg.style.color="var(--danger)"; return; }
+    d.encoderChecklist=packed;
+    m.remove();
+    sendForApproval(d, btn, Object.assign({}, opts||{}, {checklistDone:true}));
+  });
+  acts.appendChild(back); acts.appendChild(go);
+  b.appendChild(acts);
+  sheet.appendChild(b); m.appendChild(sheet);
+  m.addEventListener("click",function(e){ if(e.target===m) m.remove(); });
+  document.body.appendChild(m);
+}
+async function voidRequestedReserve(r, by, reason){
+  var api=fuelAudit();
+  if(!api) throw new Error("Fuel audit is not loaded.");
+  var plan=api.voidRecord(r, {by:by, reason:reason, at:iso()});
+  if(!plan.ok) throw new Error(plan.message);
+  Object.keys(plan.record).forEach(function(k){ r[k]=plan.record[k]; });
+  await saveReserves(r.no);
+  _vrfs=null;
+  return r;
+}
+function askVoidRequested(entry, after){
+  var r=null;
+  if(entry&&entry.no!=null&&entry.draftLines) r=reserveBy(entry.no)||entry;
+  else r=entry&&entry.reserve?reserveBy(entry.reserve):reserveForVrf(entry);
+  if(!r){ toast("That draft is not on the reserve log."); return; }
+  var ex=document.getElementById("voidSheet"); if(ex) ex.remove();
+  var m=el("div","modal"); m.id="voidSheet";
+  var sheet=el("div","sheet"); sheet.style.maxWidth="520px";
+  var b=el("div"); b.style.padding="var(--space-5) var(--space-6)";
+  var no=r.vrfNo?("VRF "+r.vrfNo):("RSV-"+r.no);
+  b.appendChild(el("h3",null,"Cancel "+no));
+  b.appendChild(el("div","hint","The request stays on file with status Cancelled. A reason is required. This does not delete it."));
+  var who=el("input"); who.placeholder="your name"; who.value=signedInName();
+  var why=el("input"); why.placeholder="why this request is void";
+  function fld(l,n){ var x=el("div","field"); x.style.marginTop="var(--space-3)"; x.appendChild(el("label",null,l)); x.appendChild(n); return x; }
+  b.appendChild(fld("Cancelled by", who));
+  b.appendChild(fld("Reason", why));
+  var msg=el("div","hint"); msg.style.marginTop="var(--space-2)";
+  b.appendChild(msg);
+  var acts=el("div"); acts.style.cssText="display:flex;gap:var(--space-2);justify-content:flex-end;margin-top:var(--space-4)";
+  var back=el("button","btn","Back");
+  back.addEventListener("click",function(){ m.remove(); });
+  var go=el("button","btn pri","Cancel this VRF");
+  function sync(){
+    var ok=!!who.value.trim()&&!!why.value.trim();
+    go.disabled=!ok;
+    msg.textContent=ok?"":"A name and a reason are required.";
+    msg.style.color=ok?"":"var(--danger)";
+  }
+  who.addEventListener("input",sync); why.addEventListener("input",sync); sync();
+  go.addEventListener("click",async function(){
+    sync(); if(go.disabled) return;
+    go.disabled=true; go.textContent="Cancelling…";
+    try{ await voidRequestedReserve(r, who.value.trim(), why.value.trim()); }
+    catch(err){
+      go.disabled=false; go.textContent="Cancel this VRF";
+      msg.textContent=(err&&err.message)||"Could not cancel it.";
+      msg.style.color="var(--danger)";
+      return;
+    }
+    m.remove();
+    toast(no+" cancelled.");
+    if(after) after(); else render();
+  });
+  acts.appendChild(back); acts.appendChild(go);
+  b.appendChild(acts);
+  sheet.appendChild(b); m.appendChild(sheet);
+  m.addEventListener("click",function(e){ if(e.target===m) m.remove(); });
+  document.body.appendChild(m);
+}
+function renderEncoderChecklist(rec){
+  var api=fuelAudit();
+  if(!api) return null;
+  var raw=rec&&(rec.encoderChecklist||null);
+  if(!raw && rec && rec.reserve){
+    var rsv=reserveBy(rec.reserve);
+    if(rsv&&rsv.encoderChecklist) raw=rsv.encoderChecklist;
+  }
+  var norm=api.normalizeChecklist(raw);
+  var box=el("div","banner "+(norm.known?(norm.complete?"info":"warn"):"info"));
+  if(!norm.known){
+    box.innerHTML="<b>Encoder checklist</b><br>n/a";
+    return box;
+  }
+  box.innerHTML="<b>Encoder checklist</b> — "+esc(norm.label)+(norm.by?" · "+esc(norm.by):"")+(norm.at?" · "+esc(norm.at):"")+"<br>"+
+    norm.items.map(function(item){
+      return (item.checked?"☑":"☐")+" "+esc(item.label)+(item.note?" — "+esc(item.note):"");
+    }).join("<br>");
+  return box;
+}
+function reserveIssueLedger(){
+  var api=fuelAudit();
+  var lots=[], seen={};
+  (S.purchases||[]).forEach(function(p){
+    if(!p) return;
+    var id=p.vrf?("VRF-"+String(p.vrf).replace(/\D/g,"")):("buy-"+(p.date||""));
+    if(!id||seen[id]) return;
+    seen[id]=1;
+    lots.push({id:id, date:p.date||"", liters:Number(p.liters)||0, source:"purchase"});
+  });
+  (S.reserves||[]).forEach(function(r){
+    if(!r) return;
+    if(!(rsvKind(r)==="fuel-bulk"||r.veh==="AV")) return;
+    var st=String(r.status||"");
+    if(st==="Rejected"||st==="Cancelled"||st==="Archived") return;
+    var id=r.vrfNo?("VRF-"+String(r.vrfNo).replace(/\D/g,"")):("RSV-"+r.no);
+    if(seen[id]) return;
+    var L=reserveFuelLitres(r)||Number(r.litres)||0;
+    if(!(L>0)) return;
+    seen[id]=1;
+    lots.push({id:id, date:r.date||"", liters:L, source:"reserve"});
+  });
+  var issues=[], dedupe={};
+  function addIssue(row){
+    var key=[row.reserve||"", row.vrf||"", row.veh||"", row.date||"", row.liters||""].join("|");
+    if(dedupe[key]) return;
+    dedupe[key]=1;
+    issues.push(row);
+  }
+  (S.withdrawals||[]).forEach(function(w){
+    if(!w) return;
+    var id=w.reserve?("RSV-"+w.reserve):(w.vrf?("VRF-"+String(w.vrf).replace(/\D/g,"")):"");
+    addIssue({reserve:id, liters:Number(w.liters)||0, veh:w.vehicle||"", date:w.date||"", vrf:w.vrf||""});
+  });
+  allLines().forEach(function(r){
+    if(!r||!isFuel(r.cat)||r.veh==="AV") return;
+    var ended=spendEndStatus(r.vstatus);
+    if(ended==="Cancelled"||ended==="Duplicate"||ended==="Not bought") return;
+    var sup=String(r.supplier||"").toUpperCase();
+    var work=String(r.work||"").toUpperCase();
+    if(sup.indexOf("FUEL RESERVE")<0 && work!=="FUEL-RES") return;
+    addIssue({reserve:r.reserve?("RSV-"+r.reserve):"", liters:fuelLitresOf(r), veh:r.veh, date:r.date, vrf:r.vrf});
+  });
+  if(!api) return {lots:[], unassigned:[], unassignedLiters:0};
+  return api.reconcileLots(lots, issues);
+}
+function reserveReconcileCard(){
+  var book=reserveIssueLedger();
+  return card("Reserve litres","each bulk reserve against the unit fills drawn from it",
+    table([
+      {h:"Reserve",get:function(r){ return el("span","mono",r.id); }},
+      {h:"In",num:true,get:function(r){ return r.reserveLiters==null?"n/a":nnum(r.reserveLiters,1)+" L"; }},
+      {h:"Issued",num:true,get:function(r){ return nnum(r.issued,1)+" L"; }},
+      {h:"Remaining",num:true,get:function(r){ return r.remaining==null?"n/a":nnum(r.remaining,1)+" L"; }},
+      {h:"",get:function(r){ return el("span","chip "+(r.mismatch?"crit":"ok"), r.mismatch?"mismatch":"reconciled"); }}
+    ], book.lots, {empty:"No bulk reserve on file."}));
+}
 var OVERRIDE_REASONS=["Meter not working / not readable","Unit idled or ran stationary on site",
   "Tank was run down before this fill","Meter was replaced or reset","Reading corrected after this VRF",
   "Emergency dispatch","Fuel for an attachment or generator","Other — see the note"];
@@ -7056,6 +7502,7 @@ var OFFICE=[
   {id:"spend",   ic:"◫", label:"Spend"},
   {id:"vrfrpt",  ic:"▥", label:"Monthly VRF report"},
   {id:"fuelecon",ic:"◴", label:"Fuel economics"},
+  {id:"fuelaudit",ic:"⚑", label:"Fuel audit"},
   {id:"consume", ic:"◑", label:"Consumption"},
   {id:"inv",     ic:"▨", label:"Inventory"},
   {id:"plan",    ic:"⏱", label:"Maintenance plan"},
@@ -7093,7 +7540,7 @@ function go(v){
 var VIEW_NAMES={yard:"the yard board",ask:"Ask the log",remind:"Reminders",
   rsv:"Reserves",vrf:"the VRF form",fuel:"Fuel",down:"Workshop",
   tasks:"Tasks",store:"Store",vrflog:"the VRF log",parts:"History",fleet:"Fleet",
-  approve:"Approvals",spend:"Spend",vrfrpt:"the monthly VRF report",fuelecon:"Fuel economics",consume:"Consumption",
+  approve:"Approvals",spend:"Spend",vrfrpt:"the monthly VRF report",fuelecon:"Fuel economics",fuelaudit:"Fuel audit",consume:"Consumption",
   inv:"Inventory",plan:"Maintenance plan",health:"Data health"};
 var _loc=null;
 function locKey(s){
@@ -7401,7 +7848,7 @@ function render(){
   if(isOffice && !S.office){ v.appendChild(gateView()); return; }
   var fn={yard:yardView,ask:askView,remind:remindView,rsv:rsvView,approve:approveView,vrf:vrfView,fuel:fuelView,down:downView,
     tasks:tasksView,store:storeView,inv:invView,vrflog:vrfLogView,parts:partsView,fleet:fleetView,
-    spend:spendView,vrfrpt:vrfReportView,fuelecon:fuelEconView,consume:consumeView,plan:planView,health:healthView}[S.view]||yardView;
+    spend:spendView,vrfrpt:vrfReportView,fuelecon:fuelEconView,fuelaudit:fuelAuditView,consume:consumeView,plan:planView,health:healthView}[S.view]||yardView;
   v.appendChild(fn());
 }
 
@@ -8679,12 +9126,23 @@ function openReserve(no,asApprover){
   ch.appendChild(rsvChip(r));
   ch.appendChild(el("span","chip mute",(RSV_KINDS[rsvKind(r)]||{}).label||"Job"));
   if(r.work) ch.appendChild(el("span","chip accent",workName(r.work)));
+  if(entryIsFuel(r)){
+    var missR=missingPhotosChip({vrf:r.vrfNo, reserve:r.no, rows:r.draftLines||[], fuelPhotos:r.fuelPhotos||null, veh:r.veh, work:r.work, kind:r.kind});
+    if(missR) ch.appendChild(missR);
+  }
   if(r.needBy) ch.appendChild(el("span","chip mute","needed by "+r.needBy));
   lf.appendChild(ch);
   hd.appendChild(lf);
   if(r.vrfNo||supplierEditAllowed(r)){
     var topActs=el("div","row");
     topActs.style.flex="none";
+    if(String(r.status||"")==="Requested"||String(r.status||"")==="Draft"){
+      var voidHold=el("button","btn","Void");
+      voidHold.addEventListener("click",function(){
+        askVoidRequested(r, function(){ m.remove(); render(); });
+      });
+      topActs.appendChild(voidHold);
+    }
     if(r.vrfNo){
       var prHold=el("button","btn pri","Print");
       prHold.addEventListener("click",function(){
@@ -8758,6 +9216,7 @@ function openReserve(no,asApprover){
      ["Est. price / litre",r.pricePerL!=null?peso(r.pricePerL):"—"],
      ["Supplier",shownReserveSupplier(r)||"—"],
      ["Meter at request",meterAll!=null?nnum(meterAll):"—"],
+     ["Driver", r.driver?r.driver:(entryIsFuel(r)?"n/a":"—")],
      [rsvKind(r)==="fuel-bulk"?"Drum level at request":"Gauge at request",
       r.gauge?gaugeLabel(r.gauge)+(r.gaugePct!=null?"  ("+r.gaugePct+"%)":""):"— not read"],
      ["Litres left in tank",r.tankLeft!=null?nnum(r.tankLeft,0)+" L":"—"]
@@ -9195,6 +9654,37 @@ function openReserve(no,asApprover){
     ac.appendChild(acb); actions.appendChild(ac);
   }
 
+  if(entryIsFuel(r)){
+    var chkBox=renderEncoderChecklist(r);
+    if(chkBox){ chkBox.style.marginTop="var(--space-4)"; b.appendChild(chkBox); }
+    var rev=fuelRequestReview({
+      veh:r.veh, date:r.date, odo:reserveMeter(r), liters:reserveFuelLitres(r),
+      amount:r.budget, lines:r.draftLines||[], project:r.project, driver:r.driver,
+      vrf:r.vrfNo, receipt:r.receipt||r.receiptNo, gauge:r.gauge, fuel:true,
+      photos:null, photoCount:photoCountMany(photoOwnersForReserve(r))
+    });
+    if(rev.notes&&rev.notes.length){
+      var flagBox=el("div","banner warn");
+      flagBox.style.marginTop="var(--space-3)";
+      flagBox.innerHTML="<b>Fuel checks</b><br>"+rev.notes.map(function(t){ return esc(t); }).join("<br>");
+      b.appendChild(flagBox);
+    }
+    if(rev.benchmark){
+      var bench=el("div","banner info");
+      bench.style.marginTop="var(--space-3)";
+      bench.innerHTML="<b>Unit benchmark</b><br>"+(rev.benchmark.lines||[]).map(function(ln){
+        return esc(ln.k)+": "+esc(ln.v);
+      }).join("<br>");
+      b.appendChild(bench);
+    }
+    if(r.odoOverride&&r.odoOverride.reason){
+      var ov=el("div","banner warn");
+      ov.style.marginTop="var(--space-3)";
+      ov.innerHTML="<b>Odometer override</b><br>"+esc(r.odoOverride.reason)+
+        " · "+esc(r.odoOverride.by||"")+" · "+esc(r.odoOverride.at||"");
+      b.appendChild(ov);
+    }
+  }
   b.appendChild(actions);
 
   var photoOwners=photoOwnersForReserve(r);
@@ -10311,6 +10801,8 @@ function vrfLogView(){
         var x=el("span","mono",v.vrf); x.style.fontWeight="600";
         wrap.appendChild(x);
         if(v.paperNote) wrap.appendChild(el("div","hint",v.paperNote));
+        var miss=missingPhotosChip(v);
+        if(miss){ var chipRow=el("div"); chipRow.style.marginTop="3px"; chipRow.appendChild(miss); wrap.appendChild(chipRow); }
         return wrap; }},
       {h:"Date",get:function(v){return v.date;}},
       {h:"Unit",get:function(v){ return el("span","mono",v.units.join(", ")||"—"); }},
@@ -10329,6 +10821,12 @@ function vrfLogView(){
       {h:"Status",get:vrfLogStatus},
       {h:"",get:function(v){
         var row=el("div"); row.style.cssText="display:flex;gap:4px;flex-wrap:wrap";
+        if(String(v.status||"")==="Requested"||String(v.status||"")==="Draft"){
+          var vb=el("button","btn sm","Void");
+          vb.title="Cancel this draft or requested VRF. A reason is required. The record stays.";
+          vb.addEventListener("click",function(ev){ ev.stopPropagation(); askVoidRequested(v, function(){ render(); }); });
+          row.appendChild(vb);
+        }
         if(v.unnumbered){
           var sb=el("button","btn sm","Send");
           sb.title="Give this printed draft the next VRF number";
@@ -10811,6 +11309,28 @@ function buildVrfDoc(entry,photos){
     pfn.appendChild(pfv);
     d.appendChild(pfn);
   }
+  if(entryIsFuel(entry)){
+    var apiPhotos=fuelAudit();
+    var photoLine=el("div");
+    photoLine.style.cssText="margin:0 0 8px;font-weight:700";
+    var showMissing=false, showNa=false;
+    if(photos==null && !(entry.fuelPhotos)){
+      var counted=0;
+      try{ counted=photoCountMany(photoOwnersForOpenVrf(entry)); }catch(e){ counted=photoCount(entry.vrf); }
+      if(!counted) showMissing=true;
+      else showNa=true;
+    }else if(entry.fuelPhotos && photos==null){
+      showMissing=!entry.fuelPhotos.gauge || !entry.fuelPhotos.meter;
+    }else if(apiPhotos){
+      showMissing=!!apiPhotos.fuelPhotoStatus(photos||[]).missing;
+    }else showNa=true;
+    if(showMissing){ photoLine.textContent="missing photos"; d.appendChild(photoLine); }
+    else if(showNa){
+      photoLine.style.fontWeight="500"; photoLine.style.color="#555";
+      photoLine.textContent="Fuel photos: n/a";
+      d.appendChild(photoLine);
+    }
+  }
   var printAudits=vrfAuditList(entry);
   if(printAudits.length){
     var ah=el("div"); ah.style.margin="0 0 8px";
@@ -11116,6 +11636,11 @@ function pullPrintPhoto(x, page, onDone){
   });
 }
 async function printVrf(entry,photos){
+  var printGate=vrfPrintGate(entry);
+  if(!printGate.ok){
+    showPrintBlocked(printGate.message||"Not approved — cannot print");
+    return;
+  }
   try{ markVrfPrinted(entry); }catch(e){}
   try{ entry=await entryWithPrintableSig(entry); }catch(e){}
   var supplied=Array.isArray(photos);
@@ -12641,7 +13166,7 @@ function openVrf(entry,tab){
   if(waiting){
     var wait=el("div","banner warn"); wait.style.marginTop="var(--space-3)";
     wait.innerHTML="<b>Sent for approval — VRF "+esc(String(entry.vrf))+" is held.</b> "+
-      "Photos and print work now. The office still has to approve before it posts."+
+      "Photos can be attached now. Printing waits until this VRF is approved."+
       (supplierEditAllowed(supReserveTop)
         ?" Edit supplier if the shop was different, or Edit amount if the quantity or price changed — that keeps this VRF for approval."
         :"");
@@ -12701,6 +13226,23 @@ function openVrf(entry,tab){
     printVrf(entry);
   });
   tabs.appendChild(pr);
+  if(String(entry.status||"")==="Requested"||String(entry.status||"")==="Draft"){
+    var voidV=el("button","btn","Void");
+    voidV.addEventListener("click",function(){
+      askVoidRequested(entry, function(){ render(); });
+    });
+    tabs.appendChild(voidV);
+  }
+  if(entryIsFuel(entry)){
+    var fuelChips=el("div"); fuelChips.style.marginTop="var(--space-3)";
+    var missOpen=missingPhotosChip(entry);
+    if(missOpen) fuelChips.appendChild(missOpen);
+    var listChk=renderEncoderChecklist(entry);
+    if(listChk) fuelChips.appendChild(listChk);
+    var drvLabel=el("div","hint", entry.driver?("Driver: "+entry.driver):"Driver: n/a");
+    fuelChips.appendChild(drvLabel);
+    b.appendChild(fuelChips);
+  }
   b.appendChild(tabs);
 
   var body=el("div");
@@ -13294,7 +13836,7 @@ function openVrf(entry,tab){
 function blankLine(){ return {cat:"",item:"",supplier:"",qty:"",unit:"pc",price:"",liters:"",work:"",remarks:""}; }
 function blankVrfDraft(){
   return {date:iso(),veh:"",project:"",projectOverridden:false,vehicleSiteDefault:"",
-    purpose:"",odo:"",work:"",
+    purpose:"",odo:"",work:"",driver:"",gauge:"",receipt:"",odoOverrideReason:"",
     requestedBy:signedInName(),lines:[blankLine(),blankLine(),blankLine()],
     photos:[],gateOverride:null,reserve:"",jo:"",vrfNo:"",submissionId:newSubmissionId()};
 }
@@ -13497,9 +14039,34 @@ function vrfView(){
   rIn.addEventListener("input",function(){
     d.requestedBy=rIn.value; rIn.style.borderColor=""; });
   hb2.appendChild(fld("Requested by",rIn));
+  var drvIn=el("input"); drvIn.value=d.driver||""; drvIn.placeholder="driver on this fuel VRF";
+  drvIn.setAttribute("list","drv-list");
+  var drvList=document.createElement("datalist"); drvList.id="drv-list";
+  (S.drivers||[]).forEach(function(x){
+    if(x&&x.name) drvList.appendChild(new Option(x.name,x.name));
+  });
+  drvIn.addEventListener("input",function(){ d.driver=drvIn.value; refreshGate(); });
+  var drvWrap=fld("Driver",drvIn);
+  drvWrap.appendChild(drvList);
+  drvWrap.appendChild(el("div","hint","Required when this VRF has a fuel line. Older fuel VRFs with no driver on file show n/a."));
+  hb2.appendChild(drvWrap);
   var plate=el("input"); plate.readOnly=true; plate.className="mono";
   hb2.appendChild(fld("Plate",plate));
   g0.appendChild(hb2);
+  var hbFuel=el("div","f3");
+  var gSel=el("select");
+  gSel.appendChild(new Option("— gauge not read —",""));
+  GAUGE_LEVELS.forEach(function(g){ gSel.appendChild(new Option(g.label,g.v)); });
+  gSel.value=d.gauge||"";
+  gSel.addEventListener("change",function(){ d.gauge=gSel.value; refreshGate(); });
+  hbFuel.appendChild(fld("Fuel gauge",gSel));
+  var rcpt=el("input"); rcpt.value=d.receipt||""; rcpt.placeholder="station receipt no.";
+  rcpt.addEventListener("input",function(){ d.receipt=rcpt.value; refreshGate(); });
+  hbFuel.appendChild(fld("Receipt no.",rcpt));
+  var ovr=el("input"); ovr.value=d.odoOverrideReason||""; ovr.placeholder="required only if the meter went backwards";
+  ovr.addEventListener("input",function(){ d.odoOverrideReason=ovr.value; refreshGate(); });
+  hbFuel.appendChild(fld("Odometer override reason",ovr));
+  g0.appendChild(hbFuel);
 
   function onUnitPicked(){
     var v=vehicle(d.veh);
@@ -13621,10 +14188,12 @@ function vrfView(){
       fuelNote.appendChild(pn);
     }
     var note=fuelUsageNote(d.veh, parseOdo(d.odo), litres);
-    if(!note||!note.title) return;
-    var bn=el("div","banner "+(note.level==="warn"?"warn":"info"));
-    bn.innerHTML="<b>"+esc(note.title)+"</b><br>"+esc(note.detail);
-    fuelNote.appendChild(bn);
+    if(note&&note.title){
+      var bn=el("div","banner "+(note.level==="warn"?"warn":"info"));
+      bn.innerHTML="<b>"+esc(note.title)+"</b><br>"+esc(note.detail);
+      fuelNote.appendChild(bn);
+    }
+    paintFuelAuditNote(fuelNote, d);
   }
 
   /* line items */
@@ -13839,7 +14408,7 @@ function vrfView(){
       im.addEventListener("click",function(){ lightbox(x.data); });
       c.appendChild(im);
       var cp=el("div","cap");
-      cp.appendChild(el("div",null,x.caption||"attachment"));
+      cp.appendChild(el("div",null,(x.role?x.role+" · ":"")+(x.caption||"attachment")));
       cp.appendChild(el("div","hint",Math.round((x.bytes||0)/1024)+" KB"));
       var rm=el("button","btn sm","Remove"); rm.style.marginTop="4px";
       rm.addEventListener("click",function(){ d.photos.splice(i,1); drawStage(); });
@@ -13852,7 +14421,11 @@ function vrfView(){
   function f4(l,n){ var x=el("div","field"); x.appendChild(el("label",null,l)); x.appendChild(n); return x; }
   var pfi=el("input"); pfi.type="file"; pfi.accept="image/*"; pfi.multiple=true;
   var pcap=el("input"); pcap.placeholder="what these show";
-  pr2.appendChild(f4("Add photos",pfi)); pr2.appendChild(f4("Caption",pcap)); pr2.appendChild(el("div"));
+  var prole=el("select");
+  [["","Other"],["fuel-gauge","Fuel gauge"],["odometer","Odometer / hour meter"],["receipt","Receipt"]].forEach(function(o){
+    prole.appendChild(new Option(o[1],o[0]));
+  });
+  pr2.appendChild(f4("Add photos",pfi)); pr2.appendChild(f4("Caption",pcap)); pr2.appendChild(f4("Fuel photo",prole));
   pb.appendChild(pr2);
   var pst=el("div","hint"); pb.appendChild(pst);
   pfi.addEventListener("change",async function(){
@@ -13862,8 +14435,14 @@ function vrfView(){
       pst.textContent="Preparing "+(i+1)+" of "+files.length+"…";
       try{
         var sh=await shrinkImage(files[i]);
+        var role=prole.value||"";
+        var capText=pcap.value.trim()||files[i].name;
+        if(role==="fuel-gauge" && !/gauge/i.test(capText)) capText="Fuel gauge — "+capText;
+        if(role==="odometer" && !/odo|hour/i.test(capText)) capText="Odometer — "+capText;
+        if(role==="receipt" && !/receipt/i.test(capText)) capText="Receipt — "+capText;
         d.photos.push({data:sh.data,w:sh.w,h:sh.h,bytes:sh.bytes,
-          caption:pcap.value.trim()||files[i].name});
+          caption:capText, role:role});
+        refreshGate();
       }catch(e){ bad++; }
     }
     pst.textContent=bad?bad+" file"+(bad>1?"s":"")+" could not be read.":"";
@@ -13953,6 +14532,27 @@ async function sendForApproval(d,btn,opts){
     toast("Put your name in “Requested by” at the top — the request has to carry one.");
     return false;
   }
+  var fuelRows=rows.filter(function(l){ return l&&isFuel(l.cat); });
+  if(fuelRows.length){
+    var review=fuelRequestReview({
+      veh:d.veh, date:d.date, odo:d.odo, liters:draftFuelLitres(rows),
+      amount:draftFuelAmount(rows), lines:rows, photos:d.photos||[],
+      project:d.project, driver:d.driver, receipt:d.receipt, gauge:d.gauge, entering:true
+    });
+    if(review.blocks&&review.blocks.length){
+      toast(review.blocks[0]);
+      return false;
+    }
+    var auditApi=fuelAudit();
+    var checklistOk=false;
+    if(auditApi&&d.encoderChecklist){
+      checklistOk=!!auditApi.checklistReady(d.encoderChecklist, fuelChecklistNeeds(review)).ok;
+    }
+    if(!opts.checklistDone && !checklistOk){
+      askEncoderChecklist(d, btn, opts, review);
+      return;
+    }
+  }
   if(!d.submissionId) d.submissionId=newSubmissionId();
   var prior=reserveBySubmission(d.submissionId);
   if(prior){
@@ -14006,6 +14606,18 @@ async function sendForApproval(d,btn,opts){
       preparedSigName:(function(){ var s=draftPreparedSig(d); return s.data?s.name:""; })(),
       justification:"",justifiedBy:"",varianceBy:"",varianceAt:"",varianceNote:"",
       submissionId:d.submissionId};
+    if(fuelish){
+      var photoSt=fuelAudit()?fuelAudit().fuelPhotoStatus(d.photos||[]):null;
+      hold.driver=String(d.driver||"").trim();
+      hold.gauge=d.gauge||"";
+      hold.receipt=String(d.receipt||"").trim();
+      hold.receiptNo=hold.receipt;
+      hold.fuelPhotos=photoSt?{gauge:!!photoSt.gauge, meter:!!photoSt.meter, receipt:!!photoSt.receipt}:null;
+      if(String(d.odoOverrideReason||"").trim()){
+        hold.odoOverride={reason:String(d.odoOverrideReason).trim(), by:who, at:iso()};
+      }
+      if(d.encoderChecklist) hold.encoderChecklist=d.encoderChecklist;
+    }
     if(fuelPrevNote) hold.fuelPrevNote=fuelPrevNote;
     var saved=await issueReserveConfirmed(hold);
     persisted=true;
@@ -14163,6 +14775,13 @@ function fuelView(){
       "either a fuel delivery was never encoded, or a withdrawal was double-entered. Check Data health.";
     g.appendChild(bn);
   }
+  var book=reserveIssueLedger();
+  if(book.unassignedLiters>0.05){
+    var loose=el("div","banner warn");
+    loose.innerHTML="<b>"+esc(nnum(book.unassignedLiters,1))+" L of reserve fuel is not tied to a bulk reserve.</b> Those fills stay in the mismatch until a reserve number is on the withdrawal.";
+    g.appendChild(loose);
+  }
+  g.appendChild(reserveReconcileCard());
 
   /* dispense form */
   var fc=el("div","card"), fh=el("div","hd"); fh.appendChild(el("h3",null,"Fuel Reserve — dispense from the drums"));
@@ -15928,6 +16547,108 @@ function consumeView(){
   return w;
 }
 
+function fuelAuditView(){
+  var api=fuelAudit();
+  var w=el("div");
+  w.appendChild(pageHead("Office · Fuel audit","Checks against the fuel reference",
+    "Benchmarks, unexplained litres, and fuel VRFs still waiting on a receipt. Rolling consumption stays on Consumption."));
+  if(!api){
+    w.appendChild(el("div","banner crit","Fuel audit did not load."));
+    return w;
+  }
+  var g=el("div","grid"); g.style.gap="var(--space-4)";
+  var bar=el("div","f3");
+  function fld(l,n){ var x=el("div","field"); x.appendChild(el("label",null,l)); x.appendChild(n); return x; }
+  if(!S.auditFrom) S.auditFrom=addIsoDays(iso(), -90);
+  if(!S.auditTo) S.auditTo=iso();
+  var from=el("input"); from.type="date"; from.value=S.auditFrom;
+  var to=el("input"); to.type="date"; to.value=S.auditTo;
+  var gapIn=el("input"); gapIn.type="number"; gapIn.min="0"; gapIn.step="1"; gapIn.value=String(shortGapKmSetting());
+  bar.appendChild(fld("From", from));
+  bar.appendChild(fld("To", to));
+  bar.appendChild(fld("Short-gap km", gapIn));
+  g.appendChild(bar);
+  var go=el("button","btn pri","Update");
+  go.addEventListener("click",async function(){
+    S.auditFrom=from.value; S.auditTo=to.value;
+    var n=parseFloat(gapIn.value);
+    var rules=fuelRules();
+    S.cfg.fuel=Object.assign({}, rules, {shortGapKm:isFinite(n)&&n>=0?n:50});
+    try{
+      await writeDoc(PATHS.cfg,{nextVrf:S.cfg.nextVrf,pass:S.cfg.pass,fuel:S.cfg.fuel,
+        varianceTol:S.cfg.varianceTol,nextReserve:S.cfg.nextReserve,driveFolder:S.cfg.driveFolder||""});
+    }catch(e){}
+    render();
+  });
+  g.appendChild(go);
+  var codes={};
+  Object.keys(api.UNIT_REF).forEach(function(c){ codes[c]=1; });
+  Object.keys(api.ALLOCATION).forEach(function(c){ codes[c]=1; });
+  var benchRows=Object.keys(codes).sort().map(function(code){
+    var panel=api.benchmarkPanel(code);
+    var max=api.maxPerFill(code);
+    return {code:code, panel:panel, max:max, cycle:api.cycleDaysOf(api.allocationOf(code))};
+  });
+  g.appendChild(card("Unit benchmarks","normal and red-flag floor. SV-12 and BT-03 are litres per day.",
+    table([
+      {h:"Unit",get:function(r){ return el("span","mono",r.code); }},
+      {h:"Normal",get:function(r){ return r.panel.known?r.panel.normalText:"n/a"; }},
+      {h:"Red flag",get:function(r){ return r.panel.known?r.panel.redText:"n/a"; }},
+      {h:"Max / fill",num:true,get:function(r){ return r.max==null?"n/a":nnum(r.max,1)+" L"; }},
+      {h:"Cycle days",num:true,get:function(r){ return r.cycle==null?"n/a":String(r.cycle); }},
+      {h:"",get:function(r){ return r.panel.brokenOdo?el("span","chip warn","broken odometer"):""; }}
+    ], benchRows, {empty:"No benchmark seed."})));
+  var fills=fuelAuditRows().map(function(r){
+    return {veh:r.veh, date:r.date, liters:r.liters, odo:r.odo, amount:r.amount, pricePerL:r.pricePerL, status:r.status, vrf:r.vrf};
+  });
+  var summary=api.unexplainedSummary(fills, {from:S.auditFrom, to:S.auditTo});
+  g.appendChild(card("Unexplained fuel", S.auditFrom+" to "+S.auditTo+" · litres and pesos beyond the benchmark",
+    table([
+      {h:"Unit",get:function(r){ return el("span","mono",r.veh); }},
+      {h:"Benchmark",get:function(r){ return r.normal||"n/a"; }},
+      {h:"Beyond",num:true,get:function(r){ return r.benchmark==="n/a"&&!r.intervals?"n/a":nnum(r.liters,1)+" L"; }},
+      {h:"Pesos",num:true,get:function(r){ return r.pesos==null?"n/a":peso(r.pesos); }},
+      {h:"Intervals",num:true,get:function(r){ return String(r.intervals)+(r.skipped?" · "+r.skipped+" n/a":""); }}
+    ], summary.filter(function(r){ return r.intervals||r.liters; }), {empty:"No unexplained fuel in this period."})));
+  var today=iso();
+  var photosKnown=!!(S.photoCounts&&Object.keys(S.photoCounts).length);
+  var outstanding=[];
+  vrfIndex().forEach(function(v){
+    if(!entryIsFuel(v)) return;
+    var rsv=reserveForVrf(v);
+    var row=api.liquidationStatus({
+      vrf:v.vrf, veh:(v.units&&v.units[0])||v.veh, date:v.date, status:v.status,
+      liquidatedAt:(rsv&&rsv.liquidatedAt)||(v.liq&&v.liq.at)||"",
+      photoCount:photoCount(v.vrf), photosKnown:photosKnown, driveUrl:vrfDrive(v),
+      receiptUploaded:rsv?rsv.receiptUploaded:undefined, fuelPhotos:v.fuelPhotos||(rsv&&rsv.fuelPhotos)
+    }, today);
+    if(row.outstanding) outstanding.push(row);
+  });
+  outstanding.sort(function(a,b){ return (b.agingDays||0)-(a.agingDays||0); });
+  g.appendChild(card("Fuel liquidation outstanding","receipt, liquidated date, and age",
+    table([
+      {h:"VRF",get:function(r){ return el("span","mono",r.vrf); }},
+      {h:"Unit",get:function(r){ return el("span","mono",r.veh||"—"); }},
+      {h:"Date",get:function(r){ return r.date||"n/a"; }},
+      {h:"Receipt",get:function(r){ return r.receipt; }},
+      {h:"Liquidated",get:function(r){ return r.liquidatedDate||"—"; }},
+      {h:"Aging",num:true,get:function(r){ return r.agingLabel==="n/a"?"n/a":r.agingLabel+" d"; }}
+    ], outstanding, {empty:"No outstanding fuel VRF."})));
+  g.appendChild(reserveReconcileCard());
+  w.appendChild(g);
+  return w;
+}
+function addIsoDays(day, delta){
+  var m=String(day||"").match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if(!m) return iso();
+  var dt=new Date(Date.UTC(Number(m[1]), Number(m[2])-1, Number(m[3])));
+  dt.setUTCDate(dt.getUTCDate()+delta);
+  var y=dt.getUTCFullYear();
+  var mo=String(dt.getUTCMonth()+1), da=String(dt.getUTCDate());
+  if(mo.length<2) mo="0"+mo;
+  if(da.length<2) da="0"+da;
+  return y+"-"+mo+"-"+da;
+}
 function planView(){
   var F=forecast();
   var w=el("div");
