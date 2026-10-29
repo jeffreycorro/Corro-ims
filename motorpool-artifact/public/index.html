@@ -416,7 +416,7 @@ var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
    This label is inside the page function. The shim reads window.BUILD when it
    sends a save. Without that copy every save goes out with an empty build and
    the server answers "Reload the page". */
-var BUILD = "2026-10-29 a";
+var BUILD = "2026-10-29 b";
 try { window.BUILD = BUILD; } catch (e) {}
 var DAY = 86400000, MO = 30.44;
 
@@ -6066,6 +6066,413 @@ function shownFuelPrevNote(rec, opts){
     beforeDate:opts.beforeDate!=null?opts.beforeDate:(rec.date||"")
   }).text;
 }
+/* Red-flag floors copied from the Unit Fuel Reference tab of
+   https://docs.google.com/spreadsheets/d/1rF-ee4RpinJ6EZCxvZ15aWKFEFDmhSNAI-zKy7DBnUg
+   (snapshot 2026-10-29).
+   TODO: this page cannot read that sheet at runtime — there is no Sheets
+   credential in the portal. When the tab changes, refresh the numbers below.
+   A unit with no row uses the fallback: more than 40% worse than its own
+   90-day figure. dir "below" means a lower km per liter is the flag;
+   "above" means a higher liters-per-hour or liters-per-day figure is the flag.
+   SV-12 and BT-03 are broken-odometer overrides: liters per day, not km per liter. */
+function fuelRedFlagTable(){
+  return {
+    "BH-03":{measure:"L/hr",floor:10.33,dir:"above"},
+    "BH-05":{measure:"L/hr",floor:4.28,dir:"above"},
+    "BH-06":{measure:"L/hr",floor:5.89,dir:"above"},
+    "BH-08":{measure:"L/hr",floor:6.56,dir:"above"},
+    "BH-09":{measure:"L/hr",floor:4.37,dir:"above"},
+    "BH-10":{measure:"L/hr",floor:13.19,dir:"above"},
+    "BT-02":{measure:"km/L",floor:1.95,dir:"below"},
+    "BT-03":{measure:"L/day",floor:10,dir:"above"},
+    "DT-05":{measure:"km/L",floor:0.91,dir:"below"},
+    "DT-08":{measure:"km/L",floor:1.36,dir:"below"},
+    "MC-05":{measure:"km/L",floor:23.79,dir:"below"},
+    "MC-07":{measure:"km/L",floor:42.31,dir:"below"},
+    "MC-14":{measure:"km/L",floor:13.39,dir:"below"},
+    "MC-16":{measure:"km/L",floor:30.9,dir:"below"},
+    "MC-21":{measure:"km/L",floor:27.8,dir:"below"},
+    "MC-27":{measure:"km/L",floor:36.9,dir:"below"},
+    "RR-03":{measure:"L/hr",floor:13.97,dir:"above"},
+    "SV-03":{measure:"km/L",floor:5.69,dir:"below"},
+    "SV-09":{measure:"km/L",floor:2.67,dir:"below"},
+    "SV-10":{measure:"km/L",floor:5.11,dir:"below"},
+    "SV-11":{measure:"km/L",floor:2.87,dir:"below"},
+    "SV-12":{measure:"L/day",floor:13,dir:"above"},
+    "SV-13":{measure:"km/L",floor:5.47,dir:"below"},
+    "TM-03":{measure:"L/hr",floor:5.6,dir:"above"},
+    "TM-04":{measure:"L/hr",floor:10.94,dir:"above"}
+  };
+}
+function fuelRefOf(code){
+  var table=fuelRedFlagTable();
+  var key=String(code||"").trim().toUpperCase();
+  return table[key]||null;
+}
+function fuelMeasureOf(code){
+  var ref=fuelRefOf(code);
+  if(ref&&ref.measure) return ref.measure;
+  return meterOf(code)==="hr"?"L/hr":"km/L";
+}
+function fuelUsePhrase(rate, measure){
+  if(rate==null||!isFinite(rate)) return "n/a";
+  if(measure==="L/hr") return rate.toFixed(2)+" liters per hour";
+  if(measure==="L/day") return rate.toFixed(2)+" liters per day";
+  return rate.toFixed(2)+" km per liter";
+}
+function fuelMedian(vals){
+  var a=(vals||[]).filter(function(n){ return isFinite(n); }).slice().sort(function(x,y){ return x-y; });
+  var n=a.length;
+  if(!n) return null;
+  var mid=Math.floor(n/2);
+  if(n%2) return a[mid];
+  return (a[mid-1]+a[mid])/2;
+}
+function fuelNaPhrase(reason){
+  if(reason==="previous fill cancelled") return "previous fill cancelled";
+  if(reason==="placeholder reading") return "placeholder reading";
+  if(reason==="litres missing") return "litres missing";
+  return "odometer missing/unchanged";
+}
+function fuelRecordLitres(rec){
+  if(!rec) return 0;
+  if(rec.draftLines) return fuelFillLitresOf(rec);
+  var lines=rec.rows||rec.lines||[], sum=0, i, line;
+  for(i=0;i<lines.length;i++){
+    line=lines[i];
+    if(!line) continue;
+    if(!(isFuel(line.cat)||isFuelWorkCode(line.work)||isFuelWorkCode(rec.work))) continue;
+    sum+=fuelLitresOf(line);
+  }
+  if(sum>0) return sum;
+  return fuelFillLitresOf(rec);
+}
+/* Rolling 90-day fuel use for the screen only. It does not write the VRF,
+   the reserve, or the ledger, and it is not an approval gate.
+   Road units: total km / total litres on intervals that end in the 90 days
+   before this request (same previous-fill litres as the last-fill line).
+   Hour meters: total litres / total hours, so the figure stays in liters per
+   hour beside that last-fill line and beside the sheet's L/hr floor.
+   SV-12, BT-03, and any unit whose recent fills have no increasing odometer
+   show a fill cycle instead: average days between fills, average litres,
+   litres per day, the last two fills, and days since the last fill.
+   Intervals with a negative, placeholder, unreliable, or huge meter gap are
+   left out of a meter average. Fewer than 3 kept fills is "not enough data". */
+function fuelRollingNote(code, currentOdo, opts){
+  opts=opts||{};
+  code=String(code||"").trim();
+  var empty={text:"",measure:"",fillsUsed:0,avg:null,median:null,currentRate:null,
+    currentReason:"none",floorFlag:false,fallbackFlag:false,consecutive:false,
+    consecutiveFills:[],usedVrfs:[]};
+  if(!code) return empty;
+  var measure=fuelMeasureOf(code);
+  var ref=fuelRefOf(code);
+  var floor=ref&&isFinite(Number(ref.floor))?Number(ref.floor):null;
+  var dir=(ref&&ref.dir)||(measure==="km/L"?"below":"above");
+  var before=opts.beforeDate?parseDate(opts.beforeDate):null;
+  var except=String(opts.exceptVrf||"");
+  var exceptN=fuelVrfNum(except);
+  var startMs=before?before.getTime()-90*DAY:null;
+  function beforeRequest(f){
+    if(!f||f.veh!==code) return false;
+    if(except&&String(f.vrf)===except) return false;
+    var d=parseDate(f.date);
+    if(!d) return false;
+    if(!before) return true;
+    if(d<before) return true;
+    if(d>before) return false;
+    if(exceptN>0&&fuelVrfNum(f.vrf)>=exceptN) return false;
+    return true;
+  }
+  function breaksFloor(rate){
+    if(floor==null||rate==null||!isFinite(rate)) return false;
+    if(dir==="above") return rate>floor;
+    return rate<floor;
+  }
+  var fills=listFuelFills().filter(function(f){
+    return f&&f.veh===code&&!isCancelledFuelStatus(f.status)&&beforeRequest(f);
+  }).sort(function(a,b){
+    var da=parseDate(a.date), db=parseDate(b.date);
+    if(da-db) return da-db;
+    return fuelVrfNum(a.vrf)-fuelVrfNum(b.vrf);
+  });
+  function dayPhrase(n){
+    if(n==null||!isFinite(n)) return "n/a";
+    var s=(Math.round(n*10)/10).toFixed(1).replace(/\.0$/,"");
+    return s+" day"+(s==="1"?"":"s");
+  }
+  function meterReadings(list){
+    var real=0, increased=false, prev=null, i, f, n, d, inWin;
+    for(i=0;i<list.length;i++){
+      f=list[i];
+      d=parseDate(f.date);
+      inWin=startMs==null||(d&&d.getTime()>=startMs);
+      n=f.odo;
+      if(n==null||!isFinite(n)||isPlaceholderOdo(n)) continue;
+      if(inWin){
+        real+=1;
+        if(prev!=null&&n>prev) increased=true;
+      }
+      prev=n;
+    }
+    return {real:real, increased:increased};
+  }
+  var inWindow=fills.filter(function(f){
+    var d=parseDate(f.date);
+    return startMs==null||(d&&d.getTime()>=startMs);
+  });
+  var readings=meterReadings(fills);
+  /* SV-12 and BT-03 are broken-meter units. Any other unit whose fills in
+     this window have no real odometer, or only a stuck reading, is described
+     the same way: a fill cycle, not km per liter. One real reading still
+     uses the meter line, which then says the figure is n/a. */
+  if(measure==="L/day"||(inWindow.length>0&&(readings.real===0||(readings.real>=2&&!readings.increased)))){
+    var cycleFills=inWindow.filter(function(f){ return f.litres>0; });
+    var gaps=[], gi, gdays;
+    for(gi=1;gi<cycleFills.length;gi++){
+      gdays=(parseDate(cycleFills[gi].date).getTime()-parseDate(cycleFills[gi-1].date).getTime())/DAY;
+      if(gdays>0) gaps.push(gdays);
+    }
+    var avgDays=null, avgLitres=null, litersPerDay=null;
+    if(cycleFills.length>=3){
+      if(gaps.length){
+        var gsum=0;
+        gaps.forEach(function(g){ gsum+=g; });
+        avgDays=gsum/gaps.length;
+      }
+      var lsum=0;
+      cycleFills.forEach(function(f){ lsum+=f.litres; });
+      avgLitres=lsum/cycleFills.length;
+      if(avgDays>0) litersPerDay=avgLitres/avgDays;
+    }
+    var withLitres=fills.filter(function(f){ return f.litres>0; });
+    var lastTwo=withLitres.slice(-2).reverse();
+    var daysSince=null;
+    var lastFill=withLitres.length?withLitres[withLitres.length-1]:null;
+    if(before&&lastFill&&parseDate(lastFill.date)){
+      daysSince=(before.getTime()-parseDate(lastFill.date).getTime())/DAY;
+      if(!(daysSince>=0)) daysSince=null;
+    }
+    var sooner=cycleFills.length>=3&&avgDays!=null&&daysSince!=null&&daysSince<avgDays;
+    var cycleLines=[];
+    if(cycleFills.length<3){
+      cycleLines.push("3-month cycle: not enough data ("+cycleFills.length+" fill"+(cycleFills.length===1?"":"s")+" in 90 days; need 3)");
+    }else{
+      cycleLines.push("3-month cycle: every "+dayPhrase(avgDays));
+      cycleLines.push("Average fill: "+(avgLitres==null?"n/a":avgLitres.toFixed(2)+" L"));
+      cycleLines.push("Liters per day: "+(litersPerDay==null?"n/a":litersPerDay.toFixed(2)+" liters per day"));
+    }
+    cycleLines.push("Last fills:");
+    if(!lastTwo.length) cycleLines.push("No earlier fuel fill");
+    else lastTwo.forEach(function(f){
+      var no=String(f.vrf||"").trim();
+      cycleLines.push((f.date||"—")+" · VRF "+(no||"—")+" · "+(f.litres>0?f.litres.toFixed(2):"—")+" L");
+    });
+    cycleLines.push("Days since last fill: "+dayPhrase(daysSince));
+    if(sooner) cycleLines.push("Red flag: Sooner than usual cycle");
+    return {text:cycleLines.join("\n"),measure:"cycle",fillsUsed:cycleFills.length,avg:litersPerDay,
+      median:null,currentRate:null,currentReason:daysSince==null?"none":"ok",
+      floorFlag:false,fallbackFlag:false,consecutive:false,consecutiveFills:[],
+      usedVrfs:cycleFills.map(function(f){ return String(f.vrf||""); }),
+      cycle:true,avgDays:avgDays,avgLitres:avgLitres,litersPerDay:litersPerDay,
+      daysSince:daysSince,sooner:sooner,
+      lastFills:lastTwo.map(function(f){ return {date:f.date,vrf:String(f.vrf||""),litres:f.litres}; })};
+  }
+  var used=[];
+  var i, start, end, endD, delta, litres, rate, why, days;
+  for(i=1;i<fills.length;i++){
+    end=fills[i];
+    start=fills[i-1];
+    endD=parseDate(end.date);
+    if(startMs!=null&&endD.getTime()<startMs) continue;
+    why="";
+    rate=null;
+    delta=null;
+    litres=0;
+    if(measure==="L/day"){
+      days=(endD.getTime()-parseDate(start.date).getTime())/DAY;
+      litres=end.litres;
+      if(!(litres>0)) why="missing";
+      else if(!(days>0)) why="negative";
+      else if(days>90) why="huge";
+      else rate=litres/days;
+    }else{
+      var a=start.odo, b=end.odo;
+      litres=start.litres;
+      if(isPlaceholderOdo(a)||isPlaceholderOdo(b)) why="placeholder";
+      else if(a==null||b==null||!isFinite(a)||!isFinite(b)||!(litres>0)) why="missing";
+      else{
+        delta=b-a;
+        if(!(delta>0)) why="negative";
+        else if(delta>(measure==="L/hr"?1500:8000)) why="huge";
+        else{
+          rate=measure==="L/hr"?litres/delta:delta/litres;
+          if(!isFinite(rate)){ rate=null; why="missing"; }
+          else if(rate<0.3||rate>(measure==="L/hr"?80:60)){ rate=null; why="unreliable"; }
+        }
+      }
+    }
+    if(why||rate==null) continue;
+    used.push({vrf:String(end.vrf||""),date:end.date,rate:rate,delta:delta,litres:litres});
+  }
+  var fillsUsed=used.length;
+  var avg=null, median=null;
+  if(fillsUsed>=3){
+    median=fuelMedian(used.map(function(x){ return x.rate; }));
+    if(measure==="L/day"){
+      var litreSum=0;
+      used.forEach(function(x){ litreSum+=x.litres; });
+      avg=litreSum/90;
+    }else if(measure==="L/hr"){
+      var lSum=0, hSum=0;
+      used.forEach(function(x){ lSum+=x.litres; hSum+=x.delta; });
+      avg=hSum?lSum/hSum:null;
+    }else{
+      var kmSum=0, gasSum=0;
+      used.forEach(function(x){ kmSum+=x.delta; gasSum+=x.litres; });
+      avg=gasSum?kmSum/gasSum:null;
+    }
+  }
+  var prev=previousFuelFill(code, opts);
+  var currentRate=null, currentReason="none";
+  if(measure==="L/day"){
+    if(!prev) currentReason="none";
+    else if(isCancelledFuelStatus(prev.status)) currentReason="previous fill cancelled";
+    else if(!(parseFloat(opts.litres)>0)) currentReason="litres missing";
+    else{
+      var span=before&&parseDate(prev.date)?(before.getTime()-parseDate(prev.date).getTime())/DAY:null;
+      if(!(span>0)) currentReason="odometer missing/unchanged";
+      else{
+        currentRate=parseFloat(opts.litres)/span;
+        currentReason="ok";
+      }
+    }
+  }else{
+    var live=fuelPreviousNote(code, currentOdo, opts);
+    currentRate=live.consumption;
+    currentReason=live.reason||(currentRate!=null?"ok":"none");
+  }
+  var floorFlag=breaksFloor(currentRate);
+  var fallbackFlag=false;
+  if(floor==null&&currentRate!=null&&avg!=null&&fillsUsed>=3){
+    if(measure==="km/L") fallbackFlag=currentRate<avg*(1-0.40);
+    else fallbackFlag=currentRate>avg*(1+0.40);
+  }
+  var consecutive=false, pair=[];
+  if(floor!=null&&currentRate!=null&&prev&&!isCancelledFuelStatus(prev.status)){
+    var prevRate=null;
+    if(measure==="L/day"){
+      var prevIdx=-1, p;
+      for(p=0;p<fills.length;p++){
+        if(String(fills[p].vrf)===String(prev.vrf)&&String(fills[p].date)===String(prev.date)) prevIdx=p;
+      }
+      if(prevIdx>0){
+        var earlier=fills[prevIdx-1];
+        var gap=(parseDate(prev.date).getTime()-parseDate(earlier.date).getTime())/DAY;
+        if(gap>0&&prev.litres>0) prevRate=prev.litres/gap;
+      }
+    }else{
+      var prevLive=fuelPreviousNote(code, prev.odo, {beforeDate:prev.date, exceptVrf:prev.vrf});
+      prevRate=prevLive.consumption;
+    }
+    if(breaksFloor(prevRate)&&breaksFloor(currentRate)){
+      consecutive=true;
+      pair=[
+        {vrf:String(prev.vrf||""),rate:prevRate},
+        {vrf:String(opts.currentVrf||except||""),rate:currentRate}
+      ];
+    }
+  }
+  function vrfLabel(vrf){
+    var no=String(vrf||"").trim();
+    if(!no||no==="— not yet posted —") return "This request";
+    return "VRF "+no;
+  }
+  var lines=[];
+  if(fillsUsed<3){
+    lines.push("3-month consumption: not enough data ("+fillsUsed+" fill"+(fillsUsed===1?"":"s")+" in 90 days; need 3)");
+  }else{
+    lines.push("3-month consumption: "+fuelUsePhrase(avg, measure)+" over 90 days");
+    lines.push("Median per fill: "+fuelUsePhrase(median, measure));
+    lines.push("Fills used: "+fillsUsed);
+  }
+  if(currentRate==null){
+    lines.push("This request: n/a ("+fuelNaPhrase(currentReason)+")");
+  }else{
+    var cmp="";
+    if(avg!=null&&fillsUsed>=3&&avg!==0){
+      var pct=(currentRate-avg)/avg*100;
+      if(pct<-0.5) cmp=" — "+Math.abs(pct).toFixed(0)+"% below the 3-month figure";
+      else if(pct>0.5) cmp=" — "+pct.toFixed(0)+"% above the 3-month figure";
+      else cmp=" — in line with the 3-month figure";
+    }
+    lines.push("This request: "+fuelUsePhrase(currentRate, measure)+cmp);
+  }
+  if(floorFlag){
+    var way=dir==="above"?"above":"below";
+    var unitPhrase=measure==="L/hr"?"liters per hour":measure==="L/day"?"liters per day":"km per liter";
+    var floorShown=(Math.round(floor*100)/100).toFixed(2).replace(/0+$/,"").replace(/\.$/,"");
+    lines.push("Red flag: "+way+" the "+floorShown+" "+unitPhrase+" floor");
+  }else if(fallbackFlag){
+    var worse=measure==="km/L"?"below":"above";
+    lines.push("Red flag: more than 40% "+worse+" the 3-month figure");
+  }
+  if(consecutive){
+    lines.push("Red flag: 2 consecutive low fills");
+    pair.forEach(function(item){
+      lines.push(vrfLabel(item.vrf)+" · "+fuelUsePhrase(item.rate, measure));
+    });
+  }
+  return {text:lines.join("\n"),measure:measure,fillsUsed:fillsUsed,avg:avg,median:median,
+    currentRate:currentRate,currentReason:currentReason,floorFlag:floorFlag,
+    fallbackFlag:fallbackFlag,consecutive:consecutive,consecutiveFills:pair,
+    usedVrfs:used.map(function(x){ return x.vrf; })};
+}
+function shownFuelRollingNote(rec, opts){
+  if(!recordHasFuelLine(rec)) return "";
+  opts=opts||{};
+  var code=rec.veh||(rec.units&&rec.units[0])||"";
+  var odo=opts.odo!=null?opts.odo:null;
+  if(odo==null&&rec.odo!=null&&rec.odo!=="") odo=rec.odo;
+  if(odo==null&&rec.draftOdo!=null&&rec.draftOdo!=="") odo=rec.draftOdo;
+  if(odo==null&&rec.odoAtRequest!=null&&rec.odoAtRequest!=="") odo=rec.odoAtRequest;
+  if(odo==null&&rec.rows){
+    for(var i=0;i<rec.rows.length;i++){
+      if(rec.rows[i]&&parseOdo(rec.rows[i].odo)!=null){ odo=rec.rows[i].odo; break; }
+    }
+  }
+  var litres=opts.litres!=null?opts.litres:fuelRecordLitres(rec);
+  return fuelRollingNote(code, odo, {
+    exceptVrf:opts.exceptVrf!=null?opts.exceptVrf:(rec.vrf||rec.vrfNo||""),
+    beforeDate:opts.beforeDate!=null?opts.beforeDate:(rec.date||""),
+    currentVrf:opts.currentVrf!=null?opts.currentVrf:(rec.vrf||rec.vrfNo||""),
+    litres:litres
+  }).text;
+}
+function appendFuelUse90(parent, text, kind){
+  if(!parent||!text) return;
+  var flagged=/Red flag:/.test(text);
+  if(kind==="print"){
+    var rfn=el("div");
+    rfn.setAttribute("data-fuel-rolling","1");
+    rfn.style.marginBottom="8px";
+    if(flagged) rfn.style.background="#fff4e5";
+    rfn.appendChild(el("div","k","Fuel use, 90 days"));
+    var rfv=el("div","v",text);
+    rfv.style.whiteSpace="pre-line";
+    rfv.style.fontWeight="500";
+    rfn.appendChild(rfv);
+    parent.appendChild(rfn);
+    return;
+  }
+  var box=el("div","banner "+(flagged?"warn":"info"));
+  box.setAttribute("data-fuel-rolling","1");
+  if(kind==="reserve") box.style.cssText="margin:0 0 var(--space-4);white-space:pre-line";
+  else if(kind==="open") box.style.cssText="margin-top:var(--space-3);white-space:pre-line";
+  else box.style.cssText="white-space:pre-line;margin-top:8px";
+  box.innerHTML="<b>Fuel use, 90 days</b><br>"+esc(text);
+  parent.appendChild(box);
+}
 /* Fuel audit. The rules live in fuel-audit.js. Old records that never stored
    the new fields read as n/a. Nothing here changes who may approve. */
 function fuelAudit(){
@@ -9181,6 +9588,7 @@ function openReserve(no,asApprover){
     prevFuel.innerHTML="<b>Previous fuel</b><br>"+esc(prevFuelText);
     b.appendChild(prevFuel);
   }
+  appendFuelUse90(b, shownFuelRollingNote(r), "reserve");
   var supChanges=(r.audit||[]).filter(function(n){ return n&&n.field==="supplier"; });
   if(supChanges.length){
     var supNote=el("div","banner info");
@@ -11309,6 +11717,8 @@ function buildVrfDoc(entry,photos){
     pfn.appendChild(pfv);
     d.appendChild(pfn);
   }
+  appendFuelUse90(d, shownFuelRollingNote(entry), "print");
+
   if(entryIsFuel(entry)){
     var apiPhotos=fuelAudit();
     var photoLine=el("div");
@@ -13151,6 +13561,7 @@ function openVrf(entry,tab){
     prevFuel.innerHTML="<b>Previous fuel</b><br>"+esc(prevFuelText);
     b.appendChild(prevFuel);
   }
+  appendFuelUse90(b, shownFuelRollingNote(entry), "open");
   var audits=vrfAuditList(entry);
   if(audits.length){
     var hist=el("div"); hist.style.marginTop="var(--space-3)";
@@ -14187,6 +14598,9 @@ function vrfView(){
       pn.innerHTML="<b>Previous fuel</b><br>"+esc(prevText);
       fuelNote.appendChild(pn);
     }
+    appendFuelUse90(fuelNote, fuelRollingNote(d.veh, parseOdo(d.odo), {
+      beforeDate:d.date||"", litres:litres
+    }).text, "form");
     var note=fuelUsageNote(d.veh, parseOdo(d.odo), litres);
     if(note&&note.title){
       var bn=el("div","banner "+(note.level==="warn"?"warn":"info"));
