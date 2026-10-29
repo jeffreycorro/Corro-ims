@@ -10,8 +10,8 @@ const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8
 const approveSrc = fs.readFileSync(path.join(__dirname, "../netlify/functions/approve-vrf.js"), "utf8");
 
 describe("fuel audit seed and rules", () => {
-  it("is build 2026-10-29 c and leaves approve-vrf alone", () => {
-    assert.match(html, /var BUILD = "2026-10-29 c"/);
+  it("is build 2026-10-29 d and leaves approve-vrf alone", () => {
+    assert.match(html, /var BUILD = "2026-10-29 d"/);
     assert.match(html, /<script src="\/fuel-audit\.js"><\/script>/);
     assert.match(html, /Not approved — cannot print/);
     assert.match(html, /No gauge photo/);
