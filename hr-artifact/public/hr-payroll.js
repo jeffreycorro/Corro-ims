@@ -185,7 +185,7 @@
 
   function govDeductionRefused(e) {
     var docs = (e && e.docs) || {};
-    return ["govrefuse", "kasabutan", "benefack"].some(function (k) {
+    return ["govrefuse", "kasabutan"].some(function (k) {
       return docSlotRefused(docs[k]);
     });
   }
@@ -202,7 +202,24 @@
     return { sss: pick("sss"), phic: pick("phic"), hdmf: pick("hdmf") };
   }
 
-  function statutoryOf(e, kind, settings) {
+  /* 3 months of service before SSS / PhilHealth / Pag-IBIG (HR 2026-10-27).
+     Reached when dateHired + 3 months is on or before the cutoff end. */
+  function addMonthsIso(d, n) {
+    var t = new Date(d + "T00:00:00");
+    var day = t.getDate();
+    t.setMonth(t.getMonth() + n);
+    if (t.getDate() < day) t.setDate(0);
+    return t.getFullYear() + "-" + String(t.getMonth() + 1).padStart(2, "0") + "-" + String(t.getDate()).padStart(2, "0");
+  }
+
+  function statTenureOk(e, to) {
+    var h = String((e && e.dateHired) || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(h) || !to) return true;
+    return String(to).slice(0, 10) >= addMonthsIso(h, 3);
+  }
+
+  function statutoryOf(e, kind, settings, to) {
+    if (!statTenureOk(e, to)) return { sss: 0, phic: 0, hdmf: 0 };
     var full = empSemiDed(e, settings);
     if (kind === "weekly") {
       return { sss: weeklyHalf(full.sss), phic: weeklyHalf(full.phic), hdmf: weeklyHalf(full.hdmf) };
@@ -1170,6 +1187,7 @@
     weeklyHalf: weeklyHalf,
     statutoryOf: statutoryOf,
     empSemiDed: empSemiDed,
+    statTenureOk: statTenureOk,
     defaultAllowance: defaultAllowance,
     computeLine: computeLine,
     holidayOn: holidayOn,
@@ -1480,7 +1498,7 @@
   function buildLine(e, kind, from, to, saved, ctx, settings) {
     var rate = payRate(e, kind);
     var tally = tallyPersonPeriod(e.id, from, to, ctx);
-    var stat = statutoryOf(e, kind, settings);
+    var stat = statutoryOf(e, kind, settings, to);
     var prev = (saved && saved.lines && saved.lines[e.id]) || {};
     var L = computeLine({
       empId: e.id,

@@ -145,7 +145,9 @@ describe("artifact HTML — hold print / photos / log after Send for approval", 
     assert.match(html, /Attachments on this request/);
     assert.match(html, /Requested — FOR APPROVAL/);
     assert.match(html, /Sent for approval — VRF /);
-    assert.match(html, /Photos and print work now/);
+    assert.match(html, /Printing waits until this VRF is approved/);
+    assert.match(html, /Not approved — cannot print/);
+    assert.match(html, /vrfPrintGate\(entry\)/);
     assert.match(html, /if\(!waiting\) tabDefs\.push\(\["liq"/);
     assert.match(html, /function printVrfNo\(entry\)/);
     assert.match(html, /printVrf\(entry\)/);
