@@ -14,7 +14,7 @@ describe("fuel audit seed and rules", () => {
     assert.match(html, /var BUILD = "2026-10-29 c"/);
     assert.match(html, /<script src="\/fuel-audit\.js"><\/script>/);
     assert.match(html, /Not approved — cannot print/);
-    assert.match(html, /missing photos/);
+    assert.match(html, /No gauge photo/);
     assert.match(html, /function askEncoderChecklist/);
     assert.match(html, /function voidRequestedReserve/);
     assert.match(html, /function fuelAuditView/);
@@ -73,12 +73,25 @@ describe("fuel audit seed and rules", () => {
     assert.match(bare.note, /odometer photo required/i);
   });
 
-  it("requires a fuel-gauge photo and an odometer or hour-meter photo", () => {
+  it("warns when the gauge photo is missing and does not treat that as a failed photo set", () => {
     const absent = audit.fuelPhotoStatus([
       { role: "receipt", caption: "Receipt" }
     ]);
-    assert.equal(absent.missing, true);
-    assert.equal(absent.label, "missing photos");
+    assert.equal(absent.missing, false);
+    assert.equal(absent.noGauge, true);
+    assert.equal(absent.gauge, false);
+    assert.equal(absent.meter, false);
+    assert.equal(absent.label, "No gauge photo");
+    const meterOnly = audit.fuelPhotoStatus([{ role: "odometer", caption: "dash" }]);
+    assert.equal(meterOnly.missing, false);
+    assert.equal(meterOnly.noGauge, true);
+    assert.equal(meterOnly.label, "No gauge photo");
+    const gaugeOnly = audit.fuelPhotoStatus([{ caption: "Fuel gauge before fill" }]);
+    assert.equal(gaugeOnly.missing, false);
+    assert.equal(gaugeOnly.noGauge, false);
+    assert.equal(gaugeOnly.gauge, true);
+    assert.equal(gaugeOnly.meter, false);
+    assert.equal(gaugeOnly.label, "");
     const ok = audit.fuelPhotoStatus([
       { caption: "Fuel gauge before fill" },
       { role: "odometer", caption: "dash" }
@@ -86,9 +99,13 @@ describe("fuel audit seed and rules", () => {
     assert.equal(ok.missing, false);
     assert.equal(ok.gauge, true);
     assert.equal(ok.meter, true);
+    assert.equal(ok.label, "");
     assert.equal(audit.fuelPhotoStatus(null).label, "n/a");
-    assert.equal(audit.missingPhotoBadge({ fuel: true, photoCount: 0 }), "missing photos");
+    assert.equal(audit.missingPhotoBadge({ fuel: true, photoCount: 0 }), "No gauge photo");
     assert.equal(audit.missingPhotoBadge({ fuel: true, photoCount: 2 }), "");
+    assert.equal(audit.missingPhotoBadge({ fuel: true, fuelPhotos: { gauge: false, meter: true } }), "No gauge photo");
+    assert.equal(audit.missingPhotoBadge({ fuel: true, fuelPhotos: { gauge: true, meter: false } }), "");
+    assert.equal(audit.missingPhotoBadge({ fuel: false, photoCount: 0 }), "");
   });
 
   it("flags a lower odometer and a short gap", () => {

@@ -6613,14 +6613,16 @@ function fuelRequestReview(spec){
   if(!fuel) return empty;
   var out={fuel:true, badges:[], notes:[], blocks:[], needsNote:{}, benchmark:api.benchmarkPanel(spec.veh)};
   var photos=spec.photos;
-  var photoSt=photos?api.fuelPhotoStatus(photos):{known:false, label:"n/a", missing:false, gauge:null, meter:null};
+  var photoSt=photos?api.fuelPhotoStatus(photos):{known:false, label:"n/a", missing:false, noGauge:false, gauge:null, meter:null};
   out.photos=photoSt;
-  if(photoSt.known&&photoSt.missing){
-    out.badges.push("missing photos");
-    out.blocks.push("Add a fuel-gauge photo and an odometer or hour-meter photo.");
-    out.needsNote.photo=true;
-  }else if(!photoSt.known && spec.photoCount===0){
-    out.badges.push("missing photos");
+  /* A missing gauge or odometer photo is a warning. It does not block Send for approval. */
+  var noGauge=false;
+  if(photoSt.known&&photoSt.gauge===false) noGauge=true;
+  else if(!photoSt.known && spec.photoCount===0) noGauge=true;
+  else if(spec.fuelPhotos&&spec.fuelPhotos.gauge===false && !photoSt.known) noGauge=true;
+  if(noGauge){
+    out.badges.push("No gauge photo");
+    out.notes.push("No gauge photo.");
   }
   var last=lastOdoOnOrBefore(spec.veh, spec.date, spec.vrf);
   var odo=api.odoLowerThanLast(spec.odo, last);
@@ -6690,7 +6692,7 @@ function missingPhotosChip(entry){
     photoCount:(function(){ try{ return photoCountMany(photoOwnersForOpenVrf(entry)); }catch(e){ return photoCount(entry&&entry.vrf); } })()
   });
   if(!label) return null;
-  return auditChip(label, "crit");
+  return auditChip(label, "warn");
 }
 function vrfPrintGate(entry){
   var api=fuelAudit();
@@ -6734,6 +6736,12 @@ function paintFuelAuditNote(host, d){
     var bits=(review.benchmark.lines||[]).map(function(ln){ return "<b>"+esc(ln.k)+".</b> "+esc(ln.v); }).join("<br>");
     box.innerHTML="<b>Unit benchmark</b>"+(review.benchmark.known?"":" — n/a")+"<br>"+bits;
     host.appendChild(box);
+  }
+  var gaugeTag=(review.badges||[]).filter(function(b){ return b==="No gauge photo"; });
+  if(gaugeTag.length){
+    var tags=el("div","row"); tags.style.marginBottom="var(--space-2)";
+    tags.appendChild(auditChip("No gauge photo", "warn"));
+    host.appendChild(tags);
   }
   if(review.notes.length){
     var wn=el("div","banner warn");
@@ -10335,6 +10343,8 @@ function approveView(){
         d.appendChild(el("span","chip mute","from VRF maker"));
         if(photoCount(rsvOwner(r.no))||(r.vrfNo&&photoCount(String(r.vrfNo))))
           d.appendChild(el("span","chip ok","📎 photo"));
+        var noGauge=missingPhotosChip({vrf:r.vrfNo, reserve:r.no, rows:r.draftLines||[], fuelPhotos:r.fuelPhotos||null, veh:r.veh, work:r.work, kind:r.kind});
+        if(noGauge) d.appendChild(noGauge);
         return d; }},
       {h:"",get:function(r){
         var wrap=el("div"); wrap.style.cssText="display:flex;gap:4px;flex-wrap:wrap";
@@ -11813,18 +11823,19 @@ function buildVrfDoc(entry,photos,opts){
     var apiPhotos=fuelAudit();
     var photoLine=el("div");
     photoLine.style.cssText="margin:0 0 8px;font-weight:700";
-    var showMissing=false, showNa=false;
+    var showNoGauge=false, showNa=false;
     if(photos==null && !(entry.fuelPhotos)){
       var counted=0;
       try{ counted=photoCountMany(photoOwnersForOpenVrf(entry)); }catch(e){ counted=photoCount(entry.vrf); }
-      if(!counted) showMissing=true;
+      if(!counted) showNoGauge=true;
       else showNa=true;
     }else if(entry.fuelPhotos && photos==null){
-      showMissing=!entry.fuelPhotos.gauge || !entry.fuelPhotos.meter;
+      showNoGauge=entry.fuelPhotos.gauge===false;
     }else if(apiPhotos){
-      showMissing=!!apiPhotos.fuelPhotoStatus(photos||[]).missing;
+      var pst=apiPhotos.fuelPhotoStatus(photos||[]);
+      showNoGauge=!!(pst.known&&pst.gauge===false);
     }else showNa=true;
-    if(showMissing){ photoLine.textContent="missing photos"; d.appendChild(photoLine); }
+    if(showNoGauge){ photoLine.textContent="No gauge photo"; d.appendChild(photoLine); }
     else if(showNa){
       photoLine.style.fontWeight="500"; photoLine.style.color="#555";
       photoLine.textContent="Fuel photos: n/a";
@@ -17154,9 +17165,22 @@ function fuelAuditView(){
       photoCount:photoCount(v.vrf), photosKnown:photosKnown, driveUrl:vrfDrive(v),
       receiptUploaded:rsv?rsv.receiptUploaded:undefined, fuelPhotos:v.fuelPhotos||(rsv&&rsv.fuelPhotos)
     }, today);
+    row.noGauge=!!missingPhotosChip(v);
     if(row.outstanding) outstanding.push(row);
   });
   outstanding.sort(function(a,b){ return (b.agingDays||0)-(a.agingDays||0); });
+  var noGaugeList=[];
+  vrfIndex().forEach(function(v){
+    if(!entryIsFuel(v)||!missingPhotosChip(v)) return;
+    noGaugeList.push({vrf:v.vrf, veh:(v.units&&v.units[0])||v.veh||"—", date:v.date||""});
+  });
+  g.appendChild(card("No gauge photo", noGaugeList.length+" fuel VRF"+(noGaugeList.length===1?"":"s")+" — a warning, not a block on Send for approval",
+    table([
+      {h:"VRF",get:function(r){ return el("span","mono",r.vrf); }},
+      {h:"Unit",get:function(r){ return el("span","mono",r.veh); }},
+      {h:"Date",get:function(r){ return r.date||"—"; }},
+      {h:"",get:function(){ return el("span","chip warn","No gauge photo"); }}
+    ], noGaugeList, {empty:"No fuel VRF is flagged for a missing gauge photo."})));
   g.appendChild(card("Fuel liquidation outstanding","receipt, liquidated date, and age",
     table([
       {h:"VRF",get:function(r){ return el("span","mono",r.vrf); }},
@@ -17164,7 +17188,8 @@ function fuelAuditView(){
       {h:"Date",get:function(r){ return r.date||"n/a"; }},
       {h:"Receipt",get:function(r){ return r.receipt; }},
       {h:"Liquidated",get:function(r){ return r.liquidatedDate||"—"; }},
-      {h:"Aging",num:true,get:function(r){ return r.agingLabel==="n/a"?"n/a":r.agingLabel+" d"; }}
+      {h:"Aging",num:true,get:function(r){ return r.agingLabel==="n/a"?"n/a":r.agingLabel+" d"; }},
+      {h:"Gauge",get:function(r){ return r.noGauge?el("span","chip warn","No gauge photo"):"—"; }}
     ], outstanding, {empty:"No outstanding fuel VRF."})));
   g.appendChild(reserveReconcileCard());
   w.appendChild(g);
