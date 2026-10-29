@@ -46,7 +46,7 @@ function loadHelpers() {
 
 describe("2026-10-12a recruitment pipeline", () => {
   it("is build 2026-10-12a and lists Background Check with the other stages", () => {
-    assert.match(html, /const BUILD = "2026-10-26a"/);
+    assert.match(html, /const BUILD = "2026-10-29a"/);
     assert.match(
       html,
       /const STAGES=\["Applied","Screening","Shortlisted","On Hold","Written Exam","Interview","Background Check","Final Interview","Offer","Hired","Rejected"\]/

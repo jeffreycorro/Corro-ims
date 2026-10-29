@@ -1601,7 +1601,7 @@
   }
 
   root.hrPaySheet = {
-    version: "2026-10-26a",
+    version: "2026-10-29a",
     WEEKLY_SITES: WEEKLY_SITES,
     SIGN_PREP: SIGN_PREP,
     SIGN_PREP_ROLE: SIGN_PREP_ROLE,

@@ -1962,7 +1962,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-10-26a";
+const BUILD = "2026-10-29a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -5463,7 +5463,8 @@ function printChecklist(e, no, opt){
        ["Barangay / Police Clearance", on("brgy"), "NBI Clearance", on("nbi")],
        ["Government Valid ID", on("govid"), "SSS "+((e&&e.sssNo)||""), on("sss")||govNoFilled(e&&e.sssNo)],
        ["Pag-IBIG "+((e&&e.pagibigNo)||""), on("hdmf")||govNoFilled(e&&e.pagibigNo), "PhilHealth "+((e&&e.philhealthNo)||""), on("phic")||govNoFilled(e&&e.philhealthNo)],
-       ["Decline in Government Mandated Benefits", on("benefack")||on("govrefuse")||on("kasabutan"), "Vaccine Card", on("vax")],
+       /* KASABUTAN only (govrefuse / legacy kasabutan). benefack is an agreement. */
+       ["Decline in Government Mandated Benefits", on("govrefuse")||on("kasabutan"), "Vaccine Card", on("vax")],
        ["Medical Certificate", on("med"), "COE (CCD)", on("coeccd")],
        ["COE (from employee)", on("coeemp"), "Drug Tests", on("drug")],
        ["Training Certificates, pls specify", on("certs"), null, false]])
