@@ -97,7 +97,7 @@ describe("Approvals renders before any picture fetch", () => {
     assert.match(painted, /el\("button","btn","Reject"\)/);
     assert.doesNotMatch(painted, /listPhotos|mountLazyGallery|S\.db\.photoMeta|signedUrl|createSignedUrl/);
     assert.ok(body.indexOf("document.body.appendChild(m)") < body.indexOf("mountLazyGallery(pgal"));
-    assert.match(html, /var BUILD = "2026-10-29 b"/);
+    assert.match(html, /var BUILD = "2026-10-29 c"/);
   });
 
   it("opens a VRF sheet without fetching pictures, and prints only when asked", () => {
@@ -157,7 +157,7 @@ describe("print opens before picture bytes and keeps every attachment", () => {
     assert.match(print, /Retry pictures/);
     assert.doesNotMatch(print, /listPhotosMany|collection\("photos"\)/);
     assert.match(html, /function printVrfNo\(entry\)\{\n  printVrf\(entry\);\n\}/);
-    const doc = sliceFn(html, "function buildVrfDoc(entry,photos)", "var VRFDOC_CSS");
+    const doc = sliceFn(html, "function buildVrfDoc(entry,photos,opts)", "var VRFDOC_CSS");
     assert.match(doc, /data-photo-id/);
     assert.match(doc, /Loading picture…/);
     assert.match(doc, /shownFuelPrevNote\(/);
