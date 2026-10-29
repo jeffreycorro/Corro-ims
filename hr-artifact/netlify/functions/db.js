@@ -14,6 +14,7 @@ const {
 const { formatManilaIso } = require("../lib/manila");
 const leaveNumbers = require("../../public/hr-leave-numbers");
 const caNumbers = require("../../public/hr-ca-numbers");
+const memoNumbers = require("../../public/hr-memo-numbers");
 
 function storeFromRows(rows) {
   return leaveNumbers.rowsToStore(rows);
@@ -32,6 +33,30 @@ async function rejectDuplicateLeaveNumber(collection, id, data) {
     docreg: storeFromRows(regRows),
   };
   return leaveNumbers.conflictForWrite(collection, id, data, stores);
+}
+
+async function rejectDuplicateMemoNumber(collection, id, data) {
+  if (!data || !data.no) return null;
+  const isMemo = collection === "memos";
+  const isCmReg = collection === "docreg" && memoNumbers.isCmDoc(data);
+  if (!isMemo && !isCmReg) return null;
+  const [memoRows, regRows, filedRows, seriesRow] = await Promise.all([
+    listCollection("memos"),
+    listCollection("docreg"),
+    listCollection("filed"),
+    getDoc("series", "CM"),
+  ]);
+  const stores = memoNumbers.storeFromLists({
+    memos: memoRows,
+    docreg: regRows,
+    filed: filedRows,
+    series: seriesRow && seriesRow.data ? { CM: seriesRow.data } : {},
+  });
+  if (isMemo) {
+    const parsed = memoNumbers.parseCm(data.no);
+    if (parsed) data.no = memoNumbers.formatCm(parsed.year, parsed.seq, stores);
+  }
+  return memoNumbers.conflictForWrite(collection, id, data, stores);
 }
 
 function serverIo(holder) {
@@ -197,6 +222,13 @@ exports.handler = async (event) => {
           code: leaveNumbers.DUP_CODE,
         });
       }
+      const memoConflict = await rejectDuplicateMemoNumber(collection, id, payload);
+      if (memoConflict) {
+        return json(409, {
+          error: memoConflict.message,
+          code: memoNumbers.DUP_CODE,
+        });
+      }
       if (collection === "daily") {
         const existing = await getDoc(collection, id);
         payload = preserveDailySignatures(existing && existing.data, payload);
@@ -263,6 +295,19 @@ exports.handler = async (event) => {
 
     return json(400, { error: `Unknown op: ${op}` });
   } catch (err) {
+    const pg = err && err.details && err.details.code;
+    const constraint = String(
+      (err && err.details && (err.details.message || err.details.details)) ||
+        (err && err.message) ||
+        ""
+    );
+    if (pg === "23505" && constraint.indexOf("docs_memos_cm_no_uidx") >= 0) {
+      return json(409, {
+        error:
+          "That memo number was just saved on another memorandum. Change the number and save again.",
+        code: memoNumbers.DUP_CODE,
+      });
+    }
     const status = err.statusCode || 500;
     return json(status, { error: err.message || "Database error" });
   }

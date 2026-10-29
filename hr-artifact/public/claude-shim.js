@@ -1008,6 +1008,7 @@
 
   function loadDictationCompanion() {
     loadCompanion("/hr-dictation.js", "data-hr-dictation");
+    loadCompanion("/hr-memo-numbers.js", "data-hr-memo-numbers");
     loadCompanion("/hr-memo.js", "data-hr-memo");
     loadCompanion("/hr-tts.js", "data-hr-tts");
     loadCompanion("/hr-applicant-dedupe.js", "data-hr-applicant-dedupe");

@@ -1234,6 +1234,8 @@ async function put(coll,id,obj,opts){
   /* Clear the flag before the local copy is written, so a scan added in this
      save is not stripped until the shared write has actually succeeded. */
   if(coll==="employees" && obj) obj._docsOnServer=false;
+  const hadRow = !!(S[coll] && Object.prototype.hasOwnProperty.call(S[coll], id));
+  const prevRow = hadRow ? clone(S[coll][id]) : undefined;
   S[coll][id]=obj; lsSaveSoon();
   ALERTS_GEN++;
   if(!S.db) return true;
@@ -1251,6 +1253,15 @@ async function put(coll,id,obj,opts){
     return true;
   }
   catch(e){
+    if(e && e.code==="duplicate_memo_number"){
+      if(hadRow) S[coll][id]=prevRow;
+      else delete S[coll][id];
+      lsSaveSoon();
+      if(!(opts && opts.quiet)) toast(e.message || "That memo number is already in use.","err");
+      if(window.hrMemoNumbers && typeof window.hrMemoNumbers.advanceSuggestion==="function")
+        window.hrMemoNumbers.advanceSuggestion(window);
+      return false;
+    }
     if(!(opts && opts.quiet) && coll!=="daily"){
       if(e && e.code==="quota_exceeded") toast("Storage is full — delete old records before adding more.","err");
       else if(e && e.code!=="revoked") toast("Could not save to shared storage. Change kept on this device.","err");
@@ -1962,7 +1973,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-10-29a";
+const BUILD = "2026-10-29b";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -14209,11 +14220,16 @@ async function memoDraw(m){
       : m.audience==="Individual"
       ? empPicker("m-detail", m.audienceDetail)
       : '<input id="m-detail" value="'+esc(m.audienceDetail||"")+'" placeholder="'+(m.audience==="Project"?"Project name":"Describe the recipients")+'">';
+    const memoNoLocked = !!(m.fromDrive || m.status==="Issued");
+    const memoNoSuggest = !memoNoLocked && !String(m.no||"").trim();
+    const memoNoShown = String(m.no||"").trim() || (memoNoLocked ? "" : (typeof peekNo==="function" ? peekNo("CM") : ""));
     openModal({
       title: m.no ? "Memo "+m.no : "New memorandum", wide:true,
       body:'<div class="stack">'
         + '<div class="grid3">'
-        + '<div class="f"><label>Number</label><input value="'+esc(m.no||"assigned when you save")+'" disabled></div>'
+        + '<div class="f"><label>Number</label><input id="m-no" class="mono" data-suggest="'+(memoNoSuggest?"1":"0")+'" value="'+esc(memoNoShown)+'"'+(memoNoLocked?" disabled":"")+' placeholder="C.M. '+new Date().getFullYear()+' - 01">'
+        + (memoNoLocked ? "" : '<span class="hint">Filled with the next C.M. number for this year, including memos already filed and signed. Change it if this sheet already has a number. A number already on file is refused.</span>')
+        + '</div>'
         + '<div class="f"><label>Date</label><input id="m-date" type="date" value="'+esc(m.date)+'"></div>'
         + '<div class="f"><label>Effective</label><input id="m-eff" type="date" value="'+esc(m.effectivity||"")+'"></div>'
         + '</div>'
@@ -14252,6 +14268,11 @@ async function memoDraw(m){
         + '<button class="btn pri" id="m-save">Save memo</button>'
     });
     const grab=()=>{
+      const noEl=$("#m-no");
+      if(noEl && !noEl.disabled){
+        const typed=String(noEl.value||"").trim();
+        m.no = typed==="assigned when you save" ? "" : typed;
+      }
       m.subject=$("#m-subj").value.trim(); m.cat=$("#m-cat").value; m.date=$("#m-date").value;
       m.effectivity=$("#m-eff").value; m.status=$("#m-status").value; m.audience=$("#m-aud").value;
       const d=$("#m-detail"); m.audienceDetail=d?d.value:"";
@@ -14295,6 +14316,10 @@ async function memoDraw(m){
     }
     $("#m-preview").onclick=()=>{ grab(); previewMemo(m); };
     $("#m-save").onclick=async()=>{
+      const saveBtn=$("#m-save");
+      if(saveBtn && saveBtn.dataset && saveBtn.dataset.busy==="1") return;
+      if(saveBtn && saveBtn.dataset) saveBtn.dataset.busy="1";
+      try{
       grab();
       const prev=S.memos[m.id];
       if(prev){
@@ -14320,8 +14345,12 @@ async function memoDraw(m){
         const entry=regFor("memo",m.id);
         if(entry){ entry.title=m.subject; entry.tags=m.tags; entry.status=m.status; entry.date=m.date; await put("docreg",entry.id,entry); }
       }
-      await put("memos",m.id,m);
+      const savedOk=await put("memos",m.id,m);
+      if(savedOk===false) return;
       closeModal(); toast("Saved as "+m.no,"ok"); render();
+      } finally {
+        if(saveBtn && saveBtn.dataset) delete saveBtn.dataset.busy;
+      }
     };
     const dl=$("#m-del");
     if(dl) dl.onclick=async()=>{
@@ -14335,7 +14364,7 @@ async function memoDraw(m){
 function previewMemo(m){
   if(blockCompanyPrint(["cassie","dept","signatory"])) return;
   const no = m.no || peekNo("CM");
-  const draft = !m.no;
+  const draft = !(S.memos[m.id] && S.memos[m.id].no);
   const e = m.audience==="Individual" ? S.employees[m.audienceDetail] : null;
   const view = Object.assign({}, m, {
     audience: audienceText(m),
