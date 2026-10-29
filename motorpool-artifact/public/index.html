@@ -437,7 +437,7 @@ var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
    This label is inside the page function. The shim reads window.BUILD when it
    sends a save. Without that copy every save goes out with an empty build and
    the server answers "Reload the page". */
-var BUILD = "2026-10-29 c";
+var BUILD = "2026-10-29 d";
 try { window.BUILD = BUILD; } catch (e) {}
 var DAY = 86400000, MO = 30.44;
 
@@ -6630,7 +6630,6 @@ function fuelRequestReview(spec){
   if(odo.known&&odo.lower){
     out.badges.push("odometer lower");
     out.notes.push(odo.label+" ("+nnum(odo.reading)+" vs "+nnum(odo.last)+").");
-    if(!String(spec.odoOverrideReason||"").trim()) out.blocks.push("This reading is lower than the last one. Add an override reason to continue.");
   }
   var prev=spec.veh?previousFuelFill(spec.veh, {beforeDate:spec.date||"", exceptVrf:spec.vrf||""}):null;
   var gap=api.shortGapFlag({
@@ -6638,23 +6637,25 @@ function fuelRequestReview(spec){
     meter:meterOf(spec.veh), shortGapKm:spec.shortGapKm!=null?spec.shortGapKm:shortGapKmSetting()
   });
   out.shortGap=gap;
-  if(gap.flag){ out.badges.push("short gap"); out.notes.push(gap.label+"."); out.needsNote.km=true; }
+  if(gap.flag){ out.badges.push("short gap"); out.notes.push(gap.label+"."); }
   var alloc=api.allocationFlags({unit:spec.veh, date:spec.date, lastDate:prev&&prev.date, liters:spec.liters});
   out.allocation=alloc;
-  if(alloc.flag){ out.badges.push("allocation"); out.notes.push(alloc.label+"."); out.needsNote.km=true; }
+  if(alloc.flag){ out.badges.push("allocation"); out.notes.push(alloc.label+"."); }
   var dup=api.duplicateFuelHits(fuelAuditRows(), {
     veh:spec.veh, date:spec.date, liters:spec.liters, amount:spec.amount,
     vrf:spec.vrf||"", receipt:spec.receipt||""
   });
   out.duplicate=dup;
-  if(dup.flag){ out.badges.push("duplicate"); out.notes.push(dup.label+"."); out.needsNote.duplicate=true; }
+  if(dup.flag){ out.badges.push("duplicate"); out.notes.push(dup.label+"."); }
   var proj=api.projectMismatch(spec.project, unitProjectNow(spec.veh));
   out.project=proj;
-  if(proj.flag){ out.badges.push("project"); out.notes.push(proj.label+"."); out.needsNote.project=true; }
-  if(!String(spec.gauge||"").trim()) out.needsNote.gauge=true;
+  if(proj.flag){ out.badges.push("project"); out.notes.push(proj.label+"."); }
   var drv=api.driverState({driver:spec.driver}, {fuel:true, entering:!!spec.entering});
   out.driver=drv;
-  if(spec.entering && !drv.ok) out.blocks.push(drv.label);
+  if(spec.entering && !drv.ok) out.notes.push(drv.label+".");
+  /* blocks stays empty. A missing gauge or odometer photo, a project mismatch,
+     a short gap, a duplicate, a low reading, and a missing driver are warnings.
+     None of them stops Send for approval, including Fuel Reserve and hour-meter units. */
   out.amounts=[];
   (lines||[]).forEach(function(l){
     if(!l||!isFuel(l.cat)) return;
@@ -6743,22 +6744,15 @@ function paintFuelAuditNote(host, d){
     tags.appendChild(auditChip("No gauge photo", "warn"));
     host.appendChild(tags);
   }
-  if(review.notes.length){
+  var warnNotes=(review.notes||[]).concat(review.blocks||[]);
+  if(warnNotes.length){
     var wn=el("div","banner warn");
-    wn.innerHTML="<b>Fuel checks</b><br>"+review.notes.map(function(t){ return esc(t); }).join("<br>");
+    wn.innerHTML="<b>Fuel checks</b><br>"+warnNotes.map(function(t){ return esc(t); }).join("<br>");
     host.appendChild(wn);
   }
-  if(review.blocks.length){
-    var bn=el("div","banner crit");
-    bn.innerHTML=review.blocks.map(function(t){ return esc(t); }).join("<br>");
-    host.appendChild(bn);
-  }
 }
-function fuelChecklistNeeds(review){
-  var need={};
-  if(!review) return need;
-  if(review.needsNote) Object.keys(review.needsNote).forEach(function(k){ if(review.needsNote[k]) need[k]=true; });
-  return need;
+function fuelChecklistNeeds(){
+  return {};
 }
 function askEncoderChecklist(d, btn, opts, review){
   var api=fuelAudit();
@@ -6767,7 +6761,7 @@ function askEncoderChecklist(d, btn, opts, review){
   var sheet=el("div","sheet"); sheet.style.maxWidth="640px";
   var b=el("div"); b.style.padding="var(--space-5) var(--space-6)";
   b.appendChild(el("h3",null,"Encoder checklist"));
-  b.appendChild(el("div","hint","Tick each item before this fuel VRF goes for approval. A flagged item needs a note. The ticks are stored on the VRF and shown to the approver."));
+  b.appendChild(el("div","hint","Optional notes for the approver. A missing gauge photo, a project mismatch, and the other fuel checks do not stop Send for approval."));
   var items=(api?api.checklistItems():[]);
   var inputs=[];
   items.forEach(function(item){
@@ -6795,9 +6789,6 @@ function askEncoderChecklist(d, btn, opts, review){
     var packed={by:(d.requestedBy||"").trim(), at:iso(), items:inputs.map(function(x){
       return {id:x.id, checked:!!x.cb.checked, note:x.note.value.trim()};
     })};
-    if(!api){ d.encoderChecklist=packed; m.remove(); sendForApproval(d, btn, Object.assign({}, opts||{}, {checklistDone:true})); return; }
-    var ready=api.checklistReady(packed, fuelChecklistNeeds(review));
-    if(!ready.ok){ msg.textContent=ready.message; msg.style.color="var(--danger)"; return; }
     d.encoderChecklist=packed;
     m.remove();
     sendForApproval(d, btn, Object.assign({}, opts||{}, {checklistDone:true}));
@@ -15082,10 +15073,7 @@ async function sendForApproval(d,btn,opts){
       amount:draftFuelAmount(rows), lines:rows, photos:d.photos||[],
       project:d.project, driver:d.driver, receipt:d.receipt, gauge:d.gauge, entering:true
     });
-    if(review.blocks&&review.blocks.length){
-      toast(review.blocks[0]);
-      return false;
-    }
+    /* review.blocks is unused. Fuel checks never refuse this send. */
     var auditApi=fuelAudit();
     var checklistOk=false;
     if(auditApi&&d.encoderChecklist){
