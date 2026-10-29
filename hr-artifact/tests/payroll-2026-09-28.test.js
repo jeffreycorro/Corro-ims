@@ -133,6 +133,8 @@ function loadPay() {
     "contribSaveValue",
     "payRunStatValue",
     "payStatKept",
+    "statServiceStart",
+    "statTenureOk",
     "payStatForLine",
     "contribSource",
     "payStat",
@@ -150,7 +152,7 @@ function putDay(ctx, date, rows, extra) {
 
 describe("2026-09-28 payroll — active roster only", () => {
   it("is build 2026-10-05a", () => {
-    assert.match(html, /const BUILD = "2026-10-26a"/);
+    assert.match(html, /const BUILD = "2026-10-29a"/);
   });
 
   it("drops non-active statuses and a separation date on or before the period start", () => {
@@ -264,9 +266,9 @@ describe("2026-09-28 payroll — contributions", () => {
     assert.equal(ctx.empStat(legacy, "sss"), 0);
     assert.equal(ctx.contribSource(legacy), "refused");
 
-    const decline = { docs: { benefack: { s: "miss", links: [{ url: "https://drive.example/decline.pdf" }] } } };
-    assert.equal(ctx.govDeductionRefused(decline), true);
-    assert.equal(ctx.empStat(decline, "hdmf"), 0);
+    const agreed = { docs: { benefack: { s: "miss", links: [{ url: "https://drive.example/benefack.pdf" }] } } };
+    assert.equal(ctx.govDeductionRefused(agreed), false);
+    assert.equal(ctx.empStat(agreed, "hdmf"), 100);
 
     const explicit = { ded: { sss: 0, phic: "", hdmf: 80 } };
     assert.equal(ctx.empStatSet(explicit, "sss"), true);

@@ -204,9 +204,25 @@
      the 27th pays none (the week of that cutoff). Explicit 0 stays 0.
      govEnroll false stays 0. A blank 201 falls back to settings when enroll
      was never set — the same fallback the 201 screen already uses. */
+  /* Contributions start at 3 months of service (HR 2026-10-27):
+     dateHired + 3 months on or before the cutoff end. */
+  function tenureOk(emp, period) {
+    var h = String((emp && emp.dateHired) || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(h) || !period || !period.to) return true;
+    var t = new Date(h + "T00:00:00");
+    var day = t.getDate();
+    t.setMonth(t.getMonth() + 3);
+    if (t.getDate() < day) t.setDate(0);
+    var start = t.getFullYear() + "-" + String(t.getMonth() + 1).padStart(2, "0") + "-" + String(t.getDate()).padStart(2, "0");
+    return String(period.to).slice(0, 10) >= start;
+  }
+
   function statutoryOf(emp, kind, period, settings) {
     if (weekSkipsGov(kind, period)) {
       return { sss: 0, phic: 0, hdmf: 0, rule: "skip-week-27" };
+    }
+    if (!tenureOk(emp, period)) {
+      return { sss: 0, phic: 0, hdmf: 0, rule: "under-3-months" };
     }
     var def = (settings && settings.ded) || { sss: 325, phic: 131.25, hdmf: 100 };
     var enroll = emp && emp.govEnroll;
@@ -1585,7 +1601,7 @@
   }
 
   root.hrPaySheet = {
-    version: "2026-10-26a",
+    version: "2026-10-29a",
     WEEKLY_SITES: WEEKLY_SITES,
     SIGN_PREP: SIGN_PREP,
     SIGN_PREP_ROLE: SIGN_PREP_ROLE,
