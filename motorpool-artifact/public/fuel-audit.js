@@ -288,20 +288,29 @@ function fuelPhotoStatus(photos) {
     if (role === "meter") meter = true;
     if (role === "receipt") receipt = true;
   });
-  var missing = !gauge || !meter;
-  return { known: true, gauge: gauge, meter: meter, receipt: receipt, missing: missing, label: missing ? "missing photos" : "" };
+  /* Gauge and odometer photos are optional. A missing gauge is a warning tag,
+     never a reason to refuse Send for approval. */
+  var noGauge = !gauge;
+  return {
+    known: true,
+    gauge: gauge,
+    meter: meter,
+    receipt: receipt,
+    missing: false,
+    noGauge: noGauge,
+    label: noGauge ? "No gauge photo" : ""
+  };
 }
 function missingPhotoBadge(spec) {
   spec = spec || {};
   if (!spec.fuel) return "";
-  if (spec.fuelPhotos && spec.fuelPhotos.gauge === false) return "missing photos";
-  if (spec.fuelPhotos && spec.fuelPhotos.meter === false) return "missing photos";
-  if (spec.fuelPhotos && spec.fuelPhotos.gauge && spec.fuelPhotos.meter) return "";
   if (spec.photos) {
-    var st = fuelPhotoStatus(spec.photos);
-    return st.missing ? "missing photos" : "";
+    var live = fuelPhotoStatus(spec.photos);
+    return live.known && live.noGauge ? "No gauge photo" : "";
   }
-  if (spec.photoCount === 0) return "missing photos";
+  if (spec.fuelPhotos && spec.fuelPhotos.gauge === false) return "No gauge photo";
+  if (spec.fuelPhotos && spec.fuelPhotos.gauge === true) return "";
+  if (spec.photoCount === 0) return "No gauge photo";
   return "";
 }
 

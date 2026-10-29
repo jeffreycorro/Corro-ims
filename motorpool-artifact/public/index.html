@@ -261,9 +261,17 @@ svg text{font-family:var(--font-body)}
 .vrfdoc .vmark span{font-family:var(--font-heading);font-weight:700;font-size:72px;letter-spacing:.12em;
   text-transform:uppercase;color:rgba(28,28,28,.16);transform:rotate(-32deg);white-space:nowrap;
   border:5px solid rgba(28,28,28,.16);padding:6px 22px;line-height:1}
+/* Unapproved preview stamp sits across the form, over the type, still readable. */
+.vrfdoc .vmark.preview{z-index:4}
+.vrfdoc .vmark.preview span{font-size:54px;letter-spacing:.04em;line-height:1.05;text-align:center;
+  color:rgba(156,49,49,.62);border:8px solid rgba(156,49,49,.66);padding:12px 18px;
+  background:rgba(255,255,255,.35);max-width:148mm;white-space:normal}
+.vrfdoc.unapproved-preview{overflow:visible}
+.vrfdoc.unapproved-preview>.vmark.preview{bottom:auto}
 .vrfdoc>*:not(.vmark){position:relative;z-index:1}
 .vrfdoc .vph{position:relative}
 .vrfdoc .vph .vmark{display:none}
+.vrfdoc .vph .vmark.preview{display:flex;z-index:4}
 .vrfdoc .vhead{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;
   border-bottom:2px solid #111;padding-bottom:8px}
 .vrfdoc .vco{font-family:var(--font-heading);font-weight:700;font-size:16px;letter-spacing:.02em;line-height:1.2}
@@ -341,6 +349,19 @@ svg text{font-family:var(--font-body)}
   body.printing>#printArea .vmark{position:fixed;inset:12mm}
   body.printing>#printArea .vph .vmark{display:flex;position:absolute}
   #printArea{display:none}
+  /* Ctrl+P while an unapproved preview is open prints that form, stamp on every page.
+     The official Print button never reaches here for an unapproved VRF. */
+  body:has(#pvPreview):not(.printing)>*:not(#pvPreview){display:none!important}
+  body:has(#pvPreview):not(.printing) #pvPreview{position:static!important;display:block!important;
+    inset:auto!important;background:#fff!important;overflow:visible!important;padding:0!important;z-index:auto!important}
+  body:has(#pvPreview):not(.printing) #pvPreview .sheet{max-width:none!important;box-shadow:none!important;
+    border:0!important;overflow:visible!important;background:#fff!important}
+  body:has(#pvPreview):not(.printing) #pvPreview .pv-scroll{background:#fff!important;padding:0!important}
+  body:has(#pvPreview):not(.printing) #pvPreview .vrfdoc{overflow:visible!important;box-shadow:none!important;max-width:none!important}
+  body:has(#pvPreview):not(.printing) #pvPreview .vrfdoc>.vmark.preview{position:fixed;inset:10mm;height:auto!important;
+    bottom:10mm!important;display:flex!important;z-index:50;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  body:has(#pvPreview):not(.printing) #pvPreview .vph .vmark.preview{display:flex!important;position:absolute;inset:0;z-index:50;
+    -webkit-print-color-adjust:exact;print-color-adjust:exact}
   @page{size:A4;margin:0}
   #app{display:block}
   body{background:#fff;font-size:11pt}
@@ -416,7 +437,7 @@ var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
    This label is inside the page function. The shim reads window.BUILD when it
    sends a save. Without that copy every save goes out with an empty build and
    the server answers "Reload the page". */
-var BUILD = "2026-10-29 b";
+var BUILD = "2026-10-29 c";
 try { window.BUILD = BUILD; } catch (e) {}
 var DAY = 86400000, MO = 30.44;
 
@@ -6592,14 +6613,16 @@ function fuelRequestReview(spec){
   if(!fuel) return empty;
   var out={fuel:true, badges:[], notes:[], blocks:[], needsNote:{}, benchmark:api.benchmarkPanel(spec.veh)};
   var photos=spec.photos;
-  var photoSt=photos?api.fuelPhotoStatus(photos):{known:false, label:"n/a", missing:false, gauge:null, meter:null};
+  var photoSt=photos?api.fuelPhotoStatus(photos):{known:false, label:"n/a", missing:false, noGauge:false, gauge:null, meter:null};
   out.photos=photoSt;
-  if(photoSt.known&&photoSt.missing){
-    out.badges.push("missing photos");
-    out.blocks.push("Add a fuel-gauge photo and an odometer or hour-meter photo.");
-    out.needsNote.photo=true;
-  }else if(!photoSt.known && spec.photoCount===0){
-    out.badges.push("missing photos");
+  /* A missing gauge or odometer photo is a warning. It does not block Send for approval. */
+  var noGauge=false;
+  if(photoSt.known&&photoSt.gauge===false) noGauge=true;
+  else if(!photoSt.known && spec.photoCount===0) noGauge=true;
+  else if(spec.fuelPhotos&&spec.fuelPhotos.gauge===false && !photoSt.known) noGauge=true;
+  if(noGauge){
+    out.badges.push("No gauge photo");
+    out.notes.push("No gauge photo.");
   }
   var last=lastOdoOnOrBefore(spec.veh, spec.date, spec.vrf);
   var odo=api.odoLowerThanLast(spec.odo, last);
@@ -6669,14 +6692,14 @@ function missingPhotosChip(entry){
     photoCount:(function(){ try{ return photoCountMany(photoOwnersForOpenVrf(entry)); }catch(e){ return photoCount(entry&&entry.vrf); } })()
   });
   if(!label) return null;
-  return auditChip(label, "crit");
+  return auditChip(label, "warn");
 }
 function vrfPrintGate(entry){
   var api=fuelAudit();
   if(!api) return {ok:true, message:""};
   return api.mayPrint(entry);
 }
-function showPrintBlocked(message){
+function showPrintBlocked(message, entry){
   var ex=document.getElementById("printBlockSheet"); if(ex) ex.remove();
   var m=el("div","modal"); m.id="printBlockSheet";
   var sheet=el("div","sheet"); sheet.style.maxWidth="480px";
@@ -6684,11 +6707,16 @@ function showPrintBlocked(message){
   b.appendChild(el("h3",null,"Not approved — cannot print"));
   b.appendChild(el("div","hint", message&&message!=="Not approved — cannot print"
     ? message
-    : "This VRF is not approved yet. Printing stays closed until the office approves it. An approved VRF can be reprinted, including its e-signature."));
-  var acts=el("div"); acts.style.cssText="display:flex;justify-content:flex-end;margin-top:var(--space-4)";
+    : "This VRF is not approved yet. Printing stays closed until the office approves it. An approved VRF can be reprinted, including its e-signature. Preview shows the form on screen and does not record a print."));
+  var acts=el("div"); acts.style.cssText="display:flex;gap:var(--space-2);justify-content:flex-end;margin-top:var(--space-4)";
+  var pv=el("button","btn","Preview");
+  pv.addEventListener("click",function(){
+    m.remove();
+    previewVrfPrint(entry);
+  });
   var cb=el("button","btn pri","Close");
   cb.addEventListener("click",function(){ m.remove(); });
-  acts.appendChild(cb); b.appendChild(acts);
+  acts.appendChild(pv); acts.appendChild(cb); b.appendChild(acts);
   sheet.appendChild(b); m.appendChild(sheet);
   m.addEventListener("click",function(e){ if(e.target===m) m.remove(); });
   document.body.appendChild(m);
@@ -6708,6 +6736,12 @@ function paintFuelAuditNote(host, d){
     var bits=(review.benchmark.lines||[]).map(function(ln){ return "<b>"+esc(ln.k)+".</b> "+esc(ln.v); }).join("<br>");
     box.innerHTML="<b>Unit benchmark</b>"+(review.benchmark.known?"":" — n/a")+"<br>"+bits;
     host.appendChild(box);
+  }
+  var gaugeTag=(review.badges||[]).filter(function(b){ return b==="No gauge photo"; });
+  if(gaugeTag.length){
+    var tags=el("div","row"); tags.style.marginBottom="var(--space-2)";
+    tags.appendChild(auditChip("No gauge photo", "warn"));
+    host.appendChild(tags);
   }
   if(review.notes.length){
     var wn=el("div","banner warn");
@@ -7231,6 +7265,30 @@ function vrfPrintWatermark(entry){
     return "FOR APPROVAL";
   return "APPROVED";
 }
+/* Screen preview only. The paper stamp stays FOR APPROVAL / APPROVED.
+   This label is not a print and does not mean the VRF was approved. */
+var VRF_PREVIEW_MARK="NOT APPROVED \u2013 PREVIEW ONLY";
+function vrfPreviewUnapproved(entry){
+  if(!entry) return true;
+  var st=String(entry.status||"").trim();
+  var key=st.toLowerCase();
+  var vrf=String(entry.vrf||"").trim();
+  if(!vrf||/not yet posted/i.test(vrf)||entry.unnumbered) return true;
+  if(!st||key==="requested"||key==="draft"||key==="pending"||key==="for approval"||
+     key==="sent for approval"||key==="rejected"||key==="disapproved") return true;
+  if(key==="cancelled"||key==="canceled"){
+    var wasApproved=!!(entry.approvedAt||entry.approvedBy||entry.posted||entry.src==="ledger");
+    if(!wasApproved&&(entry.held||entry.src==="reserve-hold")) return true;
+    return false;
+  }
+  if((entry.held||entry.src==="reserve-hold")&&key!=="open"&&key!=="closed"&&key!=="legacy"&&
+     key!=="approved"&&key!=="posted"&&key!=="not bought"&&key!=="duplicate") return true;
+  return vrfPrintWatermark(entry)==="FOR APPROVAL";
+}
+function vrfPreviewWatermark(entry){
+  if(vrfPreviewUnapproved(entry)) return VRF_PREVIEW_MARK;
+  return vrfPrintWatermark(entry);
+}
 function parseOdo(v){
   if(v==null||String(v).trim()==="") return null;
   var n=parseFloat(String(v).replace(/,/g,"").trim());
@@ -7440,10 +7498,26 @@ async function ensureApprovedEsig(){
   try{ await saveEsigs(); }catch(e){}
 }
 function vrfMarkNode(label){
-  var mk=el("div","vmark");
+  var preview=label===VRF_PREVIEW_MARK;
+  var mk=el("div","vmark"+(preview?" preview":""));
   mk.setAttribute("aria-hidden","true");
   mk.appendChild(el("span",null,label||"FOR APPROVAL"));
   return mk;
+}
+/* Keep the unapproved stamp on the form page, and the copy inside the
+   attachment page on that page. Print CSS pins one copy to every sheet. */
+function placeUnapprovedPreviewMarks(doc){
+  if(!doc||String(doc.className||"").indexOf("unapproved-preview")<0) return;
+  var mark=null, ph=null, kids=doc.children, i;
+  for(i=0;i<kids.length;i++){
+    var cn=String(kids[i].className||"");
+    if(!mark&&cn.indexOf("vmark")>=0&&cn.indexOf("preview")>=0) mark=kids[i];
+    if(!ph&&cn.indexOf("vph")>=0) ph=kids[i];
+  }
+  if(mark&&ph&&ph.offsetTop>40){
+    mark.style.height=Math.max(ph.offsetTop,200)+"px";
+    mark.style.bottom="auto";
+  }
 }
 function joStatusChip(j){
   var m={"Open":["mute","Open"],"In progress":["accent","In progress"],
@@ -9557,13 +9631,19 @@ function openReserve(no,asApprover){
         if(!held){ toast("VRF "+r.vrfNo+" is not on the log yet — refresh once."); return; }
         printVrfNo(held);
       });
+      var pvHold=el("button","btn","Preview");
+      pvHold.addEventListener("click",function(){
+        var held=heldVrfEntry(r);
+        if(!held){ toast("VRF "+r.vrfNo+" is not on the log yet — refresh once."); return; }
+        previewVrfPrint(held);
+      });
       var openHold=el("button","btn","Open VRF");
       openHold.addEventListener("click",function(){
         var held=heldVrfEntry(r);
         if(!held){ toast("VRF "+r.vrfNo+" is not on the log yet — refresh once."); return; }
         m.remove(); openVrf(held);
       });
-      topActs.appendChild(prHold); topActs.appendChild(openHold);
+      topActs.appendChild(pvHold); topActs.appendChild(prHold); topActs.appendChild(openHold);
     }
     if(supplierEditAllowed(r)){
       topActs.appendChild(supplierEditButton(r, function(){
@@ -10263,12 +10343,26 @@ function approveView(){
         d.appendChild(el("span","chip mute","from VRF maker"));
         if(photoCount(rsvOwner(r.no))||(r.vrfNo&&photoCount(String(r.vrfNo))))
           d.appendChild(el("span","chip ok","📎 photo"));
+        var noGauge=missingPhotosChip({vrf:r.vrfNo, reserve:r.no, rows:r.draftLines||[], fuelPhotos:r.fuelPhotos||null, veh:r.veh, work:r.work, kind:r.kind});
+        if(noGauge) d.appendChild(noGauge);
         return d; }},
       {h:"",get:function(r){
+        var wrap=el("div"); wrap.style.cssText="display:flex;gap:4px;flex-wrap:wrap";
+        if(!flagged&&r.vrfNo){
+          var pv=el("button","btn sm","Preview");
+          pv.addEventListener("click",function(ev){
+            ev.stopPropagation();
+            var held=heldVrfEntry(r);
+            if(!held){ toast("VRF "+r.vrfNo+" is not on the log yet — refresh once."); return; }
+            previewVrfPrint(held);
+          });
+          wrap.appendChild(pv);
+        }
         var bt=el("button","btn sm pri", r._approving?"Approving…":(flagged?"Close the notice":"Review"));
         bt.setAttribute("data-approve-rsv", String(r.no));
         bt.addEventListener("click",function(ev){ ev.stopPropagation(); openReserve(r.no,true); });
-        return bt; }}
+        wrap.appendChild(bt);
+        return wrap; }}
     ],list,{empty:flagged?"Nothing over budget.":"Nothing waiting for approval."});
   }
   g.appendChild(card("Over-budget notices",flg.length+" to close",atable(flg,true)));
@@ -11092,7 +11186,7 @@ function vrfLogVisible(list){
 function vrfLogView(){
   var w=el("div");
   w.appendChild(pageHead("VRF log","Newest first",
-    "Latest VRF is at the top. Type a VRF number to go straight to it. Print gives you the A4 form with its attachments; the Drive button opens the signed copy, or searches for it when no link has been saved yet."));
+    "Latest VRF is at the top. Type a VRF number to go straight to it. Preview shows the A4 form on screen and does not print or record a print. Print gives you the A4 form with its attachments; the Drive button opens the signed copy, or searches for it when no link has been saved yet."));
   var g=el("div","grid"); g.style.gap="var(--space-4)";
 
   var bar=el("div","f3");
@@ -11243,6 +11337,9 @@ function vrfLogView(){
         }
         var pb=el("button","btn sm","Print");
         pb.addEventListener("click",function(ev){ ev.stopPropagation(); printVrfNo(v); });
+        var pvb=el("button","btn sm","Preview");
+        pvb.addEventListener("click",function(ev){ ev.stopPropagation(); previewVrfPrint(v); });
+        row.appendChild(pvb);
         row.appendChild(pb);
         var link=vrfDrive(v);
         var db=el("a","btn sm",link?"Drive ↗":"Find in Drive ↗");
@@ -11664,10 +11761,13 @@ function partsView(){
    with the lines grouped under the jobs they belong to and the photos on their
    own page so finance gets the receipts with the form. Print → Save as PDF
    gives the file to put in Drive. */
-function buildVrfDoc(entry,photos){
+function buildVrfDoc(entry,photos,opts){
+  opts=opts||{};
   var v=vehicle(entry.veh)||{};
-  var mark=vrfPrintWatermark(entry);
-  var d=el("div","vrfdoc");
+  var preview=!!opts.preview;
+  var unapproved=preview&&vrfPreviewUnapproved(entry);
+  var mark=preview?vrfPreviewWatermark(entry):vrfPrintWatermark(entry);
+  var d=el("div","vrfdoc"+(unapproved?" unapproved-preview":""));
   d.appendChild(vrfMarkNode(mark));
   var hd=el("div","vhead");
   var l=el("div");
@@ -11723,18 +11823,19 @@ function buildVrfDoc(entry,photos){
     var apiPhotos=fuelAudit();
     var photoLine=el("div");
     photoLine.style.cssText="margin:0 0 8px;font-weight:700";
-    var showMissing=false, showNa=false;
+    var showNoGauge=false, showNa=false;
     if(photos==null && !(entry.fuelPhotos)){
       var counted=0;
       try{ counted=photoCountMany(photoOwnersForOpenVrf(entry)); }catch(e){ counted=photoCount(entry.vrf); }
-      if(!counted) showMissing=true;
+      if(!counted) showNoGauge=true;
       else showNa=true;
     }else if(entry.fuelPhotos && photos==null){
-      showMissing=!entry.fuelPhotos.gauge || !entry.fuelPhotos.meter;
+      showNoGauge=entry.fuelPhotos.gauge===false;
     }else if(apiPhotos){
-      showMissing=!!apiPhotos.fuelPhotoStatus(photos||[]).missing;
+      var pst=apiPhotos.fuelPhotoStatus(photos||[]);
+      showNoGauge=!!(pst.known&&pst.gauge===false);
     }else showNa=true;
-    if(showMissing){ photoLine.textContent="missing photos"; d.appendChild(photoLine); }
+    if(showNoGauge){ photoLine.textContent="No gauge photo"; d.appendChild(photoLine); }
     else if(showNa){
       photoLine.style.fontWeight="500"; photoLine.style.color="#555";
       photoLine.textContent="Fuel photos: n/a";
@@ -11791,7 +11892,7 @@ function buildVrfDoc(entry,photos){
 
   var sig=el("div","vsig");
   var preparedSrc=vrfPreparedSig(entry);
-  var approvedSrc=vrfApprovedSig(entry);
+  var approvedSrc=unapproved?"":vrfApprovedSig(entry);
   SIGNATORIES.forEach(function(x){
     var c=el("div");
     c.appendChild(el("div","cap",x.cap));
@@ -11875,9 +11976,12 @@ var VRFDOC_CSS = [
 ".vrfdoc{background:#fff;color:#111;padding:0;max-width:190mm;margin:0 auto;position:relative;overflow:hidden}",
 ".vmark{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;z-index:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}",
 ".vmark span{font-family:'Archivo Narrow',system-ui,sans-serif;font-weight:700;font-size:72px;letter-spacing:.12em;text-transform:uppercase;color:rgba(28,28,28,.16);transform:rotate(-32deg);white-space:nowrap;border:5px solid rgba(28,28,28,.16);padding:6px 22px;line-height:1}",
+".vmark.preview{z-index:4}",
+".vmark.preview span{font-size:54px;letter-spacing:.04em;line-height:1.05;text-align:center;color:rgba(156,49,49,.62);border:8px solid rgba(156,49,49,.66);padding:12px 18px;background:rgba(255,255,255,.35);max-width:148mm;white-space:normal}",
 ".vrfdoc>*:not(.vmark){position:relative;z-index:1}",
-"@media print{.vrfdoc>.vmark{position:fixed;inset:12mm}.vph .vmark{display:flex;position:absolute}}",
+"@media print{.vrfdoc>.vmark{position:fixed;inset:12mm}.vph .vmark{display:flex;position:absolute}.vmark.preview{display:flex!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}}",
 ".vph .vmark{display:none}",
+".vph .vmark.preview{display:flex}",
 ".vhead{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;border-bottom:2px solid #111;padding-bottom:8px}",
 ".vco{font-family:'Archivo Narrow',system-ui,sans-serif;font-weight:700;font-size:16px;line-height:1.2}",
 ".vaddr{font-size:10px;color:#444;margin-top:2px}",
@@ -12048,22 +12152,34 @@ function pullPrintPhoto(x, page, onDone){
 async function printVrf(entry,photos){
   var printGate=vrfPrintGate(entry);
   if(!printGate.ok){
-    showPrintBlocked(printGate.message||"Not approved — cannot print");
+    showPrintBlocked(printGate.message||"Not approved — cannot print", entry);
     return;
   }
   try{ markVrfPrinted(entry); }catch(e){}
+  return openVrfPrintSheet(entry, photos, false);
+}
+/* On-screen copy of the print layout. Does not print, set printedAt, seal or
+   issue the VRF, or run the printed-before-approval gate. */
+function previewVrfPrint(entry,photos){
+  if(!entry) return;
+  return openVrfPrintSheet(entry, photos, true);
+}
+async function openVrfPrintSheet(entry,photos,preview){
+  var source=entry;
   try{ entry=await entryWithPrintableSig(entry); }catch(e){}
   var supplied=Array.isArray(photos);
   var live=supplied?photos.slice():[];
   var listReady=supplied;
-  var ex=document.getElementById("pvSheet"); if(ex) ex.remove();
-  var m=el("div","modal"); m.id="pvSheet";
+  var sheetId=preview?"pvPreview":"pvSheet";
+  var ex=document.getElementById(sheetId); if(ex) ex.remove();
+  var m=el("div","modal"); m.id=sheetId;
   var sheet=el("div","sheet");
   sheet.style.cssText="max-width:900px;background:#fff";
-  var bar=el("div");
-  bar.style.cssText="display:flex;gap:var(--space-2);align-items:center;padding:var(--space-3) var(--space-4);border-bottom:1px solid var(--rule);position:sticky;top:0;background:var(--surface);z-index:2;flex-wrap:wrap";
-  bar.appendChild(el("strong",null,"VRF "+entry.vrf));
-  bar.appendChild(el("span","chip "+(vrfPrintWatermark(entry)==="APPROVED"?"ok":"warn"),vrfPrintWatermark(entry)));
+  var bar=el("div","noprint");
+  bar.style.cssText="display:flex;gap:var(--space-2);align-items:center;padding:var(--space-3) var(--space-4);border-bottom:1px solid var(--rule);position:sticky;top:0;background:var(--surface);z-index:6;flex-wrap:wrap";
+  var markLabel=preview?vrfPreviewWatermark(source):vrfPrintWatermark(source);
+  bar.appendChild(el("strong",null,(preview?"Preview · ":"")+"VRF "+(source&&source.vrf!=null?source.vrf:"")));
+  bar.appendChild(el("span","chip "+(markLabel==="APPROVED"?"ok":"warn"),markLabel));
   var hint=el("span","hint","Opening the form…");
   bar.appendChild(hint);
   var sp=el("div"); sp.style.flex="1"; bar.appendChild(sp);
@@ -12083,34 +12199,35 @@ async function printVrf(entry,photos){
       printb.disabled=true; saveb.disabled=true;
       printb.textContent="Print";
       saveb.textContent="Save printable file";
-      return;
-    }
-    if(!files.length){
+    }else if(!files.length){
       hint.textContent=links?(links+" linked file"+(links>1?"s":"")):"no attachments";
       printb.disabled=false; saveb.disabled=false;
       printb.textContent="Print";
       saveb.textContent="Save printable file";
-      return;
-    }
-    if(pending>0){
+    }else if(pending>0){
       hint.textContent=files.length+" attachment"+(files.length>1?"s":"")+" — "+ready+" of "+files.length+" pictures ready";
       printb.disabled=true; saveb.disabled=true;
       printb.textContent="Waiting for pictures ("+ready+"/"+files.length+")";
       saveb.textContent="Save printable file";
-      return;
-    }
-    if(failed>0){
+    }else if(failed>0){
       hint.textContent=ready+" of "+files.length+" pictures ready — "+failed+" failed. Retry that picture, or print with it marked missing.";
       printb.disabled=false; saveb.disabled=false;
       printb.textContent="Print — "+failed+" picture"+(failed>1?"s":"")+" missing";
       saveb.textContent="Save printable file";
-      return;
+    }else{
+      hint.textContent=files.length+" attachment"+(files.length>1?"s":"")+" included";
+      printb.disabled=false; saveb.disabled=false;
+      printb.textContent="Print";
+      saveb.textContent="Save printable file";
     }
-    hint.textContent=files.length+" attachment"+(files.length>1?"s":"")+" included";
-    printb.disabled=false; saveb.disabled=false;
-    printb.textContent="Print";
-    saveb.textContent="Save printable file";
+    if(preview){
+      printb.disabled=false;
+      printb.textContent="Print";
+      if(listReady&&!pending) hint.textContent=(hint.textContent?hint.textContent+" · ":"")+"On screen only. This does not print or record a print.";
+    }
   }
+
+  if(!preview) bar.appendChild(saveb);
 
   saveb.addEventListener("click",async function(){
     if(saveb.disabled) return;
@@ -12132,9 +12249,14 @@ async function printVrf(entry,photos){
     }
     syncBar();
   });
-  bar.appendChild(saveb);
 
   printb.addEventListener("click",async function(){
+    if(preview){
+      var shot=listReady?live.slice():undefined;
+      m.remove();
+      printVrf(source, shot);
+      return;
+    }
     if(printb.disabled) return;
     var host=document.getElementById("printArea");
     if(!host){ host=el("div"); host.id="printArea"; document.body.appendChild(host); }
@@ -12162,14 +12284,16 @@ async function printVrf(entry,photos){
   bar.appendChild(closeb);
   sheet.appendChild(bar);
 
-  var scrollBox=el("div");
+  var scrollBox=el("div","pv-scroll");
   scrollBox.style.cssText="background:#e9eaeb;padding:var(--space-4)";
   function show(list){
-    var next=buildVrfDoc(entry, list);
+    var next=buildVrfDoc(entry, list, preview?{preview:true}:null);
     next.style.boxShadow="0 2px 12px rgba(0,0,0,.18)";
     if(pageBox.node&&pageBox.node.parentNode) pageBox.node.replaceWith(next);
     else scrollBox.appendChild(next);
     pageBox.node=next;
+    placeUnapprovedPreviewMarks(next);
+    setTimeout(function(){ placeUnapprovedPreviewMarks(next); },0);
   }
   sheet.appendChild(scrollBox);
   show(live);
@@ -13637,6 +13761,11 @@ function openVrf(entry,tab){
     printVrf(entry);
   });
   tabs.appendChild(pr);
+  var prv=el("button","btn","Preview");
+  prv.addEventListener("click",function(){
+    previewVrfPrint(entry);
+  });
+  tabs.appendChild(prv);
   if(String(entry.status||"")==="Requested"||String(entry.status||"")==="Draft"){
     var voidV=el("button","btn","Void");
     voidV.addEventListener("click",function(){
@@ -14753,7 +14882,7 @@ function vrfView(){
   foot.appendChild(totalCell);
   foot.appendChild(autoHint);
   var sp=el("div"); sp.style.flex="1"; foot.appendChild(sp);
-  var pv=el("button","btn","Print preview");
+  var pv=el("button","btn","Preview");
   pv.addEventListener("click",function(){
     d.odo=oIn.value;
     var rows=d.lines.filter(function(l){ return l.cat; }).map(function(l){
@@ -14769,7 +14898,7 @@ function vrfView(){
         total:byW[k].reduce(function(a,r){return a+(r.total||0);},0)}; });
     var psigPrev=draftPreparedSig(d);
     var fuelPrevLive=fuelPrevNoteForNewVrf(d.veh, parseOdo(d.odo), d.date, d.lines||[]);
-    printVrf({vrf:"— not yet posted —",date:d.date,veh:d.veh,units:[d.veh],
+    previewVrfPrint({vrf:"— not yet posted —",date:d.date,veh:d.veh,units:[d.veh],
       rows:rows,scopes:scopes,multi:scopes.length>1,project:d.project,notes:d.purpose,
       requestedBy:d.requestedBy, preparedSig:psigPrev.data, preparedSigName:psigPrev.name,
       odo:parseOdo(d.odo), fuelPrevNote:fuelPrevLive,
@@ -17036,9 +17165,22 @@ function fuelAuditView(){
       photoCount:photoCount(v.vrf), photosKnown:photosKnown, driveUrl:vrfDrive(v),
       receiptUploaded:rsv?rsv.receiptUploaded:undefined, fuelPhotos:v.fuelPhotos||(rsv&&rsv.fuelPhotos)
     }, today);
+    row.noGauge=!!missingPhotosChip(v);
     if(row.outstanding) outstanding.push(row);
   });
   outstanding.sort(function(a,b){ return (b.agingDays||0)-(a.agingDays||0); });
+  var noGaugeList=[];
+  vrfIndex().forEach(function(v){
+    if(!entryIsFuel(v)||!missingPhotosChip(v)) return;
+    noGaugeList.push({vrf:v.vrf, veh:(v.units&&v.units[0])||v.veh||"—", date:v.date||""});
+  });
+  g.appendChild(card("No gauge photo", noGaugeList.length+" fuel VRF"+(noGaugeList.length===1?"":"s")+" — a warning, not a block on Send for approval",
+    table([
+      {h:"VRF",get:function(r){ return el("span","mono",r.vrf); }},
+      {h:"Unit",get:function(r){ return el("span","mono",r.veh); }},
+      {h:"Date",get:function(r){ return r.date||"—"; }},
+      {h:"",get:function(){ return el("span","chip warn","No gauge photo"); }}
+    ], noGaugeList, {empty:"No fuel VRF is flagged for a missing gauge photo."})));
   g.appendChild(card("Fuel liquidation outstanding","receipt, liquidated date, and age",
     table([
       {h:"VRF",get:function(r){ return el("span","mono",r.vrf); }},
@@ -17046,7 +17188,8 @@ function fuelAuditView(){
       {h:"Date",get:function(r){ return r.date||"n/a"; }},
       {h:"Receipt",get:function(r){ return r.receipt; }},
       {h:"Liquidated",get:function(r){ return r.liquidatedDate||"—"; }},
-      {h:"Aging",num:true,get:function(r){ return r.agingLabel==="n/a"?"n/a":r.agingLabel+" d"; }}
+      {h:"Aging",num:true,get:function(r){ return r.agingLabel==="n/a"?"n/a":r.agingLabel+" d"; }},
+      {h:"Gauge",get:function(r){ return r.noGauge?el("span","chip warn","No gauge photo"):"—"; }}
     ], outstanding, {empty:"No outstanding fuel VRF."})));
   g.appendChild(reserveReconcileCard());
   w.appendChild(g);
@@ -17445,7 +17588,7 @@ render();
 var bootP=boot();
 try{
   if(typeof location!=="undefined" && /^(localhost|127\.0\.0\.1)$/.test(location.hostname)){
-    window.__mpS=S; window.__mpRender=render; window.__mpPrintVrf=printVrf;
+    window.__mpS=S; window.__mpRender=render; window.__mpPrintVrf=printVrf; window.__mpPreviewVrf=previewVrfPrint;
     window.__mpPrintSample=printSigSample;
     var sigdemo="";
     try{ sigdemo=new URLSearchParams(location.search).get("sigdemo")||""; }catch(e){ sigdemo=""; }

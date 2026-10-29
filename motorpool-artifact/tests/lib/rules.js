@@ -1333,6 +1333,54 @@
     return "APPROVED";
   }
 
+  /* Screen preview only. Paper stamps stay FOR APPROVAL / APPROVED. */
+  var VRF_PREVIEW_MARK = "NOT APPROVED \u2013 PREVIEW ONLY";
+  function vrfPreviewUnapproved(entry) {
+    if (!entry) return true;
+    var st = String(entry.status || "").trim();
+    var key = st.toLowerCase();
+    var vrf = String(entry.vrf || "").trim();
+    if (!vrf || /not yet posted/i.test(vrf) || entry.unnumbered) return true;
+    if (
+      !st ||
+      key === "requested" ||
+      key === "draft" ||
+      key === "pending" ||
+      key === "for approval" ||
+      key === "sent for approval" ||
+      key === "rejected" ||
+      key === "disapproved"
+    ) {
+      return true;
+    }
+    if (key === "cancelled" || key === "canceled") {
+      var wasApproved = !!(entry.approvedAt || entry.approvedBy || entry.posted || entry.src === "ledger");
+      if (!wasApproved && (entry.held || entry.src === "reserve-hold")) return true;
+      return false;
+    }
+    if (
+      (entry.held || entry.src === "reserve-hold") &&
+      key !== "open" &&
+      key !== "closed" &&
+      key !== "legacy" &&
+      key !== "approved" &&
+      key !== "posted" &&
+      key !== "not bought" &&
+      key !== "duplicate"
+    ) {
+      return true;
+    }
+    return vrfPrintWatermark(entry) === "FOR APPROVAL";
+  }
+  function vrfPreviewWatermark(entry) {
+    if (vrfPreviewUnapproved(entry)) return VRF_PREVIEW_MARK;
+    return vrfPrintWatermark(entry);
+  }
+  function vrfPreviewApprovedSig(entry, reserve, libraryData) {
+    if (vrfPreviewUnapproved(entry)) return "";
+    return vrfApprovedSig(entry, reserve, libraryData);
+  }
+
   function parseOdo(v) {
     if (v == null || String(v).trim() === "") return null;
     var n = parseFloat(String(v).replace(/,/g, "").trim());
@@ -2705,6 +2753,10 @@
     applyVrfHeaderPatch: applyVrfHeaderPatch,
     holdIsSealed: holdIsSealed,
     vrfPrintWatermark: vrfPrintWatermark,
+    VRF_PREVIEW_MARK: VRF_PREVIEW_MARK,
+    vrfPreviewUnapproved: vrfPreviewUnapproved,
+    vrfPreviewWatermark: vrfPreviewWatermark,
+    vrfPreviewApprovedSig: vrfPreviewApprovedSig,
     parseOdo: parseOdo,
     reserveMeter: reserveMeter,
     reserveOwnsVrfNo: reserveOwnsVrfNo,
