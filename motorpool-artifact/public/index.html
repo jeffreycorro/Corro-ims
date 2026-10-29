@@ -416,7 +416,7 @@ var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
    This label is inside the page function. The shim reads window.BUILD when it
    sends a save. Without that copy every save goes out with an empty build and
    the server answers "Reload the page". */
-var BUILD = "2026-10-29 a";
+var BUILD = "2026-10-29 b";
 try { window.BUILD = BUILD; } catch (e) {}
 var DAY = 86400000, MO = 30.44;
 
@@ -6145,9 +6145,11 @@ function fuelRecordLitres(rec){
    before this request (same previous-fill litres as the last-fill line).
    Hour meters: total litres / total hours, so the figure stays in liters per
    hour beside that last-fill line and beside the sheet's L/hr floor.
-   SV-12 and BT-03: litres taken on fills in those 90 days / 90, in liters per day.
+   SV-12, BT-03, and any unit whose recent fills have no increasing odometer
+   show a fill cycle instead: average days between fills, average litres,
+   litres per day, the last two fills, and days since the last fill.
    Intervals with a negative, placeholder, unreliable, or huge meter gap are
-   left out of the average. Fewer than 3 kept fills is "not enough data". */
+   left out of a meter average. Fewer than 3 kept fills is "not enough data". */
 function fuelRollingNote(code, currentOdo, opts){
   opts=opts||{};
   code=String(code||"").trim();
@@ -6186,6 +6188,88 @@ function fuelRollingNote(code, currentOdo, opts){
     if(da-db) return da-db;
     return fuelVrfNum(a.vrf)-fuelVrfNum(b.vrf);
   });
+  function dayPhrase(n){
+    if(n==null||!isFinite(n)) return "n/a";
+    var s=(Math.round(n*10)/10).toFixed(1).replace(/\.0$/,"");
+    return s+" day"+(s==="1"?"":"s");
+  }
+  function meterReadings(list){
+    var real=0, increased=false, prev=null, i, f, n, d, inWin;
+    for(i=0;i<list.length;i++){
+      f=list[i];
+      d=parseDate(f.date);
+      inWin=startMs==null||(d&&d.getTime()>=startMs);
+      n=f.odo;
+      if(n==null||!isFinite(n)||isPlaceholderOdo(n)) continue;
+      if(inWin){
+        real+=1;
+        if(prev!=null&&n>prev) increased=true;
+      }
+      prev=n;
+    }
+    return {real:real, increased:increased};
+  }
+  var inWindow=fills.filter(function(f){
+    var d=parseDate(f.date);
+    return startMs==null||(d&&d.getTime()>=startMs);
+  });
+  var readings=meterReadings(fills);
+  /* SV-12 and BT-03 are broken-meter units. Any other unit whose fills in
+     this window have no real odometer, or only a stuck reading, is described
+     the same way: a fill cycle, not km per liter. One real reading still
+     uses the meter line, which then says the figure is n/a. */
+  if(measure==="L/day"||(inWindow.length>0&&(readings.real===0||(readings.real>=2&&!readings.increased)))){
+    var cycleFills=inWindow.filter(function(f){ return f.litres>0; });
+    var gaps=[], gi, gdays;
+    for(gi=1;gi<cycleFills.length;gi++){
+      gdays=(parseDate(cycleFills[gi].date).getTime()-parseDate(cycleFills[gi-1].date).getTime())/DAY;
+      if(gdays>0) gaps.push(gdays);
+    }
+    var avgDays=null, avgLitres=null, litersPerDay=null;
+    if(cycleFills.length>=3){
+      if(gaps.length){
+        var gsum=0;
+        gaps.forEach(function(g){ gsum+=g; });
+        avgDays=gsum/gaps.length;
+      }
+      var lsum=0;
+      cycleFills.forEach(function(f){ lsum+=f.litres; });
+      avgLitres=lsum/cycleFills.length;
+      if(avgDays>0) litersPerDay=avgLitres/avgDays;
+    }
+    var withLitres=fills.filter(function(f){ return f.litres>0; });
+    var lastTwo=withLitres.slice(-2).reverse();
+    var daysSince=null;
+    var lastFill=withLitres.length?withLitres[withLitres.length-1]:null;
+    if(before&&lastFill&&parseDate(lastFill.date)){
+      daysSince=(before.getTime()-parseDate(lastFill.date).getTime())/DAY;
+      if(!(daysSince>=0)) daysSince=null;
+    }
+    var sooner=cycleFills.length>=3&&avgDays!=null&&daysSince!=null&&daysSince<avgDays;
+    var cycleLines=[];
+    if(cycleFills.length<3){
+      cycleLines.push("3-month cycle: not enough data ("+cycleFills.length+" fill"+(cycleFills.length===1?"":"s")+" in 90 days; need 3)");
+    }else{
+      cycleLines.push("3-month cycle: every "+dayPhrase(avgDays));
+      cycleLines.push("Average fill: "+(avgLitres==null?"n/a":avgLitres.toFixed(2)+" L"));
+      cycleLines.push("Liters per day: "+(litersPerDay==null?"n/a":litersPerDay.toFixed(2)+" liters per day"));
+    }
+    cycleLines.push("Last fills:");
+    if(!lastTwo.length) cycleLines.push("No earlier fuel fill");
+    else lastTwo.forEach(function(f){
+      var no=String(f.vrf||"").trim();
+      cycleLines.push((f.date||"—")+" · VRF "+(no||"—")+" · "+(f.litres>0?f.litres.toFixed(2):"—")+" L");
+    });
+    cycleLines.push("Days since last fill: "+dayPhrase(daysSince));
+    if(sooner) cycleLines.push("Red flag: Sooner than usual cycle");
+    return {text:cycleLines.join("\n"),measure:"cycle",fillsUsed:cycleFills.length,avg:litersPerDay,
+      median:null,currentRate:null,currentReason:daysSince==null?"none":"ok",
+      floorFlag:false,fallbackFlag:false,consecutive:false,consecutiveFills:[],
+      usedVrfs:cycleFills.map(function(f){ return String(f.vrf||""); }),
+      cycle:true,avgDays:avgDays,avgLitres:avgLitres,litersPerDay:litersPerDay,
+      daysSince:daysSince,sooner:sooner,
+      lastFills:lastTwo.map(function(f){ return {date:f.date,vrf:String(f.vrf||""),litres:f.litres}; })};
+  }
   var used=[];
   var i, start, end, endD, delta, litres, rate, why, days;
   for(i=1;i<fills.length;i++){

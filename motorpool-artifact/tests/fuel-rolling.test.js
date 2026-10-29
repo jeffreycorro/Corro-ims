@@ -95,8 +95,8 @@ function loadRows(ctx, rows) {
 }
 
 describe("fuel VRF 90-day consumption", () => {
-  it("is build 2026-10-29 a and keeps the sheet floors in a TODO map", () => {
-    assert.match(html, /var BUILD = "2026-10-29 a"/);
+  it("is build 2026-10-29 b and keeps the sheet floors in a TODO map", () => {
+    assert.match(html, /var BUILD = "2026-10-29 b"/);
     assert.match(html, /TODO: this page cannot read that sheet at runtime/);
     assert.match(html, /1rF-ee4RpinJ6EZCxvZ15aWKFEFDmhSNAI-zKy7DBnUg/);
     assert.match(html, /Unit Fuel Reference/);
@@ -265,36 +265,83 @@ describe("fuel VRF 90-day consumption", () => {
     assert.match(cancelled.text, /not enough data/);
   });
 
-  it("shows SV-12 and BT-03 as liters per day over 90 days, not km per liter", () => {
+  it("shows a fill cycle for SV-12, BT-03, and any unit with no usable odometer", () => {
     const ctx = loadFuel();
     loadRows(ctx, [
-      ledgerFuel({ veh: "SV-12", date: "2026-07-01", vrf: "4900", odo: null, liters: 40 }),
-      ledgerFuel({ veh: "SV-12", date: "2026-08-01", vrf: "5100", odo: 76260, liters: 50 }),
-      ledgerFuel({ veh: "SV-12", date: "2026-09-01", vrf: "5200", odo: null, liters: 60 }),
-      ledgerFuel({ veh: "SV-12", date: "2026-10-01", vrf: "5300", odo: 1, liters: 40 }),
+      ledgerFuel({ veh: "SV-12", date: "2026-08-01", vrf: "5100", odo: null, liters: 40 }),
+      ledgerFuel({ veh: "SV-12", date: "2026-08-21", vrf: "5200", odo: 76260, liters: 50 }),
+      ledgerFuel({ veh: "SV-12", date: "2026-09-10", vrf: "5300", odo: null, liters: 60 }),
+      ledgerFuel({ veh: "SV-12", date: "2026-10-05", vrf: "5400", odo: null, liters: 30 }),
     ]);
-    const note = ctx.fuelRollingNote("SV-12", 76260, { beforeDate: "2026-10-20", litres: 20 });
-    assert.equal(note.measure, "L/day");
-    assert.equal(note.fillsUsed, 3);
-    assert.ok(Math.abs(note.avg - 150 / 90) < 1e-9);
-    assert.ok(Math.abs(note.currentRate - 20 / 19) < 1e-9);
-    assert.equal(note.floorFlag, false);
-    assert.match(note.text, /3-month consumption: 1\.67 liters per day over 90 days/);
-    assert.match(note.text, /Median per fill: 1\.61 liters per day/);
-    assert.match(note.text, /Fills used: 3/);
-    assert.match(note.text, /This request: 1\.05 liters per day/);
-    assert.doesNotMatch(note.text, /km per liter/);
-    assert.doesNotMatch(note.text, /placeholder/);
+    const soon = ctx.fuelRollingNote("SV-12", null, { beforeDate: "2026-10-20" });
+    assert.equal(soon.measure, "cycle");
+    assert.equal(soon.cycle, true);
+    assert.equal(soon.fillsUsed, 4);
+    assert.ok(Math.abs(soon.avgDays - (20 + 20 + 25) / 3) < 1e-9);
+    assert.ok(Math.abs(soon.avgLitres - 45) < 1e-9);
+    assert.ok(Math.abs(soon.litersPerDay - 45 / ((20 + 20 + 25) / 3)) < 1e-9);
+    assert.equal(soon.daysSince, 15);
+    assert.equal(soon.sooner, true);
+    assert.equal(soon.floorFlag, false);
+    assert.equal(soon.consecutive, false);
+    assert.match(soon.text, /3-month cycle: every 21\.7 days/);
+    assert.match(soon.text, /Average fill: 45\.00 L/);
+    assert.match(soon.text, /Liters per day: 2\.08 liters per day/);
+    assert.match(soon.text, /2026-10-05 · VRF 5400 · 30\.00 L\n2026-09-10 · VRF 5300 · 60\.00 L/);
+    assert.match(soon.text, /Days since last fill: 15 days/);
+    assert.match(soon.text, /Red flag: Sooner than usual cycle/);
+    assert.doesNotMatch(soon.text, /km per liter/);
+    assert.doesNotMatch(soon.text, /2 consecutive low fills/);
 
-    loadRows(ctx, [ledgerFuel({ veh: "BT-03", date: "2026-10-10", vrf: "7000", odo: null, liters: 20 })]);
-    const boom = ctx.fuelRollingNote("BT-03", null, { beforeDate: "2026-10-20", litres: 120 });
-    assert.equal(boom.measure, "L/day");
-    assert.equal(boom.fillsUsed, 0);
-    assert.equal(boom.floorFlag, true);
-    assert.match(boom.text, /not enough data \(0 fills in 90 days; need 3\)/);
-    assert.match(boom.text, /This request: 12\.00 liters per day/);
-    assert.match(boom.text, /Red flag: above the 10 liters per day floor/);
+    const onCycle = ctx.fuelRollingNote("SV-12", null, { beforeDate: "2026-10-27" });
+    assert.equal(onCycle.daysSince, 22);
+    assert.equal(onCycle.sooner, false);
+    assert.doesNotMatch(onCycle.text, /Sooner than usual cycle/);
+
+    loadRows(ctx, [
+      ledgerFuel({ veh: "BT-03", date: "2026-10-01", vrf: "7001", odo: null, liters: 20 }),
+      ledgerFuel({ veh: "BT-03", date: "2026-10-10", vrf: "7002", odo: null, liters: 25 }),
+    ]);
+    const boom = ctx.fuelRollingNote("BT-03", null, { beforeDate: "2026-10-20" });
+    assert.equal(boom.measure, "cycle");
+    assert.equal(boom.fillsUsed, 2);
+    assert.equal(boom.sooner, false);
+    assert.match(boom.text, /3-month cycle: not enough data \(2 fills in 90 days; need 3\)/);
+    assert.match(boom.text, /2026-10-10 · VRF 7002 · 25\.00 L/);
+    assert.match(boom.text, /2026-10-01 · VRF 7001 · 20\.00 L/);
+    assert.match(boom.text, /Days since last fill: 10 days/);
+    assert.doesNotMatch(boom.text, /Red flag/);
     assert.doesNotMatch(boom.text, /km per liter/);
+
+    loadRows(ctx, [
+      ledgerFuel({ veh: "DT-04", date: "2026-09-01", vrf: "1", odo: null, liters: 40 }),
+      ledgerFuel({ veh: "DT-04", date: "2026-09-11", vrf: "2", odo: null, liters: 40 }),
+      ledgerFuel({ veh: "DT-04", date: "2026-09-21", vrf: "3", odo: 76260, liters: 40 }),
+      ledgerFuel({ veh: "DT-04", date: "2026-10-01", vrf: "4", odo: null, liters: 40 }),
+    ]);
+    const stuck = ctx.fuelRollingNote("DT-04", null, { beforeDate: "2026-10-11" });
+    assert.equal(stuck.measure, "cycle");
+    assert.equal(stuck.daysSince, 10);
+    assert.equal(stuck.sooner, false);
+    assert.match(stuck.text, /3-month cycle: every 10 days/);
+    assert.match(stuck.text, /Average fill: 40\.00 L/);
+    assert.match(stuck.text, /Liters per day: 4\.00 liters per day/);
+    assert.doesNotMatch(stuck.text, /km per liter/);
+    const early = ctx.fuelRollingNote("DT-04", null, { beforeDate: "2026-10-10" });
+    assert.equal(early.daysSince, 9);
+    assert.equal(early.sooner, true);
+    assert.match(early.text, /Red flag: Sooner than usual cycle/);
+
+    loadRows(ctx, [
+      ledgerFuel({ veh: "MC-02", date: "2026-09-01", vrf: "11", odo: 5000, liters: 10 }),
+      ledgerFuel({ veh: "MC-02", date: "2026-09-15", vrf: "12", odo: 5000, liters: 12 }),
+      ledgerFuel({ veh: "MC-02", date: "2026-10-01", vrf: "13", odo: 5000, liters: 8 }),
+    ]);
+    const flat = ctx.fuelRollingNote("MC-02", 5000, { beforeDate: "2026-10-20" });
+    assert.equal(flat.measure, "cycle");
+    assert.match(flat.text, /3-month cycle: every 15 days/);
+    assert.match(flat.text, /Average fill: 10\.00 L/);
+    assert.doesNotMatch(flat.text, /km per liter/);
   });
 
   it("rates an hour meter in liters per hour and flags above its floor", () => {
@@ -401,7 +448,7 @@ describe("fuel VRF 90-day consumption", () => {
     assert.doesNotMatch(onlyCurrent.text, /2 consecutive low fills/);
   });
 
-  it("flags two consecutive hour-meter and broken-odometer fills on the bad side of the floor", () => {
+  it("flags two consecutive hour-meter fills on the bad side of the floor", () => {
     const ctx = loadFuel();
     loadRows(ctx, [
       ledgerFuel({ veh: "BH-05", date: "2026-09-01", vrf: "5300", odo: 100, liters: 80 }),
@@ -420,26 +467,7 @@ describe("fuel VRF 90-day consumption", () => {
     assert.equal(fine.consecutive, false);
     assert.equal(fine.floorFlag, false);
     assert.doesNotMatch(fine.text, /Red flag/);
-
-    loadRows(ctx, [
-      ledgerFuel({ veh: "SV-12", date: "2026-10-16", vrf: "5300", odo: null, liters: 20 }),
-      ledgerFuel({ veh: "SV-12", date: "2026-10-18", vrf: "5400", odo: null, liters: 40 }),
-    ]);
-    const days = ctx.fuelRollingNote("SV-12", null, {
-      beforeDate: "2026-10-20",
-      litres: 30,
-      currentVrf: "5500",
-    });
-    assert.equal(days.fillsUsed, 1);
-    assert.equal(days.consecutive, true);
-    assert.match(days.text, /Red flag: above the 13 liters per day floor/);
-    assert.match(days.text, /Red flag: 2 consecutive low fills\nVRF 5400 · 20\.00 liters per day\nVRF 5500 · 15\.00 liters per day/);
-    assert.doesNotMatch(days.text, /km per liter/);
-
-    const oneHigh = ctx.fuelRollingNote("SV-12", null, { beforeDate: "2026-10-20", litres: 10 });
-    assert.equal(oneHigh.consecutive, false);
-    assert.equal(oneHigh.floorFlag, false);
-    assert.doesNotMatch(oneHigh.text, /2 consecutive low fills/);
+    assert.doesNotMatch(fine.text, /3-month cycle/);
   });
 
   it("does not store the 90-day note or change the last-fill sentence", () => {
