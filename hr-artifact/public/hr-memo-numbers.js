@@ -3,16 +3,20 @@
  * Loaded by claude-shim.js (browser) and required by the db function (Node).
  *
  * Filed memoranda are numbered C.M. {year} - {seq} with a two-digit sequence
- * (C.M. 2026 - 15). The series resets each calendar year. The next number is
- * one past the highest sequence already stored for that year on a memo, on
- * the CM document register (including a signed or Drive-filed row and a draft
- * register row), or on a filed form. Gaps are not reused.
+ * (C.M. 2026 - 15). The series resets each calendar year.
  *
- * New memo shows that number. HR can type a different one. A number already
- * held by another memo, register row, or filed form is refused. The memo this
- * record already has is kept. Two saves in one browser cannot take the same
- * sequence; the database unique index is the backstop when two browsers save
- * together.
+ * Rule (2026-10-31): the next number is the LOWEST sequence for that year
+ * that no saved memo record holds (draft, issued, signed or read off Drive,
+ * i.e. a row in the memos collection). Document-register rows, filed forms,
+ * the series counter and abandoned draws do not consume numbers — a memo
+ * that drew 16, 22, 23, 25, 28 and 29 before it was saved leaves those
+ * numbers free for the next memo.
+ *
+ * An existing memo keeps its number when it is edited, re-saved or gets its
+ * signed scan; it never draws a new one and no new register row is written
+ * for it. A number held by a different memo is refused and the warning names
+ * the next free number. Two saves in one browser cannot take the same
+ * sequence; the database unique index on memos is the backstop.
  */
 (function (root, factory) {
   var api = factory();
@@ -142,85 +146,95 @@
     return inflight[p.key] !== str(id || "");
   }
 
-  function yearMapHigh(map, year) {
-    if (!map || typeof map !== "object") return 0;
-    var n = map[year] != null ? map[year] : map[String(year)];
-    return n | 0;
-  }
-
-  function counterFloor(S, year) {
-    var y = year | 0;
-    var mx = 0;
-    var ser = S && S.series && S.series[CM];
-    if (ser) {
-      mx = Math.max(mx, yearMapHigh(ser.lastByYear, y));
-      if ((ser.year | 0) === y && (ser.lastSeq | 0) > mx) mx = ser.lastSeq | 0;
-      if ((ser.year | 0) === y && (ser.seq | 0) > mx) mx = ser.seq | 0;
-    }
-    var counters = S && S.counters && S.counters[CM];
-    if (counters) {
-      mx = Math.max(mx, yearMapHigh(counters.lastByYear, y));
-      if ((counters.year | 0) === y && (counters.lastSeq | 0) > mx) mx = counters.lastSeq | 0;
-      if ((counters.year | 0) === y && (counters.seq | 0) > mx) mx = counters.seq | 0;
-    }
-    return mx;
-  }
-
-  function consider(mx, year, rec) {
-    if (!rec) return mx;
-    var y = year | 0;
-    if (str(rec.seriesKey).toUpperCase() === CM && (rec.year | 0) === y && (rec.seq | 0) > mx) {
-      mx = rec.seq | 0;
-    }
+  function memoSeq(rec, year) {
+    if (!rec) return 0;
     var p = parseCm(rec.no);
-    if (p && p.year === y && p.seq > mx) mx = p.seq;
-    return mx;
+    if (p) return p.year === (year | 0) ? p.seq : 0;
+    return 0;
   }
 
-  function highSeq(S, year) {
+  function usedSeqs(S, year, exceptId) {
     var y = year | 0;
-    var mx = counterFloor(S, y);
+    var used = {};
+    var except = str(exceptId);
     values(S && S.memos).forEach(function (m) {
-      mx = consider(mx, y, m);
-    });
-    values(S && S.docreg).forEach(function (d) {
-      if (!isCmDoc(d)) return;
-      mx = consider(mx, y, d);
-    });
-    values(S && S.filed).forEach(function (f) {
-      mx = consider(mx, y, f);
+      if (except && str(m.id) === except) return;
+      var n = memoSeq(m, y);
+      if (n) used[n] = true;
     });
     Object.keys(inflight).forEach(function (k) {
       var parts = k.split("|");
-      if (parts[0] === CM && (parts[1] | 0) === y && (parts[2] | 0) > mx) mx = parts[2] | 0;
+      if (parts[0] !== CM || (parts[1] | 0) !== y) return;
+      if (except && inflight[k] === except) return;
+      used[parts[2] | 0] = true;
+    });
+    return used;
+  }
+
+  /* Highest sequence on a saved memo (for display/diagnostics only). */
+  function highSeq(S, year) {
+    var mx = 0;
+    var used = usedSeqs(S, year);
+    Object.keys(used).forEach(function (k) {
+      if ((k | 0) > mx) mx = k | 0;
     });
     return mx;
   }
 
-  function seqTaken(S, year, seq) {
-    var y = year | 0;
+  function seqTaken(S, year, seq, exceptId) {
     var n = seq | 0;
     if (!n) return false;
-    if (Object.prototype.hasOwnProperty.call(inflight, "CM|" + y + "|" + n)) return true;
-    function hit(rec) {
-      if (!rec) return false;
-      if (str(rec.seriesKey).toUpperCase() === CM && (rec.year | 0) === y && (rec.seq | 0) === n) return true;
-      var p = parseCm(rec.no);
-      return !!(p && p.year === y && p.seq === n);
-    }
-    if (values(S && S.memos).some(hit)) return true;
-    if (values(S && S.docreg).some(function (d) { return isCmDoc(d) && hit(d); })) return true;
-    if (values(S && S.filed).some(hit)) return true;
-    return false;
+    return !!usedSeqs(S, year, exceptId)[n];
   }
 
-  function nextNo(S, year) {
+  function nextNo(S, year, exceptId) {
     var y = (year | 0) || new Date().getFullYear();
-    var seq = highSeq(S, y) + 1;
-    if (seq < 1) seq = 1;
-    var guard = 0;
-    while (seqTaken(S, y, seq) && guard++ < 500) seq += 1;
+    var used = usedSeqs(S, y, exceptId);
+    var seq = 1;
+    while (used[seq] && seq < 1000000) seq += 1;
     return { year: y, seq: seq, no: formatCm(y, seq, S) };
+  }
+
+  /* Memos and CM register rows whose numbers look wrong: a memo past the
+     first gap, two memos on one number, a memo with several register rows,
+     register rows whose number no memo holds. Read-only. */
+  function suspects(S, year) {
+    var y = (year | 0) || new Date().getFullYear();
+    var out = [];
+    var memos = values(S && S.memos);
+    var bySeq = {};
+    memos.forEach(function (m) {
+      var n = memoSeq(m, y);
+      if (!n) return;
+      (bySeq[n] = bySeq[n] || []).push(m);
+    });
+    var gap = 1;
+    while (bySeq[gap]) gap += 1;
+    Object.keys(bySeq).forEach(function (k) {
+      var n = k | 0;
+      if (bySeq[n].length > 1) {
+        bySeq[n].forEach(function (m) {
+          out.push({ kind: "memo", id: m.id, no: m.no, reason: "number shared by " + bySeq[n].length + " memos" });
+        });
+      }
+      if (n > gap) {
+        bySeq[n].forEach(function (m) {
+          out.push({ kind: "memo", id: m.id, no: m.no, date: m.date || "", subject: labelOf(m),
+            reason: "past the gap — " + formatCm(y, gap, S) + " is unused by any memo" });
+        });
+      }
+    });
+    values(S && S.docreg).forEach(function (d) {
+      if (!isCmDoc(d)) return;
+      var p = parseCm(d.no);
+      if (!p || p.year !== y) return;
+      var memo = d.refId && S.memos ? S.memos[d.refId] : null;
+      var reason = "";
+      if (!memo) reason = "register row for a memo that is not saved";
+      else if (!sameNo(memo.no, d.no)) reason = "leftover draw — memo " + d.refId + " is " + (memo.no || "unnumbered");
+      if (reason) out.push({ kind: "docreg", id: d.id, no: d.no, refId: d.refId || "", status: d.status || "", reason: reason });
+    });
+    return out;
   }
 
   function labelOf(rec) {
@@ -235,26 +249,6 @@
       if (!m || !m.no) return;
       if (except && str(m.id) === except) return;
       if (sameNo(m.no, no)) hit = m;
-    });
-    return hit;
-  }
-
-  function findReg(S, no, except) {
-    except = except || {};
-    var hit = null;
-    values(S && S.docreg).forEach(function (d) {
-      if (!d || !d.no || !isCmDoc(d)) return;
-      if (except.docId && str(d.id) === str(except.docId)) return;
-      if (except.refId && d.refId && str(d.refId) === str(except.refId)) return;
-      if (sameNo(d.no, no)) hit = d;
-    });
-    return hit;
-  }
-
-  function findFiled(S, no) {
-    var hit = null;
-    values(S && S.filed).forEach(function (f) {
-      if (f && f.no && sameNo(f.no, no)) hit = f;
     });
     return hit;
   }
@@ -297,22 +291,6 @@
           holder: memo,
         };
       }
-      var reg = findReg(S, no, { refId: id });
-      if (reg) {
-        return {
-          code: DUP_CODE,
-          message: conflictMessage(no, "document register", labelOf(reg), S),
-          holder: reg,
-        };
-      }
-      var filed = findFiled(S, no);
-      if (filed) {
-        return {
-          code: DUP_CODE,
-          message: conflictMessage(no, "filed forms", labelOf(filed), S),
-          holder: filed,
-        };
-      }
       return null;
     }
     if (coll === "docreg" && isCmDoc(data)) {
@@ -324,22 +302,6 @@
           code: DUP_CODE,
           message: conflictMessage(no, "memo register", labelOf(otherMemo), S),
           holder: otherMemo,
-        };
-      }
-      var otherReg = findReg(S, no, { docId: id, refId: data.refId });
-      if (otherReg) {
-        return {
-          code: DUP_CODE,
-          message: conflictMessage(no, "document register", labelOf(otherReg), S),
-          holder: otherReg,
-        };
-      }
-      var filedReg = findFiled(S, no);
-      if (filedReg) {
-        return {
-          code: DUP_CODE,
-          message: conflictMessage(no, "filed forms", labelOf(filedReg), S),
-          holder: filedReg,
         };
       }
     }
@@ -417,7 +379,7 @@
     });
   }
 
-  function syncDocreg(host, memo) {
+  function syncDocreg(host, memo, prev) {
     if (!host || typeof host.put !== "function" || !memo || !memo.id || !str(memo.no).trim()) {
       return Promise.resolve(null);
     }
@@ -429,6 +391,9 @@
       if (!isCmDoc(d)) return;
       if (sameNo(d.no, memo.no)) match = d;
     });
+    /* An existing memo keeps its number: refresh its matching register row,
+       never write a new register number for it. */
+    if (!match && prev && str(prev.no).trim()) return Promise.resolve(null);
     var row = match
       ? Object.assign({}, match)
       : {
@@ -470,6 +435,8 @@
     sameNo: sameNo,
     isCmDoc: isCmDoc,
     highSeq: highSeq,
+    usedSeqs: usedSeqs,
+    suspects: suspects,
     nextNo: nextNo,
     conflictForWrite: conflictForWrite,
     conflictMessage: conflictMessage,

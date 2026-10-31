@@ -75,43 +75,60 @@ describe("company memorandum numbers", () => {
     assert.equal(numbers.parseCm("Implementation of Revised Work Schedule"), null);
   });
 
-  it("offers C.M. 2026 - 30 when 29 is the highest stored number, and resets the next year", () => {
+  it("offers the lowest number no saved memo holds (16), ignoring leftover register rows and filed forms", () => {
     const S = liveStore();
     assert.equal(numbers.highSeq(S, 2026), 29);
-    assert.equal(numbers.nextNo(S, 2026).no, "C.M. 2026 - 30");
+    assert.equal(numbers.nextNo(S, 2026).no, "C.M. 2026 - 16");
     assert.equal(numbers.nextNo(S, 2027).no, "C.M. 2027 - 01");
-    S.filed.f = { id: "f", no: "C.M. 2026 - 40" };
-    assert.equal(numbers.nextNo(S, 2026).no, "C.M. 2026 - 41");
+    S.filed.f = { id: "f", no: "C.M. 2026 - 16" };
+    S.series.CM.lastByYear = { 2026: 40 };
+    assert.equal(numbers.nextNo(S, 2026).no, "C.M. 2026 - 16");
+    S.memos.m16 = memo("m16", "C.M. 2026 - 16", { status: "Draft" });
+    assert.equal(numbers.nextNo(S, 2026).no, "C.M. 2026 - 17");
+    S.memos.m17 = memo("m17", "C.M. 2026 - 17");
+    for (let n = 18; n <= 21; n += 1) S.memos["m" + n] = memo("m" + n, numbers.formatCm(2026, n, null));
+    assert.equal(numbers.nextNo(S, 2026).no, "C.M. 2026 - 23");
+    assert.equal(numbers.nextNo(S, 2026, "m22").no, "C.M. 2026 - 22");
   });
 
-  it("refuses a number already on a memo, a register row, or a filed form, and allows a resave", () => {
+  it("an in-flight save holds its number for the next draw", () => {
+    const S = liveStore();
+    numbers.hold("C.M. 2026 - 16", "m-a");
+    try {
+      assert.equal(numbers.nextNo(S, 2026).no, "C.M. 2026 - 17");
+      assert.equal(numbers.nextNo(S, 2026, "m-a").no, "C.M. 2026 - 16");
+    } finally {
+      numbers.release("C.M. 2026 - 16", "m-a");
+    }
+  });
+
+  it("refuses only a number held by a different memo, naming the next free number", () => {
     const S = liveStore();
     const taken = numbers.conflictForWrite("memos", "m-new", { no: "C.M. 2026-15" }, S);
     assert.equal(taken.code, "duplicate_memo_number");
     assert.match(taken.message, /C\.M\. 2026 - 15/);
     assert.match(taken.message, /memo register/);
-    assert.match(taken.message, /C\.M\. 2026 - 30/);
+    assert.match(taken.message, /next free number is C\.M\. 2026 - 16/);
 
-    const burned = numbers.conflictForWrite("memos", "m-new", { no: "C.M. 2026 - 16" }, S);
-    assert.match(burned.message, /document register/);
-
-    const resave = numbers.conflictForWrite("memos", "m22", { no: "C.M. 2026 - 22", subject: "October 31" }, S);
-    assert.equal(resave, null);
-
-    const back = numbers.conflictForWrite("memos", "m22", { no: "C.M. 2026 - 16" }, S);
-    assert.equal(back, null);
-
+    assert.equal(numbers.conflictForWrite("memos", "m-new", { no: "C.M. 2026 - 16" }, S), null);
+    assert.equal(numbers.conflictForWrite("memos", "m-new", { no: "C.M. 2026 - 23" }, S), null);
     S.filed.scan = { id: "scan", no: "C.M. 2026 - 31" };
-    const onPaper = numbers.conflictForWrite("memos", "m-new", { no: "C.M. 2026 - 31" }, S);
-    assert.match(onPaper.message, /filed forms/);
+    assert.equal(numbers.conflictForWrite("memos", "m-new", { no: "C.M. 2026 - 31" }, S), null);
 
-    const regTouch = numbers.conflictForWrite(
-      "docreg",
-      "d22a",
-      { no: "C.M. 2026 - 22", seriesKey: "CM", refId: "m22" },
-      S
-    );
-    assert.equal(regTouch, null);
+    assert.equal(numbers.conflictForWrite("memos", "m22", { no: "C.M. 2026 - 22" }, S), null);
+    assert.match(numbers.conflictForWrite("memos", "m22", { no: "C.M. 2026 - 29" }, S).message, /November 2/);
+
+    assert.equal(numbers.conflictForWrite("docreg", "d22a", { no: "C.M. 2026 - 22", seriesKey: "CM", refId: "m22" }, S), null);
+    const regOther = numbers.conflictForWrite("docreg", "dx", { no: "C.M. 2026 - 22", seriesKey: "CM", refId: "m-new" }, S);
+    assert.equal(regOther.code, "duplicate_memo_number");
+  });
+
+  it("lists memos and register rows whose numbers look wrong", () => {
+    const list = numbers.suspects(liveStore(), 2026);
+    const memoIds = list.filter((x) => x.kind === "memo").map((x) => x.id).sort();
+    assert.deepEqual(memoIds, ["m22", "m29"]);
+    const regIds = list.filter((x) => x.kind === "docreg").map((x) => x.id).sort();
+    assert.deepEqual(regIds, ["d16", "d23", "d25", "d28"]);
   });
 
   it("keeps the number an issued memo already has when the save omits it", () => {
@@ -160,6 +177,7 @@ describe("company memorandum numbers", () => {
       MutationObserver: class { observe() {} },
       console,
       setTimeout,
+      allocate() { throw new Error("series counter must not be drawn for CM"); },
       uid(prefix) { return prefix + "_new"; },
       toast(msg, kind) { w.lastToast = { msg: msg, kind: kind }; },
     };
@@ -182,13 +200,36 @@ describe("company memorandum numbers", () => {
     assert.equal(w.lastToast.kind, "err");
 
     calls.length = 0;
-    const ok = await w.put("memos", "m-new", { id: "m-new", no: "C.M. 2026 - 30", status: "Draft", subject: "All Souls" });
+    const ok = await w.put("memos", "m-new", { id: "m-new", no: "C.M. 2026 - 16", status: "Draft", subject: "All Souls" });
     assert.equal(ok, true);
     assert.equal(calls[0].coll, "memos");
-    assert.equal(calls[0].no, "C.M. 2026 - 30");
+    assert.equal(calls[0].no, "C.M. 2026 - 16");
     assert.equal(calls[1].coll, "docreg");
-    assert.equal(calls[1].no, "C.M. 2026 - 30");
+    assert.equal(calls[1].no, "C.M. 2026 - 16");
     assert.equal(calls[1].refId, "m-new");
+
+    calls.length = 0;
+    const edit = await w.put("memos", "m-new", { id: "m-new", no: "C.M. 2026 - 16", status: "Draft", subject: "All Souls (edited)", signedLink: "https://drive/x" });
+    assert.equal(edit, true);
+    assert.equal(calls[0].no, "C.M. 2026 - 16");
+    assert.equal(calls.filter((c) => c.coll === "docreg" && c.no !== "C.M. 2026 - 16").length, 0);
+    assert.equal(calls.filter((c) => c.coll === "docreg" && c.id !== "d_new").length, 0);
+
+    calls.length = 0;
+    w.S.memos.m29.status = "Draft";
+    const old = await w.put("memos", "m29", { id: "m29", no: "C.M. 2026 - 29", status: "Draft", subject: "November 2 again" });
+    assert.equal(old, true);
+    assert.equal(calls.filter((c) => c.coll === "docreg").every((c) => c.id === "d29"), true);
+
+    calls.length = 0;
+    w.S.docreg = {};
+    await w.put("memos", "m29", { id: "m29", no: "C.M. 2026 - 29", status: "Draft", subject: "no row" });
+    assert.equal(calls.filter((c) => c.coll === "docreg").length, 0);
+
+    const drawn = await w.allocate("CM", { refId: "m-brand" });
+    assert.equal(drawn.no, "C.M. 2026 - 17");
+    assert.equal(calls.filter((c) => c.coll === "docreg").length, 0);
+    assert.equal((await w.allocate("CM", { refId: "m29" })).no, "C.M. 2026 - 29");
   });
 
   it("shows the next number on New memo and leaves a filed memo number locked", () => {

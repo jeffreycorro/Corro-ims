@@ -9,6 +9,9 @@
 -- "C.M. 2026 - 15", "C.M. 2026-15" and "CM 2026 - 015" are one number.
 -- A blank number is not indexed. Existing memo rows are not rewritten.
 --
+-- Rule since 2026-10-31: register rows never block a number; only memos
+-- hold one, so this index (memos only) is the whole backstop.
+--
 -- Safe to run on 2026-10-29: every stored memo number is unique under
 -- this key (highest is C.M. 2026 - 29). The document register is not
 -- indexed here — two draft register rows already share C.M. 2026 - 22

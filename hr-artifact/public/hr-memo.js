@@ -408,7 +408,7 @@
       function (out) {
         numbers.release(obj.no, id);
         if (out === false) return out;
-        return Promise.resolve(numbers.syncDocreg(window, obj)).then(function () {
+        return Promise.resolve(numbers.syncDocreg(window, obj, prev)).then(function () {
           return out;
         });
       },
@@ -501,6 +501,17 @@
             return Promise.resolve(null);
           }
           return Promise.resolve({ no: canon, reused: false, typed: true });
+        }
+        /* No register row is written here: the row is written once the memo
+           itself saves (syncDocreg), so an abandoned or failed save leaves no
+           number behind. Lowest number no saved memo holds. */
+        if (numbers && window.S) {
+          var draw = function () {
+            var nx = numbers.nextNo(window.S, new Date().getFullYear(), meta && meta.refId);
+            return { no: nx.no, year: nx.year, seq: nx.seq, reused: false };
+          };
+          if (typeof numbers.refresh === "function") return numbers.refresh(window).then(draw);
+          return Promise.resolve(draw());
         }
       }
       return orig.apply(this, arguments);
