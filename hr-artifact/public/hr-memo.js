@@ -8,6 +8,9 @@
  *
  * Issued / Drive-imported paper memos also lock number, date and effective
  * date in the editor — the remaining action is upload the signed copy.
+ *
+ * A new memorandum shows the next C.M. number (hr-memo-numbers.js). Saving
+ * keeps that number. A duplicate is refused. Issued / Drive identity stays locked.
  */
 (function () {
   "use strict";
@@ -385,19 +388,90 @@
     return true;
   }
 
+  function numbersApi() {
+    return window.hrMemoNumbers || null;
+  }
+
+  function finishMemoPut(orig, coll, id, obj, prev) {
+    var numbers = numbersApi();
+    var track = !!(numbers && coll === "memos" && obj && obj.no && !shouldLockIdentity(prev));
+    if (track) numbers.hold(obj.no, id);
+    var result;
+    try {
+      result = orig.call(window, coll, id, obj);
+    } catch (err) {
+      if (track) numbers.release(obj.no, id);
+      throw err;
+    }
+    if (!track) return result;
+    return Promise.resolve(result).then(
+      function (out) {
+        numbers.release(obj.no, id);
+        if (out === false) return out;
+        return Promise.resolve(numbers.syncDocreg(window, obj, prev)).then(function () {
+          return out;
+        });
+      },
+      function (err) {
+        numbers.release(obj.no, id);
+        throw err;
+      }
+    );
+  }
+
+  function rejectMemoNumber(conflict) {
+    if (window.toast) window.toast(conflict.message, "err");
+    var numbers = numbersApi();
+    if (numbers && typeof numbers.advanceSuggestion === "function") {
+      numbers.advanceSuggestion(window);
+    }
+    return Promise.resolve(false);
+  }
+
   function wrapPut() {
     var orig = window.put;
     if (typeof orig !== "function" || orig._hrMemo) return false;
     window.put = function (coll, id, obj) {
-      if (coll === "memos" && obj) {
-        var prev = window.S && window.S.memos && window.S.memos[id];
-        obj = preserveOnSave(prev, obj);
-        arguments[2] = obj;
+      if (coll !== "memos" || !obj) return orig.apply(this, arguments);
+      var numbers = numbersApi();
+      var S = window.S;
+      var prev = S && S.memos ? S.memos[id] : null;
+      function commit(livePrev) {
+        obj = preserveOnSave(livePrev, obj);
+        if (numbers && !shouldLockIdentity(livePrev)) {
+          var prepared = numbers.applyTypedNumber(S, id, obj, livePrev);
+          obj = prepared.memo;
+          if (prepared.conflict) return rejectMemoNumber(prepared.conflict);
+          if (numbers.heldByOther(obj.no, id)) {
+            return rejectMemoNumber(
+              numbers.conflictForWrite("memos", id, obj, S) || {
+                message:
+                  obj.no +
+                  " is already being saved on another memorandum. Wait a moment and save again.",
+              }
+            );
+          }
+        }
+        return finishMemoPut(orig, coll, id, obj, livePrev);
       }
-      return orig.apply(this, arguments);
+      if (numbers && S && S.db && !shouldLockIdentity(prev)) {
+        return numbers.refresh(window).then(function () {
+          var livePrev = S.memos ? S.memos[id] : prev;
+          return commit(livePrev);
+        });
+      }
+      return commit(prev);
     };
     window.put._hrMemo = true;
     return true;
+  }
+
+  function typedMemoNo() {
+    var input = document.getElementById && document.getElementById("m-no");
+    if (!input || input.disabled) return "";
+    var typed = String(input.value || "").trim();
+    if (!typed || typed === "assigned when you save") return "";
+    return typed;
   }
 
   function wrapAllocate() {
@@ -410,10 +484,68 @@
           return Promise.resolve({ no: existing.no, reused: true });
         }
       }
+      if (String(key) === "CM") {
+        var numbers = numbersApi();
+        var typed = typedMemoNo();
+        if (numbers && typed) {
+          var canon = numbers.canonical(typed, window.S);
+          var conflict = numbers.conflictForWrite(
+            "memos",
+            meta && meta.refId,
+            { no: canon },
+            window.S
+          );
+          if (conflict) {
+            if (window.toast) window.toast(conflict.message, "err");
+            if (typeof numbers.advanceSuggestion === "function") numbers.advanceSuggestion(window);
+            return Promise.resolve(null);
+          }
+          return Promise.resolve({ no: canon, reused: false, typed: true });
+        }
+        /* No register row is written here: the row is written once the memo
+           itself saves (syncDocreg), so an abandoned or failed save leaves no
+           number behind. Lowest number no saved memo holds. */
+        if (numbers && window.S) {
+          var draw = function () {
+            var nx = numbers.nextNo(window.S, new Date().getFullYear(), meta && meta.refId);
+            return { no: nx.no, year: nx.year, seq: nx.seq, reused: false };
+          };
+          if (typeof numbers.refresh === "function") return numbers.refresh(window).then(draw);
+          return Promise.resolve(draw());
+        }
+      }
       return orig.apply(this, arguments);
     };
     window.allocate._hrMemo = true;
     return true;
+  }
+
+  function bindSuggestionInput(input) {
+    if (!input || input._hrMemoNo || typeof input.addEventListener !== "function") return;
+    input._hrMemoNo = true;
+    input.addEventListener("input", function () {
+      if (input.setAttribute) input.setAttribute("data-suggest", "0");
+    });
+  }
+
+  function offerNextNumber() {
+    var input = document.getElementById && document.getElementById("m-no");
+    if (!input || input.disabled) return;
+    bindSuggestionInput(input);
+    var suggested = input.getAttribute && input.getAttribute("data-suggest") === "1";
+    var blank = !String(input.value || "").trim() || input.value === "assigned when you save";
+    if (!suggested && !blank) return;
+    if (input.setAttribute && blank) input.setAttribute("data-suggest", "1");
+    var numbers = numbersApi();
+    function paint() {
+      if (!input || input.disabled) return;
+      if (input.getAttribute && input.getAttribute("data-suggest") !== "1") return;
+      var no = "";
+      if (numbers && window.S) no = numbers.nextNo(window.S, new Date().getFullYear()).no;
+      else if (typeof window.peekNo === "function") no = window.peekNo("CM");
+      if (no && input.value !== no) input.value = no;
+    }
+    paint();
   }
 
   function wrapMemoDraw() {
@@ -426,6 +558,18 @@
       var ret = orig.apply(this, arguments);
       return Promise.resolve(ret).then(function (v) {
         enhance(document);
+        offerNextNumber();
+        var numbers = numbersApi();
+        var input = document.getElementById && document.getElementById("m-no");
+        if (
+          numbers &&
+          input &&
+          !input.disabled &&
+          input.getAttribute &&
+          input.getAttribute("data-suggest") === "1"
+        ) {
+          numbers.advanceSuggestion(window);
+        }
         return v;
       });
     };
@@ -449,6 +593,7 @@
     var obs = new MutationObserver(function () {
       patchGlobals();
       enhance(document);
+      offerNextNumber();
     });
     var start = function () {
       if (document.body) obs.observe(document.body, { childList: true, subtree: true });
