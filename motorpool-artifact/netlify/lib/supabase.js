@@ -2,6 +2,7 @@
 
 const { ledgerMonthFromParts } = require("../../public/vrf-report");
 const { normalizeLedgerRows, normalizeReserve } = require("./project-name");
+const saveGuard = require("../../public/vrf-save-guard");
 
 function supabaseUrl() {
   return (
@@ -71,6 +72,12 @@ async function rest({ method, path, query, body, prefer }) {
     );
     err.statusCode = res.status >= 400 && res.status < 600 ? res.status : 502;
     err.details = json;
+    if (/vrf_changed_elsewhere/.test(err.message) || (json && json.code === "P0409")) {
+      /* Raised by the motorpool_records_stale_guard trigger. */
+      err.statusCode = 409;
+      err.code = "vrf_changed_elsewhere";
+      err.message = String(err.message).replace(/^vrf_changed_elsewhere:\s*/, "This VRF was approved/changed elsewhere. ");
+    }
     throw err;
   }
   return json;
@@ -326,6 +333,16 @@ function comparableData(data) {
   ["preparedSig", "checkedSig", "approvedSig"].forEach((key) => {
     if (typeof copy[key] === "string" && copy[key].length > 80) delete copy[key];
   });
+  /* The record revision is bookkeeping, not content. */
+  delete copy.rev;
+  if (Array.isArray(copy.rows)) {
+    copy.rows = copy.rows.map((row) => {
+      if (!row || typeof row !== "object" || row.rev === undefined) return row;
+      const r = Object.assign({}, row);
+      delete r.rev;
+      return r;
+    });
+  }
   return copy;
 }
 
@@ -475,13 +492,48 @@ function planCollectionWrites(collection, id, data, existingRecs) {
   return writes;
 }
 
-async function writeRecord(row, exists) {
+/**
+ * Stale-save guard (2026-11-01). Refuses a write that would put an
+ * approved/Open/Closed/Cancelled VRF back to Requested or draft, or that was
+ * based on an older revision than the stored record. Throws a 409
+ * vrf_changed_elsewhere error the browser shows as "reload".
+ */
+function guardRecordWrite(existing, next, mode) {
+  if (!existing || !next) return;
+  let ref = null;
+  if (next.kind === "reserve") ref = saveGuard.checkReserveWrite(existing.data, next.data);
+  else if (next.kind === "ledger") ref = saveGuard.checkLedgerWrite(existing.data, next.data && next.data.rows, mode);
+  if (ref) throw saveGuard.toError(ref);
+}
+
+function storedRev(existing) {
+  if (!existing || !existing.data) return 0;
+  const d = existing.data;
+  let rev = saveGuard.revOf(d.rev);
+  (Array.isArray(d.rows) ? d.rows : []).forEach((r) => {
+    rev = Math.max(rev, saveGuard.revOf(r && r.rev));
+  });
+  return rev;
+}
+
+/** Stamp the next revision on a record (and on each ledger line). */
+function bumpRev(next, existing) {
+  const rev = storedRev(existing) + 1;
+  const data = Object.assign({}, next.data, { rev });
+  if (next.kind === "ledger" && Array.isArray(data.rows)) {
+    data.rows = data.rows.map((r) => (r && typeof r === "object" ? Object.assign({}, r, { rev }) : r));
+  }
+  return Object.assign({}, next, { data });
+}
+
+async function writeRecord(row, exists, expectUpdatedAt) {
   if (exists) {
-    await rest({
+    const cas = expectUpdatedAt ? `&updated_at=eq.${encodeURIComponent(expectUpdatedAt)}` : "";
+    const out = await rest({
       method: "PATCH",
       path: "/rest/v1/motorpool_records",
-      query: `id=eq.${encodeURIComponent(row.id)}`,
-      prefer: "return=minimal",
+      query: `id=eq.${encodeURIComponent(row.id)}${cas}`,
+      prefer: cas ? "return=representation" : "return=minimal",
       body: {
         data: row.data,
         live: row.live,
@@ -491,6 +543,15 @@ async function writeRecord(row, exists) {
         month: row.month,
       },
     });
+    if (cas && Array.isArray(out) && out.length === 0) {
+      /* Someone else wrote this record between our read and this write. */
+      throw saveGuard.toError({
+        code: saveGuard.CODE,
+        reason: "updated_at",
+        vrf: row.vrf_no || "",
+        message: saveGuard.message(row.vrf_no || "", ""),
+      });
+    }
     return;
   }
   await rest({
@@ -516,8 +577,10 @@ async function upsertReserveRecord(row, year) {
       vrfNo: next.vrf_no,
     };
   }
-  await writeRecord(next, !!existing);
-  return { wrote: true, id: next.id, data: next.data, reserveNo: next.reserve_no, vrfNo: next.vrf_no };
+  guardRecordWrite(existing, next);
+  const stamped = existing ? bumpRev(next, existing) : next;
+  await writeRecord(stamped, !!existing, existing && existing.updated_at);
+  return { wrote: true, id: stamped.id, data: stamped.data, reserveNo: stamped.reserve_no, vrfNo: stamped.vrf_no };
 }
 
 async function upsertLedgerRecord(vrf, month, rows, reserveNo) {
@@ -547,8 +610,9 @@ async function upsertBlobRows(collection, id, data) {
   const writes = planCollectionWrites(collection, id, data, existing);
   for (let i = 0; i < writes.length; i++) {
     const row = writes[i];
-    const exists = existing.some((rec) => rec && rec.id === row.id);
-    await writeRecord(row, exists);
+    const prev = existing.find((rec) => rec && rec.id === row.id) || null;
+    guardRecordWrite(prev, row);
+    await writeRecord(prev ? bumpRev(row, prev) : row, !!prev, prev && prev.updated_at);
   }
 }
 
@@ -715,9 +779,11 @@ async function saveLedgerVrf(spec) {
   if (ledgerUnchanged(existing, next)) {
     return { ok: true, kind: "ledger", vrf, store: "records", wrote: false };
   }
-  await writeRecord(next, !!existing);
+  guardRecordWrite(existing, Object.assign({}, next, { data: Object.assign({}, next.data, { rows: incoming }) }), mode);
+  const stamped = existing ? bumpRev(next, existing) : next;
+  await writeRecord(stamped, !!existing, existing && existing.updated_at);
   if (spec && spec.ensureIndex) await ensureLedgerMonthIndexed(month);
-  return { ok: true, kind: "ledger", vrf, store: "records", wrote: true };
+  return { ok: true, kind: "ledger", vrf, store: "records", wrote: true, rev: stamped.data.rev || 0 };
 }
 
 async function ensureLedgerMonthIndexed(month) {
@@ -1083,6 +1149,8 @@ async function getProfile(userId, accessToken) {
 
 module.exports = {
   acquireLock,
+  bumpRev,
+  guardRecordWrite,
   anonKey,
   approveReserveFilter,
   approveVrfRecord,
