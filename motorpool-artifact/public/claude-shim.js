@@ -503,6 +503,9 @@
       photoMeta: function (owner) {
         return dbCall("photoMeta", { owner: String(owner || "") });
       },
+      financeLiq: function (vrf, refs) {
+        return dbCall("financeLiq", { vrf: String(vrf || ""), refs: Array.isArray(refs) ? refs : [] });
+      },
       listIds: function (name) {
         return dbCall("listIds", { collection: String(name || "") }).then(function (row) {
           return (row && row.ids) || [];
