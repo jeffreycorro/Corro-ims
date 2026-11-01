@@ -23,6 +23,7 @@ const { applyClientMerge } = require("../lib/doc-merge");
 const { normalizeIssueSpec, normalizeProjectWrite } = require("../lib/project-name");
 const { gateWrite, mergeAppConfig, screenClientSet } = require("../lib/vrf-issue");
 const { formatManilaIso } = require("../lib/manila");
+const { financeLiquidationForVrf } = require("../lib/finance-link");
 
 function snapshotFromRow(id, row) {
   if (!row) {
@@ -208,6 +209,12 @@ exports.handler = async (event) => {
       if (!owner) return json(400, { error: "owner is required" });
       const docs = await listPhotoMeta(owner);
       return json(200, { owner, docs, ...tz });
+    }
+
+    if (op === "financeLiq") {
+      /* Read-only: Finance liquidation receipts linked to one VRF. */
+      const result = await financeLiquidationForVrf(body.vrf, body.refs);
+      return json(200, { ...result, ...tz });
     }
 
     if (op === "list") {

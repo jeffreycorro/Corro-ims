@@ -1,4 +1,4 @@
-<!doctype html><html><head><script src="/claude-shim.js"></script><link rel="manifest" href="/manifest.json"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/favicon.svg"><link rel="stylesheet" href="/pwa.css"><script src="/pwa.js"></script><script src="/vrf-report.js"></script><script src="/fuel-audit.js"></script><script src="/stock-fifo.js"></script><script src="/voucher-no.js"></script><script src="/vrf-save-guard.js"></script><script src="/vrf-cancel.js"></script><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1"><title>Corcondev Motorpool</title>
+<!doctype html><html><head><script src="/claude-shim.js"></script><link rel="manifest" href="/manifest.json"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/favicon.svg"><link rel="stylesheet" href="/pwa.css"><script src="/pwa.js"></script><script src="/vrf-report.js"></script><script src="/fuel-audit.js"></script><script src="/stock-fifo.js"></script><script src="/voucher-no.js"></script><script src="/vrf-save-guard.js"></script><script src="/vrf-cancel.js"></script><script src="/vrf-liquidation.js"></script><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1"><title>Corcondev Motorpool</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600&family=Archivo+Narrow:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
@@ -8971,6 +8971,7 @@ var YARD=[
       return S.reserves.filter(function(r){
         return r.status==="Requested"||r.status==="Approved"||r.status==="Flagged"; }).length; }},
   {id:"vrf",    ic:"✎", label:"New VRF"},
+  {id:"unliq",  ic:"🧾", label:"Unliquidated"},
   {id:"fuel",   ic:"⛽", label:"Fuel"},
   {id:"down",   ic:"⚠", label:"Workshop", count:function(){
       return openBreakdowns().length+openJOs().length; }},
@@ -9320,6 +9321,263 @@ function vrfReportView(){
   return w;
 }
 
+/* ============================ VRF liquidation proof ============================
+   Extends the Liquidate tab. Receipts / OR (or the withdrawal slip for fuel
+   drawn from the reserve) are stored with the same photo store as Job Order
+   proof, under owner LIQ-<vrf>. The liquidated amount, date, who, and Finance
+   references live in ops/liq-<vrf> (kind "vrf-liq"). Status is derived by
+   window.VrfLiquidation (public/vrf-liquidation.js). */
+var VL = (typeof window!=="undefined" && window.VrfLiquidation) || null;
+S.liqRecords = S.liqRecords || null;
+async function loadLiqRecords(force){
+  if(S.liqRecords && !force) return S.liqRecords;
+  var out={};
+  var loc=lsGet("liqRecords",{});
+  Object.keys(loc||{}).forEach(function(k){ out[k]=loc[k]; });
+  if(S.db && typeof S.db.collection==="function"){
+    try{
+      var snap=await S.db.collection("ops").where("kind","==","vrf-liq").get();
+      (snap&&snap.docs||[]).forEach(function(d){
+        var x=d.data&&d.data(); if(x&&x.vrf) out[String(x.vrf)]=x;
+      });
+    }catch(e){}
+  }
+  S.liqRecords=out;
+  return out;
+}
+function liqRecordFor(no){ return (S.liqRecords||{})[String(no)]||null; }
+function liqProofCount(no){ return (S.photoCounts||{})[VL.liqOwner(no)]||0; }
+/* The entry plus the reserve figures the status needs. */
+function liqEntryOf(entry){
+  var rv=null;
+  try{ rv=reserveForVrf(entry); }catch(e){ rv=null; }
+  var x=Object.assign({}, entry);
+  if(rv){
+    if(rv.approvedBudget!=null||rv.budget!=null) x.approvedBudget=(rv.approvedBudget!=null?rv.approvedBudget:rv.budget);
+    if(rv.actual!=null) x.actual=rv.actual;
+    x.kind=rv.kind||x.kind; x.liquidatedAt=rv.liquidatedAt||"";
+    if(!x.approvedAt) x.approvedAt=rv.approvedAt||"";
+    if(!x.requestedBy) x.requestedBy=rv.requestedBy||"";
+  }
+  return x;
+}
+function liqStatusOf(entry){
+  return VL.liquidationOf(liqEntryOf(entry), liqRecordFor(entry.vrf), liqProofCount(entry.vrf));
+}
+function liqChip(L){
+  var cls={"Liquidated":"ok","Partially liquidated":"warn","Unliquidated":"crit","Excluded":"mute"}[L.status]||"mute";
+  return el("span","chip "+cls,L.status==="Excluded"?"Not counted":(L.status+(L.legacy?" (paper)":"")));
+}
+async function saveLiqRecord(no, input){
+  var prev=liqRecordFor(no)||{};
+  var rec=VL.buildLiqRecord(prev, Object.assign({vrf:String(no)}, input));
+  rec.kind="vrf-liq";
+  var all=lsGet("liqRecords",{}); all[String(no)]=rec; lsSet("liqRecords",all);
+  if(S.db) await S.db.doc("ops/"+VL.liqDocId(no)).set(rec);
+  S.liqRecords=S.liqRecords||{}; S.liqRecords[String(no)]=rec;
+  return rec;
+}
+function prepareLiqFile(file){
+  if(VL.isPdfFile(file)){
+    var big=VL.pdfTooLarge(file);
+    if(big) return Promise.reject(new Error(big));
+    return readFileDataURL(file).then(function(data){
+      if(!data) throw new Error("could not read the file");
+      return {kind:"pdf",data:data,w:null,h:null,bytes:(file&&file.size)||0,mime:"application/pdf"};
+    });
+  }
+  if(mediaKindOf(file)!=="photo") return Promise.reject(new Error("Choose a photo or a PDF of the receipt."));
+  return prepareLocalMedia(file);
+}
+function liqThumb(x,alt){
+  if(x && (x.kind==="pdf" || /^data:application\/pdf/i.test(String(x.data||"")))){
+    var a=el("a","btn sm","Open PDF"); a.href=x.data; a.target="_blank"; a.rel="noopener noreferrer";
+    a.download=(alt||"receipt")+".pdf";
+    return a;
+  }
+  return mediaThumb(x,alt);
+}
+async function liqProofPanel(entry, body, reopen){
+  await loadLiqRecords();
+  var no=String(entry.vrf), owner=VL.liqOwner(no);
+  var L=liqStatusOf(entry);
+  var kind=L.proofKind;
+  var wrap=el("div","card"); wrap.style.marginTop="var(--space-4)";
+  var hd=el("div","hd"); hd.appendChild(el("h3",null,"Receipts & proof")); hd.appendChild(liqChip(L));
+  wrap.appendChild(hd);
+  var bd=el("div","bd"); wrap.appendChild(bd);
+  if(L.status==="Excluded"){
+    bd.appendChild(el("p","hint","This VRF is "+(entry.status||"cancelled")+", so it is left out of liquidation."));
+    body.appendChild(wrap); return;
+  }
+  bd.appendChild(el("p","hint","Approved "+peso(L.approved)+" · liquidated "+peso(L.liquidated)+
+    (L.by?" by "+L.by:"")+(L.date?" on "+L.date:"")+" · outstanding "+peso(L.outstanding)+
+    (L.needs?" · needs: "+L.needs:"")+
+    (L.source==="liquidate-button"?" · amount taken from the Liquidate button":"")));
+  bd.appendChild(el("p","hint","Proof for this VRF is the "+kind+". Every VRF is liquidated by the end of the month it was approved in."));
+  var gal=el("div","pgrid"); gal.appendChild(el("div","hint","Loading…")); bd.appendChild(gal);
+  listPhotos(owner).then(function(items){
+    gal.innerHTML="";
+    var media=(items||[]).filter(function(x){ return x&&x.data; });
+    if(!media.length) gal.appendChild(el("div","hint","No "+kind+" uploaded yet."));
+    media.forEach(function(x){
+      var c=el("div","pcell"); c.appendChild(liqThumb(x,"VRF-"+no));
+      var cp=el("div","cap"); cp.appendChild(el("div",null,x.caption||kind));
+      cp.appendChild(el("div","hint",(x.by||"—")+" · "+(x.at||"")));
+      var rm=el("button","btn sm","Remove"); rm.style.marginTop="4px";
+      rm.addEventListener("click",async function(){ rm.disabled=true; await removePhoto(owner,x.id); reopen(); });
+      cp.appendChild(rm); c.appendChild(cp); gal.appendChild(c);
+    });
+  });
+  function fld(l,n,h){ var x=el("div","field"); x.appendChild(el("label",null,l)); x.appendChild(n);
+    if(h) x.appendChild(el("div","hint",h)); return x; }
+  var rec=liqRecordFor(no)||{};
+  var f1=el("div","f3"); f1.style.marginTop="var(--space-3)";
+  var fi=el("input"); fi.type="file"; fi.multiple=true; fi.accept=VL.PROOF_ACCEPT;
+  var cap=el("input"); cap.placeholder=kind==="withdrawal slip"?"e.g. withdrawal slip #123":"e.g. OR 004512 — Kapitan";
+  var who=el("input"); who.placeholder="your name"; who.value=rec.by||L.by||"";
+  f1.appendChild(fld("Upload "+kind,fi,"Photo or PDF from this phone or computer."));
+  f1.appendChild(fld("Caption",cap)); f1.appendChild(fld("Liquidated by",who));
+  bd.appendChild(f1);
+  var up=el("button","btn","Upload proof"); bd.appendChild(up);
+  up.addEventListener("click",async function(){
+    var files=Array.prototype.slice.call(fi.files||[]);
+    if(!files.length){ toast("Choose the "+kind+" photo or PDF."); return; }
+    if(!who.value.trim()){ toast("Put your name in Liquidated by first."); return; }
+    up.disabled=true; up.textContent="Uploading…";
+    var ok=0, fail="";
+    for(var i=0;i<files.length;i++){
+      try{
+        var med=await prepareLiqFile(files[i]);
+        await addPhoto(owner,{caption:cap.value.trim()||files[i].name,by:who.value.trim(),
+          data:med.data,w:med.w,h:med.h,bytes:med.bytes,kind:med.kind,mime:med.mime});
+        ok++;
+      }catch(e){ fail=(files[i].name?files[i].name+": ":"")+(e&&e.message||"could not upload"); }
+    }
+    up.disabled=false; up.textContent="Upload proof";
+    if(fail) toast(fail); else toast(ok+" file"+(ok===1?"":"s")+" uploaded.");
+    if(ok) reopen();
+  });
+  var f2=el("div","f3"); f2.style.marginTop="var(--space-4)";
+  var amt=el("input"); amt.inputMode="decimal";
+  amt.value=rec.amount!=null?String(rec.amount):(L.liquidated?String(L.liquidated):"");
+  var dt=el("input"); dt.type="date"; dt.value=rec.date||L.date||iso().slice(0,10);
+  var refs=el("input"); refs.placeholder="CA-2026-0012, DV no., or receipt id";
+  refs.value=(rec.financeRefs||[]).join(", ");
+  f2.appendChild(fld("Liquidated amount (₱)",amt,"Total of the receipts. Approved "+peso(L.approved)+"."));
+  f2.appendChild(fld("Liquidation date",dt));
+  f2.appendChild(fld("Finance reference",refs,"Finance cash advance no., voucher no. or receipt id. Comma-separated."));
+  bd.appendChild(f2);
+  var sv=el("button","btn pri","Save liquidation"); bd.appendChild(sv);
+  sv.addEventListener("click",async function(){
+    sv.disabled=true;
+    try{
+      await saveLiqRecord(no,{amount:amt.value,date:dt.value,by:who.value,
+        financeRefs:refs.value.split(",")});
+      toast("Liquidation saved for VRF "+no+".");
+      reopen();
+    }catch(e){ toast(e&&e.message||"Could not save."); sv.disabled=false; }
+  });
+  var fin=el("div"); fin.style.marginTop="var(--space-4)";
+  fin.appendChild(el("h4",null,"Finance liquidation receipts"));
+  var finBody=el("div","hint","Looking up Finance…"); fin.appendChild(finBody);
+  bd.appendChild(fin);
+  (async function(){
+    var stored=(rec.financeRefs||[]);
+    if(!S.db||typeof S.db.financeLiq!=="function"){
+      finBody.textContent=stored.length?("Stored reference: "+stored.join(", ")+". Finance lookup is not available offline."):"No Finance reference stored.";
+      return;
+    }
+    try{
+      var r=await S.db.financeLiq(no, stored);
+      finBody.innerHTML="";
+      if(!r||!r.available){
+        finBody.appendChild(el("div","hint",(r&&r.reason||"Finance is not reachable")+". "+
+          (stored.length?"Stored reference: "+stored.join(", ")+".":"No reference stored.")));
+        return;
+      }
+      if(!(r.receipts||[]).length&&!(r.advances||[]).length&&!(r.vouchers||[]).length){
+        finBody.appendChild(el("div","hint","No Finance receipt, advance or voucher points at VRF "+no+" yet."+
+          (stored.length?" Stored reference: "+stored.join(", ")+".":"")));
+        return;
+      }
+      (r.advances||[]).forEach(function(a){
+        finBody.appendChild(el("div",null,"Cash advance "+(a.ca_no||a.id)+" · "+(a.status||"")+" · "+peso(Number(a.amount)||0)+
+          (a.employee_name?" · "+a.employee_name:"")));
+      });
+      (r.receipts||[]).forEach(function(x){
+        finBody.appendChild(el("div",null,"Receipt "+(x.receipt_date||"")+" · "+(x.particulars||"")+" · "+peso(Number(x.amount)||0)));
+      });
+      (r.vouchers||[]).forEach(function(v){
+        finBody.appendChild(el("div",null,"Voucher "+(v.dv_no||v.id)+" · "+(v.status||"")+" · "+peso(Number(v.amount)||0)));
+      });
+      if((r.receipts||[]).length) finBody.appendChild(el("div","hint","Finance receipts total "+peso(r.receiptTotal||0)+"."));
+      var link=el("a",null,"Open Finance"); link.href="https://corcondev-finance.netlify.app/"; link.target="_blank"; link.rel="noopener noreferrer";
+      finBody.appendChild(link);
+    }catch(e){
+      finBody.textContent="Finance lookup failed. "+(stored.length?"Stored reference: "+stored.join(", ")+".":"");
+    }
+  })();
+  body.appendChild(wrap);
+}
+
+function unliqView(){
+  var w=el("div");
+  w.appendChild(pageHead("Liquidation","Unliquidated VRFs",
+    "Every approved VRF is liquidated by the end of the month it was approved in. Upload the receipts or OR — or the withdrawal slip for fuel from the reserve — on the VRF's Receipts & proof tab."));
+  var holder=el("div","hint","Loading liquidation records…"); w.appendChild(holder);
+  S.unliqF=S.unliqF||{};
+  loadLiqRecords().then(function(){
+    holder.innerHTML=""; holder.className="";
+    var today=VL.manilaToday();
+    var rows=VL.unliquidatedRows(vrfIndex().map(liqEntryOf), S.liqRecords||{},
+      (function(){ var o={}; vrfIndex().forEach(function(e){ o[String(e.vrf)]=liqProofCount(e.vrf); }); return o; })(),
+      {today:today});
+    function opts(list){ var seen={}, out=[]; list.forEach(function(v){ if(v&&!seen[v]){ seen[v]=1; out.push(v);} }); return out.sort(); }
+    var f=el("div","f3"); f.style.marginBottom="var(--space-4)";
+    function sel(label,key,values,labels){
+      var s=el("select"); s.appendChild(new Option("All",""));
+      values.forEach(function(v,i){ s.appendChild(new Option(labels?labels[i]:v,v)); });
+      s.value=S.unliqF[key]||"";
+      s.addEventListener("change",function(){ S.unliqF[key]=s.value; render(); });
+      var x=el("div","field"); x.appendChild(el("label",null,label)); x.appendChild(s); f.appendChild(x);
+    }
+    sel("Age since approval","age",VL.AGE_BUCKETS.map(function(b){return b.id;}),VL.AGE_BUCKETS.map(function(b){return b.label;}));
+    sel("Custodian / requester","requester",opts(rows.map(function(r){return r.requester;})));
+    sel("Unit","unit",opts(rows.map(function(r){return r.unit;})));
+    sel("Month approved","month",opts(rows.map(function(r){return r.month;})).reverse());
+    sel("Status","status",["Unliquidated","Partially liquidated"]);
+    holder.appendChild(f);
+    var shown=VL.filterRows(rows,S.unliqF);
+    var t=VL.totals(shown);
+    holder.appendChild(stats([
+      ["Not liquidated", String(t.count), "VRFs in this view"],
+      ["Past month-end", String(t.overdue), "overdue", false, t.overdue?"var(--danger)":"var(--ok)"],
+      ["Approved", peso(t.approved), "on these VRFs", true],
+      ["Liquidated so far", peso(t.liquidated), "", true],
+      ["Outstanding", peso(t.outstanding), peso(t.overdueOutstanding)+" overdue", true]
+    ]));
+    var tb=el("table","tbl"); var th=el("tr");
+    ["VRF","Status","Approved on","Age","Due","Requester","Unit","Approved","Liquidated","Outstanding","Needs"].forEach(function(h){ th.appendChild(el("th",null,h)); });
+    tb.appendChild(th);
+    shown.forEach(function(r){
+      var tr=el("tr"); if(r.overdue) tr.style.background="var(--danger-bg, #fde8e8)";
+      var a=el("a",null,r.vrf); a.href="#"; a.addEventListener("click",function(ev){ ev.preventDefault(); openVrf(r.entry,"proof"); });
+      var td0=el("td"); td0.appendChild(a); tr.appendChild(td0);
+      var td1=el("td"); td1.appendChild(liqChip(r.liq)); if(r.overdue) td1.appendChild(el("span","chip crit","overdue")); tr.appendChild(td1);
+      [r.approvedOn||"—", r.age==null?"—":String(r.age)+"d",
+       r.due?(r.due+(r.overdue?"":" ("+r.daysToDue+"d left)")):"—",
+       r.requester||"—", r.unit||"—", peso(r.approved), peso(r.liquidated), peso(r.outstanding), r.liq.needs||"proof and amount"
+      ].forEach(function(v){ tr.appendChild(el("td",null,v)); });
+      tb.appendChild(tr);
+    });
+    if(!shown.length){ var er=el("tr"); var td=el("td",null,"Nothing unliquidated for these filters."); td.colSpan=11; er.appendChild(td); tb.appendChild(er); }
+    var scroll=el("div"); scroll.style.overflowX="auto"; scroll.appendChild(tb);
+    holder.appendChild(card("Unliquidated",shown.length+" shown",scroll));
+  });
+  return w;
+}
+
 /* ============================ views ============================ */
 function render(){
   _oil=null; _cons=null; _inv=null; _itemIdx=null;
@@ -9336,7 +9594,7 @@ function render(){
   if(isOffice && !S.office){ v.appendChild(gateView()); return; }
   var fn={yard:yardView,ask:askView,remind:remindView,rsv:rsvView,approve:approveView,vrf:vrfView,fuel:fuelView,down:downView,
     tasks:tasksView,store:storeView,inv:invView,vrflog:vrfLogView,parts:partsView,fleet:fleetView,
-    spend:spendView,vrfrpt:vrfReportView,cxllog:vrfCancelLogView,fuelecon:fuelEconView,fuelaudit:fuelAuditView,consume:consumeView,plan:planView,health:healthView}[S.view]||yardView;
+    spend:spendView,vrfrpt:vrfReportView,cxllog:vrfCancelLogView,unliq:unliqView,fuelecon:fuelEconView,fuelaudit:fuelAuditView,consume:consumeView,plan:planView,health:healthView}[S.view]||yardView;
   v.appendChild(fn());
 }
 
@@ -15752,6 +16010,7 @@ function openVrf(entry,tab){
    ["photos","Attachments"+(photoCountMany(photoOwnersForOpenVrf(entry))?" ("+photoCountMany(photoOwnersForOpenVrf(entry))+")":"")],
    ["jo","Job order"+(joForVrf(entry.vrf).length?" ("+joForVrf(entry.vrf).length+")":"")]];
   if(!waiting) tabDefs.push(["liq","Liquidate"+(vrfCanLiquidate(entry)?" ●":"")]);
+  if(!waiting && VL) tabDefs.push(["proof","Receipts & proof"+(liqProofCount(entry.vrf)?" ("+liqProofCount(entry.vrf)+")":"")]);
   tabDefs.forEach(function(o){
       var bt=el("button","btn"+(tab===o[0]?" pri":""),o[1]);
       bt.addEventListener("click",function(){ openVrf(entry,o[0]); });
@@ -16018,6 +16277,8 @@ function openVrf(entry,tab){
     mk2.appendChild(el("span","hint","Raise it there, then come back and attach it."));
     ab3.appendChild(mk2);
     att2.appendChild(ab3); body.appendChild(att2);
+  }else if(tab==="proof"){
+    liqProofPanel(entry, body, function(){ m.remove(); openVrf(vrfByNo(entry.vrf)||entry,"proof"); });
   }else if(tab==="liq"){
     if(entry.legacy&&!vrfCanLiquidate(entry)){
       var lg=el("div","banner info");
