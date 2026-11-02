@@ -13,6 +13,7 @@
  */
 
 const C = require("../../public/vrf-cancel");
+const { runWithContext } = require("./cancel-guard");
 
 function err(message, code, statusCode) {
   const e = new Error(message);
@@ -52,7 +53,13 @@ function createRecordsStore(api) {
   };
 }
 
+/* The approve-cancel function is APPROVE_VRF_SECRET-gated, so its writes
+   count as an approver's for lib/cancel-guard.js. */
 async function applyCancel(store, body, opts) {
+  return runWithContext({ approver: true, by: "approve-cancel" }, () => applyCancelInner(store, body, opts));
+}
+
+async function applyCancelInner(store, body, opts) {
   const b = body || {};
   const vrf = String(b.vrf || "").trim().replace(/^VRF\s*/i, "");
   if (!/^\d+$/.test(vrf)) throw err("vrf is required (digits)", "bad_request", 400);
@@ -83,6 +90,7 @@ async function applyCancel(store, body, opts) {
     request = C.newCancelRequest({
       vrf, reserveNo: reserve.no, rows, lines, by,
       reason: b.reason || b.note || "", at,
+      prevStatus: (rows[0] && rows[0].vstatus) || reserve.status || "",
     });
     reserve = C.addCancelRequest(reserve, request);
   } else if (lines) {
@@ -93,6 +101,13 @@ async function applyCancel(store, body, opts) {
     });
   }
 
+  /* 1) Record the approval first. The cancel guards (Node + DB trigger) only
+        let a line or reserve become Cancelled once the stored reserve holds
+        an Approved request, so the decision must land before the cancel. */
+  reserve = C.decideRequest(reserve, request.id, "Approved", by, at, String(b.note || ""));
+  await store.putReserve({ year, reserve });
+
+  /* 2) Apply the cancel. */
   const stamp = C.cancelStamp(by, request.reason, at);
   let nextRows;
   let amount;
@@ -117,7 +132,6 @@ async function applyCancel(store, body, opts) {
     }
     reserve = C.settleReserveAfterVrfCancel(reserve, statuses, by, request.reason, at);
   }
-  reserve = C.decideRequest(reserve, request.id, "Approved", by, at, String(b.note || ""));
   const saved = reserve.cancelRequests.find((q) => q && q.id === request.id);
   saved.amount = Math.round(amount * 100) / 100;
 

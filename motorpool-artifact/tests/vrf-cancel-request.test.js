@@ -90,7 +90,7 @@ test("index.html wires request, approver card and the cancellations log", () => 
   assert.match(html, /function requestVrfCancel/);
   assert.match(html, /function cancelRequestsCard/);
   assert.match(html, /cxllog:vrfCancelLogView/);
-  assert.match(html, /VRF Cancellations Log/);
-  assert.match(html, /"Cancel requested"/);
+  assert.match(html, /"Cancellations Log"/);
+  assert.match(html, /"Cancellation requested"/);
   assert.doesNotMatch(html, /"Cancel approved VRF"/);
 });

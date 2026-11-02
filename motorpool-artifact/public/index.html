@@ -4279,6 +4279,11 @@ function stampLedgerRev(month, no, rev){
 }
 async function remoteMerge(path, spec){
   if(!S.db||!S.db.doc(path).merge) return null;
+  /* Cancellation approvals: the server (lib/cancel-guard.js) accepts a
+     decision only from an approver. The Office passcode stays in memory
+     while Office is unlocked and sent beside the spec; it is never stored. */
+  if(spec&&S.office&&S.officePass&&(spec.kind==="reserve"||spec.kind==="ledger"))
+    spec=Object.assign({},spec,{approverPass:S.officePass});
   try{
     return await S.db.doc(path).merge(spec);
   }catch(e){
@@ -8234,7 +8239,10 @@ function vrfLogStatus(v){
   if(pendingCancelFor(v)){
     var cw=el("span"); cw.appendChild(vrfChip(v));
     cw.appendChild(document.createTextNode(" "));
-    cw.appendChild(el("span","chip warn","Cancel requested"));
+    var pq=pendingCancelFor(v);
+    var pc=el("span","chip warn","Cancellation requested");
+    pc.title="Requested by "+pq.by+" on "+pq.at+" — "+pq.reason;
+    cw.appendChild(pc);
     return cw;
   }
   if(v&&(v.status==="Requested"||vrfAwaitingApproval(v)))
@@ -8978,7 +8986,7 @@ var OFFICE=[
       return openReserves().length+flaggedReserves().length+allCancelRequests().filter(function(q){ return q.status==="Requested"; }).length; }},
   {id:"spend",   ic:"◫", label:"Spend"},
   {id:"vrfrpt",  ic:"▥", label:"Monthly VRF report"},
-  {id:"cxllog",  ic:"⊘", label:"VRF Cancellations Log", count:function(){
+  {id:"cxllog",  ic:"⊘", label:"Cancellations Log", count:function(){
       return allCancelRequests().filter(function(q){ return q.status==="Requested"; }).length; }},
   {id:"fuelecon",ic:"◴", label:"Fuel economics"},
   {id:"fuelaudit",ic:"⚑", label:"Fuel audit"},
@@ -9352,14 +9360,14 @@ function gateView(){
     var val=i.value.trim();
     if(!val){ err.textContent="Type a passcode first."; return; }
     if(S.cfg.pass){
-      if(hash(val)===S.cfg.pass){ S.office=true; render(); }
+      if(hash(val)===S.cfg.pass){ S.office=true; S.officePass=val; render(); }
       else err.textContent="That passcode does not match. Try again.";
     }else{
       if(val.length<4){ err.textContent="Use at least 4 characters."; return; }
       S.cfg.pass=hash(val);
       await writeDoc(PATHS.cfg,{nextVrf:S.cfg.nextVrf,pass:S.cfg.pass,fuel:S.cfg.fuel||null,
         varianceTol:S.cfg.varianceTol,nextReserve:S.cfg.nextReserve, driveFolder:S.cfg.driveFolder||""});
-      S.office=true; toast("Passcode set."); render();
+      S.office=true; S.officePass=val; toast("Passcode set."); render();
     }
   });
   i.addEventListener("keydown",function(e){ if(e.key==="Enter") btn.click(); });
@@ -10982,7 +10990,7 @@ function openReserve(no,asApprover){
       var gob=el("button","btn pri","Open VRF "+liveOne.vrf+" to liquidate");
       gob.addEventListener("click",function(){ m.remove(); openVrf(liveOne,"liq"); });
       lb3.appendChild(gob);
-      var cxr=el("button","btn","Request cancel — purchase did not go through");
+      var cxr=el("button","btn","Request cancellation");
       cxr.addEventListener("click",function(){
         askCancelVrf(liveOne, function(){ m.remove(); render(); });
       });
@@ -12510,7 +12518,7 @@ function vrfLogView(){
           var lqb=el("button","btn sm","Liquidate");
           lqb.addEventListener("click",function(ev){ ev.stopPropagation(); openVrf(v,"liq"); });
           row.appendChild(lqb);
-          var cqb=el("button","btn sm",pendingCancelFor(v)?"Cancel requested":"Request cancel");
+          var cqb=el("button","btn sm",pendingCancelFor(v)?"Cancellation requested":"Request cancellation");
           cqb.title="Ask Jeffrey to cancel this VRF or some lines. Amounts change only after he approves.";
           cqb.addEventListener("click",function(ev){
             ev.stopPropagation();
@@ -13804,17 +13812,18 @@ function askMarkDuplicate(entry, after){
    Jeffrey approves it in Office → Approvals, or the assistant applies it
    through approve-cancel after his yes. The old direct staff cancel
    path (cancelApprovedVrf) only runs from the approver. */
-function askCancelVrf(entry, after){
+function askCancelVrf(entry, after, opts){
   if(!entry) return;
+  opts=opts||{};
   var ex=document.getElementById("cancelVrfSheet"); if(ex) ex.remove();
   var rsv=reserveForVrf(entry);
   var m=el("div","modal"); m.id="cancelVrfSheet";
   var sheet=el("div","sheet"); sheet.style.maxWidth="560px";
   var b=el("div"); b.style.padding="var(--space-5) var(--space-6)";
-  b.appendChild(el("h3",null,"Request cancel — VRF "+entry.vrf));
+  b.appendChild(el("h3",null,"Request cancellation — VRF "+entry.vrf));
   var pend=rsv&&window.VrfCancel?VrfCancel.pendingCancel(rsv, entry.vrf):null;
   if(pend){
-    b.appendChild(el("div","banner warn","Cancel requested by "+pend.by+" on "+pend.at+" ("+VrfCancel.describeLines(pend)+", "+peso(pend.amount)+"). It is waiting for Jeffrey's approval."));
+    b.appendChild(el("div","banner warn","Cancellation requested by "+pend.by+" on "+pend.at+" ("+VrfCancel.describeLines(pend)+", "+peso(pend.amount)+"). Reason: "+pend.reason+". The VRF stays as it is until an approver decides."));
     var cl=el("button","btn","Close"); cl.addEventListener("click",function(){ m.remove(); });
     b.appendChild(cl);
     sheet.appendChild(b); m.appendChild(sheet); document.body.appendChild(m);
@@ -13823,15 +13832,22 @@ function askCancelVrf(entry, after){
   b.appendChild(el("div","hint",
     "VRF "+entry.vrf+" is "+peso(entry.total)+" now. This sends a cancel request to Jeffrey. "+
     "Nothing is zeroed until he approves it. Pick the whole VRF or only the lines that were not bought."));
+  var warns=cancelRiskWarnings(entry, rsv, null);
+  var warnBox=el("div"); b.appendChild(warnBox);
+  function paintWarns(p){
+    warnBox.innerHTML="";
+    cancelRiskWarnings(entry, rsv, p).forEach(function(w){ warnBox.appendChild(el("div","banner crit","⚠ "+w.msg)); });
+  }
   var rows=entry.rows||[];
-  var whole=el("input"); whole.type="checkbox"; whole.checked=true;
+  var whole=el("input"); whole.type="checkbox"; whole.checked=opts.line==null;
   var wl=el("label"); wl.style.cssText="display:flex;gap:6px;align-items:center;margin-top:var(--space-3)";
   wl.appendChild(whole); wl.appendChild(el("span",null,"Whole VRF ("+rows.length+" line"+(rows.length===1?"":"s")+")"));
   b.appendChild(wl);
   var boxes=[];
   var lineWrap=el("div"); lineWrap.style.cssText="margin:var(--space-2) 0 0 var(--space-5)";
   rows.forEach(function(r,i){
-    var cb=el("input"); cb.type="checkbox"; cb.checked=true; cb.disabled=true;
+    var cb=el("input"); cb.type="checkbox";
+    cb.checked=opts.line==null||opts.line===i; cb.disabled=opts.line==null;
     var lb=el("label"); lb.style.cssText="display:flex;gap:6px;align-items:center";
     lb.appendChild(cb);
     lb.appendChild(el("span",null,"#"+(i+1)+" "+((r&&(r.item||r.cat))||"line")+" — "+peso(r&&r.total)));
@@ -13849,12 +13865,14 @@ function askCancelVrf(entry, after){
   row.appendChild(fld("Requested by",who));
   row.appendChild(fld("Reason (required)",why));
   b.appendChild(row);
+  var att=el("input"); att.type="file"; att.multiple=true; att.accept=MEDIA_ACCEPT;
+  b.appendChild(fld("Photo or file (optional)",att));
   var msg=el("div","hint"); msg.style.marginTop="var(--space-2)";
   b.appendChild(msg);
   var acts=el("div"); acts.style.cssText="display:flex;gap:var(--space-2);justify-content:flex-end;margin-top:var(--space-5)";
   var back=el("button","btn","Back");
   back.addEventListener("click",function(){ m.remove(); });
-  var go=el("button","btn pri","Request cancel — purchase did not go through");
+  var go=el("button","btn pri","Request cancellation");
   boxes.forEach(function(cb){ cb.addEventListener("change",sync); });
   function picked(){
     if(whole.checked) return null;
@@ -13868,6 +13886,7 @@ function askCancelVrf(entry, after){
       !why.value.trim()?"A reason is required.":
       (p&&!p.length)?"Pick at least one line, or tick Whole VRF.":"";
     go.disabled=!!err;
+    paintWarns(p);
     msg.textContent=err;
     msg.style.color=err?"var(--danger)":"";
   }
@@ -13875,14 +13894,15 @@ function askCancelVrf(entry, after){
   go.addEventListener("click",async function(){
     sync(); if(go.disabled) return;
     go.disabled=true; go.textContent="Sending request…";
-    try{ await requestVrfCancel(entry, picked(), who.value.trim(), why.value.trim()); }
+    try{ await requestVrfCancel(entry, picked(), who.value.trim(), why.value.trim(),
+      {files:Array.prototype.slice.call(att.files||[]), warnings:cancelRiskWarnings(entry, rsv, picked())}); }
     catch(err){
-      go.disabled=false; go.textContent="Request cancel — purchase did not go through";
+      go.disabled=false; go.textContent="Request cancellation";
       toast((err&&err.message)||("Could not request a cancel for VRF "+entry.vrf+"."));
       return;
     }
     m.remove();
-    toast("Cancel requested for VRF "+entry.vrf+". Waiting for Jeffrey's approval — amounts are unchanged.");
+    toast("Cancellation requested for VRF "+entry.vrf+". Waiting for approval — nothing changes until it is decided.");
     if(after) after();
     else render();
   });
@@ -13899,11 +13919,25 @@ function replaceReserveLocal(next){
   S.reserves=(S.reserves||[]).map(function(r){ return r&&String(r.no)===key?next:r; });
   return next;
 }
-async function requestVrfCancel(entry, lines, by, reason){
+function cancelRiskWarnings(entry, rsv, lines){
+  if(!window.VrfCancel||!VrfCancel.riskWarnings) return [];
+  return VrfCancel.riskWarnings({entry:entry, reserve:rsv, lines:lines, withdrawals:S.withdrawals||[]});
+}
+async function requestVrfCancel(entry, lines, by, reason, extra){
+  extra=extra||{};
   var rsv=reserveForVrf(entry);
   if(!rsv) throw new Error("No reserve holds VRF "+entry.vrf+".");
+  var owner="CXL-"+entry.vrf, atts=[];
+  var files=extra.files||[];
+  for(var fi=0;fi<files.length;fi++){
+    var med=await prepareLocalMedia(files[fi]);
+    var idx=await addPhoto(owner, Object.assign({caption:"Cancellation request: "+reason, by:by}, med));
+    atts.push({id:photoKey(owner,idx), owner:owner, idx:idx, kind:med.kind, name:(files[fi]&&files[fi].name)||""});
+  }
   var req=VrfCancel.newCancelRequest({vrf:entry.vrf, reserveNo:rsv.no, rows:entry.rows||[],
-    lines:lines, by:by, reason:reason, at:iso()+"T"+new Date().toTimeString().slice(0,8)});
+    lines:lines, by:by, reason:reason, at:iso()+"T"+new Date().toTimeString().slice(0,8),
+    prevStatus:entry.status||rsv.status||"", unit:entry.veh||entry.unit||rsv.veh||"",
+    attachments:atts, warnings:extra.warnings||[]});
   replaceReserveLocal(VrfCancel.addCancelRequest(rsv, req));
   await saveReserves(rsv.no);
   _vrfs=null;
@@ -13936,79 +13970,123 @@ async function cancelVrfLines(entry, req, by){
 async function decideCancelRequest(req, decision, by, note){
   var rsv=reserveBy(req.reserveNo)||reserveForVrf({vrf:req.vrf});
   if(!rsv) throw new Error("Reserve for VRF "+req.vrf+" not found. Reload the page.");
-  var at=iso();
-  if(decision==="Approved"){
-    var entry=vrfByNo(req.vrf);
-    if(!entry) throw new Error("VRF "+req.vrf+" not found. Reload the page.");
-    var amount=0;
-    if(req.scope==="lines"&&req.lines&&req.lines.length<(entry.rows||[]).length){
-      amount=await cancelVrfLines(entry, req, by);
-      rsv=reserveBy(rsv.no)||rsv;
-      rsv=VrfCancel.recomputeReserveForLines(rsv, amount, by, at, req);
-    }else{
-      amount=entry.total||0;
-      /* Whole VRF: the PR #68 behaviour, run by the approver. */
-      await cancelApprovedVrf(entry, by, req.reason);
-      rsv=reserveBy(rsv.no)||rsv;
-    }
-    rsv=VrfCancel.decideRequest(rsv, req.id, "Approved", by, at, note||"");
-    (rsv.cancelRequests||[]).forEach(function(q){ if(q&&q.id===req.id) q.amount=Math.round(amount*100)/100; });
-  }else{
+  if(!S.office) throw new Error("Unlock Office (the approver passcode) to decide cancellation requests.");
+  var at=iso()+"T"+new Date().toTimeString().slice(0,8);
+  if(decision!=="Approved"){
+    /* Reject: only the request changes. The VRF and its lines were never
+       touched by the request, so they are back at their exact previous status. */
     rsv=VrfCancel.decideRequest(rsv, req.id, "Rejected", by, at, note||"");
+    replaceReserveLocal(rsv);
+    await saveReserves(rsv.no);
+    _vrfs=null;
+    return;
   }
+  var entry=vrfByNo(req.vrf);
+  if(!entry) throw new Error("VRF "+req.vrf+" not found. Reload the page.");
+  /* 1) Save the approval first: the server and DB refuse a Cancelled line or
+        reserve unless the stored reserve already holds an Approved request. */
+  rsv=VrfCancel.decideRequest(rsv, req.id, "Approved", by, at, note||"");
+  replaceReserveLocal(rsv);
+  await saveReserves(rsv.no);
+  _vrfs=null;
+  entry=vrfByNo(req.vrf)||entry;
+  /* 2) Apply the cancel. */
+  var amount=0;
+  if(req.scope==="lines"&&req.lines&&req.lines.length<(entry.rows||[]).length){
+    amount=await cancelVrfLines(entry, req, by);
+    rsv=reserveBy(rsv.no)||rsv;
+    rsv=VrfCancel.recomputeReserveForLines(rsv, amount, by, at, req);
+  }else{
+    amount=entry.total||0;
+    await cancelApprovedVrf(entry, by, req.reason);
+    rsv=reserveBy(rsv.no)||rsv;
+  }
+  (rsv.cancelRequests||[]).forEach(function(q){ if(q&&q.id===req.id) q.amount=Math.round(amount*100)/100; });
   replaceReserveLocal(rsv);
   await saveReserves(rsv.no);
   _vrfs=null;
 }
+function cancelAttachmentLinks(q){
+  var w=el("span");
+  (q.attachments||[]).forEach(function(a,i){
+    var b=el("button","btn sm","Attachment "+(i+1));
+    b.addEventListener("click",async function(){
+      try{ var list=await listPhotoMeta(a.owner||("CXL-"+q.vrf));
+        var hit=(list||[]).filter(function(x){ return x&&(x.id===a.id||x.idx===a.idx); })[0];
+        if(hit&&hit.data) lightbox(hit.data); else toast("Attachment not found on this device. Open the photos for "+(a.owner||"")+".");
+      }catch(e){ toast("Could not open the attachment."); }
+    });
+    w.appendChild(b);
+  });
+  return w;
+}
 function cancelRequestsCard(){
   var c=el("div","card");
-  var hd=el("div","hd"); hd.appendChild(el("h3",null,"Cancel requests"));
-  hd.appendChild(el("span","note","Staff asked to cancel these. Amounts change only when you approve."));
+  var hd=el("div","hd"); hd.appendChild(el("h3",null,"Cancellation requests"));
+  hd.appendChild(el("span","note","Staff asked to cancel these. Nothing changes until you approve. Reject leaves the VRF exactly as it was."));
   c.appendChild(hd);
   var bd=el("div","bd");
   var list=allCancelRequests().filter(function(q){ return q.status==="Requested"; });
   bd.appendChild(table([
     {h:"VRF",get:function(q){ return el("span","mono",q.vrf); }},
-    {h:"Status",get:function(){ return el("span","chip warn","Cancel requested"); }},
+    {h:"Status",get:function(){ return el("span","chip warn","Cancellation requested"); }},
     {h:"Lines",get:function(q){ return VrfCancel.describeLines(q); }},
+    {h:"Unit",get:function(q){ return q.unit||"—"; }},
     {h:"Amount",num:true,get:function(q){ return peso(q.amount); }},
-    {h:"Reason",get:function(q){ return q.reason; }},
+    {h:"Reason",get:function(q){ var d=el("div",null,q.reason); if((q.attachments||[]).length) d.appendChild(cancelAttachmentLinks(q)); return d; }},
     {h:"Requested",get:function(q){ return q.by+" · "+q.at; }},
+    {h:"Warnings",get:function(q){
+      var e=vrfByNo(q.vrf), r=reserveBy(q.reserveNo);
+      var ws=e?cancelRiskWarnings(e, r, q.scope==="lines"?q.lines:null):(q.warnings||[]);
+      if(!ws.length) return el("span","hint","none");
+      var d=el("div"); ws.forEach(function(w){ d.appendChild(el("div","banner crit","⚠ "+(w.msg||w))); }); return d; }},
     {h:"",get:function(q){
-      var r=el("div"); r.style.cssText="display:flex;gap:4px";
-      var ok=el("button","btn sm pri","Approve cancel");
+      var r=el("div"); r.style.cssText="display:flex;gap:4px;flex-direction:column";
+      var note=el("input"); note.placeholder="Decision note";
+      var bb=el("div"); bb.style.cssText="display:flex;gap:4px";
+      var ok=el("button","btn sm pri","Approve");
       var no=el("button","btn sm","Reject");
       async function go(decision){
-        var note=decision==="Rejected"?(prompt("Why reject the cancel of VRF "+q.vrf+"?")||""):"";
+        if(decision==="Rejected"&&!note.value.trim()){ toast("Add a note saying why the cancellation is rejected."); return; }
         ok.disabled=no.disabled=true;
-        try{ await decideCancelRequest(q, decision, signedInName()||"Jeffrey", note);
-          toast("Cancel of VRF "+q.vrf+" "+decision.toLowerCase()+"."); render(); }
-        catch(e){ ok.disabled=no.disabled=false; toast((e&&e.message)||"Could not update the cancel request."); }
+        try{ await decideCancelRequest(q, decision, signedInName()||"Jeffrey", note.value.trim());
+          toast("Cancellation of VRF "+q.vrf+" "+decision.toLowerCase()+"."); render(); }
+        catch(e){ ok.disabled=no.disabled=false; toast((e&&e.message)||"Could not update the cancellation request."); }
       }
       ok.addEventListener("click",function(){ go("Approved"); });
       no.addEventListener("click",function(){ go("Rejected"); });
-      r.appendChild(ok); r.appendChild(no); return r; }}
-  ], list, {empty:"No cancel requests waiting."}));
+      bb.appendChild(ok); bb.appendChild(no);
+      r.appendChild(note); r.appendChild(bb); return r; }}
+  ], list, {empty:"No cancellation requests waiting."}));
   c.appendChild(bd);
   return c;
 }
 function vrfCancelLogView(){
   var w=el("div");
-  w.appendChild(pageHead("Office · VRF Cancellations Log","Every cancel request",
-    "Requested, approved and rejected cancels: who asked, who decided, when, which lines, the amount and the reason."));
+  w.appendChild(pageHead("Office · Cancellations Log","Every cancellation request",
+    "Requested, approved and rejected cancellations: who asked, who decided, when, which lines, the unit, the amount and the reason. Replaces the Sheets cancellations log."));
   var list=allCancelRequests();
-  var chip={Requested:["warn","Cancel requested"],Approved:["ok","Approved"],Rejected:["crit","Rejected"]};
+  var chip={Requested:["warn","Pending"],Approved:["ok","Approved"],Rejected:["crit","Rejected"]};
   var c=el("div","card"), bd=el("div","bd");
+  var csv=el("button","btn sm","Export CSV");
+  csv.addEventListener("click",function(){
+    var blob=new Blob([VrfCancel.cancelLogCsv(list)],{type:"text/csv"});
+    var a=document.createElement("a"); a.href=URL.createObjectURL(blob);
+    a.download="cancellations-log-"+iso()+".csv"; document.body.appendChild(a); a.click(); a.remove();
+  });
+  var hd=el("div","hd"); hd.appendChild(el("h3",null,list.length+" request"+(list.length===1?"":"s"))); hd.appendChild(csv);
+  c.appendChild(hd);
   bd.appendChild(table([
     {h:"VRF",get:function(q){ return el("span","mono",q.vrf); }},
-    {h:"RSV",get:function(q){ return el("span","mono","RSV-"+q.reserveNo); }},
-    {h:"Status",get:function(q){ var k=chip[q.status]||["mute",q.status]; return el("span","chip "+k[0],k[1]); }},
-    {h:"Lines",get:function(q){ return VrfCancel.describeLines(q); }},
+    {h:"Line",get:function(q){ return VrfCancel.describeLines(q); }},
+    {h:"Unit",get:function(q){ return q.unit||(q.lineUnits||[]).join(" / ")||"—"; }},
     {h:"Amount",num:true,get:function(q){ return peso(q.amount); }},
-    {h:"Reason",get:function(q){ return q.reason; }},
-    {h:"Requested by",get:function(q){ return q.by+" · "+q.at; }},
-    {h:"Decided by",get:function(q){ return q.decidedBy?(q.decidedBy+" · "+q.decidedAt+(q.decisionNote?" — "+q.decisionNote:"")):"—"; }}
-  ], list, {empty:"No VRF cancels yet."}));
+    {h:"Requested",get:function(q){ return q.by+" · "+q.at; }},
+    {h:"Reason",get:function(q){ var d=el("div",null,q.reason); if((q.attachments||[]).length) d.appendChild(cancelAttachmentLinks(q)); return d; }},
+    {h:"Decided",get:function(q){ return q.decidedBy?(q.decidedBy+" · "+q.decidedAt):"—"; }},
+    {h:"Note",get:function(q){ return q.decisionNote||"—"; }},
+    {h:"Outcome",get:function(q){ var k=chip[q.status]||["mute",q.status]; return el("span","chip "+k[0],k[1]); }}
+  ], list, {empty:"No cancellations yet."}));
   c.appendChild(bd); w.appendChild(c);
   return w;
 }
@@ -15681,7 +15759,7 @@ function openVrf(entry,tab){
     });
   var sp=el("div"); sp.style.flex="1"; tabs.appendChild(sp);
   if(vrfCanLiquidate(entry)){
-    var cxlTop=el("button","btn",pendingCancelFor(entry)?"Cancel requested":"Request cancel");
+    var cxlTop=el("button","btn",pendingCancelFor(entry)?"Cancellation requested":"Request cancellation");
     cxlTop.title="Ask Jeffrey to cancel this VRF or some lines. Amounts change only after he approves.";
     cxlTop.addEventListener("click",function(){
       askCancelVrf(entry, function(){ m.remove(); render(); });
@@ -15790,6 +15868,9 @@ function openVrf(entry,tab){
     var wrap=el("div","scroll"), t=el("table"), th=el("thead"), hr=el("tr");
     var lineHeads=["Part category","Item on the line","Supplier","Qty","Total","Why","Job this line belongs to"];
     if(canLineEdit) lineHeads.push("");
+    var canLineCxl=vrfCanLiquidate(entry)&&!!window.VrfCancel;
+    var pendLine=pendingCancelFor(entry);
+    lineHeads.push("Cancellation");
     lineHeads.forEach(function(x){
       var h=el("th",null,x); if(x==="Qty"||x==="Total") h.style.textAlign="right"; hr.appendChild(h); });
     th.appendChild(hr); t.appendChild(th);
@@ -15841,6 +15922,22 @@ function openVrf(entry,tab){
         cSup.appendChild(cRow);
         tr.appendChild(cSup);
       }
+      var cCx=el("td");
+      if(r&&r.vstatus==="Cancelled") cCx.appendChild(el("span","chip mute","Cancelled"));
+      else if(pendLine&&(pendLine.scope==="vrf"||(pendLine.lines||[]).indexOf(i)>=0)){
+        var lc=el("span","chip warn","Cancellation requested");
+        lc.title="Requested by "+pendLine.by+" on "+pendLine.at+" — "+pendLine.reason;
+        cCx.appendChild(lc);
+        cCx.appendChild(el("div","hint",pendLine.by+" · "+pendLine.at+" — "+pendLine.reason));
+      }else if(canLineCxl&&!pendLine){
+        var lb=el("button","btn sm","Request cancellation");
+        lb.title="Ask the approver to cancel only this line.";
+        (function(ix){ lb.addEventListener("click",function(){
+          askCancelVrf(entry, function(){ var fresh=vrfByNo(entry.vrf)||entry; openVrf(fresh,"lines"); }, {line:ix});
+        }); })(i);
+        cCx.appendChild(lb);
+      }else cCx.appendChild(el("span","hint","—"));
+      tr.appendChild(cCx);
       tb.appendChild(tr);
     });
     t.appendChild(tb); wrap.appendChild(t); body.appendChild(wrap);
@@ -16022,7 +16119,7 @@ function openVrf(entry,tab){
       stopBd.appendChild(el("div",null,
         "Request a cancel when the fuel or parts were never bought. Once Jeffrey approves it, the lines (or the chosen lines) become ₱0.00. You do not have to liquidate it at "+peso(entry.total)+"."));
       var stopRow=el("div","row"); stopRow.style.marginTop="var(--space-3)";
-      var stopBtn=el("button","btn","Request cancel — purchase did not go through");
+      var stopBtn=el("button","btn","Request cancellation");
       stopBtn.addEventListener("click",function(){
         askCancelVrf(entry, function(){ m.remove(); render(); });
       });

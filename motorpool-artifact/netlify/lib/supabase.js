@@ -527,6 +527,7 @@ function bumpRev(next, existing) {
 }
 
 async function writeRecord(row, exists, expectUpdatedAt) {
+  await require("./cancel-guard").guardCancelWrite(row, { readRecord });
   if (exists) {
     const cas = expectUpdatedAt ? `&updated_at=eq.${encodeURIComponent(expectUpdatedAt)}` : "";
     const out = await rest({

@@ -68,7 +68,76 @@
       by: by,
       at: at,
       status: "Requested",
+      /* What the VRF / lines were when the request was filed. A request does
+         not change any status; a Reject leaves (and checks) these as they are. */
+      prevStatus: s.prevStatus == null ? "" : String(s.prevStatus),
+      prevLineStatuses: (lines || rows.map(function (_, i) { return i; })).map(function (i) {
+        return String((rows[i] && rows[i].vstatus) || "");
+      }),
+      unit: String(s.unit || (picked[0] && (picked[0].veh || picked[0].unit)) || ""),
+      lineUnits: picked.map(function (r) { return String((r && (r.veh || r.unit)) || s.unit || ""); }),
+      attachments: Array.isArray(s.attachments) ? s.attachments.slice(0, 10) : [],
+      warnings: Array.isArray(s.warnings) ? s.warnings.slice() : [],
     };
+  }
+
+  /* True when an Approved request on this reserve covers VRF `vrf` line `idx`
+     (idx null = the whole VRF). The server and DB guards use the same rule. */
+  function approvedCovers(reserve, vrf, idx) {
+    var list = (reserve && Array.isArray(reserve.cancelRequests)) ? reserve.cancelRequests : [];
+    return list.some(function (q) {
+      if (!q || q.status !== "Approved" || String(q.vrf) !== String(vrf)) return false;
+      if (!q.decidedBy || !q.decidedAt) return false;
+      if (q.scope === "vrf" || !Array.isArray(q.lines)) return true;
+      return idx != null && q.lines.indexOf(Number(idx)) >= 0;
+    });
+  }
+
+  /* Spec item 6: warn when a cancel would undo fuel, cash or a liquidation.
+     ctx: { entry:{vrf,status,rows,liq}, reserve, withdrawals:[], lines:null|[idx] } */
+  function riskWarnings(ctx) {
+    var c = ctx || {};
+    var e = c.entry || {};
+    var vrf = String(e.vrf || "");
+    var rows = Array.isArray(e.rows) ? e.rows : [];
+    var pick = normLines(c.lines);
+    var sel = pick ? pick.map(function (i) { return rows[i]; }).filter(Boolean) : rows;
+    var r = c.reserve || {};
+    var out = [];
+    var draws = (c.withdrawals || []).filter(function (w) {
+      return w && Number(w.liters) > 0 &&
+        (String(w.vrf || "") === vrf || (r.no != null && String(w.reserve || "") === String(r.no)));
+    });
+    var litres = draws.reduce(function (a, w) { return a + (Number(w.liters) || 0); }, 0);
+    if (litres > 0) out.push({ code: "fuel_withdrawn", msg: "Fuel already withdrawn: " + litres + " L on " + draws.length + " withdrawal slip(s). Cancelling does not put the fuel back in the tank." });
+    var st = String(e.status || r.status || "");
+    var approvedAmt = Number(r.approvedBudget != null ? r.approvedBudget : r.budget) || 0;
+    if ((st === "Open" || st === "Approved" || r.status === "Approved") && (approvedAmt > 0 || sel.some(function (x) { return lineAmount(x) > 0; }))) {
+      out.push({ code: "money_released", msg: "Money released: this VRF is approved/Open (" + money(approvedAmt || sel.reduce(function (a, x) { return a + lineAmount(x); }, 0)).toFixed(2) + "). Make sure the cash is returned before approving." });
+    }
+    var liq = !!e.liq || /^(closed|liquidated)$/i.test(st) || sel.some(function (x) { return x && (x.vstatus === "Closed" || (x.liq && !/^(cancelled|not-bought|duplicate)$/i.test(String(x.liq.outcome || "")))); }) ||
+      !!(r.liquidatedAt && !/^cancelled$/i.test(String(r.status || "")));
+    if (liq) out.push({ code: "liquidated", msg: "Already liquidated: a liquidation is on file for this VRF/line. Cancelling will reverse it." });
+    return out;
+  }
+
+  function csvCell(v) {
+    var s = v == null ? "" : String(v);
+    return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+  /* Cancellations log as CSV (replaces the Sheets cancellations log). */
+  function cancelLogCsv(entries) {
+    var head = ["VRF", "Reserve", "Lines", "Unit", "Amount", "Requested by", "Requested at", "Reason",
+      "Outcome", "Decided by", "Decided at", "Decision note", "Previous status", "Warnings", "Attachments"];
+    var lines = [head.join(",")];
+    (entries || []).forEach(function (q) {
+      lines.push([q.vrf, q.reserveNo, describeLines(q), q.unit || (q.lineUnits || []).join(" / "),
+        money(q.amount).toFixed(2), q.by, q.at, q.reason,
+        q.status === "Requested" ? "Pending" : q.status, q.decidedBy || "", q.decidedAt || "", q.decisionNote || "",
+        q.prevStatus || "", (q.warnings || []).map(function (w) { return w && (w.msg || w); }).join(" | "),
+        (q.attachments || []).map(function (a) { return a && (a.id || a); }).join(" ")].map(csvCell).join(","));
+    });
+    return lines.join("\r\n") + "\r\n";
   }
 
   function codeError(message, code, status) {
@@ -174,6 +243,13 @@
     return r;
   }
 
+  /* Same djb2 hash the Office passcode gate uses (index.html hash()). */
+  function officeHash(str) {
+    var h = 5381, i, t = String(str || "");
+    for (i = 0; i < t.length; i++) h = ((h * 33) ^ t.charCodeAt(i)) >>> 0;
+    return "h" + h.toString(36);
+  }
+
   function decideRequest(reserve, requestId, decision, by, at, note) {
     var list = (reserve && reserve.cancelRequests) || [];
     var found = false;
@@ -224,5 +300,9 @@
     describeLines: describeLines,
     lineAmount: lineAmount,
     isDeadLine: isDeadLine,
+    approvedCovers: approvedCovers,
+    riskWarnings: riskWarnings,
+    cancelLogCsv: cancelLogCsv,
+    officeHash: officeHash,
   };
 });
