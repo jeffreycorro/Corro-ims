@@ -270,9 +270,10 @@ function pdfTooLarge(file) {
  *       (owner LIQ-<vrf>, or a VRF photo tagged Receipt)
  *   - actual < approved: change returned amount + how + when
  *   - actual > approved: a reason
- *   - FUEL RESERVE VRF: instead of an OR, an after-fueling gauge photo on the
- *     VRF, plus the matching reserve withdrawal row (fuel/withdrawals) whose
- *     liters match the VRF liters. The withdrawal slip is optional.
+ *   - FUEL RESERVE VRF: instead of an OR, ONLY an after-fueling gauge photo on
+ *     the VRF. (Jeffrey, 2026-11-02: "No need for matching withdrawal now" —
+ *     the withdrawal row / liters match is OFF, see REQUIRE_FUEL_WITHDRAWAL_MATCH.
+ *     The withdrawal slip stays optional.)
  * The same rules run in the browser (dialog), in the Netlify db function, and
  * (as a backstop) in the Postgres trigger 20261102000001.
  */
@@ -282,15 +283,24 @@ var RETURN_METHODS = ["Cash returned to Finance", "Deposited to company account"
 var AFTER_FUEL_ROLE = "fuel-gauge-after";
 var RECEIPT_ROLE = "receipt";
 var SLIP_ROLE = "withdrawal-slip";
+/* A photo in the portal's photos collection on the VRF (motorpool_docs id
+ * vrf-<vrf>__N) that carries no tag counts as the receipt / OR. Before
+ * 2026-11-02 the portal never tagged photos (role/type/caption were empty or
+ * the file name), and the VRF's attachment strip is where the yard put the
+ * receipts. A photo tagged as a gauge or withdrawal slip, or a link, does not
+ * count as a receipt. */
+var UNTAGGED_PHOTO_IS_RECEIPT = true;
+/* Off since 2026-11-02. When false the withdrawal row is never required. */
+var REQUIRE_FUEL_WITHDRAWAL_MATCH = false;
 
 function photoRoleOf(p) {
   if (!p) return "";
-  var role = String(p.role || p.fuelRole || "").trim().toLowerCase();
+  var role = String(p.role || p.fuelRole || p.type || p.tag || "").trim().toLowerCase();
   var cap = String(p.caption || "").toLowerCase();
   if (role === AFTER_FUEL_ROLE || role === "gauge-after") return "gauge-after";
   if (role === "gauge" || role === "fuel-gauge" || role === "fuel gauge") return /after/.test(cap) ? "gauge-after" : "gauge";
   if (role === SLIP_ROLE) return "slip";
-  if (role === "receipt" || role === "or") return "receipt";
+  if (role === "receipt" || role === "or" || role === "official receipt") return "receipt";
   if (role) return role;
   if (/gauge/.test(cap) && /after/.test(cap)) return "gauge-after";
   if (/fuel\s*gauge|\bgauge\b/.test(cap)) return "gauge";
@@ -319,6 +329,14 @@ function proofCounts(vrfItems, liqItems) {
     else c.untagged++;
   });
   return c;
+}
+
+/** Receipts / OR on file for a non-fuel VRF: tagged receipts, LIQ uploads,
+ * and (UNTAGGED_PHOTO_IS_RECEIPT) untagged photos on the VRF. */
+function receiptCount(c, opts) {
+  c = c || {}; opts = opts || {};
+  var untagged = UNTAGGED_PHOTO_IS_RECEIPT && opts.untaggedIsReceipt !== false ? (c.untagged || 0) : 0;
+  return (c.receipts || 0) + untagged;
 }
 
 function fuelLitresOfRows(rows) {
@@ -375,11 +393,12 @@ function checkLiquidation(input, ctx) {
   if (ctx.fuelReserve) {
     if (!((c.afterFuel || 0) > 0)) err("afterFuel", "Upload the after-fueling photo (gauge after fueling) on this VRF.");
     var w = input.withdrawal;
-    if (!w || !w.ref) err("withdrawal", "Link the matching withdrawal row from the fuel reserve log.");
+    if (!REQUIRE_FUEL_WITHDRAWAL_MATCH) { /* not required (2026-11-02) */ }
+    else if (!w || !w.ref) err("withdrawal", "Link the matching withdrawal row from the fuel reserve log.");
     else if (Math.abs(num(w.liters) - num(ctx.litres)) > 0.01) {
       err("withdrawal", "Liters do not match: the withdrawal row is " + num(w.liters) + " L, this VRF is " + num(ctx.litres) + " L.");
     }
-  } else if (!((c.receipts || 0) > 0)) {
+  } else if (!(receiptCount(c) > 0)) {
     err("receipt", "Upload at least one receipt / OR on this VRF.");
   }
   if (actual > 0 && approved > 0) {
@@ -444,6 +463,9 @@ function stampedProof(entry) {
  * Fuel reserve VRFs are cleared by an after-fueling / gauge photo. Untagged
  * photos on a fuel reserve VRF clear it too (opts.untaggedClearsFuel, default
  * true): before 2026-11-02 the portal did not tag gauge photos.
+ * Non-fuel VRFs are cleared by a receipt / OR: a LIQ-<vrf> upload, a VRF photo
+ * tagged receipt/OR (role, type or caption), or an untagged photo on the VRF
+ * (opts.untaggedClearsNonFuel, default true; see UNTAGGED_PHOTO_IS_RECEIPT).
  */
 function noReceiptFlag(entry, counts, opts) {
   opts = opts || {};
@@ -466,6 +488,7 @@ function noReceiptFlag(entry, counts, opts) {
     return { flag: true, label: NO_RECEIPT_LABEL, fuel: true };
   }
   if ((c.receipts || 0) > 0 || fp.receipt === true) return { flag: false, clearedBy: "receipt" };
+  if (receiptCount(c, { untaggedIsReceipt: opts.untaggedClearsNonFuel !== false }) > 0) return { flag: false, clearedBy: "untagged photo on VRF" };
   return { flag: true, label: NO_RECEIPT_LABEL, fuel: false };
 }
 
@@ -477,7 +500,8 @@ var api = {
   liqDocId: liqDocId, liqOwner: liqOwner, liquidationOf: liquidationOf, manilaToday: manilaToday,
   monthEnd: monthEnd, normalizeFinanceRef: normalizeFinanceRef, pdfTooLarge: pdfTooLarge,
   proofLabel: proofLabel, totals: totals, unliquidatedRows: unliquidatedRows,
-  NO_RECEIPT_LABEL: NO_RECEIPT_LABEL, RETURN_METHODS: RETURN_METHODS, AFTER_FUEL_ROLE: AFTER_FUEL_ROLE,
+  NO_RECEIPT_LABEL: NO_RECEIPT_LABEL, REQUIRE_FUEL_WITHDRAWAL_MATCH: REQUIRE_FUEL_WITHDRAWAL_MATCH,
+  UNTAGGED_PHOTO_IS_RECEIPT: UNTAGGED_PHOTO_IS_RECEIPT, receiptCount: receiptCount, RETURN_METHODS: RETURN_METHODS, AFTER_FUEL_ROLE: AFTER_FUEL_ROLE,
   RECEIPT_ROLE: RECEIPT_ROLE, SLIP_ROLE: SLIP_ROLE,
   buildProof: buildProof, checkLiquidation: checkLiquidation, fuelLitresOfRows: fuelLitresOfRows,
   noReceiptFlag: noReceiptFlag, photoRoleOf: photoRoleOf, proofCounts: proofCounts,

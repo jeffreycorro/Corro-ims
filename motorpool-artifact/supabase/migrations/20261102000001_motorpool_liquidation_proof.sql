@@ -8,13 +8,16 @@
 --   actual (> 0, equals the closed lines), date (not in the future, Manila),
 --   by; and evidence in motorpool_docs:
 --     non-fuel VRF: >= 1 receipt / OR  (photos vrf-LIQ-<vrf>__*, or a VRF
---                   photo with role 'receipt' / caption 'receipt')
+--                   photo vrf-<vrf>__* with role/type/tag 'receipt'/'or' or a
+--                   caption with 'receipt' / 'official receipt', or an UNTAGGED
+--                   VRF photo (not a link, not captioned gauge / withdrawal slip):
+--                   the portal never tagged photos before 2026-11-02 and the
+--                   VRF attachment strip is where receipts were put)
 --     fuel reserve VRF (every line FUEL-RES / supplier FUEL RESERVE):
 --                   >= 1 after-fueling gauge photo on vrf-<vrf>__* (role
---                   'fuel-gauge-after', or a caption with "gauge" and "after"),
---                   and liq.proof.fuel.withdrawal pointing at a fuel/withdrawals
---                   row whose liters equal the VRF liters (+/- 0.01).
---                   The withdrawal slip is optional.
+--                   'fuel-gauge-after', or a caption with "gauge" and "after").
+--                   That is all: no matching withdrawal row / liters check
+--                   (Jeffrey, 2026-11-02). The withdrawal slip is optional.
 --   actual < approved: proof.change {amount = approved - actual, how, date}
 --   actual > approved: proof.overReason
 -- A reserve row may move to Closed / Flagged only when every VRF on it is
@@ -44,8 +47,13 @@ as $$
        (not p_fuel
          and ((d.id >= 'vrf-LIQ-' || p_vrf || '__' and d.id < 'vrf-LIQ-' || p_vrf || '_~')
               or (d.id >= 'vrf-' || p_vrf || '__' and d.id < 'vrf-' || p_vrf || '_~'
-                  and (lower(coalesce(d.data->>'role', '')) in ('receipt', 'or')
-                       or coalesce(d.data->>'caption', '') ~* '(\mreceipt\M|official receipt)'))))
+                  and coalesce(d.data->>'kind', 'photo') <> 'link'
+                  and (lower(coalesce(d.data->>'role', d.data->>'type', d.data->>'tag', '')) in ('receipt', 'or', 'official receipt')
+                       or coalesce(d.data->>'caption', '') ~* '(\mreceipt\M|official receipt)'
+                       /* untagged photo on the VRF = its receipt / OR
+                          (UNTAGGED_PHOTO_IS_RECEIPT in vrf-liquidation.js) */
+                       or (coalesce(d.data->>'role', d.data->>'type', d.data->>'tag', '') = ''
+                           and coalesce(d.data->>'caption', '') !~* '(gauge|withdrawal\s*slip)')))))
        or (p_fuel
          and d.id >= 'vrf-' || p_vrf || '__' and d.id < 'vrf-' || p_vrf || '_~'
          and (lower(coalesce(d.data->>'role', '')) in ('fuel-gauge-after', 'gauge-after')
@@ -68,8 +76,6 @@ declare
   lines_total numeric;
   approved numeric;
   litres numeric;
-  w jsonb;
-  w_idx integer;
   today date := (now() at time zone 'Asia/Manila')::date;
   open_vrf text;
 begin
@@ -161,15 +167,6 @@ begin
       using errcode = 'P0422';
   end if;
 
-  if is_fuel then
-    w_idx := nullif(split_part(coalesce(proof->'fuel'->'withdrawal'->>'ref', ''), '|', 5), '')::integer;
-    select d.data->'rows'->w_idx into w
-      from public.motorpool_docs d where d.collection = 'fuel' and d.id = 'withdrawals';
-    if w_idx is null or w is null
-       or abs(coalesce(nullif(w->>'liters', '')::numeric, 0) - litres) > 0.01 then
-      raise exception 'liquidation_proof_required: VRF % needs the matching reserve withdrawal row (% L).', vrf, litres
-        using errcode = 'P0422';
-    end if;
   end if;
 
   /* Approved: the reserve budget when the reserve carries only this VRF. */

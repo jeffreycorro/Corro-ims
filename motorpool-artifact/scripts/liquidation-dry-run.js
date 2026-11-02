@@ -103,23 +103,28 @@ function summarize(entries, proofCounts, today) {
 /**
  * "Liquidated – no receipt" flag counts (2026-11-02 rule).
  * photoMeta: { owner: [ {id, caption, role, kind} ] } for "<vrf>" and "LIQ-<vrf>".
- * Strict: only tagged gauge / after-fueling photos clear a fuel reserve VRF.
- * Portal: untagged photos on a fuel reserve VRF clear it too (what ships).
+ * Strict: only tagged photos / LIQ uploads clear a VRF (gauge / after-fueling
+ * for fuel reserve, receipt / OR otherwise).
+ * Portal (what ships): an untagged photo on the VRF in the photos collection
+ * clears it too — the after-fueling photo on a fuel reserve VRF, the receipt /
+ * OR on any other VRF.
  */
-function noReceiptReport(entries, photoMeta, today) {
+function noReceiptReport(entries, photoMeta, today, opts) {
   photoMeta = photoMeta || {};
+  opts = opts || {};
   const out = {
     today,
     closedByFlow: 0,
     flagged: { count: 0, php: 0, today: 0, todayPhp: 0, fuelReserve: 0, nonFuel: 0 },
     strictFlagged: { count: 0, php: 0 },
+    nonFuel: { closed: 0, clearedByReceipt: 0, clearedByUntaggedPhoto: 0, clearedByProof: 0, flagged: 0 },
     fuelReserve: { closed: 0, clearedByAfterFuelPhoto: 0, clearedByGaugePhoto: 0, clearedByUntaggedPhoto: 0, clearedByProof: 0, flagged: 0 },
     vrfs: [],
   };
   entries.forEach((e) => {
     const counts = L.proofCounts(photoMeta[e.vrf] || [], photoMeta[L.liqOwner(e.vrf)] || []);
     const lenient = L.noReceiptFlag(e, counts);
-    const strict = L.noReceiptFlag(e, counts, { untaggedClearsFuel: false });
+    const strict = L.noReceiptFlag(e, counts, { untaggedClearsFuel: false, untaggedClearsNonFuel: false });
     const liq = e.liq || {};
     const closed = lenient.flag || lenient.clearedBy;
     if (!closed) return;
@@ -134,12 +139,24 @@ function noReceiptReport(entries, photoMeta, today) {
       else if (lenient.clearedBy === "proof") out.fuelReserve.clearedByProof++;
       else if (lenient.flag) out.fuelReserve.flagged++;
     }
+    if (!lenient.fuel) {
+      out.nonFuel.closed++;
+      if (lenient.clearedBy === "receipt") out.nonFuel.clearedByReceipt++;
+      else if (lenient.clearedBy === "untagged photo on VRF") out.nonFuel.clearedByUntaggedPhoto++;
+      else if (lenient.clearedBy === "proof") out.nonFuel.clearedByProof++;
+      else if (lenient.flag) out.nonFuel.flagged++;
+    }
     if (strict.flag) { out.strictFlagged.count++; out.strictFlagged.php += amt; }
     if (lenient.flag) {
       out.flagged.count++; out.flagged.php += amt;
       if (lenient.fuel) out.flagged.fuelReserve++; else out.flagged.nonFuel++;
       if (day === today) { out.flagged.today++; out.flagged.todayPhp += amt; }
       out.vrfs.push({ vrf: e.vrf, amount: amt, at: liq.at || "", by: liq.by || "", fuel: !!lenient.fuel });
+    }
+    if (opts.all) {
+      out.all = out.all || [];
+      out.all.push({ vrf: e.vrf, veh: e.veh || "", amount: amt, at: liq.at || "", by: liq.by || "", status: e.status || "",
+        fuel: !!lenient.fuel, flagged: !!lenient.flag, clearedBy: lenient.clearedBy || "", counts });
     }
   });
   ["php", "todayPhp"].forEach((k) => { out.flagged[k] = Math.round(out.flagged[k] * 100) / 100; });
@@ -154,7 +171,7 @@ async function readPhotoMeta(owners) {
   const out = {};
   for (const o of owners) {
     const lo = encodeURIComponent("vrf-" + o + "__"), hi = encodeURIComponent("vrf-" + o + "_~");
-    const res = await fetch(`${url}/rest/v1/motorpool_docs?collection=eq.photos&id=gte.${lo}&id=lt.${hi}&select=id,caption:data->>caption,role:data->>role,kind:data->>kind`, { headers });
+    const res = await fetch(`${url}/rest/v1/motorpool_docs?collection=eq.photos&id=gte.${lo}&id=lt.${hi}&select=id,caption:data->>caption,role:data->>role,type:data->>type,tag:data->>tag,kind:data->>kind`, { headers });
     if (!res.ok) throw new Error("photo read failed: HTTP " + res.status);
     out[o] = await res.json();
   }

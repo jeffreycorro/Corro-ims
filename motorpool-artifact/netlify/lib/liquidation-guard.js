@@ -81,7 +81,7 @@ async function checkLedgerWrite(next, existing, io) {
   const approved = approvedServer != null ? approvedServer : Number(proof.approved) || 0;
   const litres = V.fuelLitresOfRows(rows);
   let withdrawal = null;
-  if (fuelReserve) {
+  if (fuelReserve && V.REQUIRE_FUEL_WITHDRAWAL_MATCH) {
     const doc = await io.getDoc("fuel", "withdrawals");
     const list = (doc && doc.data && doc.data.rows) || [];
     const ref = proof.fuel && proof.fuel.withdrawal && proof.fuel.withdrawal.ref;

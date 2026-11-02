@@ -8354,11 +8354,13 @@ function liqEntryOf(entry){
     if(!x.requestedBy) x.requestedBy=rv.requestedBy||"";
     if(rv.fuelPhotos) x.fuelPhotos=rv.fuelPhotos;
   }
-  /* "Liquidated – no receipt" flag: LIQ-<vrf> uploads count as receipts; on a
-     fuel reserve VRF the photos on the VRF itself (gauge after fueling) clear it. */
+  /* "Liquidated – no receipt" flag: LIQ-<vrf> uploads count as receipts; the
+     photos on the VRF itself (photos collection, vrf-<vrf>__N) clear it too —
+     the receipt / OR on a non-fuel VRF, the gauge after fueling on a fuel
+     reserve VRF (VL.UNTAGGED_PHOTO_IS_RECEIPT, 2026-11-02). */
   var pc=S.photoCounts||{};
   x.proofCounts={receipts:pc[VL.liqOwner(entry.vrf)]||0, untagged:pc[String(entry.vrf)]||0};
-  if(!VL.isReserveWithdrawal(x)) x.proofCounts.untagged=0;
+  if(!VL.isReserveWithdrawal(x)&&!VL.UNTAGGED_PHOTO_IS_RECEIPT) x.proofCounts.untagged=0;
   return x;
 }
 function liqStatusOf(entry){
@@ -14516,7 +14518,8 @@ function openVrf(entry,tab){
       var fOver=pfld("Reason for going over the approved amount",oRs); pbd.appendChild(fOver);
       var wSel=null, fW=null;
       var litres=LQ?LQ.fuelLitresOfRows(entry.rows):0;
-      if(isFuelRes){
+      /* 2026-11-02: no matching withdrawal row needed; the picker is off. */
+      if(isFuelRes&&LQ.REQUIRE_FUEL_WITHDRAWAL_MATCH){
         wSel=el("select");
         var cands=LQ.withdrawalCandidates(S.withdrawals||[], entry.vrf, entry.veh||entry.vehicle||"", (entry.date||"").slice(0,10));
         (S.withdrawals||[]).forEach(function(w,i){
@@ -14565,7 +14568,7 @@ function openVrf(entry,tab){
         var c=pf.counts;
         pRc.textContent=!c?"Checking uploads…":(isFuelRes
           ? (c.afterFuel+" after-fueling photo"+(c.afterFuel===1?"":"s")+(c.slips?" · "+c.slips+" slip":""))
-          : (c.receipts+" receipt"+(c.receipts===1?"":"s")+" uploaded"));
+          : (function(n){ return n+" receipt / OR photo"+(n===1?"":"s")+" on file"; })(LQ.receiptCount(c)));
         var by={};
         (res.errors||[]).forEach(function(e){ (by[e.field]=by[e.field]||[]).push(e.msg); });
         [[fAct,"actual"],[fDate,"date"],[fRc,isFuelRes?"afterFuel":"receipt"],[fCAmt,"changeAmount"],[fCHow,"changeHow"],[fCDate,"changeDate"],[fOver,"overReason"]].concat(fW?[[fW,"withdrawal"]]:[]).forEach(function(p){

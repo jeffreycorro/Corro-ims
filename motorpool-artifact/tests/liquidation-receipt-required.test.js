@@ -38,15 +38,15 @@ describe("checkLiquidation", () => {
     assert.deepEqual(fields(V.checkLiquidation(over, ctx)), ["overReason"]);
     assert.equal(V.checkLiquidation({ ...over, overReason: "price went up at the supplier" }, ctx).ok, true);
   });
-  it("fuel reserve: after-fueling photo and a withdrawal row with matching liters; slip optional", () => {
+  it("fuel reserve: only the after-fueling photo is needed (no withdrawal row, 2026-11-02)", () => {
+    assert.equal(V.REQUIRE_FUEL_WITHDRAWAL_MATCH, false);
     const fctx = { approved: 2000, fuelReserve: true, litres: 40, today: TODAY };
     const fin = { actual: 2000, date: TODAY, by: "Ana", counts: { receipts: 0, afterFuel: 0, slips: 0 } };
-    assert.deepEqual(fields(V.checkLiquidation(fin, fctx)), ["afterFuel", "withdrawal"]);
+    assert.deepEqual(fields(V.checkLiquidation(fin, fctx)), ["afterFuel"]);
     const withPhoto = { ...fin, counts: { afterFuel: 1, slips: 0 } };
-    const mism = V.checkLiquidation({ ...withPhoto, withdrawal: { ref: "x", liters: 35 } }, fctx);
-    assert.deepEqual(fields(mism), ["withdrawal"]);
-    assert.match(mism.errors[0].msg, /35 L.*40 L/);
-    assert.equal(V.checkLiquidation({ ...withPhoto, withdrawal: { ref: "x", liters: 40 } }, fctx).ok, true);
+    assert.equal(V.checkLiquidation(withPhoto, fctx).ok, true);
+    assert.equal(V.checkLiquidation({ ...withPhoto, withdrawal: { ref: "x", liters: 35 } }, fctx).ok, true);
+    assert.deepEqual(fields(V.checkLiquidation({ ...fin, counts: { receipts: 2 } }, fctx)), ["afterFuel"]);
   });
   it("cancelled / not bought / duplicate are exempt", () => {
     ["cancelled", "not-bought", "duplicate"].forEach((o) => assert.equal(V.checkLiquidation({}, { ...ctx, outcome: o }).ok, true));
@@ -105,6 +105,45 @@ function io(opts) {
 }
 const proofFor = (extra) => Object.assign({ v: 1, actual: 1500, approved: 1500, date: TODAY, by: "Ana" }, extra);
 
+describe("receipt / OR photos in the photos collection (2026-11-02)", () => {
+  it("an untagged photo on the VRF counts as its receipt; a link or a tagged gauge / slip does not", () => {
+    assert.equal(V.UNTAGGED_PHOTO_IS_RECEIPT, true);
+    const e = { vrf: "1", status: "Closed", rows: [closedRow()] };
+    const c = V.proofCounts([{ caption: "815209029_n.jpg", kind: "photo" }], []);
+    assert.equal(V.noReceiptFlag(e, c).flag, false);
+    assert.equal(V.noReceiptFlag(e, c).clearedBy, "untagged photo on VRF");
+    assert.equal(V.noReceiptFlag(e, c, { untaggedClearsNonFuel: false }).flag, true);
+    assert.equal(V.noReceiptFlag(e, V.proofCounts([{ kind: "link", caption: "x" }], [])).flag, true);
+    assert.equal(V.noReceiptFlag(e, V.proofCounts([{ caption: "Gauge before filling" }, { role: "withdrawal-slip" }], [])).flag, true);
+    assert.equal(V.noReceiptFlag(e, V.proofCounts([{ type: "receipt" }], [])).clearedBy, "receipt");
+    assert.equal(V.noReceiptFlag(e, V.proofCounts([{ caption: "Official Receipt (OR) 0716" }], [])).clearedBy, "receipt");
+  });
+  it("the Liquidate rules accept a VRF photo as the receipt for a non-fuel VRF", () => {
+    assert.equal(V.checkLiquidation({ ...base, counts: { receipts: 0, untagged: 1 } }, ctx).ok, true);
+    assert.deepEqual(fields(V.checkLiquidation({ ...base, counts: { receipts: 0, gauge: 1 } }, ctx)), ["receipt"]);
+  });
+  it("the guard accepts a photo on vrf-<vrf> from the photos collection", async () => {
+    const next = { id: "ledger:7001", kind: "ledger", vrf_no: "7001", reserve_no: "9", data: { rows: [closedRow({ liq: { at: "x", by: "Ana", outcome: "bought", proof: proofFor() } })] } };
+    const recs = { "reserve:9": { data: { vrfs: ["7001"], approvedBudget: 1500 } } };
+    await G.guardRecordWrite(next, io({ records: recs, photos: { "7001": [{ caption: "IMG_1.jpg", kind: "photo" }] } }));
+  });
+  it("the dry run splits cleared non-fuel VRFs by receipt kind", () => {
+    const entries = D.buildEntries({ ledger: [
+      { vrf: "1", rows: [closedRow({ vrf: "1" })] },
+      { vrf: "5", rows: [closedRow({ vrf: "5" })] },
+      { vrf: "6", rows: [closedRow({ vrf: "6" })] },
+    ] });
+    const r = D.noReceiptReport(entries, { "5": [{ caption: "IMG.jpg" }], "6": [{ caption: "Receipt — Petron" }] }, TODAY, { all: true });
+    assert.deepEqual([r.flagged.count, r.nonFuel.clearedByUntaggedPhoto, r.nonFuel.clearedByReceipt, r.strictFlagged.count], [1, 1, 1, 2]);
+    assert.equal(r.all.length, 3);
+  });
+  it("the trigger counts untagged VRF photos, not links or gauge / slip captions", () => {
+    const sql = fs.readFileSync(path.join(__dirname, "../supabase/migrations/20261102000001_motorpool_liquidation_proof.sql"), "utf8");
+    assert.match(sql, /<> 'link'/);
+    assert.match(sql, /!~\* '\(gauge\|withdrawal\\s\*slip\)'/);
+  });
+});
+
 describe("server guard", () => {
   it("refuses a new liquidation without a proof stamp (409)", async () => {
     const next = { id: "ledger:7001", kind: "ledger", vrf_no: "7001", data: { rows: [closedRow()] } };
@@ -125,16 +164,16 @@ describe("server guard", () => {
     const recs = { "reserve:9": { data: { vrfs: ["7001"], approvedBudget: 2000 } } };
     await assert.rejects(() => G.guardRecordWrite(next, io({ records: recs, photos: { "LIQ-7001": [{}] } })), /change returned/);
   });
-  it("fuel reserve: checks the after-fueling photo and the withdrawal row liters", async () => {
-    const wd = { date: "2026-11-02", vehicle: "DT-12", liters: 40, vrf: "7002" };
-    const ref = V.withdrawalRef(wd, 0);
-    const proof = proofFor({ actual: 2000, approved: 2000, fuel: { withdrawal: { ref, liters: 40 } } });
+  it("fuel reserve: needs only the after-fueling photo; no withdrawal row or liters match", async () => {
+    const proof = proofFor({ actual: 2000, approved: 2000 });
     const next = { id: "ledger:7002", kind: "ledger", vrf_no: "7002", data: { rows: [fuelRow({ vrf: "7002", liq: { at: "x", by: "Ana", outcome: "bought", proof } })] } };
-    const docs = { "fuel/withdrawals": { data: { rows: [wd] } } };
-    await assert.rejects(() => G.guardRecordWrite(next, io({ docs })), /after-fueling/);
-    await G.guardRecordWrite(next, io({ docs, photos: { "7002": [{ caption: "Gauge after fill" }] } }));
-    const docs35 = { "fuel/withdrawals": { data: { rows: [Object.assign({}, wd, { liters: 35 })] } } };
-    await assert.rejects(() => G.guardRecordWrite(next, io({ docs: docs35, photos: { "7002": [{ role: "fuel-gauge-after" }] } })), /withdrawal/);
+    let docReads = 0;
+    const base = io({});
+    const counting = (photos) => Object.assign(io({ photos }), { getDoc: async () => { docReads++; return null; } });
+    await assert.rejects(() => G.guardRecordWrite(next, base), /after-fueling/);
+    await G.guardRecordWrite(next, counting({ "7002": [{ caption: "Gauge after fill" }] }));
+    await G.guardRecordWrite(next, counting({ "7002": [{ role: "fuel-gauge-after" }] }));
+    assert.equal(docReads, 0);
   });
   it("a reserve closes only after its VRFs are closed; an already-closed reserve is exempt", async () => {
     const next = { id: "reserve:9", kind: "reserve", data: { no: 9, status: "Closed", liquidatedAt: "x", vrfs: ["7001"] } };
@@ -187,5 +226,10 @@ describe("wiring", () => {
     assert.match(sql, /motorpool\.allow_liquidate_without_proof/);
     assert.match(sql, /before insert or update on public\.motorpool_records/);
     assert.match(sql, /if not exists \(\s*select 1 from pg_trigger/);
+  });
+  it("no matching-withdrawal requirement left in the trigger or the dialog", () => {
+    assert.doesNotMatch(sql, /matching reserve withdrawal row/);
+    assert.doesNotMatch(sql, /fuel'->'withdrawal'/);
+    assert.match(html, /if\(isFuelRes&&LQ\.REQUIRE_FUEL_WITHDRAWAL_MATCH\)/);
   });
 });
