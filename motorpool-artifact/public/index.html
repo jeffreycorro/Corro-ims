@@ -2523,7 +2523,7 @@ async function settleReserve(no, outcome, by, note){
     return v.status==="Not bought"||v.status==="Cancelled"||v.status==="Duplicate";
   });
   if(!linked.length && stopping) allDead=true;
-  var actual=linked.reduce(function(a,v){ return a+(v.total||0); },0);
+  var actual=linked.reduce(function(a,v){ return a+reserveShareOfVrf(r,v); },0);
   r.liquidatedAt=iso();
   if(allDead){
     r.actual=0;
@@ -4284,11 +4284,25 @@ function approvedReserves(veh){
 function flaggedReserves(){ return S.reserves.filter(function(r){ return r.status==="Flagged"; }); }
 
 /* What the linked VRFs actually came to. */
+/* A VRF can carry lines for several units (e.g. an AV bulk top-up plus one
+   unit's fuel). Only the lines tagged to this reserve count toward it; an
+   untagged VRF falls back to its whole total. */
+function reserveShareOfVrf(r, v){
+  if(!v) return 0;
+  var no=String((r&&r.no)||"").trim();
+  var rows=(v.rows||[]);
+  var mine=no?rows.filter(function(x){ return x&&String(x.reserve==null?"":x.reserve).trim()===no; }):[];
+  if(!mine.length) return v.total||0;
+  return mine.reduce(function(a,x){
+    var amt=(x.total!=null&&x.total!=="")?Number(x.total):(Number(x.qty)||0)*(Number(x.price)||0);
+    return a+(isFinite(amt)?amt:0);
+  },0);
+}
 function reserveActual(r){
   var t=0, found=[];
   (r.vrfs||[]).forEach(function(no){
     var v=vrfByNo(no);
-    if(v){ t+=v.total; found.push(v); }
+    if(v){ t+=reserveShareOfVrf(r,v); found.push(v); }
   });
   return {total:t,vrfs:found};
 }
