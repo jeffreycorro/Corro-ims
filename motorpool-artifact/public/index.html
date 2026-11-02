@@ -2008,13 +2008,15 @@ function rowsConfinedToVrf(rows, vrfNo){
   });
   return rows||[];
 }
-async function liquidateVrf(entry,edits,added,by,note,outcome){
+async function liquidateVrf(entry,edits,added,by,note,outcome,proof){
   var no=String(entry&&entry.vrf||"").trim();
   if(!no) throw new Error("VRF number is required.");
   var ownerNo=entry.reserve||"";
   assertSingleVrfOwner(no, ownerNo||null);
   outcome=outcome||liquidationOutcome(entry.rows, edits, added);
   var stamp={at:iso(),by:by||"",note:note||"",outcome:outcome};
+  /* Liquidation proof (2026-11-02): the server refuses a bought close without it. */
+  if(proof&&outcome==="bought") stamp.proof=proof;
   if(outcome==="duplicate"){
     var dupNo=/(\d{3,})/.exec(String(stamp.note||""));
     if(dupNo) stamp.duplicateOf=String(dupNo[1]).replace(/^0+/,"")||dupNo[1];
@@ -4833,7 +4835,7 @@ var photoDocCache={};
 var photoDocFlight={};
 var photoJobActive=0;
 var photoJobWait=[];
-var PHOTO_META_KEYS=["id","vrf","idx","caption","kind","linkKind","url","w","h","bytes","mime","by","at","link","thumb"];
+var PHOTO_META_KEYS=["id","vrf","idx","caption","kind","linkKind","url","w","h","bytes","mime","by","at","link","thumb","role"];
 function photoMetaOf(x){
   if(!x) return null;
   var o={};
@@ -5183,6 +5185,7 @@ async function addPhoto(vrf,rec){
   var body={vrf:String(vrf),idx:idx,caption:rec.caption||"",by:rec.by||"",at:iso(),
     data:rec.data,w:rec.w,h:rec.h,bytes:rec.bytes,link:rec.link||"",kind:rec.kind||"photo"};
   if(rec.mime) body.mime=rec.mime;
+  if(rec.role) body.role=String(rec.role);
   var row=Object.assign({id:photoKey(vrf,idx)},body);
   var loc=lsGet("photos/"+vrf,{items:[]});
   loc.items=mergePhotoLists([loc.items||[],[row]]);
@@ -5227,7 +5230,7 @@ async function copyPhotos(from,to){
         await addLink(to,{url:x.url,linkKind:x.linkKind,caption:x.caption,by:x.by});
       }else if(x.data){
         await addPhoto(to,{data:x.data,w:x.w,h:x.h,bytes:x.bytes,caption:x.caption,by:x.by,
-          kind:x.kind,mime:x.mime});
+          kind:x.kind,mime:x.mime,role:x.role});
       }else continue;
       n++;
     }catch(e){}
@@ -5255,7 +5258,7 @@ async function copyMissingPhotos(from, to){
         await addLink(to,{url:x.url,linkKind:x.linkKind,caption:x.caption,by:x.by});
       }else if(x.data){
         await addPhoto(to,{data:x.data,w:x.w,h:x.h,bytes:x.bytes,caption:x.caption,by:x.by,
-          kind:x.kind,mime:x.mime});
+          kind:x.kind,mime:x.mime,role:x.role});
       }else continue;
       if(fp2) have[fp2]=1;
       n++;
@@ -7228,8 +7231,15 @@ function vrfChip(v){
     var of=duplicateOfNumber(v);
     return el("span","chip mute", of?("Duplicate of "+of):"Duplicate");
   }
+  if(v.status==="Closed"&&vrfNoReceipt(v)) return el("span","chip crit",VL.NO_RECEIPT_LABEL);
   var x=m[v.status]||["mute",v.status];
   return el("span","chip "+x[0],x[1]);
+}
+/* Liquidated before 2026-11-02 with no receipt / after-fueling photo on file.
+   Data is not changed; the lists just say so. */
+function vrfNoReceipt(v){
+  if(!v||!VL||typeof liqStatusOf!=="function") return false;
+  try{ return !!liqStatusOf(v).noReceipt; }catch(e){ return false; }
 }
 function vrfLogStatus(v){
   if(v&&v.status==="Duplicate") return vrfChip(v);
@@ -8342,13 +8352,20 @@ function liqEntryOf(entry){
     x.kind=rv.kind||x.kind; x.liquidatedAt=rv.liquidatedAt||"";
     if(!x.approvedAt) x.approvedAt=rv.approvedAt||"";
     if(!x.requestedBy) x.requestedBy=rv.requestedBy||"";
+    if(rv.fuelPhotos) x.fuelPhotos=rv.fuelPhotos;
   }
+  /* "Liquidated – no receipt" flag: LIQ-<vrf> uploads count as receipts; on a
+     fuel reserve VRF the photos on the VRF itself (gauge after fueling) clear it. */
+  var pc=S.photoCounts||{};
+  x.proofCounts={receipts:pc[VL.liqOwner(entry.vrf)]||0, untagged:pc[String(entry.vrf)]||0};
+  if(!VL.isReserveWithdrawal(x)) x.proofCounts.untagged=0;
   return x;
 }
 function liqStatusOf(entry){
   return VL.liquidationOf(liqEntryOf(entry), liqRecordFor(entry.vrf), liqProofCount(entry.vrf));
 }
 function liqChip(L){
+  if(L&&L.noReceipt) return el("span","chip crit",VL.NO_RECEIPT_LABEL);
   var cls={"Liquidated":"ok","Partially liquidated":"warn","Unliquidated":"crit","Excluded":"mute"}[L.status]||"mute";
   return el("span","chip "+cls,L.status==="Excluded"?"Not counted":(L.status+(L.legacy?" (paper)":"")));
 }
@@ -14455,6 +14472,135 @@ function openVrf(entry,tab){
         body.appendChild(goto2);
       }
 
+
+      /* ---- Liquidation proof (2026-11-02): required before "Liquidate and close". ---- */
+      var LQ=(typeof window!=="undefined"&&window.VrfLiquidation)||null;
+      var isFuelRes=!!(LQ&&LQ.isReserveWithdrawal(entry));
+      var pf={counts:null, withdrawal:null};
+      var pcard=el("div","card"); pcard.style.marginTop="var(--space-4)";
+      var phd=el("div","hd"); phd.appendChild(el("h3",null,isFuelRes?"Fuel reserve proof":"Receipts & amount spent")); pcard.appendChild(phd);
+      var pbd=el("div","bd"); pcard.appendChild(pbd);
+      function pfld(l,n,h){ var x=el("div","field"); x.appendChild(el("label",null,l)); x.appendChild(n);
+        var e=el("div","hint"); e.style.color="var(--danger)"; e.hidden=true; x.appendChild(e); x._err=e;
+        if(h) x.appendChild(el("div","hint",h)); return x; }
+      var pr1=el("div","f3");
+      var pAct=el("input"); pAct.inputMode="decimal"; pAct.className="mono"; pAct.placeholder="0.00";
+      var pDate=el("input"); pDate.type="date"; pDate.value=iso().slice(0,10);
+      var fAct=pfld("Actual amount spent (₱)",pAct,"Total of the receipts. Must match the lines above.");
+      var fDate=pfld("Liquidation date",pDate);
+      var pRc=el("div","hint","Checking uploads…");
+      var fRc=pfld(isFuelRes?"After-fueling photo":"Receipts / OR",pRc);
+      pr1.appendChild(fAct); pr1.appendChild(fDate); pr1.appendChild(fRc);
+      pbd.appendChild(pr1);
+      var upRow2=el("div","row"); upRow2.style.marginTop="var(--space-2)";
+      var pFi=el("input"); pFi.type="file"; pFi.multiple=true; pFi.accept=isFuelRes?"image/*":((LQ&&LQ.PROOF_ACCEPT)||"image/*,application/pdf");
+      if(isFuelRes) pFi.capture="environment";
+      var pUp=el("button","btn sm",isFuelRes?"Upload after-fueling photo":"Upload receipt / OR");
+      upRow2.appendChild(pFi); upRow2.appendChild(pUp);
+      var pSlipFi=null, pSlipUp=null;
+      if(isFuelRes){
+        pSlipFi=el("input"); pSlipFi.type="file"; pSlipFi.accept="image/*,application/pdf";
+        pSlipUp=el("button","btn sm","Upload withdrawal slip (optional)");
+        upRow2.appendChild(pSlipFi); upRow2.appendChild(pSlipUp);
+      }
+      pbd.appendChild(upRow2);
+      var pr2=el("div","f3"); pr2.style.marginTop="var(--space-3)";
+      var cAmt=el("input"); cAmt.inputMode="decimal"; cAmt.className="mono";
+      var cHow=el("select"); cHow.appendChild(new Option("— how —",""));
+      ((LQ&&LQ.RETURN_METHODS)||[]).forEach(function(x){ cHow.appendChild(new Option(x,x)); });
+      var cDate=el("input"); cDate.type="date"; cDate.value=iso().slice(0,10);
+      var fCAmt=pfld("Change returned (₱)",cAmt), fCHow=pfld("How it was returned",cHow), fCDate=pfld("Date returned",cDate);
+      pr2.appendChild(fCAmt); pr2.appendChild(fCHow); pr2.appendChild(fCDate);
+      pbd.appendChild(pr2);
+      var oRs=el("textarea"); oRs.rows=2; oRs.placeholder="why it cost more than approved";
+      var fOver=pfld("Reason for going over the approved amount",oRs); pbd.appendChild(fOver);
+      var wSel=null, fW=null;
+      var litres=LQ?LQ.fuelLitresOfRows(entry.rows):0;
+      if(isFuelRes){
+        wSel=el("select");
+        var cands=LQ.withdrawalCandidates(S.withdrawals||[], entry.vrf, entry.veh||entry.vehicle||"", (entry.date||"").slice(0,10));
+        (S.withdrawals||[]).forEach(function(w,i){
+          if(!w) return;
+          if(!cands.some(function(c){ return c.idx===i; })) cands.push({idx:i, ref:LQ.withdrawalRef(w,i), date:w.date||"", vehicle:w.vehicle||"", liters:Number(w.liters)||0, vrf:String(w.vrf||""), exact:false});
+        });
+        wSel.appendChild(new Option("— pick the reserve withdrawal row —",""));
+        cands.slice(0,300).forEach(function(c){
+          wSel.appendChild(new Option((c.exact?"★ ":"")+(c.date||"—")+" · "+(c.vehicle||"—")+" · "+c.liters+" L"+(c.vrf?" · VRF "+c.vrf:""),c.ref));
+        });
+        var pre=cands.filter(function(c){ return c.exact && Math.abs(c.liters-litres)<=0.01; })[0];
+        if(pre) wSel.value=pre.ref;
+        wSel._c=cands;
+        fW=pfld("Matching withdrawal row",wSel,"This VRF is "+litres+" L. The row's liters must match. The slip is optional.");
+        pbd.appendChild(fW);
+      }
+      var pErr=el("ul","hint"); pErr.style.cssText="color:var(--danger);margin:var(--space-2) 0 0 18px"; pbd.appendChild(pErr);
+      body.appendChild(pcard);
+      function curActual(){ var t=0; entry.rows.forEach(function(r,i){ t+=lineTot(i); }); added.forEach(function(a2){ t+=addedTot(a2); }); return Math.round(t*100)/100; }
+      function vrfApproved(){
+        var rr=entry.reserve?reserveBy(entry.reserve):null;
+        if(rr&&(rr.vrfs||[]).length<=1&&(rr.approvedBudget!=null||rr.budget!=null)) return Number(rr.approvedBudget!=null?rr.approvedBudget:rr.budget)||0;
+        return Number(entry.total)||0;
+      }
+      function proofInput(){
+        var w=null;
+        if(wSel&&wSel.value){ var c=(wSel._c||[]).filter(function(x){ return x.ref===wSel.value; })[0]; if(c) w={ref:c.ref,liters:c.liters,date:c.date,vehicle:c.vehicle}; }
+        return {actual:pAct.value, date:pDate.value, by:lby.value,
+          change:{amount:cAmt.value, how:cHow.value, date:cDate.value}, overReason:oRs.value,
+          counts:pf.counts||{}, withdrawal:w};
+      }
+      function proofCtx(){ return {approved:vrfApproved(), fuelReserve:isFuelRes, litres:litres, today:iso().slice(0,10), outcome:nothingBought()?"not-bought":"bought"}; }
+      function proofCheck(){
+        if(!LQ) return {ok:false, errors:[{field:"proof",msg:"The liquidation rules did not load. Reload the page."}]};
+        var res=LQ.checkLiquidation(proofInput(), proofCtx());
+        var a=Number(pAct.value), ap=vrfApproved();
+        if(pAct.value.trim() && Math.abs(a-curActual())>0.01) res.errors.push({field:"actual",msg:"Actual "+peso(a)+" does not match the lines above ("+peso(curActual())+")."});
+        res.ok=!res.errors.length;
+        return res;
+      }
+      function drawProof(res){
+        var a=Number(pAct.value)||0, ap=vrfApproved();
+        var under=a>0&&ap>0&&a+0.005<ap, over=a>0&&ap>0&&a>ap+0.005;
+        pr2.hidden=!under; fOver.hidden=!over;
+        if(under&&!cAmt.value) cAmt.placeholder=(Math.round((ap-a)*100)/100).toFixed(2);
+        var c=pf.counts;
+        pRc.textContent=!c?"Checking uploads…":(isFuelRes
+          ? (c.afterFuel+" after-fueling photo"+(c.afterFuel===1?"":"s")+(c.slips?" · "+c.slips+" slip":""))
+          : (c.receipts+" receipt"+(c.receipts===1?"":"s")+" uploaded"));
+        var by={};
+        (res.errors||[]).forEach(function(e){ (by[e.field]=by[e.field]||[]).push(e.msg); });
+        [[fAct,"actual"],[fDate,"date"],[fRc,isFuelRes?"afterFuel":"receipt"],[fCAmt,"changeAmount"],[fCHow,"changeHow"],[fCDate,"changeDate"],[fOver,"overReason"]].concat(fW?[[fW,"withdrawal"]]:[]).forEach(function(p){
+          var m=by[p[1]]; p[0]._err.hidden=!m; p[0]._err.textContent=m?m.join(" "):"";
+        });
+        pErr.innerHTML="";
+        (res.errors||[]).forEach(function(e){ pErr.appendChild(el("li",null,e.msg)); });
+      }
+      async function loadProofCounts(){
+        try{
+          var lists=await Promise.all([listPhotoMeta(String(entry.vrf)), listPhotoMeta(LQ.liqOwner(String(entry.vrf)))]);
+          pf.counts=LQ.proofCounts(lists[0], lists[1]);
+        }catch(e){ pf.counts={receipts:0,afterFuel:0,gauge:0,slips:0,untagged:0}; }
+        syncLiq();
+      }
+      async function uploadProof(fi, role, btn){
+        var files=Array.prototype.slice.call(fi.files||[]);
+        if(!files.length){ toast("Choose the file first."); return; }
+        btn.disabled=true;
+        var owner=isFuelRes&&role!==(LQ.SLIP_ROLE)?String(entry.vrf):LQ.liqOwner(String(entry.vrf));
+        try{
+          for(var i=0;i<files.length;i++){
+            var med=(isFuelRes&&role!==LQ.SLIP_ROLE)?await shrinkImage(files[i]):await prepareLiqFile(files[i]);
+            var cap=role===LQ.AFTER_FUEL_ROLE?"Gauge after fueling — "+files[i].name:(role===LQ.SLIP_ROLE?"Withdrawal slip — "+files[i].name:"Receipt — "+files[i].name);
+            await addPhoto(owner,{data:med.data,w:med.w,h:med.h,bytes:med.bytes,kind:med.kind,mime:med.mime,caption:cap,by:lby.value.trim()||signedInName(),role:role});
+          }
+          toast(files.length+" file"+(files.length===1?"":"s")+" uploaded.");
+        }catch(e){ toast(e&&e.message||"Could not upload."); }
+        fi.value=""; btn.disabled=false;
+        loadProofCounts();
+      }
+      pUp.addEventListener("click",function(){ uploadProof(pFi, isFuelRes?LQ.AFTER_FUEL_ROLE:LQ.RECEIPT_ROLE, pUp); });
+      if(pSlipUp) pSlipUp.addEventListener("click",function(){ uploadProof(pSlipFi, LQ.SLIP_ROLE, pSlipUp); });
+      [pAct,pDate,cAmt,cDate,oRs].forEach(function(x){ x.addEventListener("input",function(){ syncLiq(); }); });
+      [cHow].concat(wSel?[wSel]:[]).forEach(function(x){ x.addEventListener("change",function(){ syncLiq(); }); });
       var lrow=el("div","f3"); lrow.style.marginTop="var(--space-4)";
       function lf3(l,n){ var x=el("div","field"); x.appendChild(el("label",null,l)); x.appendChild(n); return x; }
       var lby=el("input"); lby.placeholder="your name"; lby.value=signedInName();
@@ -14472,7 +14618,10 @@ function openVrf(entry,tab){
         var zeroClose=nothingBought();
         if(goto2) goto2.hidden=zeroClose;
         closeBtn.textContent=zeroClose?"Close as not bought":"Liquidate and close";
-        closeBtn.disabled=(!ev2.ok&&!zeroClose)||!hasName;
+        var pres=zeroClose?{ok:true,errors:[]}:proofCheck();
+        pcard.hidden=zeroClose;
+        if(!zeroClose) drawProof(pres);
+        closeBtn.disabled=!hasName||!pres.ok;
         evb2.className="banner "+((ev2.ok||zeroClose)?"info":"warn");
         evb2.innerHTML=zeroClose
           ? "<b>Nothing was bought.</b> Closing sets every line and the VRF total to ₱0.00 and marks it not bought. No receipt is required."
@@ -14480,8 +14629,8 @@ function openVrf(entry,tab){
             ? "<b>"+ev2.count+" photo"+(ev2.count===1?"":"s")+" attached.</b> They print with the form."
             : "<b>No proof attached.</b> Fuel closes against a picture of the gauge or the meter — attach it on the Attachments tab before closing.");
         var need=[];
-        if(!ev2.ok&&!zeroClose) need.push("the proof photo on the Attachments tab");
         if(!hasName) need.push("your name in “Liquidated by”");
+        if(!pres.ok) need.push("the receipt and amount details listed above");
         lmsg.textContent = zeroClose && hasName
           ? "This will close VRF "+entry.vrf+" at ₱0.00."
           : (need.length ? "Closing this VRF needs "+need.join(" and ")+"." : "");
@@ -14489,9 +14638,16 @@ function openVrf(entry,tab){
       }
       lby.addEventListener("input",syncLiq);
       syncLiq();
+      loadProofCounts();
       closeBtn.addEventListener("click",async function(){
         if(!lby.value.trim()){ toast("The liquidation has to carry a name."); return; }
         var outcome=liquidationOutcome(entry.rows, edits, added);
+        var proof=null;
+        if(outcome!=="not-bought"){
+          var pchk=proofCheck();
+          if(!pchk.ok){ syncLiq(); toast(pchk.errors[0].msg); return; }
+          proof=LQ.buildProof(proofInput(), proofCtx());
+        }
         closeBtn.disabled=true; closeBtn.textContent="Closing…";
         var bad=added.filter(function(a2){ return a2.cat&&!(parseFloat(a2.qty)>0); });
         if(outcome!=="not-bought"&&bad.length){ closeBtn.disabled=false; syncLiq();
@@ -14528,7 +14684,7 @@ function openVrf(entry,tab){
           return;
         }
         try{
-          await liquidateVrf(prePlan==="seed"?entry:target,edits,added,lby.value.trim(),lnt.value.trim(),outcome);
+          await liquidateVrf(prePlan==="seed"?entry:target,edits,added,lby.value.trim(),lnt.value.trim(),outcome,proof);
         }catch(err){
           closeBtn.disabled=false; syncLiq();
           toast(err&&err.message||"Could not liquidate VRF "+entry.vrf+".");
@@ -15217,7 +15373,7 @@ function vrfView(){
   var pfi=el("input"); pfi.type="file"; pfi.accept="image/*"; pfi.multiple=true;
   var pcap=el("input"); pcap.placeholder="what these show";
   var prole=el("select");
-  [["","Other"],["fuel-gauge","Fuel gauge"],["odometer","Odometer / hour meter"],["receipt","Receipt"]].forEach(function(o){
+  [["","Other"],["fuel-gauge","Fuel gauge"],["fuel-gauge-after","Fuel gauge after fueling"],["odometer","Odometer / hour meter"],["receipt","Receipt"]].forEach(function(o){
     prole.appendChild(new Option(o[1],o[0]));
   });
   pr2.appendChild(f4("Add photos",pfi)); pr2.appendChild(f4("Caption",pcap)); pr2.appendChild(f4("Fuel photo",prole));
@@ -15233,6 +15389,7 @@ function vrfView(){
         var role=prole.value||"";
         var capText=pcap.value.trim()||files[i].name;
         if(role==="fuel-gauge" && !/gauge/i.test(capText)) capText="Fuel gauge — "+capText;
+        if(role==="fuel-gauge-after" && !/gauge/i.test(capText)) capText="Gauge after fueling — "+capText;
         if(role==="odometer" && !/odo|hour/i.test(capText)) capText="Odometer — "+capText;
         if(role==="receipt" && !/receipt/i.test(capText)) capText="Receipt — "+capText;
         d.photos.push({data:sh.data,w:sh.w,h:sh.h,bytes:sh.bytes,
@@ -15440,7 +15597,7 @@ async function sendForApproval(d,btn,opts){
           for(var pi=0;pi<staged.length;pi++){
             try{
               await addPhotoToOwners([liveNo, rsvOwner(hold.no)],{data:staged[pi].data,w:staged[pi].w,
-                h:staged[pi].h,bytes:staged[pi].bytes,caption:staged[pi].caption,by:who});
+                h:staged[pi].h,bytes:staged[pi].bytes,caption:staged[pi].caption,by:who,role:staged[pi].role});
             }catch(e){
               toast("Photo could not be saved: "+((e&&e.message)||"try again")); }
           }
@@ -15662,7 +15819,7 @@ function fuelView(){
     var files=Array.prototype.slice.call(pfi.files||[]);
     for(var i=0;i<files.length;i++){
       try{ var sh=await shrinkImage(files[i]);
-        dphotos.push({data:sh.data,w:sh.w,h:sh.h,bytes:sh.bytes,caption:"Gauge after fill"}); }catch(e){}
+        dphotos.push({data:sh.data,w:sh.w,h:sh.h,bytes:sh.bytes,caption:"Gauge after fill",role:"fuel-gauge-after"}); }catch(e){}
     }
     pfi.value=""; drawStrip();
   });
@@ -15699,7 +15856,7 @@ function fuelView(){
     }
     for(var pi=0;pi<dphotos.length;pi++){
       try{ await addPhoto(no,{data:dphotos[pi].data,w:dphotos[pi].w,h:dphotos[pi].h,
-        bytes:dphotos[pi].bytes,caption:dphotos[pi].caption,by:op.value}); }catch(e){}
+        bytes:dphotos[pi].bytes,caption:dphotos[pi].caption,by:op.value,role:dphotos[pi].role}); }catch(e){}
     }
     var rr=reserveBy(rsvNo);
     if(rr){

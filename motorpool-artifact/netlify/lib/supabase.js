@@ -2,6 +2,7 @@
 
 const { ledgerMonthFromParts } = require("../../public/vrf-report");
 const { normalizeLedgerRows, normalizeReserve } = require("./project-name");
+const { guardRecordWrite } = require("./liquidation-guard");
 
 function supabaseUrl() {
   return (
@@ -476,6 +477,13 @@ function planCollectionWrites(collection, id, data, existingRecs) {
 }
 
 async function writeRecord(row, exists) {
+  /* Liquidation proof: refuses a write that newly sets a VRF Liquidated
+     without receipts / after-fueling photo (see liquidation-guard.js). */
+  await guardRecordWrite(row, {
+    readRecord,
+    listPhotoMeta,
+    getDoc: (collection, id) => fetchDoc(collection, id),
+  });
   if (exists) {
     await rest({
       method: "PATCH",
@@ -818,6 +826,7 @@ function photoMetaSelect() {
     "at:data->>at",
     "link:data->>link",
     "thumb:data->>thumb",
+    "role:data->>role",
   ].join(",");
 }
 
@@ -872,7 +881,7 @@ function photoIdRangeQuery(owner) {
 function photoMetaRow(row) {
   if (!row || typeof row !== "object") return null;
   const out = {};
-  ["id", "vrf", "idx", "caption", "kind", "linkKind", "url", "w", "h", "bytes", "mime", "by", "at", "link", "thumb"].forEach(
+  ["id", "vrf", "idx", "caption", "kind", "linkKind", "url", "w", "h", "bytes", "mime", "by", "at", "link", "thumb", "role"].forEach(
     (key) => {
       if (row[key] != null && row[key] !== "") out[key] = row[key];
     }
