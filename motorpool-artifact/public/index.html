@@ -445,7 +445,7 @@ var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
    This label is inside the page function. The shim reads window.BUILD when it
    sends a save. Without that copy every save goes out with an empty build and
    the server answers "Reload the page". */
-var BUILD = "2026-11-05 b";
+var BUILD = "2026-11-05 c";
 try { window.BUILD = BUILD; } catch (e) {}
 var DAY = 86400000, MO = 30.44;
 
@@ -474,7 +474,7 @@ var S = {
   vehicles:[], parts:[], suppliers:[], projects:[], drivers:[], worktypes:[], ambig:[], items:[],
   purchases:[], withdrawals:[], ledger:{}, breakdowns:[], mechanic:[], tasks:[], papers:[],
   cfg:{nextVrf:5793, pass:null, varianceTol:0.10, nextReserve:1}, sample:null, chat:[], askFiles:[], askPhase:"", asking:false, voiceOut:true, voiceLang:"en-PH", hearing:false, speaking:false, micBlocked:false, ttsReady:false,
-  voiceName:"", voices:[], photoCounts:{}, reserves:[], rsvYears:[], issued:{numbers:{}}, lens:"job", selUnit:"", selCat:"", selWork:"", regWork:"", regUnit:"", regSrc:"", regStatus:"", logQ:"",
+  voiceName:"", voices:[], photoCounts:{}, reserves:[], rsvYears:[], issued:{numbers:{}}, lens:"job", selUnit:"", selCat:"", selWork:"", regWork:"", regUnit:"", regSrc:"", regStatus:"", logQ:"", logSource:"",
   view:"yard", office:false, db:null, ready:false, sel:null, draft:null, stale:false,
   hist:[], showArchivedProjects:false, logProject:"", esigs:{}
 };
@@ -1366,6 +1366,97 @@ function vrfSearchHits(vrf,term){
   }
   return false;
 }
+/* Optional origin of a VRF: Motor Pool, a site PSRF, or an LRF from Corro
+   Materials (for example LRF-0010). Blank is the normal case and must not
+   change how an older VRF renders or prints. */
+var VRF_SOURCE_CHOICES=["Motor Pool","PSRF","LRF"];
+function canonVrfSource(v){
+  var key=String(v==null?"":v).trim().toLowerCase().replace(/\s+/g," ");
+  if(key==="motor pool"||key==="motorpool") return "Motor Pool";
+  if(key==="psrf") return "PSRF";
+  if(key==="lrf") return "LRF";
+  return "";
+}
+function vrfSourceNoText(v){
+  return String(v==null?"":v).trim();
+}
+function vrfSourceParts(entry){
+  var source="", sourceNo="";
+  function take(obj){
+    if(!obj||typeof obj!=="object") return;
+    if(!source) source=canonVrfSource(obj.source);
+    if(!sourceNo) sourceNo=vrfSourceNoText(obj.sourceNo);
+  }
+  take(entry);
+  var rows=entry&&entry.rows;
+  var i;
+  if(rows&&rows.length){
+    for(i=0;i<rows.length;i++) take(rows[i]);
+  }
+  if((!source||!sourceNo)&&typeof reserveForVrf==="function"){
+    try{ take(reserveForVrf(entry)); }catch(e){}
+  }
+  if((!source||!sourceNo)&&entry&&entry.reserve&&typeof reserveBy==="function"){
+    try{ take(reserveBy(entry.reserve)); }catch(e2){}
+  }
+  return {source:source, sourceNo:sourceNo};
+}
+function vrfSourceLabel(entry){
+  var p=vrfSourceParts(entry||{});
+  if(!p.source&&!p.sourceNo) return "";
+  if(p.source&&p.sourceNo) return "Source: "+p.source+" · "+p.sourceNo;
+  if(p.source) return "Source: "+p.source;
+  return "Source: "+p.sourceNo;
+}
+function vrfSourceHay(entry){
+  var p=vrfSourceParts(entry||{});
+  return (p.source+" "+p.sourceNo).trim().toLowerCase();
+}
+function vrfMatchesLogSource(v, source){
+  source=canonVrfSource(source);
+  if(!source) return true;
+  return vrfSourceParts(v).source===source;
+}
+function vrfMatchesLogTerm(v, term){
+  term=String(term==null?"":term).trim().toLowerCase();
+  if(!term) return true;
+  if(vrfSearchHits(v&&v.vrf, term)) return true;
+  if(typeof voucherSearchHit==="function" && voucherSearchHit(v, term)) return true;
+  if(/^\d{3,}$/.test(term.replace(/\s+/g,""))) return false;
+  if(((v&&v.units)||[]).join(" ").toLowerCase().indexOf(term)>=0) return true;
+  if(String((v&&v.project)||"").toLowerCase().indexOf(term)>=0) return true;
+  if(vrfSourceHay(v).indexOf(term)>=0) return true;
+  return ((v&&v.rows)||[]).some(function(r){
+    return ((r&&r.item||"")+" "+(r&&r.supplier||"")+" "+(r&&r.cat||"")+" "+(r&&r.sub||"")+" "+(r&&r.source||"")+" "+(r&&r.sourceNo||"")).toLowerCase().indexOf(term)>=0;
+  });
+}
+function vrfSourceSelect(value){
+  var sel=el("select");
+  sel.appendChild(new Option("— optional —",""));
+  VRF_SOURCE_CHOICES.forEach(function(name){ sel.appendChild(new Option(name, name)); });
+  sel.value=canonVrfSource(value)||"";
+  return sel;
+}
+/* Carry a stored source onto a new row. Does not invent keys when it is blank. */
+function copyVrfSourceFields(target, from){
+  if(!target||!from) return target;
+  var src=canonVrfSource(from.source);
+  var no=vrfSourceNoText(from.sourceNo);
+  if(src) target.source=src;
+  if(no) target.sourceNo=no;
+  return target;
+}
+/* Header edit. A blank value clears a source that was set. */
+function applyVrfSourceFields(target, source, sourceNo){
+  if(!target) return target;
+  var src=canonVrfSource(source);
+  var no=vrfSourceNoText(sourceNo);
+  if(src) target.source=src;
+  else delete target.source;
+  if(no) target.sourceNo=no;
+  else delete target.sourceNo;
+  return target;
+}
 function enrichLtoWorktype(){
   var w=findLtoWorktype(); if(!w) return;
   var i=-1, n;
@@ -1589,6 +1680,18 @@ function buildIndex(){
         if(!saved&&rsvRow&&rsvRow.fuelPrevNote) saved=rsvRow.fuelPrevNote;
         return saved;
       })(),
+      source:(function(){
+        var saved="";
+        rows.forEach(function(r){ if(!saved&&r) saved=canonVrfSource(r.source); });
+        if(!saved&&rsvRow) saved=canonVrfSource(rsvRow.source);
+        return saved;
+      })(),
+      sourceNo:(function(){
+        var saved="";
+        rows.forEach(function(r){ if(!saved&&r&&r.sourceNo) saved=vrfSourceNoText(r.sourceNo); });
+        if(!saved&&rsvRow&&rsvRow.sourceNo) saved=vrfSourceNoText(rsvRow.sourceNo);
+        return saved;
+      })(),
       requestedBy:who};
   });
   addHeldReserveVrfs();
@@ -1795,6 +1898,7 @@ function heldVrfShell(no, r){
     odoOverride:(r&&r.odoOverride)||null,
     receipt:(r&&(r.receipt||r.receiptNo))||"",
     src:"reserve-hold", requestedBy:(r&&r.requestedBy)||"", held:true,
+    source:canonVrfSource(r&&r.source), sourceNo:vrfSourceNoText(r&&r.sourceNo),
     approvedBy:(r&&r.approvedBy)||"", approvedAt:(r&&r.approvedAt)||"",
     approvedVia:(r&&r.approvedVia)||""};
 }
@@ -1881,6 +1985,7 @@ function addHeldReserveVrfs(){
       odo:meter, preparedSig:r.preparedSig||"", preparedSigName:r.preparedSigName||"",
       approvedBy:r.approvedBy||"", approvedAt:r.approvedAt||"", approvedVia:r.approvedVia||"",
       src:"reserve-hold", requestedBy:r.requestedBy||"", held:true,
+      source:canonVrfSource(r.source), sourceNo:vrfSourceNoText(r.sourceNo),
       paperNote:r.renumberNote||"", printedAs:r.printedAs||"", unnumbered:!!unnumbered});
     have[slot]=1;
     if(!shared && !unnumbered) have[no]=1;
@@ -1970,7 +2075,7 @@ function ledgerLineFromHoldRow(entry, row){
   var vehCode=entry.veh||row.veh||"";
   var v=vehicle(vehCode);
   var sp=partSpec(cat);
-  return {
+  var line={
     month:mk,
     date:row.date||entry.date||iso(),
     vrf:String(entry.vrf||row.vrf||""),
@@ -1992,6 +2097,8 @@ function ledgerLineFromHoldRow(entry, row){
     requestedBy:entry.requestedBy||row.requestedBy||"",
     notes:row.notes||entry.notes||""
   };
+  copyVrfSourceFields(line, {source:entry.source||row.source, sourceNo:entry.sourceNo||row.sourceNo});
+  return line;
 }
 function lineIdentity(line){
   return [String(line&&line.cat||"").trim().toLowerCase(),
@@ -2510,6 +2617,7 @@ async function prepareReservePost(r){
       bypass:!!r.bypass,
       notes:note};
     if(r.fuelPrevNote) row.fuelPrevNote=r.fuelPrevNote;
+    copyVrfSourceFields(row, r);
     return row;
   });
   return {already:false, no:String(no), prevNo:prevNo, month:mk, rows:rowsConfinedToVrf(rows, String(no))};
@@ -4048,17 +4156,18 @@ function sealSnapshot(reserve, rows, reason){
   if(!reserve) return null;
   var no=String(reserve.vrfNo||"").trim();
   if(!no) return null;
+  var snapReserve={no:reserve.no, vrfNo:no, vrfs:(reserve.vrfs||[]).slice(), date:reserve.date,
+    status:reserve.status, veh:reserve.veh, project:reserve.project, work:reserve.work,
+    requestedBy:reserve.requestedBy, approvedBy:reserve.approvedBy, approvedAt:reserve.approvedAt,
+    printedAt:reserve.printedAt||"", draftPurpose:reserve.draftPurpose||reserve.scope||"",
+    draftLines:reserve.draftLines||[], draftOdo:reserve.draftOdo||"",
+    budget:reserve.budget, approvedBudget:reserve.approvedBudget,
+    preparedSigName:reserve.preparedSigName||"", paperAttachments:reserve.paperAttachments||null,
+    decisionNote:reserve.decisionNote||"", kind:reserve.kind||"job", submissionId:reserve.submissionId||""};
+  copyVrfSourceFields(snapReserve, reserve);
   return {no:no, sealed:true, reason:reason||(reserve.printedAt?"printed":"approved"),
     at:reserve.printedAt||reserve.approvedAt||"",
-    snapshot:{month:monthKey(reserve.date)||"", rows:rows||[],
-      reserve:{no:reserve.no, vrfNo:no, vrfs:(reserve.vrfs||[]).slice(), date:reserve.date,
-        status:reserve.status, veh:reserve.veh, project:reserve.project, work:reserve.work,
-        requestedBy:reserve.requestedBy, approvedBy:reserve.approvedBy, approvedAt:reserve.approvedAt,
-        printedAt:reserve.printedAt||"", draftPurpose:reserve.draftPurpose||reserve.scope||"",
-        draftLines:reserve.draftLines||[], draftOdo:reserve.draftOdo||"",
-        budget:reserve.budget, approvedBudget:reserve.approvedBudget,
-        preparedSigName:reserve.preparedSigName||"", paperAttachments:reserve.paperAttachments||null,
-        decisionNote:reserve.decisionNote||"", kind:reserve.kind||"job", submissionId:reserve.submissionId||""}}};
+    snapshot:{month:monthKey(reserve.date)||"", rows:rows||[], reserve:snapReserve}};
 }
 async function rememberSealedVrf(entry){
   if(!entry||!entry.no) return;
@@ -10114,6 +10223,12 @@ function openReserve(no,asApprover){
   if(r.vrfNo) lf.appendChild(el("div","hint","Reserve RSV-"+r.no+" — this number is held for the form and used when it is posted."));
   lf.appendChild(el("div","hint",r.date+"  ·  "+r.veh+(v?" · "+v.desc:"")+
     (r.project?"  ·  "+r.project:"")+"  ·  raised by "+(r.requestedBy||"—")));
+  var reserveSource=vrfSourceLabel(r);
+  if(reserveSource){
+    var reserveSourceEl=el("div",null,reserveSource);
+    reserveSourceEl.style.cssText="font-weight:600;margin-top:4px";
+    lf.appendChild(reserveSourceEl);
+  }
   var ch=el("div","row"); ch.style.marginTop="var(--space-2)";
   ch.appendChild(rsvChip(r));
   ch.appendChild(el("span","chip mute",(RSV_KINDS[rsvKind(r)]||{}).label||"Job"));
@@ -11730,7 +11845,7 @@ function vrfLogView(){
   var bar=el("div","f3");
   function f2(l,n,h){ var x=el("div","field"); x.appendChild(el("label",null,l)); x.appendChild(n);
     if(h) x.appendChild(el("div","hint",h)); return x; }
-  var q=el("input"); q.placeholder="VRF number, unit, item, supplier, voucher no…"; q.value=S.logQ||"";
+  var q=el("input"); q.placeholder="VRF number, unit, item, supplier, voucher no, LRF or PSRF no…"; q.value=S.logQ||"";
   q.className="mono";
   var fw=workSelect(S.regWork,"— every job —");
   var fs2=el("select");
@@ -11756,10 +11871,16 @@ function vrfLogView(){
   archF.appendChild(el("label",null,"List"));
   var archRow=el("div","row"); archRow.appendChild(showArch); archRow.appendChild(manageLog);
   archF.appendChild(archRow);
+  var fsrc=el("select");
+  [["","every source"],["Motor Pool","Motor Pool"],["PSRF","PSRF"],["LRF","LRF"]].forEach(function(o){
+    fsrc.appendChild(new Option(o[1],o[0]));
+  });
+  fsrc.value=S.logSource||"";
   barP.appendChild(f2("Project",fp));
   barP.appendChild(archF);
-  barP.appendChild(el("div"));
+  barP.appendChild(f2("Source",fsrc,"Optional. Motor Pool, PSRF, or LRF."));
   g.appendChild(barP);
+  fsrc.addEventListener("change",function(){ S.logSource=fsrc.value; draw(); });
   fw.addEventListener("change",function(){ S.regWork=fw.value; render(); });
   fs2.addEventListener("change",function(){ S.regStatus=fs2.value; render(); });
   showCb.addEventListener("change",function(){
@@ -11807,14 +11928,9 @@ function vrfLogView(){
         if(S.regWork&&(v.works||[]).indexOf(S.regWork)<0) return false;
         if(S.regStatus&&v.status!==S.regStatus) return false;
         if(S.logProject&&normProj(v.project)!==S.logProject) return false;
+        if(!vrfMatchesLogSource(v, S.logSource)) return false;
       }
-      if(!term) return true;
-      if(byNumber||byVoucher) return true;
-      if(numberQuery) return false;
-      if((v.units||[]).join(" ").toLowerCase().indexOf(term)>=0) return true;
-      if((v.project||"").toLowerCase().indexOf(term)>=0) return true;
-      return (v.rows||[]).some(function(r){
-        return ((r.item||"")+" "+(r.supplier||"")+" "+(r.cat||"")+" "+(r.sub||"")).toLowerCase().indexOf(term)>=0; });
+      return vrfMatchesLogTerm(v, term);
     });
     if(!list.length && term){
       var loose=vrfIndex().filter(function(v){
@@ -11842,6 +11958,8 @@ function vrfLogView(){
         var x=el("span","mono",v.vrf); x.style.fontWeight="600";
         wrap.appendChild(x);
         if(v.paperNote) wrap.appendChild(el("div","hint",v.paperNote));
+        var srcHint=vrfSourceLabel(v);
+        if(srcHint) wrap.appendChild(el("div","hint",srcHint));
         var miss=missingPhotosChip(v);
         if(miss){ var chipRow=el("div"); chipRow.style.marginTop="3px"; chipRow.appendChild(miss); wrap.appendChild(chipRow); }
         return wrap; }},
@@ -12365,6 +12483,12 @@ function buildVrfDoc(entry,photos,opts){
     meta.appendChild(c);
   });
   d.appendChild(meta);
+  var sourceLabel=vrfSourceLabel(entry);
+  if(sourceLabel){
+    var sl=el("div","vsource",sourceLabel);
+    sl.style.cssText="margin:0 0 8px;font-size:11.5px;font-weight:600";
+    d.appendChild(sl);
+  }
   if(entry.notes){
     var pu=el("div");
     pu.appendChild(el("div","k","Purpose"));
@@ -14098,6 +14222,7 @@ function vrfHeaderSnapshot(entry){
   var rsv=reserveForVrf(entry);
   var work=(entry.works&&entry.works[0])||(rsv&&rsv.work)||((entry.rows||[])[0]&&entry.rows[0].work)||"";
   var odo=vrfOdo(entry);
+  var src=vrfSourceParts(entry);
   return {
     veh:entry.veh||((entry.units||[])[0])||"",
     project:entry.project||(rsv&&rsv.project)||"",
@@ -14105,16 +14230,21 @@ function vrfHeaderSnapshot(entry){
     odo:odo==null?"":String(odo),
     requestedBy:vrfRequestedBy(entry)||"",
     purpose:entry.notes||(rsv&&(rsv.draftPurpose||rsv.scope))||"",
-    work:work||""
+    work:work||"",
+    source:src.source,
+    sourceNo:src.sourceNo
   };
 }
 function headerAuditNotes(before, patch, by, at){
   var fields=[["vehicle","veh"],["project","project"],["date","date"],["odometer","odo"],
-    ["requestedBy","requestedBy"],["purpose","purpose"],["job","work"]];
+    ["requestedBy","requestedBy"],["purpose","purpose"],["job","work"],
+    ["source","source"],["source no","sourceNo"]];
   var notes=[];
   fields.forEach(function(pair){
     var from=before?before[pair[1]]:"";
     var to=patch?patch[pair[1]]:"";
+    if(pair[1]==="source"){ from=canonVrfSource(from); to=canonVrfSource(to); }
+    else if(pair[1]==="sourceNo"){ from=vrfSourceNoText(from); to=vrfSourceNoText(to); }
     if(String(from==null?"":from)===String(to==null?"":to)) return;
     notes.push({at:at||"", by:by||"", field:pair[0],
       from:String(from==null?"":from), to:String(to==null?"":to)});
@@ -14139,11 +14269,13 @@ async function markVrfPrinted(entry, opts){
   }
   if(!keepSeal && entry && (entry.rows||[]).length){
     try{
+      var printReserve={no:entry.reserve||("print-"+no), vrfNo:no, vrfs:[no], date:entry.date,
+        status:"Approved", veh:entry.veh, project:entry.project, printedAt:iso(),
+        requestedBy:entry.requestedBy||"", draftPurpose:entry.notes||"", draftLines:[]};
+      copyVrfSourceFields(printReserve, vrfSourceParts(entry));
       await rememberSealedVrf({no:no, sealed:true, reason:"printed", at:iso(),
         snapshot:{month:(entry.rows[0]&&entry.rows[0].month)||entry.month||"", rows:entry.rows,
-          reserve:{no:entry.reserve||("print-"+no), vrfNo:no, vrfs:[no], date:entry.date,
-            status:"Approved", veh:entry.veh, project:entry.project, printedAt:iso(),
-            requestedBy:entry.requestedBy||"", draftPurpose:entry.notes||"", draftLines:[]}}});
+          reserve:printReserve}});
     }catch(e){}
   }
 }
@@ -14174,6 +14306,7 @@ async function saveVrfHeader(entry, patch, by){
       copy.requestedBy=patch.requestedBy;
       copy.notes=patch.purpose;
       if(patch.work) copy.work=patch.work;
+      applyVrfSourceFields(copy, patch.source, patch.sourceNo);
       copy.qty=r.qty; copy.price=r.price; copy.total=r.total;
       copy.vstatus=r.vstatus; copy.liq=r.liq;
       copy.audit=(r.audit||[]).concat(notes);
@@ -14194,6 +14327,7 @@ async function saveVrfHeader(entry, patch, by){
     rsv.requestedBy=patch.requestedBy;
     rsv.draftPurpose=patch.purpose;
     if(patch.work) rsv.work=patch.work;
+    applyVrfSourceFields(rsv, patch.source, patch.sourceNo);
     rsv.audit=(rsv.audit||[]).concat(notes);
     (rsv.draftLines||[]).forEach(function(l){ if(l&&patch.work) l.work=patch.work; });
     writes.push(saveReserves(rsv.no));
@@ -14213,7 +14347,7 @@ function openVrfEdit(entry, after){
   var b=el("div"); b.style.padding="var(--space-5) var(--space-6)";
   b.appendChild(el("h3",null,"Edit VRF "+entry.vrf));
   b.appendChild(el("div","hint",
-    "Corrects the header only — vehicle, project, date, odometer, who asked, purpose, and job. Amounts, lines, and approval stay as they are. Each change is written on this VRF and on its own reserve."));
+    "Corrects the header only — vehicle, project, date, odometer, who asked, purpose, job, and source. Source can stay blank. Amounts, lines, and approval stay as they are. Each change is written on this VRF and on its own reserve."));
   function fld(l,n){ var x=el("div","field"); x.appendChild(el("label",null,l)); x.appendChild(n); return x; }
   var grid=el("div","f3"); grid.style.marginTop="var(--space-4)";
   var dIn=el("input"); dIn.type="date"; dIn.value=snap.date||"";
@@ -14235,6 +14369,14 @@ function openVrfEdit(entry, after){
   pur.appendChild(el("label",null,"Purpose"));
   var pIn=el("input"); pIn.value=snap.purpose||"";
   pur.appendChild(pIn); b.appendChild(pur);
+  var srcRow=el("div","f3"); srcRow.style.marginTop="var(--space-3)";
+  var srcSel=vrfSourceSelect(snap.source);
+  var srcNoIn=el("input"); srcNoIn.value=snap.sourceNo||""; srcNoIn.placeholder="e.g. LRF-0010";
+  srcRow.appendChild(fld("Source", srcSel));
+  var srcNoField=fld("Source no.", srcNoIn);
+  srcNoField.appendChild(el("div","hint","Optional. LRF number, PSRF number, or a motor pool number."));
+  srcRow.appendChild(srcNoField);
+  b.appendChild(srcRow);
   var byF=el("div","field"); byF.style.cssText="margin-top:var(--space-3);max-width:280px";
   byF.appendChild(el("label",null,"Your name"));
   var byIn=el("input"); byIn.value=signedInName(); byIn.placeholder="signed-in name";
@@ -14260,7 +14402,8 @@ function openVrfEdit(entry, after){
     if(!vehCode){ msg.textContent="Pick the vehicle."; msg.style.color="var(--danger)"; return; }
     go.disabled=true; go.textContent="Saving…";
     var patch={veh:vehCode, project:pSel.getCode?pSel.getCode():snap.project, date:dIn.value||snap.date,
-      odo:oIn.value, requestedBy:who.value.trim(), purpose:pIn.value, work:job.value||snap.work};
+      odo:oIn.value, requestedBy:who.value.trim(), purpose:pIn.value, work:job.value||snap.work,
+      source:srcSel.value, sourceNo:srcNoIn.value};
     try{ await saveVrfHeader(entry, patch, byIn.value.trim()); }
     catch(err){
       go.disabled=false; go.textContent="Save correction";
@@ -14296,6 +14439,12 @@ function openVrf(entry,tab){
     (v?" · "+v.desc:"")+"  ·  "+entry.rows.length+" line"+(entry.rows.length>1?"s":"")+
     "  ·  requested by "+(vrfRequestedBy(entry)||"—")+
     (entry.src?"  ·  from the "+entry.src:"")));
+  var sourceLine=vrfSourceLabel(entry);
+  if(sourceLine){
+    var sourceEl=el("div",null,sourceLine);
+    sourceEl.style.cssText="font-weight:600;margin-top:4px";
+    lft.appendChild(sourceEl);
+  }
   var chips=el("div","row"); chips.style.marginTop="var(--space-2)";
   chips.appendChild(vrfChip(entry));
   if(entry.reserve) chips.appendChild(el("span","chip accent","RSV-"+entry.reserve));
@@ -15110,6 +15259,7 @@ function blankLine(){ return {cat:"",item:"",supplier:"",qty:"",unit:"pc",price:
 function blankVrfDraft(){
   return {date:iso(),veh:"",project:"",projectOverridden:false,vehicleSiteDefault:"",
     purpose:"",odo:"",work:"",driver:"",gauge:"",receipt:"",odoOverrideReason:"",
+    source:"",sourceNo:"",
     requestedBy:signedInName(),lines:[blankLine(),blankLine(),blankLine()],
     photos:[],gateOverride:null,reserve:"",jo:"",vrfNo:"",submissionId:newSubmissionId()};
 }
@@ -15361,6 +15511,30 @@ function vrfView(){
   var pu=el("input"); pu.value=d.purpose; pu.placeholder="e.g. Requested by Engr. Roy Solis — concrete pouring";
   pu.addEventListener("input",function(){ d.purpose=pu.value; });
   g0.appendChild(fld("Purpose",pu));
+
+  var srcSel=vrfSourceSelect(d.source);
+  var srcNo=el("input"); srcNo.value=d.sourceNo||""; srcNo.placeholder="e.g. LRF-0010";
+  var srcPreview=el("div","hint");
+  function paintSourcePreview(){
+    d.source=canonVrfSource(srcSel.value);
+    d.sourceNo=srcNo.value;
+    var label=vrfSourceLabel({source:d.source, sourceNo:d.sourceNo});
+    srcPreview.textContent=label
+      ? ("Shows on the VRF and the printout as "+label+". It does not block Send for approval.")
+      : "Source is optional. Leave it blank and the VRF and printout stay as they are.";
+  }
+  srcSel.addEventListener("change",paintSourcePreview);
+  srcNo.addEventListener("input",paintSourcePreview);
+  var srcRow=el("div","f3");
+  var srcF=fld("Source", srcSel);
+  srcF.appendChild(el("div","hint","Optional. Motor Pool, a site PSRF, or an LRF from Corro Materials."));
+  srcRow.appendChild(srcF);
+  var srcNoF=fld("Source no.", srcNo);
+  srcNoF.appendChild(el("div","hint","Optional. LRF number, PSRF number, or the motor pool number. Blank is fine."));
+  srcRow.appendChild(srcNoF);
+  g0.appendChild(srcRow);
+  paintSourcePreview();
+  g0.appendChild(srcPreview);
 
   /* Prepared/Purchased By is chosen here. Checked/Released By stays a blank
      line. Approved By is Jeffrey James M. Corro and is stamped at print
@@ -15682,6 +15856,7 @@ function vrfView(){
       rows:rows,scopes:scopes,multi:scopes.length>1,project:d.project,notes:d.purpose,
       requestedBy:d.requestedBy, preparedSig:psigPrev.data, preparedSigName:psigPrev.name,
       odo:parseOdo(d.odo), fuelPrevNote:fuelPrevLive,
+      source:canonVrfSource(d.source), sourceNo:vrfSourceNoText(d.sourceNo),
       total:rows.reduce(function(a,r){return a+lineMoney(r);},0)}, d.photos||[]);
   });
   foot.appendChild(pv);
@@ -15941,6 +16116,8 @@ async function sendForApproval(d,btn,opts){
       if(d.encoderChecklist) hold.encoderChecklist=d.encoderChecklist;
     }
     if(fuelPrevNote) hold.fuelPrevNote=fuelPrevNote;
+    /* Source never blocks this send. A blank source is left off the record. */
+    copyVrfSourceFields(hold, {source:d.source, sourceNo:d.sourceNo});
     var saved=await issueReserveConfirmed(hold);
     persisted=true;
     hold=saved;

@@ -1105,7 +1105,7 @@
     var price = moneyNum(row.price);
     var total = qty || price ? qty * price : moneyNum(row.total);
     var cat = row.cat || "";
-    return {
+    var line = {
       month: row.month || ledgerMonthKey(row.date, today) || ledgerMonthKey(entry.date, today) || ledgerMonthKey(today, today),
       date: row.date || entry.date || today || "",
       vrf: String(entry.vrf || row.vrf || ""),
@@ -1129,6 +1129,11 @@
       requestedBy: entry.requestedBy || row.requestedBy || "",
       notes: row.notes || entry.notes || "",
     };
+    copyVrfSourceFields(line, {
+      source: entry.source || row.source,
+      sourceNo: entry.sourceNo || row.sourceNo,
+    });
+    return line;
   }
 
   function lineIdentity(line) {
@@ -1270,6 +1275,66 @@
     });
   }
 
+  var VRF_SOURCE_CHOICES = ["Motor Pool", "PSRF", "LRF"];
+  function canonVrfSource(v) {
+    var key = String(v == null ? "" : v)
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, " ");
+    if (key === "motor pool" || key === "motorpool") return "Motor Pool";
+    if (key === "psrf") return "PSRF";
+    if (key === "lrf") return "LRF";
+    return "";
+  }
+  function vrfSourceNoText(v) {
+    return String(v == null ? "" : v).trim();
+  }
+  function vrfSourceParts(entry) {
+    var source = "";
+    var sourceNo = "";
+    function take(obj) {
+      if (!obj || typeof obj !== "object") return;
+      if (!source) source = canonVrfSource(obj.source);
+      if (!sourceNo) sourceNo = vrfSourceNoText(obj.sourceNo);
+    }
+    take(entry);
+    var rows = entry && entry.rows;
+    var i;
+    if (rows && rows.length) {
+      for (i = 0; i < rows.length; i++) take(rows[i]);
+    }
+    return { source: source, sourceNo: sourceNo };
+  }
+  function vrfSourceLabel(entry) {
+    var p = vrfSourceParts(entry || {});
+    if (!p.source && !p.sourceNo) return "";
+    if (p.source && p.sourceNo) return "Source: " + p.source + " · " + p.sourceNo;
+    if (p.source) return "Source: " + p.source;
+    return "Source: " + p.sourceNo;
+  }
+  function vrfSourceHay(entry) {
+    var p = vrfSourceParts(entry || {});
+    return (p.source + " " + p.sourceNo).trim().toLowerCase();
+  }
+  function copyVrfSourceFields(target, from) {
+    if (!target || !from) return target;
+    var src = canonVrfSource(from.source);
+    var no = vrfSourceNoText(from.sourceNo);
+    if (src) target.source = src;
+    if (no) target.sourceNo = no;
+    return target;
+  }
+  function applyVrfSourceFields(target, source, sourceNo) {
+    if (!target) return target;
+    var src = canonVrfSource(source);
+    var no = vrfSourceNoText(sourceNo);
+    if (src) target.source = src;
+    else delete target.source;
+    if (no) target.sourceNo = no;
+    else delete target.sourceNo;
+    return target;
+  }
+
   function headerAuditNotes(before, patch, by, at) {
     var fields = [
       ["vehicle", "veh"],
@@ -1279,11 +1344,20 @@
       ["requestedBy", "requestedBy"],
       ["purpose", "purpose"],
       ["job", "work"],
+      ["source", "source"],
+      ["source no", "sourceNo"],
     ];
     var notes = [];
     fields.forEach(function (pair) {
       var from = before ? before[pair[1]] : "";
       var to = patch ? patch[pair[1]] : "";
+      if (pair[1] === "source") {
+        from = canonVrfSource(from);
+        to = canonVrfSource(to);
+      } else if (pair[1] === "sourceNo") {
+        from = vrfSourceNoText(from);
+        to = vrfSourceNoText(to);
+      }
       if (String(from == null ? "" : from) === String(to == null ? "" : to)) return;
       notes.push({
         at: at || "",
@@ -1310,6 +1384,7 @@
       if (patch.requestedBy != null) copy.requestedBy = patch.requestedBy;
       if (patch.purpose != null) copy.notes = patch.purpose;
       if (patch.work) copy.work = patch.work;
+      if (patch.source != null || patch.sourceNo != null) applyVrfSourceFields(copy, patch.source, patch.sourceNo);
       copy.qty = row.qty;
       copy.price = row.price;
       copy.total = row.total;
@@ -1692,6 +1767,8 @@
       purpose: "",
       odo: "",
       work: "",
+      source: "",
+      sourceNo: "",
       requestedBy: String(signedIn || "").trim(),
       lines: [{}, {}, {}],
       photos: [],
@@ -2766,6 +2843,13 @@
     reservesClaimingVrf: reservesClaimingVrf,
     headerAuditNotes: headerAuditNotes,
     applyVrfHeaderPatch: applyVrfHeaderPatch,
+    canonVrfSource: canonVrfSource,
+    vrfSourceLabel: vrfSourceLabel,
+    vrfSourceParts: vrfSourceParts,
+    vrfSourceHay: vrfSourceHay,
+    copyVrfSourceFields: copyVrfSourceFields,
+    applyVrfSourceFields: applyVrfSourceFields,
+    VRF_SOURCE_CHOICES: VRF_SOURCE_CHOICES,
     holdIsSealed: holdIsSealed,
     vrfPrintWatermark: vrfPrintWatermark,
     VRF_PREVIEW_MARK: VRF_PREVIEW_MARK,
