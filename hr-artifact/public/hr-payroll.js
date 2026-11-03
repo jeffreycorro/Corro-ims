@@ -285,14 +285,229 @@
     return false;
   }
 
+  /* An exact YYYY-MM-DD wins over a recurring MM-DD. A local holiday saved
+     for one date must not be hidden by the annual "all employees" entry. */
   function holidayOn(date, holidays) {
     var iso = isoDate(date);
+    if (!iso) return null;
     var list = holidays || [];
+    var annual = null;
     var i;
     for (i = 0; i < list.length; i++) {
-      if (holidayMatches(list[i], iso)) return list[i];
+      var h = list[i];
+      if (!holidayMatches(h, iso)) continue;
+      var d = String(h.d);
+      if (d === iso || (d.length >= 10 && d.slice(0, 10) === iso)) return h;
+      if (!annual) annual = h;
     }
-    return null;
+    return annual;
+  }
+
+  function normScopeName(s) {
+    return String(s || "").trim().toLowerCase();
+  }
+
+  function holidaySites(h) {
+    var list = (h && (h.sites || h.scopeSites)) || [];
+    if (!Array.isArray(list)) return [];
+    return list.map(function (s) { return String(s || "").trim(); }).filter(Boolean);
+  }
+
+  function holidayEmps(h) {
+    var list = (h && (h.emps || h.employees || h.scopeEmps)) || [];
+    if (!Array.isArray(list)) return [];
+    return list.map(function (s) { return String(s || "").trim(); }).filter(Boolean);
+  }
+
+  /* Missing scope is the old calendar: the holiday covers every employee.
+     scope "all" is the same choice, written down. scope "picked" is a list
+     of project sites and/or employee ids. A leftover site list with no
+     scope flag is treated as picked so it cannot silently pay everyone. */
+  function holidayScopeAll(h) {
+    if (!h || typeof h !== "object") return true;
+    if (h.scope === "all") return true;
+    if (h.scope === "picked") return false;
+    if (holidaySites(h).length || holidayEmps(h).length) return false;
+    return true;
+  }
+
+  function personSite(empId, row, ctx) {
+    var map = ctx && ctx.sites;
+    if (map && map[empId]) return String(map[empId]).trim();
+    if (row && row.site) return String(row.site).trim();
+    var e = ctx && ctx.employees && ctx.employees[empId];
+    if (e && e.project) return String(e.project).trim();
+    if (e && e.site) return String(e.site).trim();
+    return "";
+  }
+
+  function holidayAppliesTo(h, empId, site, ctx) {
+    if (holidayScopeAll(h)) return true;
+    var emps = holidayEmps(h);
+    var id = String(empId || "");
+    var i;
+    for (i = 0; i < emps.length; i++) {
+      if (String(emps[i]) === id) return true;
+    }
+    var e = ctx && ctx.employees && ctx.employees[empId];
+    if (e && e.empNo) {
+      var no = String(e.empNo).trim();
+      for (i = 0; i < emps.length; i++) {
+        if (String(emps[i]).trim() === no) return true;
+      }
+    }
+    var want = normScopeName(site);
+    if (!want) return false;
+    var sites = holidaySites(h);
+    for (i = 0; i < sites.length; i++) {
+      if (normScopeName(sites[i]) === want) return true;
+    }
+    return false;
+  }
+
+  function scopeLabel(h) {
+    if (holidayScopeAll(h)) return "All employees";
+    var sites = holidaySites(h);
+    var emps = holidayEmps(h);
+    var bits = [];
+    if (sites.length) bits.push(sites.length === 1 ? sites[0] : sites.length + " sites");
+    if (emps.length) bits.push(emps.length + " employee" + (emps.length === 1 ? "" : "s"));
+    return bits.join(" · ") || "Nobody selected";
+  }
+
+  function holidayScopeWhy(h) {
+    var prem = "as is";
+    if (h && (h.prem === 1 || h.prem === "1")) prem = "+30%";
+    else if (h && (h.prem === 2 || h.prem === "2")) prem = "+100%";
+    var by = h && h.scopeBy ? " by " + h.scopeBy : "";
+    return "Holiday scope" + by + ": " + scopeLabel(h) + ", premium " + prem;
+  }
+
+  function uniqClean(list) {
+    var out = [];
+    var seen = {};
+    (list || []).forEach(function (x) {
+      var s = String(x || "").trim();
+      if (!s || seen[s]) return;
+      seen[s] = 1;
+      out.push(s);
+    });
+    return out;
+  }
+
+  function withHolidayScope(fields) {
+    fields = fields || {};
+    var t = String(fields.t || "");
+    var h = {
+      d: String(fields.d || "").slice(0, 10),
+      n: String(fields.n || "").trim() || "Holiday",
+      t: /^r/i.test(t) ? "Regular" : "Special",
+    };
+    if (fields.scope === "picked") {
+      h.scope = "picked";
+      h.sites = uniqClean(fields.sites);
+      h.emps = uniqClean(fields.emps);
+    } else {
+      h.scope = "all";
+    }
+    if (fields.prem === 0 || fields.prem === 1 || fields.prem === 2 ||
+        fields.prem === "0" || fields.prem === "1" || fields.prem === "2") {
+      h.prem = Number(fields.prem);
+    }
+    if (fields.by) h.scopeBy = String(fields.by).slice(0, LOG_NAME_CAP);
+    if (fields.at) h.scopeAt = String(fields.at);
+    return h;
+  }
+
+  function rememberHolidayScope(settings, h) {
+    settings = settings || {};
+    var entry = {
+      at: (h && h.scopeAt) || "",
+      by: (h && h.scopeBy) || "",
+      d: h && h.d,
+      n: h && h.n,
+      t: h && h.t,
+      scope: (h && h.scope) || "all",
+      sites: holidaySites(h),
+      emps: holidayEmps(h),
+      prem: h && h.prem != null && h.prem !== "" ? Number(h.prem) || 0 : 0,
+    };
+    if (!Array.isArray(settings.holidayLog)) settings.holidayLog = [];
+    settings.holidayLog.unshift(entry);
+    if (settings.holidayLog.length > LOG_ENTRY_CAP) settings.holidayLog.length = LOG_ENTRY_CAP;
+    return entry;
+  }
+
+  function holidayListSig(list) {
+    return (list || [])
+      .map(function (h) {
+        if (!h) return "";
+        return [
+          h.d,
+          h.n,
+          h.t,
+          h.scope,
+          holidaySites(h).join("|"),
+          holidayEmps(h).join("|"),
+          h.prem,
+          h.scopeBy,
+          h.scopeAt,
+        ].join("~");
+      })
+      .join("||");
+  }
+
+  function copyHolidayScope(from, to) {
+    if (!from || !to) return to;
+    ["scope", "sites", "emps", "prem", "scopeBy", "scopeAt"].forEach(function (k) {
+      if (from[k] != null && from[k] !== "") to[k] = from[k];
+    });
+    return to;
+  }
+
+  /* +30% / +100% is written onto people the holiday covers who have a paid
+     day. Everyone outside the scope loses a premium tick so the day pays as
+     a normal day. As-is does not overwrite a premium HR already set on
+     someone the holiday covers. */
+  function applyHolidayPremium(rec, holiday, ctx) {
+    var changed = [];
+    if (!rec || !rec.rows || !holiday) return changed;
+    var writePrem = holiday.prem === 1 || holiday.prem === 2 || holiday.prem === "1" || holiday.prem === "2";
+    var code = Number(holiday.prem) === 2 ? 2 : 1;
+    Object.keys(rec.rows).forEach(function (id) {
+      var row = rec.rows[id];
+      if (!row || typeof row !== "object") return;
+      var site = personSite(id, row, ctx);
+      var inside = holidayAppliesTo(holiday, id, site, ctx);
+      var cur = holidayPremiumCode(row);
+      if (!inside) {
+        if (cur) {
+          row.hol = 0;
+          changed.push(id);
+        }
+        return;
+      }
+      if (!writePrem) return;
+      if (payDayCredit(row, id, rec.date, ctx) <= 0) return;
+      if (cur === code) return;
+      row.hol = code;
+      changed.push(id);
+    });
+    return changed;
+  }
+
+  function holidayPremiumApplies(date, empId, row, ctx) {
+    var holidays = (ctx && ctx.holidays) || (ctx && ctx.settings && ctx.settings.holidays) || [];
+    var h = holidayOn(date, holidays);
+    if (!h) return true;
+    return holidayAppliesTo(h, empId, personSite(empId, row, ctx), ctx);
+  }
+
+  function holidayPremiumForRow(row, date, empId, ctx) {
+    var rate = holidayPremiumRate(row);
+    if (!rate) return 0;
+    if (!holidayPremiumApplies(date, empId, row, ctx)) return 0;
+    return rate;
   }
 
   function ensureHolidayCalendar(settings) {
@@ -341,12 +556,14 @@
   function holEligible(row, date, empId, ctx) {
     var credit = payDayCredit(row, empId, date, ctx);
     if (credit <= 0) return false;
+    var holidays = (ctx && ctx.holidays) || (ctx && ctx.settings && ctx.settings.holidays) || [];
+    var h = holidayOn(date, holidays);
+    if (h && !holidayAppliesTo(h, empId, personSite(empId, row, ctx), ctx)) return false;
     var raw = (row && (row.s || row.status)) || "";
     var st = effectiveStatusOf(empId, date, raw, row && (row.r || row.reason), ctx);
     if (st === "Regular Holiday" || st === "Special Holiday") return true;
     if (raw === "Regular Holiday" || raw === "Special Holiday") return true;
-    var holidays = (ctx && ctx.holidays) || (ctx && ctx.settings && ctx.settings.holidays) || [];
-    if (holidayOn(date, holidays)) return true;
+    if (h) return true;
     if (weekdayLocal(date) === 0) return true;
     return false;
   }
@@ -478,7 +695,7 @@
         eligible += 1;
         eligDates.push(d);
       }
-      var rate = holidayPremiumRate(row);
+      var rate = holidayPremiumForRow(row, d, empId, ctx);
       if (rate) {
         hol += 1;
         holFactor += rate;
@@ -1191,6 +1408,16 @@
     defaultAllowance: defaultAllowance,
     computeLine: computeLine,
     holidayOn: holidayOn,
+    holidayScopeAll: holidayScopeAll,
+    holidayAppliesTo: holidayAppliesTo,
+    holidayPremiumApplies: holidayPremiumApplies,
+    holidayPremiumForRow: holidayPremiumForRow,
+    scopeLabel: scopeLabel,
+    holidayScopeWhy: holidayScopeWhy,
+    withHolidayScope: withHolidayScope,
+    rememberHolidayScope: rememberHolidayScope,
+    copyHolidayScope: copyHolidayScope,
+    applyHolidayPremium: applyHolidayPremium,
     ensureHolidayCalendar: ensureHolidayCalendar,
     dayCredit: dayCredit,
     payDayCredit: payDayCredit,
@@ -2528,18 +2755,30 @@
           ">Regular</option><option" +
           (h.t === "Special" ? " selected" : "") +
           ">Special</option></select></td>" +
-          '<td><button type="button" class="btn sm danger" data-hr-hol-del="' +
+          "<td>" +
+          esc(scopeLabel(h)) +
+          (h.scopeBy
+            ? '<div class="lbl">Set by ' + esc(h.scopeBy) + (h.scopeAt ? " · " + esc(h.scopeAt) : "") + "</div>"
+            : "") +
+          "</td>" +
+          '<td style="white-space:nowrap"><button type="button" class="btn sm" data-hr-hol-who="' +
+          i +
+          '">Who</button> ' +
+          '<button type="button" class="btn sm danger" data-hr-hol-del="' +
           i +
           '">Remove</button></td></tr>'
         );
       })
       .join("");
     return (
-      '<div class="card" id="hr-pay-holidays"><div class="card-h"><h3>Company holiday calendar</h3></div>' +
+      '<div class="card" id="hr-pay-holidays" data-hr-hol-sig="' +
+      esc(holidayListSig(S.settings && S.settings.holidays)) +
+      '"><div class="card-h"><h3>Company holiday calendar</h3></div>' +
       '<div class="card-b stack"><div class="note">The seven <b>fixed regular holidays</b> ship with the portal. ' +
       "Movable specials (Maundy Thursday, Eid, EDSA, and the rest) arrive by proclamation — add them here when the year\'s list is out. " +
-      "Holiday premium is never granted just because a date is on this list — pick <b>+30%</b>, <b>+100%</b>, or <b>As is</b> on the day.</div>" +
-      '<div class="tw"><table><thead><tr><th>Date</th><th>Name</th><th>Type</th><th></th></tr></thead><tbody>' +
+      "Holiday premium is never granted just because a date is on this list — pick <b>+30%</b>, <b>+100%</b>, or <b>As is</b> on the day. " +
+      "<b>Who</b> chooses all employees, or only some project sites and people. A holiday saved before that choice covers everyone.</div>" +
+      '<div class="tw"><table><thead><tr><th>Date</th><th>Name</th><th>Type</th><th>Who receives the premium</th><th></th></tr></thead><tbody>' +
       rows +
       "</tbody></table></div>" +
       '<div class="row"><button type="button" class="btn sm" id="hr-hol-add">Add a holiday</button>' +
@@ -2582,7 +2821,13 @@
           next[i] = next[i] || {};
           next[i].t = inp.value;
         });
-        S.settings.holidays = next.filter(function (h) { return h && h.d; });
+        var prevByDate = {};
+        (S.settings.holidays || []).forEach(function (h) {
+          if (h && h.d) prevByDate[String(h.d)] = h;
+        });
+        S.settings.holidays = next.filter(function (h) { return h && h.d; }).map(function (h) {
+          return copyHolidayScope(prevByDate[String(h.d)], h);
+        });
         if (typeof root.putSettings === "function") await root.putSettings();
         else if (typeof root.put === "function") await root.put("meta", "settings", S.settings);
         if (root.toast) root.toast("Holiday calendar saved", "ok");
@@ -2595,16 +2840,29 @@
         refreshHolidayCard();
       };
     });
+    document.querySelectorAll("[data-hr-hol-who]").forEach(function (b) {
+      b.onclick = function () {
+        var i = +b.getAttribute("data-hr-hol-who");
+        var inp = document.querySelector('[data-hr-hol-d="' + i + '"]');
+        var stored = (S.settings.holidays || [])[i] || {};
+        var d = (inp && inp.value.trim()) || stored.d || "";
+        if (typeof root.holidayMark === "function") root.holidayMark(d);
+      };
+    });
   }
 
   function injectSettingsHolidays() {
     var view = document.getElementById("view");
     if (!view || !document.querySelector("[data-set], [data-ded]")) return;
     var S = store();
-    if (!document.getElementById("hr-pay-holidays")) {
+    var existingHolCard = document.getElementById("hr-pay-holidays");
+    var holSig = holidayListSig(S.settings && S.settings.holidays);
+    if (!existingHolCard) {
       var host = document.createElement("div");
       host.innerHTML = holidayCardHTML(S);
       view.appendChild(host.firstChild);
+    } else if (existingHolCard.getAttribute("data-hr-hol-sig") !== holSig) {
+      existingHolCard.outerHTML = holidayCardHTML(S);
     }
     if (!document.querySelector(".hr-pay-ded-note")) {
       var ded = document.querySelector("[data-ded]");
@@ -2661,7 +2919,12 @@
       dec.textContent = "Declare holiday";
       dec.style.minHeight = "40px";
       row.appendChild(dec);
-      dec.onclick = function () { declareHoliday(); };
+      dec.onclick = function () {
+        var live = store();
+        var day = (live.ui && live.ui.dailyDate) || (typeof root.TODAY === "string" ? root.TODAY : isoDate(new Date()));
+        if (typeof root.holidayMark === "function") root.holidayMark(day);
+        else declareHoliday();
+      };
     }
     if (row && !document.getElementById("hr-pay-editor")) {
       var wrap = document.createElement("div");
@@ -2708,11 +2971,21 @@
     if (go) {
       go.onclick = async function () {
         ensureHolidayCalendar(S.settings);
-        S.settings.holidays.push({
+        var by = "";
+        if (typeof root.whoEdits === "function") by = root.whoEdits();
+        else by = editorName(S);
+        var stamped = withHolidayScope({
           d: d,
           n: ($("#hr-hol-name") && $("#hr-hol-name").value.trim()) || "Holiday",
           t: ($("#hr-hol-type") && $("#hr-hol-type").value) || "Special",
+          scope: "all",
+          prem: 0,
+          by: by,
+          at: localStamp(),
         });
+        rememberHolidayScope(S.settings, stamped);
+        S.settings.holidays = (S.settings.holidays || []).filter(function (h) { return !h || String(h.d) !== String(d); });
+        S.settings.holidays.push(stamped);
         if (typeof root.putSettings === "function") await root.putSettings();
         else if (typeof root.put === "function") await root.put("meta", "settings", S.settings);
         if (root.closeModal) root.closeModal();

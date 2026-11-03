@@ -421,6 +421,190 @@ describe("holiday premium: eligible is not granted", () => {
   });
 });
 
+describe("holiday scope: who receives the premium", () => {
+  const employees = {
+    e1: { id: "e1", empNo: "1001", name: "Site, Ana", project: "Tawason" },
+    e2: { id: "e2", empNo: "1002", name: "Other, Ben", project: "Mandaue" },
+    e3: { id: "e3", empNo: "1003", name: "Crew, Cal", project: "Mandaue" },
+  };
+
+  function day(empRows) {
+    return {
+      daily: {
+        d20261102: {
+          id: "d20261102",
+          date: "2026-11-02",
+          rows: empRows,
+        },
+      },
+      employees: employees,
+    };
+  }
+
+  it("a saved holiday with no scope still pays everyone who was ticked", () => {
+    const ctx = day({
+      e1: { s: "Present", site: "Tawason", hol: 2 },
+      e2: { s: "Present", site: "Mandaue", hol: 1 },
+    });
+    ctx.holidays = [{ d: "2026-11-02", n: "Local", t: "Special" }];
+    const a = P.tallyPersonPeriod("e1", "2026-11-02", "2026-11-02", ctx);
+    const b = P.tallyPersonPeriod("e2", "2026-11-02", "2026-11-02", ctx);
+    assert.equal(a.holFactor, 1);
+    assert.equal(b.holFactor, 0.3);
+    assert.equal(a.days, 1);
+    assert.equal(b.days, 1);
+    assert.equal(P.holidayScopeAll(ctx.holidays[0]), true);
+  });
+
+  it("scope all is the same as a holiday that never recorded a scope", () => {
+    const open = P.withHolidayScope({ d: "2026-11-02", n: "Local", t: "Special", scope: "all", prem: 1, by: "Cassie" });
+    assert.equal(open.scope, "all");
+    assert.equal(open.sites, undefined);
+    assert.equal(P.holidayScopeAll(open), true);
+    assert.equal(P.holidayAppliesTo(open, "e2", "Mandaue", { employees: employees }), true);
+  });
+
+  it("a site-only holiday pays that site and treats everyone else as a normal day", () => {
+    const holiday = P.withHolidayScope({
+      d: "2026-11-02", n: "Tawason day", t: "Special", scope: "picked",
+      sites: ["Tawason"], prem: 2, by: "Cassie", at: "2026-11-03 09:00",
+    });
+    const ctx = day({
+      e1: { s: "Present", site: "Tawason", hol: 2 },
+      e2: { s: "Present", site: "Mandaue", hol: 2 },
+    });
+    ctx.holidays = [holiday];
+    const a = P.tallyPersonPeriod("e1", "2026-11-02", "2026-11-02", ctx);
+    const b = P.tallyPersonPeriod("e2", "2026-11-02", "2026-11-02", ctx);
+    assert.equal(a.holFactor, 1);
+    assert.equal(a.days, 1);
+    assert.equal(b.hol, 0);
+    assert.equal(b.holFactor, 0);
+    assert.equal(b.days, 1);
+    assert.equal(P.holEligible({ s: "Present", site: "Mandaue" }, "2026-11-02", "e2", ctx), false);
+    assert.equal(P.holidayPremiumForRow({ s: "Present", hol: 2, site: "Mandaue" }, "2026-11-02", "e2", ctx), 0);
+  });
+
+  it("named employees are covered even when their site is not, and the two lists combine", () => {
+    const holiday = P.withHolidayScope({
+      d: "2026-11-02", n: "Crew day", t: "Regular", scope: "picked",
+      sites: ["Tawason"], emps: ["e3"], prem: 1,
+    });
+    const ctx = day({
+      e1: { s: "Present", site: "Tawason", hol: 1 },
+      e2: { s: "Present", site: "Mandaue", hol: 1 },
+      e3: { s: "Present", site: "Mandaue", hol: 1 },
+    });
+    ctx.holidays = [holiday];
+    assert.equal(P.tallyPersonPeriod("e1", "2026-11-02", "2026-11-02", ctx).holFactor, 0.3);
+    assert.equal(P.tallyPersonPeriod("e3", "2026-11-02", "2026-11-02", ctx).holFactor, 0.3);
+    assert.equal(P.tallyPersonPeriod("e2", "2026-11-02", "2026-11-02", ctx).holFactor, 0);
+    assert.equal(P.holidayAppliesTo(holiday, "e3", "Mandaue", { employees: employees }), true);
+    assert.equal(P.scopeLabel(holiday), "Tawason · 1 employee");
+  });
+
+  it("an exact dated holiday wins over the annual all-employees entry", () => {
+    const annual = { d: "11-02", n: "Annual", t: "Special" };
+    const local = P.withHolidayScope({
+      d: "2026-11-02", n: "Local", t: "Special", scope: "picked", sites: ["Tawason"], prem: 2,
+    });
+    const found = P.holidayOn("2026-11-02", [annual, local]);
+    assert.equal(found.n, "Local");
+    const ctx = day({
+      e1: { s: "Present", site: "Tawason", hol: 2 },
+      e2: { s: "Present", site: "Mandaue", hol: 2 },
+    });
+    ctx.holidays = [annual, local];
+    assert.equal(P.tallyPersonPeriod("e1", "2026-11-02", "2026-11-02", ctx).holFactor, 1);
+    assert.equal(P.tallyPersonPeriod("e2", "2026-11-02", "2026-11-02", ctx).holFactor, 0);
+  });
+
+  it("as-is leaves covered ticks alone and clears everyone outside the scope", () => {
+    const holiday = P.withHolidayScope({
+      d: "2026-11-02", n: "Local", t: "Special", scope: "picked", sites: ["Tawason"], prem: 0, by: "Cassie",
+    });
+    const rec = {
+      date: "2026-11-02",
+      rows: {
+        e1: { s: "Present", site: "Tawason", hol: 1 },
+        e2: { s: "Present", site: "Mandaue", hol: 2 },
+        e3: { s: "Absent", site: "Mandaue", hol: 2 },
+      },
+    };
+    const changed = P.applyHolidayPremium(rec, holiday, { employees: employees });
+    assert.equal(changed.slice().sort().join(","), "e2,e3");
+    assert.equal(rec.rows.e1.hol, 1);
+    assert.equal(rec.rows.e2.hol, 0);
+    assert.equal(rec.rows.e3.hol, 0);
+  });
+
+  it("+100% is written onto covered paid days and not onto an absence", () => {
+    const holiday = P.withHolidayScope({
+      d: "2026-11-02", n: "Local", t: "Regular", scope: "picked", emps: ["1001", "e2"], prem: 2, by: "Cassie", at: "2026-11-03 10:15",
+    });
+    assert.equal(holiday.scopeBy, "Cassie");
+    const rec = {
+      date: "2026-11-02",
+      rows: {
+        e1: { s: "Present", site: "Elsewhere", hol: 0 },
+        e2: { s: "Absent", site: "Mandaue", hol: 0 },
+      },
+    };
+    const changed = P.applyHolidayPremium(rec, holiday, { employees: employees });
+    assert.equal(changed.join(","), "e1");
+    assert.equal(rec.rows.e1.hol, 2);
+    assert.equal(rec.rows.e2.hol, 0);
+    assert.match(P.holidayScopeWhy(holiday), /Cassie/);
+    assert.match(P.holidayScopeWhy(holiday), /\+100%/);
+  });
+
+  it("records who set the scope without dropping the holiday itself", () => {
+    const settings = { holidays: [] };
+    const holiday = P.withHolidayScope({
+      d: "2026-11-02", n: "Local", t: "Special", scope: "picked", sites: ["Tawason"], prem: 1,
+      by: "Cassie", at: "2026-11-03 10:15",
+    });
+    const entry = P.rememberHolidayScope(settings, holiday);
+    assert.equal(entry.by, "Cassie");
+    assert.equal(entry.scope, "picked");
+    assert.equal(entry.sites.join(","), "Tawason");
+    assert.equal(settings.holidayLog.length, 1);
+    assert.equal(settings.holidayLog[0].d, "2026-11-02");
+    const kept = P.copyHolidayScope(holiday, { d: holiday.d, n: "Renamed", t: "Special" });
+    assert.equal(kept.n, "Renamed");
+    assert.equal(kept.scopeBy, "Cassie");
+    assert.equal(kept.sites.join(","), "Tawason");
+  });
+
+  it("register and payslip columns stay in the company order", () => {
+    const run = {
+      kind: "weekly",
+      from: "2026-10-29",
+      to: "2026-11-04",
+      release: "2026-11-07",
+      lines: [{
+        empId: "e1", name: "Site, Ana", empNo: "1001", project: "Tawason",
+        days: 1, ot: 0, daily: 500, basic: 500, otPay: 0, holPay: 150,
+        allowance: 0, incentive: 0, gross: 650, late: 0, ca: 0,
+        sss: 0, phic: 0, hdmf: 0, ded: 0, net: 650,
+        hol30: 1, hol100: 0, hol: 1,
+      }],
+    };
+    const html = P.registerHTML(run);
+    const heads = html.slice(html.indexOf("<thead>"), html.indexOf("</thead>"));
+    assert.equal(
+      heads,
+      "<thead><tr><th>No.</th><th>ID</th><th>Name</th><th>Project</th><th>Days</th><th>OT</th><th>Daily</th><th>Basic</th><th>OT pay</th><th>Hol</th><th>Inc.</th><th>Gross</th><th>Late</th><th>CA</th><th>SSS</th><th>PHIC</th><th>HDMF</th><th>Ded</th><th>Net</th></tr>"
+    );
+    const slip = P.payslipHTML(run.lines[0], run);
+    assert.match(slip, /Basic pay/);
+    assert.match(slip, /Holiday premium/);
+    assert.match(slip, /NET PAY/);
+    assert.equal(slip.indexOf("Basic pay") < slip.indexOf("Holiday premium"), true);
+    assert.doesNotMatch(slip, /Who receives|scopeBy/);
+  });
+});
+
 describe("cash advance plan rate", () => {
   it("adds min(perPeriod, balance) and skips closed statuses", () => {
     const advances = {
