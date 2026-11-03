@@ -9890,14 +9890,43 @@ function holidayList(){
    regular holidays that falls on that day of that month. */
 function holidayOn(date){
   if(!date) return null;
-  const own=(S.settings.holidays||[]).find(x=>x.d===date);
-  if(own) return own;
-  const f=HOLIDAY_FIXED.find(x=>x.md===String(date).slice(5));
-  return f ? {d:date, n:f.n, t:f.t, fixed:true} : null;
+  const iso=String(date).slice(0,10);
+  const list=S.settings.holidays||[];
+  let annual=null;
+  for(let i=0;i<list.length;i++){
+    const x=list[i];
+    if(!x || !x.d) continue;
+    const d=String(x.d);
+    if(d===iso) return x;
+    if(d.length===5 && d===iso.slice(5) && !annual) annual=x;
+  }
+  if(annual) return annual;
+  const f=HOLIDAY_FIXED.find(x=>x.md===iso.slice(5));
+  return f ? {d:iso, n:f.n, t:f.t, fixed:true} : null;
 }
-function holEligible(date, r){
+/* A holiday with no scope, or scope "all", covers every employee — that is
+   how every holiday already on the calendar behaves. A picked scope covers
+   the ticked project sites and the ticked people only. */
+function holidayPremiumApplies(date, empId, row, site){
+  const h=holidayOn(date);
+  if(!h) return true;
+  const emp=S.employees && empId ? S.employees[empId] : null;
+  const where=site || (row&&row.site) || (emp&&emp.project) || "";
+  const P=typeof hrPayroll!=="undefined" ? hrPayroll : null;
+  if(P && typeof P.holidayAppliesTo==="function"){
+    return !!P.holidayAppliesTo(h, empId, where, {employees:S.employees||{}});
+  }
+  return true;
+}
+function holidayScopeLabel(h){
+  const P=typeof hrPayroll!=="undefined" ? hrPayroll : null;
+  if(P && typeof P.scopeLabel==="function") return P.scopeLabel(h);
+  return "All employees";
+}
+function holEligible(date, r, empId){
   const st=(r&&r.s)||"";
   if(dayCredit(r)<=0) return false;
+  if(empId!=null && empId!=="" && !holidayPremiumApplies(date, empId, r)) return false;
   if(st==="Special Holiday" || st==="Regular Holiday") return true;
   if(holidayOn(date)) return true;                              /* on the calendar */
   return !!(date && new Date(date+"T00:00:00").getDay()===0);   /* Sunday worked */
@@ -11347,15 +11376,25 @@ function viewDaily(){
 
   /* A holiday or a Sunday is a decision to make, so say so once at the top of
      the day rather than leaving HR to spot it row by row. */
-  const anyEligible = groups.some(g=>g.people.some(e=>holEligible(rec.date, dailyRow(rec,e))));
+  const anyEligible = groups.some(g=>g.people.some(e=>holEligible(rec.date, dailyRow(rec,e), e.id)));
   if(anyEligible){
-    const on = groups.reduce((n2,g)=>n2+g.people.filter(e=>holCode(dailyRow(rec,e))>0).length,0);
-    const can= groups.reduce((n2,g)=>n2+g.people.filter(e=>holEligible(rec.date, dailyRow(rec,e))).length,0);
+    const on = groups.reduce((n2,g)=>n2+g.people.filter(e=>{
+      const row=dailyRow(rec,e);
+      return holidayPremiumApplies(rec.date, e.id, row, g.site) && holCode(row)>0;
+    }).length,0);
+    const can= groups.reduce((n2,g)=>n2+g.people.filter(e=>holEligible(rec.date, dailyRow(rec,e), e.id)).length,0);
+    const scopeBit=(function(){
+      const hol=holidayOn(rec.date);
+      if(!hol || holidayScopeLabel(hol)==="All employees") return "";
+      const who=hol.scopeBy ? " Set by "+hol.scopeBy+(hol.scopeAt?" · "+hol.scopeAt:"")+"." : "";
+      return " This holiday covers <b>"+esc(holidayScopeLabel(hol))+"</b> only. Everyone else is a normal day."+esc(who);
+    })();
     h+='<div class="note" style="border-left-color:var(--warn);margin-bottom:12px">'
      + '<b>'+esc(longDate(rec.date))+' can carry a holiday premium</b> — '+esc(holReason(rec.date))
      + ', and '+can+' '+(can===1?'person':'people')+' worked. It is eligible, not granted: choose '
      + '<b>+30%</b> for a special day or Sunday, <b>+100%</b> for a regular holiday worked, or <b>As is</b>, '
      + 'person by person. <b>'+on+' of '+can+' have a premium.</b> '
+     + scopeBit + " "
      + '<button class="btn sm" id="dm-hol30">Give all +30%</button> '
      + '<button class="btn sm" id="dm-hol100">Give all +100%</button> '
      + '<button class="btn sm" id="dm-holnone">Clear all (as is)</button> '
@@ -11386,6 +11425,7 @@ function viewDaily(){
     g.people.forEach(e=>{
       n++;
       const r=dailyRow(rec,e);
+      const covered=holidayPremiumApplies(rec.date, e.id, r, dailySiteOf(rec,e));
       const sty='width:100%;padding:3px 6px;border:1px solid var(--line2);border-radius:4px;background:var(--surface);font-size:12px';
       const nf=nameLastFirst(e.name);
       h+='<tr draggable="true" data-drag="'+esc(e.id)+'">'
@@ -11402,10 +11442,10 @@ function viewDaily(){
        +   ((r.s==="Undertime" && !String(r.out||"").trim())?';border-color:var(--crit)':'')+'"></td>'
        + '<td>'+otEntryBox(e.id, rec.date, dailySiteOf(rec,e), r.ot, sty, 'data-dmot="'+esc(e.id)+'"')+'</td>'
        + '<td><input data-dmday="'+esc(e.id)+'" type="number" step="0.5" min="0" max="1" value="'+esc(r.day!=null?r.day:"")+'" placeholder="'+dayCredit(r)+'" style="'+sty+';text-align:right"></td>'
-       + '<td'+(holEligible(rec.date,r)?' style="background:var(--warn-soft)"':'')+'>'
-       + ((holEligible(rec.date,r) || holCode(r))
+       + '<td'+(covered && holEligible(rec.date,r,e.id)?' style="background:var(--warn-soft)"':'')+'>'
+       + ((covered && (holEligible(rec.date,r,e.id) || holCode(r)))
           ? holSelect("data-dmhol", e.id, holCode(r))
-          : '<span class="lbl" title="Not a holiday or Sunday worked">—</span>')
+          : '<span class="lbl" title="'+(covered?"Not a holiday or Sunday worked":"This holiday does not cover this person — a normal day")+'">—</span>')
        + '</td>'
        + '<td><div style="display:flex;gap:4px;align-items:center">'
        +   '<select data-dmrk="'+esc(e.id)+'" style="'+sty+';max-width:158px"'+(statusNeedsReason(r.s)?'':' disabled')+'>'
@@ -22001,12 +22041,14 @@ function payDaysFor(empId, dates){
     const ot=part ? part.ot : (blocked ? 0 : dayVal(r,"ot", 0));
     const lateMin=blocked || typeof lateMinutesOf!=="function" ? 0
       : ((typeof dayCountsLate==="function" && !dayCountsLate(r)) ? 0 : lateMinutesOf(r.in||""));
-    out.push({ date:d, s:r.s||"", reason:r.r||"", site:r.site||"",
+    const site=(e && typeof dailySiteOf==="function") ? dailySiteOf(rec, e) : (r.site||(e&&e.project)||"");
+    const covered=!blocked && holidayPremiumApplies(d, empId, r, site);
+    out.push({ date:d, s:r.s||"", reason:r.r||"", site:r.site||site||"",
                in:r.in||"", out:r.out||"",
                day, ot, lateMin,
-               hol: blocked ? 0 : holCode(r),
-               holRate: blocked ? 0 : holRate(r),
-               elig: blocked ? false : holEligible(d, r) });
+               hol: covered ? holCode(r) : 0,
+               holRate: covered ? holRate(r) : 0,
+               elig: covered && holEligible(d, r, empId) });
   });
   return out;
 }
@@ -22399,13 +22441,14 @@ function payUnmatchedLines(kind, dates){
         rows:[]
       });
       if(row.site) bag.site=row.site;
+      const covered=typeof holidayPremiumApplies!=="function" || holidayPremiumApplies(d, id, row, row.site||"");
       bag.rows.push({
         date:d, s:row.s||"", reason:row.r||"", site:row.site||"",
         in:row.in||"", out:row.out||"",
         day:Number(day)||0, ot:Number(ot)||0,
-        hol:typeof holCode==="function"?holCode(row):0,
-        holRate:typeof holRate==="function"?holRate(row):0,
-        elig:typeof holEligible==="function"?!!holEligible(d, row):false
+        hol:covered && typeof holCode==="function"?holCode(row):0,
+        holRate:covered && typeof holRate==="function"?holRate(row):0,
+        elig:covered && typeof holEligible==="function"?!!holEligible(d, row, id):false
       });
     });
   });
@@ -23427,42 +23470,203 @@ async function flushContribSaves(announce){
   return true;
 }
 
-/* The calendar itself, opened from wherever HR happens to be standing. */
+/* The calendar itself, opened from wherever HR happens to be standing.
+   Who receives the premium is chosen here: everyone, or only some sites
+   and people. A holiday already saved with no choice still covers everyone. */
+function holidayDateValue(d){
+  d=String(d||"");
+  if(/^\d{4}-\d{2}-\d{2}/.test(d)) return d.slice(0,10);
+  if(/^\d{2}-\d{2}$/.test(d)) return String(TODAY||"2026").slice(0,4)+"-"+d;
+  return TODAY;
+}
+function holidayPeopleChoices(date){
+  const map=new Map();
+  const add=e=>{ if(e && e.id) map.set(e.id, e); };
+  if(typeof atWork==="function") atWork().forEach(add);
+  const rec=typeof dailyGet==="function" ? dailyGet(date) : null;
+  if(rec && typeof dailyPeople==="function") dailyPeople(rec).forEach(add);
+  return [...map.values()].sort((a,b)=>String(a.name||"").localeCompare(String(b.name||"")));
+}
+function holidaySiteChoices(){
+  if(typeof dailySites==="function") return dailySites();
+  if(typeof projectList==="function") return projectList().map(p=>p.name).filter(Boolean);
+  return [];
+}
+function holidayScopeChecked(h){
+  const sites={}, emps={};
+  if(h && !h.fixed){
+    (h.sites||[]).forEach(s=>{ sites[String(s).trim().toLowerCase()]=1; });
+    (h.emps||h.employees||[]).forEach(id=>{ emps[String(id)]=1; });
+  }
+  return {sites, emps};
+}
+function holidayMarkBody(date, h){
+  const when=holidayDateValue(date || (h&&h.d) || TODAY);
+  const picked=!!(h && !h.fixed && typeof hrPayroll!=="undefined" && hrPayroll.holidayScopeAll && !hrPayroll.holidayScopeAll(h));
+  const prem=(h && (h.prem===0 || h.prem===1 || h.prem===2)) ? String(h.prem) : "0";
+  const type=(h&&h.t)==="Regular" ? "Regular" : "Special";
+  const tick=holidayScopeChecked(h);
+  const sites=holidaySiteChoices();
+  const people=holidayPeopleChoices(when);
+  let html='<div class="stack">'
+    + '<div class="note">Choose who receives the holiday premium. <b>All employees</b> is the usual holiday. '
+    + 'A local holiday can be limited to <b>project sites</b>, <b>individual employees</b>, or both. '
+    + 'Anyone not selected is a normal day — no holiday premium. '
+    + 'Premium is still <b>As is</b>, <b>+30%</b>, or <b>+100%</b>, read from attendance.</div>'
+    + '<div class="f"><label>Date</label><input id="hm-date" type="date" value="'+esc(when)+'"></div>'
+    + '<div class="f"><label>What it is</label><input id="hm-name" value="'+esc((h&&h.n)||"")+'" placeholder="e.g. Ninoy Aquino Day"></div>'
+    + '<div class="f"><label>Regular or Special</label><select id="hm-type">'
+    + '<option'+(type==="Special"?" selected":"")+'>Special</option>'
+    + '<option'+(type==="Regular"?" selected":"")+'>Regular</option></select>'
+    + '<span class="hint">The label is for the record. What is paid is the premium below.</span></div>'
+    + '<div class="f"><label>Holiday premium</label><select id="hm-prem">'
+    + '<option value="0"'+(prem==="0"?" selected":"")+'>As is</option>'
+    + '<option value="1"'+(prem==="1"?" selected":"")+'>'+'+30%</option>'
+    + '<option value="2"'+(prem==="2"?" selected":"")+'>'+'+100%</option></select>'
+    + '<span class="hint">+30% or +100% is written onto the people this holiday covers, on that day\'s attendance, when they have a paid day. As is does not add pay and does not clear a premium already ticked for someone who is covered. People outside the selection are cleared.</span></div>'
+    + '<div class="f"><label>Who receives it</label><select id="hm-who">'
+    + '<option value="all"'+(picked?"":" selected")+'>All employees</option>'
+    + '<option value="picked"'+(picked?" selected":"")+'>Selected sites and/or employees</option></select></div>'
+    + '<div id="hm-pick"'+(picked?"":" hidden")+'>'
+    + '<div class="note">Tick the sites, the people, or both. A person is covered when their site is ticked or their name is ticked.</div>'
+    + '<div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start">'
+    + '<div style="min-width:180px"><b>Project sites</b><div style="margin-top:6px">';
+  if(!sites.length) html+='<div class="lbl">No sites on file yet.</div>';
+  sites.forEach(s=>{
+    const on=tick.sites[String(s).trim().toLowerCase()];
+    html+='<label style="display:flex;gap:8px;align-items:center;margin:4px 0">'
+      + '<input type="checkbox" data-hm-site="'+esc(s)+'"'+(on?" checked":"")+'> '+esc(s)+'</label>';
+  });
+  html+='</div></div><div style="flex:1;min-width:240px"><div style="margin-bottom:6px"><b>Employees</b></div>'
+    + '<input id="hm-q" placeholder="Search name or ID" style="width:100%;margin:0 0 8px">'
+    + '<div style="max-height:240px;overflow:auto">';
+  if(!people.length) html+='<div class="lbl">No employees on the working list.</div>';
+  people.forEach(e=>{
+    const on=tick.emps[String(e.id)] || (e.empNo && tick.emps[String(e.empNo)]);
+    const nm=typeof flipName==="function" ? flipName(e.name) : (e.name||e.id);
+    html+='<label style="display:flex;gap:8px;align-items:center;margin:4px 0" data-hm-row="1">'
+      + '<input type="checkbox" data-hm-emp="'+esc(e.id)+'"'+(on?" checked":"")+'> '
+      + '<span>'+esc(nm)+' <span class="lbl mono">'+esc(e.empNo||"")+'</span></span></label>';
+  });
+  html+='</div></div></div></div></div>';
+  return html;
+}
+function holidayMarkRead(){
+  const dateEl=document.getElementById("hm-date");
+  const nameEl=document.getElementById("hm-name");
+  const typeEl=document.getElementById("hm-type");
+  const premEl=document.getElementById("hm-prem");
+  const whoEl=document.getElementById("hm-who");
+  const scope=whoEl && whoEl.value==="picked" ? "picked" : "all";
+  const sites=[], emps=[];
+  if(scope==="picked"){
+    document.querySelectorAll("[data-hm-site]").forEach(el=>{ if(el.checked) sites.push(el.getAttribute("data-hm-site")); });
+    document.querySelectorAll("[data-hm-emp]").forEach(el=>{ if(el.checked) emps.push(el.getAttribute("data-hm-emp")); });
+  }
+  return {
+    d: dateEl ? String(dateEl.value||"").slice(0,10) : "",
+    n: nameEl ? String(nameEl.value||"").trim() : "",
+    t: typeEl ? typeEl.value : "Special",
+    prem: premEl ? premEl.value : "0",
+    scope: scope,
+    sites: sites,
+    emps: emps
+  };
+}
+function wireHolidayMark(){
+  const who=document.getElementById("hm-who");
+  const pick=document.getElementById("hm-pick");
+  if(who && pick) who.onchange=()=>{ pick.hidden=who.value!=="picked"; };
+  const q=document.getElementById("hm-q");
+  if(q) q.oninput=()=>{
+    const needle=String(q.value||"").trim().toLowerCase();
+    document.querySelectorAll("[data-hm-row]").forEach(row=>{
+      const show=!needle || String(row.textContent||"").toLowerCase().indexOf(needle)>=0;
+      row.style.display=show?"":"none";
+    });
+  };
+}
 async function holidayMark(date){
-  const h=holidayOn(date);
-  const r=await askText(h?"Edit this holiday":"Declare a holiday", [
-    {k:"d",    label:"Date",  type:"date", value:date||TODAY},
-    {k:"n",    label:"What it is", value:(h&&h.n)||"", placeholder:"e.g. Ninoy Aquino Day"},
-    {k:"t",    label:"Regular or Special", value:(h&&h.t)||"Special", options:["Special","Regular"],
-     hint:"Both can carry the 30% premium here. The label is for the record — what a person is actually paid stays HR's decision, ticked per head."}
-  ]);
-  if(!r || !r.d) return;
-  const list=(S.settings.holidays||[]).filter(x=>x.d!==r.d);
-  list.push({d:r.d, n:r.n||"Holiday", t:/^r/i.test(r.t||"")?"Regular":"Special"});
-  S.settings.holidays=list;
-  await putSettings();
-  toast(longDate(r.d)+" is on the holiday calendar. Open that day and the premium column appears.","ok");
-  render();
+  const start=holidayDateValue(date||TODAY);
+  const h=holidayOn(start);
+  openModal({
+    title: h && !h.fixed ? "Edit this holiday" : "Declare a holiday",
+    wide: true,
+    body: holidayMarkBody(start, h),
+    foot: '<button class="btn" id="hm-cancel">Cancel</button>'
+      + '<button class="btn pri" id="hm-save">Save holiday</button>'
+  });
+  wireHolidayMark();
+  const cancel=document.getElementById("hm-cancel");
+  if(cancel) cancel.onclick=closeModal;
+  const save=document.getElementById("hm-save");
+  if(!save) return;
+  save.onclick=async()=>{
+    const r=holidayMarkRead();
+    if(!r.d){ toast("Date is needed.","err"); return; }
+    if(r.scope==="picked" && !r.sites.length && !r.emps.length){
+      toast("Tick at least one site or employee, or choose All employees.","err");
+      return;
+    }
+    const P=typeof hrPayroll!=="undefined" ? hrPayroll : null;
+    const by=typeof whoEdits==="function" ? whoEdits() : "HR";
+    const at=typeof nowStamp==="function" ? nowStamp() : "";
+    const holiday=P && typeof P.withHolidayScope==="function"
+      ? P.withHolidayScope({ d:r.d, n:r.n, t:r.t, scope:r.scope, sites:r.sites, emps:r.emps, prem:r.prem, by:by, at:at })
+      : { d:r.d, n:r.n||"Holiday", t:/^r/i.test(r.t||"")?"Regular":"Special", scope:r.scope, sites:r.sites, emps:r.emps, prem:Number(r.prem)||0, scopeBy:by, scopeAt:at };
+    S.settings=S.settings||{};
+    if(P && typeof P.rememberHolidayScope==="function") P.rememberHolidayScope(S.settings, holiday);
+    const list=(S.settings.holidays||[]).filter(x=>x && String(x.d)!==holiday.d);
+    list.push(holiday);
+    S.settings.holidays=list;
+    await putSettings();
+    let applied=0;
+    const rec0=typeof dailyGet==="function" ? dailyGet(holiday.d) : null;
+    if(rec0 && P && typeof P.applyHolidayPremium==="function"){
+      const rec=clone(rec0);
+      const sites={};
+      if(typeof dailyPeople==="function" && typeof dailySiteOf==="function"){
+        dailyPeople(rec).forEach(e=>{ if(e && e.id) sites[e.id]=dailySiteOf(rec, e); });
+      }
+      const changed=P.applyHolidayPremium(rec, holiday, {employees:S.employees||{}, sites:sites});
+      applied=changed.length;
+      const why=typeof P.holidayScopeWhy==="function" ? P.holidayScopeWhy(holiday) : "Holiday scope";
+      try{ await dailySave(rec, why); }
+      catch(err){
+        closeModal();
+        toast((err&&err.message)||"The holiday was saved. That day's attendance did not update — open the day and save again.","err");
+        render();
+        return;
+      }
+    }
+    closeModal();
+    const whoTxt=typeof holidayScopeLabel==="function" ? holidayScopeLabel(holiday) : "the people selected";
+    toast(longDate(holiday.d)+" saved for "+whoTxt+(applied?" — "+applied+" attendance row"+(applied===1?"":"s")+" updated":"")+".","ok");
+    render();
+  };
 }
 function holidayEditor(){
   const draw=()=>{
     const own=holidayList();
-    const y=TODAY.slice(0,4);
-    let b='<div class="note">A date on this list makes the <b>30% premium column</b> appear on that day\'s '
-     + 'Daily Manpower screen. It does not pay anybody anything on its own — the premium is still ticked '
-     + 'per person, because who worked and who should be paid extra is a decision, not a date.</div>';
+    let b='<div class="note">A date on this list makes the holiday premium available on that day\'s '
+     + 'Daily Manpower screen. Choose <b>who</b> it covers — all employees, or only some project sites and people. '
+     + 'A holiday saved before that choice still covers everyone. The premium itself stays As is, +30%, or +100%.</div>';
     b+='<div class="tw" style="max-height:44vh;overflow:auto;margin-top:12px"><table><thead><tr>'
-     + '<th style="width:130px">Date</th><th>What it is</th><th style="width:90px">Type</th>'
-     + '<th style="width:80px"></th></tr></thead><tbody>';
-    if(!own.length) b+='<tr><td colspan="4" class="lbl" style="padding:14px">Nothing added yet. '
-      + 'The fixed regular holidays below are already recognised.</td></tr>';
+     + '<th style="width:120px">Date</th><th>What it is</th><th style="width:80px">Type</th>'
+     + '<th>Who receives the premium</th><th style="width:140px"></th></tr></thead><tbody>';
+    if(!own.length) b+='<tr><td colspan="5" class="lbl" style="padding:14px">Nothing added yet. '
+      + 'The fixed regular holidays below are already recognised, for everyone.</td></tr>';
     own.forEach(x=>{
+      const by=x.scopeBy ? '<div class="lbl">Set by '+esc(x.scopeBy)+(x.scopeAt?" · "+esc(x.scopeAt):"")+'</div>' : "";
       b+='<tr><td class="mono">'+esc(x.d)+'</td><td><b>'+esc(x.n||"")+'</b></td>'
        + '<td>'+esc(x.t||"Special")+'</td>'
-       + '<td style="text-align:right"><button class="btn sm danger" data-holdel="'+esc(x.d)+'">Remove</button></td></tr>';
+       + '<td>'+esc(holidayScopeLabel(x))+by+'</td>'
+       + '<td style="text-align:right;white-space:nowrap">'
+       + '<button class="btn sm" data-holedit="'+esc(x.d)+'">Edit</button> '
+       + '<button class="btn sm danger" data-holdel="'+esc(x.d)+'">Remove</button></td></tr>';
     });
     b+='</tbody></table></div>';
-    b+='<div class="note" style="margin-top:12px"><b>Already recognised every year, no need to add them:</b> '
+    b+='<div class="note" style="margin-top:12px"><b>Already recognised every year, for all employees, until you edit that date:</b> '
      + HOLIDAY_FIXED.map(f=>esc(f.n)+" ("+f.md.replace("-","/")+")").join(" · ")
      + '. <b>Not recognised until you add them:</b> Maundy Thursday, Good Friday, National Heroes Day, '
      + 'the Eid holidays and every special non-working day — those move each year and arrive by '
@@ -23474,7 +23678,12 @@ function holidayEditor(){
       foot:'<button class="btn" id="hc-close">Close</button>'
         + '<button class="btn pri" id="hc-add">Add a holiday</button>'});
     $("#hc-close").onclick=closeModal;
-    $("#hc-add").onclick=async()=>{ closeModal(); await holidayMark(S.ui.dailyDate||TODAY); };
+    $("#hc-add").onclick=()=>{ closeModal(); holidayMark(S.ui.dailyDate||TODAY); };
+    $$("[data-holedit]").forEach(btn=>btn.onclick=()=>{
+      const d=btn.dataset.holedit;
+      closeModal();
+      holidayMark(d);
+    });
     $$("[data-holdel]").forEach(btn=>btn.onclick=async()=>{
       const d=btn.dataset.holdel;
       S.settings.holidays=(S.settings.holidays||[]).filter(x=>x.d!==d);
@@ -24313,7 +24522,7 @@ async function payHolAll(code){
     const rec0=dailyGet(d); if(!rec0) continue;
     const rec=clone(rec0); let moved=0;
     Object.entries(rec.rows||{}).forEach(([id,r])=>{
-      if(!who.has(id) || !holEligible(d, r) || holCode(r)===code) return;
+      if(!who.has(id) || !holEligible(d, r, id) || holCode(r)===code) return;
       r.hol=code; moved++;
     });
     if(moved){
@@ -24393,7 +24602,7 @@ function payPersonDays(empId){
     const day='<td class="mono" style="white-space:nowrap">'+esc(longDate(d))+'</td>';
     if(!rec) return '<tr>'+day+'<td colspan="7"><span class="lbl">No report filed for this day</span></td></tr>';
     if(!r) return '<tr>'+day+'<td colspan="7"><span class="lbl">Not on this day’s report — add them on Daily Manpower</span></td></tr>';
-    const elig=holEligible(d, r) || holCode(r);
+    const elig=holidayPremiumApplies(d, empId, r, r.site||"") && (holEligible(d, r, empId) || holCode(r));
     const latePart=(typeof hrPaySheet!=="undefined" && hrPaySheet && typeof hrPaySheet.lateForRow==="function")
       ? hrPaySheet.lateForRow(r, (e&&e.dailyRate)||0) : null;
     const lateMin=latePart ? (latePart.amount||0) : ((typeof lateMinutesOf==="function" && (typeof dayCountsLate!=="function" || dayCountsLate(r))) ? lateMinutesOf(r.in) : 0);
