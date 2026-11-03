@@ -97,8 +97,8 @@ function apply(api, row, spec) {
 }
 
 describe("edit quantity and amount before approval", () => {
-  it("is build 2026-10-29 d", () => {
-    assert.match(html, /var BUILD = "2026-10-29 d"/);
+  it("is build 2026-11-03 a", () => {
+    assert.match(html, /var BUILD = "2026-11-03 a"/);
   });
 
   it("offers Edit amount on a VRF that is still for approval", () => {
