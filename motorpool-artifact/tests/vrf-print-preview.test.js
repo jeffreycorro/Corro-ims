@@ -97,8 +97,8 @@ describe("VRF print preview — page wiring", () => {
     assert.equal(checked.status, 0, checked.stderr || "node --check failed");
   });
 
-  it("is build 2026-10-29 d", () => {
-    assert.match(html, /var BUILD = "2026-10-29 d"/);
+  it("is build 2026-11-03 a", () => {
+    assert.match(html, /var BUILD = "2026-11-03 a"/);
   });
 
   it("offers Preview on the VRF form, the approval view, and the VRF log", () => {
@@ -136,24 +136,25 @@ describe("VRF print preview — page wiring", () => {
     assert.match(block, /previewVrfPrint\(entry\)/);
     assert.doesNotMatch(block, /printVrf\(|markVrfPrinted|window\.print|printedAt/);
 
-    const gate = sliceFn(html, "async function printVrf(entry,photos)", "function previewVrfPrint");
+    const gate = sliceFn(html, "async function printVrf(entry,photos,edition)", "function previewVrfPrint");
     assert.match(gate, /vrfPrintGate\(entry\)/);
     assert.match(gate, /showPrintBlocked\(printGate\.message\|\|"Not approved — cannot print", entry\)/);
-    assert.ok(gate.indexOf("vrfPrintGate(entry)") < gate.indexOf("markVrfPrinted(entry)"));
+    assert.ok(gate.indexOf("vrfPrintGate(entry)") < gate.indexOf("markVrfPrinted(entry"));
     assert.match(gate, /openVrfPrintSheet\(entry, photos, false\)/);
   });
 
   it("opens the same print layout without recording a print", () => {
-    const preview = sliceFn(html, "function previewVrfPrint(entry,photos)", "async function openVrfPrintSheet");
+    const preview = sliceFn(html, "function previewVrfPrint(entry,photos,edition)", "async function openVrfPrintSheet");
     assert.match(preview, /openVrfPrintSheet\(entry, photos, true\)/);
     assert.doesNotMatch(preview, /markVrfPrinted|vrfPrintGate|window\.print|printedAt|rememberSealedVrf|materializeApprovedVrf|showPrintBlocked/);
 
-    const sheet = sliceFn(html, "async function openVrfPrintSheet(entry,photos,preview)", "function lightbox(src)");
+    const sheet = sliceFn(html, "async function openVrfPrintSheet(entry,photos,preview,edition,model)", "function lightbox(src)");
     assert.doesNotMatch(sheet, /markVrfPrinted|vrfPrintGate|rememberSealedVrf|materializeApprovedVrf|printedAt\s*=/);
     assert.match(sheet, /if\(preview\)\{/);
     assert.match(sheet, /printVrf\(source, shot\)/);
     assert.match(sheet, /window\.print\(\)/);
-    assert.match(sheet, /buildVrfDoc\(entry, list, preview\?\{preview:true\}:null\)/);
+    assert.match(sheet, /buildVrfDoc\(entry, list, sheetOpts\(\)\)/);
+    assert.match(sheet, /preview:!!preview/);
     assert.match(sheet, /m\.id=sheetId/);
     assert.match(sheet, /pvPreview/);
     assert.match(sheet, /if\(!preview\) bar\.appendChild\(saveb\)/);

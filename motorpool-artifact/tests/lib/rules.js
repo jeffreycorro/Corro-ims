@@ -954,11 +954,13 @@
     return (Math.round(v * 100) / 100).toFixed(2);
   }
 
-  function reopenAuditNote(by, at, oldAmount, prevLiq) {
+  function reopenAuditNote(by, at, oldAmount, prevLiq, reason) {
     var note = "";
     if (prevLiq && (prevLiq.at || prevLiq.by)) {
       note = "Was liquidated" + (prevLiq.at ? " on " + prevLiq.at : "") + (prevLiq.by ? " by " + prevLiq.by : "");
     }
+    var why = String(reason || "").trim();
+    if (why) note = (note ? note + ". " : "") + "Reason: " + why;
     return {
       at: at || "",
       by: String(by || "").trim(),
@@ -966,11 +968,12 @@
       from: auditMoney(oldAmount),
       to: "awaiting liquidation",
       note: note,
+      reason: why,
     };
   }
 
   /** Clear liq and keep the closed amounts. A leftover liq stamp stays Closed. */
-  function reopenClosedLedgerRow(row, by, at, oldAmount, prevLiq) {
+  function reopenClosedLedgerRow(row, by, at, oldAmount, prevLiq, reason) {
     var next = Object.assign({}, row || {});
     next.vrf = String(next.vrf || "").trim();
     next.vstatus = "Open";
@@ -978,7 +981,7 @@
     delete next.liq;
     if (next.src === "reserve-hold") delete next.src;
     next.audit = ((row && row.audit) || []).concat([
-      reopenAuditNote(by, at, oldAmount, prevLiq || (row && row.liq)),
+      reopenAuditNote(by, at, oldAmount, prevLiq || (row && row.liq), reason),
     ]);
     return next;
   }
@@ -990,19 +993,27 @@
   }
 
   /** Same VRF number stays sealed via vrfs so a reload does not mint another. */
-  function applyReserveReopen(reserve, by, at, oldAmount, prevLiq) {
+  function clearVarianceApproval(reserve) {
+    if (!reserve) return;
+    reserve.varianceApprovedBy = "";
+    reserve.varianceApprovedAt = "";
+    reserve.varianceApprovedNote = "";
+  }
+
+  function applyReserveReopen(reserve, by, at, oldAmount, prevLiq, reason) {
     if (!reserveNeedsReopen(reserve)) return false;
     var no = String(reserve.vrfNo || "").trim();
     reserve.status = "Approved";
     reserve.liquidatedAt = "";
     reserve.actual = null;
+    clearVarianceApproval(reserve);
     if (no) {
       var list = (reserve.vrfs || []).map(function (x) {
         return String(x);
       });
       if (list.indexOf(no) < 0) reserve.vrfs = list.concat([no]);
     }
-    reserve.audit = (reserve.audit || []).concat([reopenAuditNote(by, at, oldAmount, prevLiq)]);
+    reserve.audit = (reserve.audit || []).concat([reopenAuditNote(by, at, oldAmount, prevLiq, reason)]);
     return true;
   }
 
@@ -2740,6 +2751,7 @@
     reopenClosedLedgerRow: reopenClosedLedgerRow,
     reserveNeedsReopen: reserveNeedsReopen,
     applyReserveReopen: applyReserveReopen,
+    clearVarianceApproval: clearVarianceApproval,
     recloseAmountAudit: recloseAmountAudit,
     liquidationNewTotal: liquidationNewTotal,
     approvedVrfMayJoinLedger: approvedVrfMayJoinLedger,
