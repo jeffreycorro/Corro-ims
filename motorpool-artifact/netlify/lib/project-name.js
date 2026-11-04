@@ -89,13 +89,90 @@ function normalizeProjectWrite(collection, id, data) {
   return data;
 }
 
+/* Same rule as the portal: "Fuel — Diesel" / "Fuel — Gasoline", not "Fuel Filter". */
+function isFuelCategory(cat) {
+  return /^\s*fuel\s*[—–-]/i.test(cat == null ? "" : String(cat));
+}
+
+function fuelNumber(v) {
+  if (v == null || v === "") return 0;
+  const n = typeof v === "number" ? v : parseFloat(String(v).replace(/,/g, ""));
+  return isFinite(n) ? n : 0;
+}
+
+function fuelLitersMissing(v) {
+  return !(fuelNumber(v) > 0);
+}
+
+/* Store a fuel line as unit "liters". A litres figure already on the line
+   stays. A blank or zero is filled from qty. Price and total are not touched.
+   The input object is left as it arrived. */
+function normalizeFuelLine(line) {
+  if (!line || typeof line !== "object" || Array.isArray(line)) return line;
+  if (!isFuelCategory(line.cat)) return line;
+  const qty = fuelNumber(line.qty);
+  const needUnit = String(line.unit == null ? "" : line.unit).trim() !== "liters";
+  const needLiters = fuelLitersMissing(line.liters) && qty > 0;
+  if (!needUnit && !needLiters) return line;
+  const next = Object.assign({}, line, { unit: "liters" });
+  if (needLiters) next.liters = qty;
+  return next;
+}
+
+function fuelLineLitres(line) {
+  if (!line || !isFuelCategory(line.cat)) return 0;
+  if (!fuelLitersMissing(line.liters)) return fuelNumber(line.liters);
+  if (!fuelLitersMissing(line.litres)) return fuelNumber(line.litres);
+  const unit = String(line.unit || "")
+    .trim()
+    .toLowerCase();
+  if (
+    unit === "l" ||
+    unit === "lt" ||
+    unit === "ltr" ||
+    unit === "liter" ||
+    unit === "litre" ||
+    unit === "liters" ||
+    unit === "litres"
+  ) {
+    return fuelNumber(line.qty);
+  }
+  return 0;
+}
+
+function fuelLinesLitres(lines) {
+  if (!Array.isArray(lines)) return null;
+  let sum = 0;
+  let any = false;
+  lines.forEach((line) => {
+    if (!line || !isFuelCategory(line.cat)) return;
+    any = true;
+    sum += fuelLineLitres(line);
+  });
+  return any ? sum : null;
+}
+
+function normalizeLedgerRow(row) {
+  return normalizeFuelLine(normalizeNamedProject(row));
+}
+
 function normalizeLedgerRows(rows) {
   if (!Array.isArray(rows)) return rows;
-  return mapList(rows, normalizeNamedProject);
+  return mapList(rows, normalizeLedgerRow);
 }
 
 function normalizeReserve(reserve) {
-  return normalizeNamedProject(reserve);
+  const named = normalizeNamedProject(reserve);
+  if (!named || typeof named !== "object" || Array.isArray(named)) return named;
+  const lines = named.draftLines;
+  const mapped = Array.isArray(lines) ? mapList(lines, normalizeFuelLine) : lines;
+  const sum = fuelLinesLitres(mapped);
+  const needLitres = sum != null && sum > 0 && fuelLitersMissing(named.litres);
+  if (named === reserve && mapped === lines && !needLitres) return reserve;
+  const out = named === reserve ? Object.assign({}, reserve) : named;
+  if (Array.isArray(lines) && mapped !== lines) out.draftLines = mapped;
+  if (needLitres) out.litres = sum;
+  return out;
 }
 
 function normalizeIssueSpec(spec) {
@@ -120,7 +197,9 @@ function normalizeIssueSpec(spec) {
 }
 
 module.exports = {
+  isFuelCategory,
   normProjectLabel,
+  normalizeFuelLine,
   normalizeIssueSpec,
   normalizeLedgerRows,
   normalizeProjectWrite,
