@@ -449,6 +449,17 @@ function dateOf(reserve, lines) {
   return best;
 }
 
+function voucherNoOf(reserve, lines) {
+  var i, line, no;
+  for (i = 0; i < (lines || []).length; i++) {
+    line = lines[i];
+    no = line && line.liq && (line.liq.voucherNo || line.liq.voucherKey);
+    if (no) return String(line.liq.voucherNo || no);
+  }
+  if (reserve && reserve.voucherNo) return String(reserve.voucherNo);
+  return "";
+}
+
 function odoFromLines(lines) {
   for (var i = 0; i < (lines || []).length; i++) {
     var n = parseOdo(lines[i] && lines[i].odo);
@@ -892,6 +903,7 @@ function buildMonthlyVrfReport(input) {
       submissionIds: submissionIdsOf(reserve, slot.lines),
       odo: odo,
       duplicateOf: String((reserve && reserve.duplicateOf) || "").trim(),
+      voucherNo: voucherNoOf(reserve, slot.lines),
       linkedReserveNo: slot.linkedReserveNo || (reserve && reserve.no != null ? String(reserve.no) : ""),
       fromLedger: slot.lines.length > 0,
       bought: anyLineBought(slot.lines),
@@ -1044,6 +1056,7 @@ function buildMonthlyVrfReport(input) {
       statusNote: row.statusNote || "",
       odo: row.odo,
       duplicateOf: row.duplicateOf,
+      voucherNo: row.voucherNo || "",
     };
   }
 

@@ -996,6 +996,9 @@
     reserve.status = "Approved";
     reserve.liquidatedAt = "";
     reserve.actual = null;
+    delete reserve.voucherNo;
+    delete reserve.voucherKey;
+    delete reserve.voucherHint;
     if (no) {
       var list = (reserve.vrfs || []).map(function (x) {
         return String(x);
