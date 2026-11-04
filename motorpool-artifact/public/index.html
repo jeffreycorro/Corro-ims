@@ -1,4 +1,4 @@
-<!doctype html><html><head><script src="/claude-shim.js"></script><link rel="manifest" href="/manifest.json"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/favicon.svg"><link rel="stylesheet" href="/pwa.css"><script src="/pwa.js"></script><script src="/vrf-report.js"></script><script src="/fuel-audit.js"></script><script src="/approvers.js"></script><script src="/liquidation-print.js"></script><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1"><title>Corcondev Motorpool</title>
+<!doctype html><html><head><script src="/claude-shim.js"></script><link rel="manifest" href="/manifest.json"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/favicon.svg"><link rel="stylesheet" href="/pwa.css"><script src="/pwa.js"></script><script src="/vrf-report.js"></script><script src="/fuel-audit.js"></script><script src="/voucher-no.js"></script><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1"><title>Corcondev Motorpool</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600&family=Archivo+Narrow:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
@@ -441,7 +441,7 @@ var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
    This label is inside the page function. The shim reads window.BUILD when it
    sends a save. Without that copy every save goes out with an empty build and
    the server answers "Reload the page". */
-var BUILD = "2026-11-03 a";
+var BUILD = "2026-11-03 b";
 try { window.BUILD = BUILD; } catch (e) {}
 var DAY = 86400000, MO = 30.44;
 
@@ -653,6 +653,9 @@ function applyReserveReopen(reserve, by, at, oldAmount, prevLiq, reason){
   reserve.liquidatedAt="";
   reserve.actual=null;
   clearVarianceApproval(reserve);
+  delete reserve.voucherNo;
+  delete reserve.voucherKey;
+  delete reserve.voucherHint;
   if(no){
     var list=(reserve.vrfs||[]).map(function(x){ return String(x); });
     if(list.indexOf(no)<0) reserve.vrfs=list.concat([no]);
@@ -1734,7 +1737,7 @@ function heldVrfShell(no, r){
     if(st!=="Requested") st="Duplicate";
   }
     return {vrf:String(no), date:(r&&r.date)||"", month:monthKey(r&&r.date)||"", rows:[],
-    status:st, legacy:false, duplicateOf:dup, liq:null,
+    status:st, legacy:false, duplicateOf:dup, liq:liqStampFromReserve(r),
     reserve:r?String(r.no):"", units:r&&r.veh?[r.veh]:[], veh:(r&&r.veh)||"",
     works:[], scopes:[], multi:false, confirmed:true, partial:false,
     confidence:"confirmed", why:"", total:0, project:(r&&r.project)||"",
@@ -1817,7 +1820,7 @@ function addHeldReserveVrfs(){
     if(st==="Duplicate") sum=0;
     _vrfs.push({vrf:no, date:r.date, month:rows[0].month, rows:rows,
       status:st, legacy:false, duplicateOf:dup,
-      liq:(reserveSpendClosed(r)||r.liquidatedAt)?{at:r.cancelledAt||r.liquidatedAt, outcome:r.cancelOutcome||"", by:r.cancelledBy||""}:null,
+      liq:liqStampFromReserve(r),
       reserve:String(r.no),
       units:r.veh?[r.veh]:[], veh:r.veh, works:works, scopes:scopes,
       multi:works.length>1, confirmed:true, partial:false,
@@ -2014,6 +2017,131 @@ function seedZeroLines(entry, stamp, outcome){
     return next;
   });
 }
+function normalizeVoucherNo(raw){
+  try{
+    if(typeof VoucherNo!=="undefined"&&VoucherNo&&typeof VoucherNo.normalize==="function")
+      return VoucherNo.normalize(raw);
+  }catch(e){}
+  var text=String(raw==null?"":raw).trim();
+  if(!text) return {voucherNo:"",voucherKey:"",hint:""};
+  return {voucherNo:text, voucherKey:text.toUpperCase().replace(/\s+/g,""), hint:""};
+}
+function voucherHintText(hint){
+  try{
+    if(typeof VoucherNo!=="undefined"&&VoucherNo&&typeof VoucherNo.hintText==="function")
+      return VoucherNo.hintText(hint);
+  }catch(e){}
+  return "";
+}
+/* Blank stays off the record so a liquidation with no voucher is the same shape as before. */
+function applyVoucherToStamp(stamp, raw){
+  if(!stamp) return stamp;
+  var v=normalizeVoucherNo(raw);
+  if(!v.voucherNo){
+    delete stamp.voucherNo; delete stamp.voucherKey; delete stamp.voucherHint;
+    return stamp;
+  }
+  stamp.voucherNo=v.voucherNo;
+  stamp.voucherKey=v.voucherKey;
+  if(v.hint) stamp.voucherHint=v.hint;
+  else delete stamp.voucherHint;
+  return stamp;
+}
+function applyVoucherToReserve(reserve, raw){
+  if(!reserve) return;
+  var v=normalizeVoucherNo(raw);
+  if(!v.voucherNo){
+    delete reserve.voucherNo; delete reserve.voucherKey; delete reserve.voucherHint;
+    return;
+  }
+  reserve.voucherNo=v.voucherNo;
+  reserve.voucherKey=v.voucherKey;
+  if(v.hint) reserve.voucherHint=v.hint;
+  else delete reserve.voucherHint;
+}
+function liqStampFromReserve(r){
+  if(!(r&&(reserveSpendClosed(r)||r.liquidatedAt))) return null;
+  var liq={at:r.cancelledAt||r.liquidatedAt, outcome:r.cancelOutcome||"", by:r.cancelledBy||""};
+  if(r.voucherNo){
+    liq.voucherNo=r.voucherNo;
+    if(r.voucherKey) liq.voucherKey=r.voucherKey;
+    if(r.voucherHint) liq.voucherHint=r.voucherHint;
+  }
+  return liq;
+}
+function voucherNoOfEntry(entry){
+  var no=entry&&entry.liq&&entry.liq.voucherNo;
+  if(no) return String(no);
+  var rows=(entry&&entry.rows)||[];
+  var i;
+  for(i=0;i<rows.length;i++){
+    if(rows[i]&&rows[i].liq&&rows[i].liq.voucherNo) return String(rows[i].liq.voucherNo);
+  }
+  var r=null;
+  try{ r=reserveForVrf(entry); }catch(e){ r=null; }
+  if(r&&r.voucherNo) return String(r.voucherNo);
+  return "";
+}
+function voucherSearchHit(v, term){
+  var t=String(term==null?"":term).trim();
+  if(!t||!v) return false;
+  var bits=[];
+  function add(no, key){
+    if(no) bits.push(String(no));
+    if(key) bits.push(String(key));
+  }
+  if(v.liq) add(v.liq.voucherNo, v.liq.voucherKey);
+  (v.rows||[]).forEach(function(r){ if(r&&r.liq) add(r.liq.voucherNo, r.liq.voucherKey); });
+  var rsv=null;
+  try{ rsv=v.reserve?reserveBy(v.reserve):null; }catch(e){ rsv=null; }
+  if(rsv) add(rsv.voucherNo, rsv.voucherKey);
+  if(!bits.length) return false;
+  var needle=t.toLowerCase();
+  var key=t.toUpperCase().replace(/\s+/g,"");
+  for(var i=0;i<bits.length;i++){
+    var b=bits[i];
+    if(String(b).toLowerCase().indexOf(needle)>=0) return true;
+    if(key && String(b).toUpperCase().replace(/\s+/g,"").indexOf(key)>=0) return true;
+  }
+  return false;
+}
+function paintVoucherMatch(node, hit){
+  if(!node) return;
+  node.style.color="";
+  if(!hit||hit.available===false){ node.textContent=""; return; }
+  if(hit.matched&&hit.matches&&hit.matches.length){
+    var labels=hit.matches.map(function(m){
+      var st=String(m.status||"");
+      var dead=/void|cancel/i.test(st);
+      return (m.label||"Finance")+(dead?" ("+st+")":"");
+    });
+    node.textContent="Matched in Finance · "+labels.join(", ");
+    node.style.color="var(--ok)";
+    return;
+  }
+  if(hit.lookedUp) node.textContent="Not in Finance yet";
+  else node.textContent="";
+}
+var _voucherMatchCache={};
+function financeVoucherLookup(raw){
+  var n=normalizeVoucherNo(raw);
+  if(!n.voucherNo) return Promise.resolve(null);
+  if(_voucherMatchCache[n.voucherKey]) return Promise.resolve(_voucherMatchCache[n.voucherKey]);
+  return fetch("/.netlify/functions/voucher-match",{
+    method:"POST", credentials:"include",
+    headers:{"content-type":"application/json", accept:"application/json"},
+    body:JSON.stringify({numbers:[n.voucherNo]})
+  }).then(function(res){
+    return res.text().then(function(text){
+      var body={};
+      if(text){ try{ body=JSON.parse(text); }catch(e){ body={}; } }
+      if(!res.ok||!body||body.available===false) return null;
+      var hit=(body.results||[])[0]||null;
+      if(hit&&n.voucherKey) _voucherMatchCache[n.voucherKey]=hit;
+      return hit;
+    });
+  }).catch(function(){ return null; });
+}
 function rowsConfinedToVrf(rows, vrfNo){
   var no=String(vrfNo||"").trim();
   (rows||[]).forEach(function(row){
@@ -2025,13 +2153,15 @@ function rowsConfinedToVrf(rows, vrfNo){
   });
   return rows||[];
 }
-async function liquidateVrf(entry,edits,added,by,note,outcome){
+async function liquidateVrf(entry,edits,added,by,note,outcome,voucherRaw){
   var no=String(entry&&entry.vrf||"").trim();
   if(!no) throw new Error("VRF number is required.");
   var ownerNo=entry.reserve||"";
   assertSingleVrfOwner(no, ownerNo||null);
   outcome=outcome||liquidationOutcome(entry.rows, edits, added);
   var stamp={at:iso(),by:by||"",note:note||"",outcome:outcome};
+  var setVoucher=arguments.length>=7;
+  if(setVoucher) applyVoucherToStamp(stamp, voucherRaw);
   if(outcome==="duplicate"){
     var dupNo=/(\d{3,})/.exec(String(stamp.note||""));
     if(dupNo) stamp.duplicateOf=String(dupNo[1]).replace(/^0+/,"")||dupNo[1];
@@ -2134,7 +2264,7 @@ async function liquidateVrf(entry,edits,added,by,note,outcome){
       rsvLink.vrfs=(rsvLink.vrfs||[]).concat([vno]);
       linkedNew=true;
     }
-    await settleReserve(rsvNo, outcome, by, note);
+    await settleReserve(rsvNo, outcome, by, note, setVoucher?{voucherRaw:voucherRaw}:null);
     if(linkedNew && reserveBy(rsvNo) && reserveBy(rsvNo).status==="Approved") await saveReserves(rsvNo);
   }
 }
@@ -2536,12 +2666,21 @@ async function reopenLiquidatedVrf(entry, by, reason){
 
 /* When every VRF against a reserve is closed, the reserve settles itself.
    A purchase that never happened closes at zero instead of the approved figure. */
-async function settleReserve(no, outcome, by, note){
+async function settleReserve(no, outcome, by, note, voucherOpt){
   var r=reserveBy(no); if(!r||r.status!=="Approved") return;
+  var rememberVoucher=voucherOpt&&Object.prototype.hasOwnProperty.call(voucherOpt,"voucherRaw");
+  var pendingVoucher=rememberVoucher?normalizeVoucherNo(voucherOpt.voucherRaw):{voucherNo:""};
+  if(rememberVoucher&&pendingVoucher.voucherNo) applyVoucherToReserve(r, voucherOpt.voucherRaw);
   var linked=(r.vrfs||[]).map(vrfByNo).filter(Boolean);
-  if(linked.some(function(v){ return v.status==="Open"||v.status==="Requested"; })) return;
+  if(linked.some(function(v){ return v.status==="Open"||v.status==="Requested"; })){
+    if(rememberVoucher&&pendingVoucher.voucherNo) await saveReserves(no);
+    return;
+  }
   var stopping=outcome==="cancelled"||outcome==="not-bought"||outcome==="duplicate";
-  if(!linked.length && !stopping) return;
+  if(!linked.length && !stopping){
+    if(rememberVoucher&&pendingVoucher.voucherNo) await saveReserves(no);
+    return;
+  }
   var allDead=linked.length>0 && linked.every(function(v){
     return v.status==="Not bought"||v.status==="Cancelled"||v.status==="Duplicate";
   });
@@ -2571,6 +2710,7 @@ async function settleReserve(no, outcome, by, note){
     r.actual=actual;
     r.status = rv.over ? "Flagged" : "Closed";
   }
+  if(rememberVoucher&&!pendingVoucher.voucherNo) applyVoucherToReserve(r, "");
   await saveReserves(no);
 }
 function lineWork(r){ buildIndex(); var e=_lw.get(r); return e?e.work:"UNCLASS"; }
@@ -8478,7 +8618,8 @@ function vrfReportView(){
     {h:"Description", get:function(r){ return r.description; }},
     {h:"Approved amount", num:true, get:function(r){ return rptApproved(r); }},
     {h:"Actual", num:true, get:function(r){ return rptActual(r); }},
-    {h:"Status", get:function(r){ return rptStatus(r); }}
+    {h:"Status", get:function(r){ return rptStatus(r); }},
+    {h:"Voucher no.", get:function(r){ return r.voucherNo||""; }}
   ], report.vrfs||[], "No VRFs in this month.")));
 
   var ex=report.exceptions||{};
@@ -9807,6 +9948,7 @@ function rsvView(){
         if((r.draftLines||[]).length&&r.status==="Approved")
           return el("span","chip accent",r.draftLines.length+" lines ready to post");
         return "—"; }},
+      {h:"Voucher",get:function(r){ return r.voucherNo?el("span","mono",r.voucherNo):"—"; }},
       {h:"Status",get:rsvChip},
       {h:"",get:function(r){
         var bt=el("button","btn sm","Open");
@@ -10049,7 +10191,7 @@ function openReserve(no,asApprover){
   if(r.status==="Cancelled"||r.cancelledAt) steps.push(["Cancelled",
     (r.cancelledAt||r.liquidatedAt||"—")+" by "+(r.cancelledBy||"—")+
     (r.cancelNote?" — "+r.cancelNote:"")+" at "+peso(0)]);
-  else if(r.liquidatedAt) steps.push(["Liquidated",r.liquidatedAt+" at "+peso(rv.actual)]);
+  else if(r.liquidatedAt) steps.push(["Liquidated",r.liquidatedAt+" at "+peso(rv.actual)+(r.voucherNo?" · Voucher "+r.voucherNo:"")]);
   supChanges.forEach(function(n){ steps.push(["Supplier", supplierChangeText(n)]); });
   amtChanges.forEach(function(n){ steps.push(["Amount", pendingAmountText(n)]); });
   if(r.varianceAt) steps.push(["Variance decision",r.varianceAt+" by "+(r.varianceBy||"—")+
@@ -10061,6 +10203,13 @@ function openReserve(no,asApprover){
     tl.appendChild(row);
   });
   b.appendChild(tl);
+  if(r.voucherNo){
+    var vMatch=el("div","hint");
+    vMatch.setAttribute("data-voucher-match","reserve");
+    vMatch.style.marginTop="var(--space-2)";
+    b.appendChild(vMatch);
+    financeVoucherLookup(r.voucherNo).then(function(hit){ paintVoucherMatch(vMatch, hit); });
+  }
 
   /* linked VRFs */
   var la=reserveActual(r);
@@ -11448,7 +11597,7 @@ function vrfLogView(){
   var bar=el("div","f3");
   function f2(l,n,h){ var x=el("div","field"); x.appendChild(el("label",null,l)); x.appendChild(n);
     if(h) x.appendChild(el("div","hint",h)); return x; }
-  var q=el("input"); q.placeholder="VRF number, unit, item, supplier…"; q.value=S.logQ||"";
+  var q=el("input"); q.placeholder="VRF number, unit, item, supplier, voucher no…"; q.value=S.logQ||"";
   q.className="mono";
   var fw=workSelect(S.regWork,"— every job —");
   var fs2=el("select");
@@ -11520,13 +11669,14 @@ function vrfLogView(){
     var numberQuery=/^\d{3,}$/.test(term.replace(/\s+/g,""));
     var list=vrfIndex().filter(function(v){
       var byNumber=term && vrfSearchHits(v.vrf,term);
-      if(!(numberQuery && byNumber)){
+      var byVoucher=term && voucherSearchHit(v, term);
+      if(!((numberQuery && byNumber) || byVoucher)){
         if(S.regWork&&(v.works||[]).indexOf(S.regWork)<0) return false;
         if(S.regStatus&&v.status!==S.regStatus) return false;
         if(S.logProject&&normProj(v.project)!==S.logProject) return false;
       }
       if(!term) return true;
-      if(byNumber) return true;
+      if(byNumber||byVoucher) return true;
       if(numberQuery) return false;
       if((v.units||[]).join(" ").toLowerCase().indexOf(term)>=0) return true;
       if((v.project||"").toLowerCase().indexOf(term)>=0) return true;
@@ -11576,7 +11726,12 @@ function vrfLogView(){
       {h:"Files",num:true,get:function(v){
         var n=photoCount(v.vrf);
         return el("span","chip "+(n?"accent":"mute"),n?"📎 "+n:"—"); }},
-      {h:"Status",get:vrfLogStatus},
+      {h:"Status",get:function(v){
+        var d=el("div");
+        d.appendChild(vrfLogStatus(v));
+        var vno=voucherNoOfEntry(v);
+        if(vno) d.appendChild(el("div","hint mono",vno));
+        return d; }},
       {h:"",get:function(v){
         var row=el("div"); row.style.cssText="display:flex;gap:4px;flex-wrap:wrap";
         if(String(v.status||"")==="Requested"||String(v.status||"")==="Draft"){
@@ -12058,6 +12213,8 @@ function buildVrfDoc(entry,photos,opts){
    ["Project",entry.project||"—"],
    ["Jobs on this form",entry.scopes.map(function(x){return x.name;}).join(" · ")],
    ["Requested by",vrfRequestedBy(entry)||"—"]];
+  var printVoucher=voucherNoOfEntry(entry);
+  if(printVoucher) metaPairs.push(["Voucher no.", printVoucher]);
   if(entry.status==="Not bought") metaPairs.push(["Status","Not bought — amount zero"]);
   if(entry.status==="Cancelled") metaPairs.push(["Status","Cancelled — purchase did not go through"]);
   metaPairs.forEach(function(pp){
@@ -14258,10 +14415,17 @@ function openVrf(entry,tab){
         :(entry.status==="Cancelled"
           ?"Cancelled — the purchase did not go through, so the amount is zero"
           :"Liquidated");
+      var closedVoucher=voucherNoOfEntry(entry);
       cl.innerHTML="<b>"+esc(endedLabel)+" on "+esc(entry.liq&&entry.liq.at||"—")+
         " by "+esc(entry.liq&&entry.liq.by||"—")+".</b>"+
-        (entry.liq&&entry.liq.note?"<br>"+esc(entry.liq.note):"");
+        (entry.liq&&entry.liq.note?"<br>"+esc(entry.liq.note):"")+
+        (closedVoucher?"<br>Voucher no. "+esc(closedVoucher):"")+
+        (closedVoucher?"<div class=\"hint\" data-voucher-match=\"closed\"></div>":"");
       body.appendChild(cl);
+      if(closedVoucher){
+        var closedMatch=cl.querySelector("[data-voucher-match]");
+        financeVoucherLookup(closedVoucher).then(function(hit){ paintVoucherMatch(closedMatch, hit); });
+      }
       var tot0=el("div"); tot0.style.cssText="display:flex;justify-content:flex-end;gap:14px;align-items:baseline;margin-top:var(--space-4)";
       tot0.appendChild(el("span","hint",entry.status==="Closed"?"Closed at":"Amount"));
       var tv0=el("span","mono",peso(entry.status==="Closed"?entry.total:0)); tv0.style.cssText="font-size:20px;font-weight:600";
@@ -14541,11 +14705,24 @@ function openVrf(entry,tab){
       function lf3(l,n){ var x=el("div","field"); x.appendChild(el("label",null,l)); x.appendChild(n); return x; }
       var lby=el("input"); lby.placeholder="your name"; lby.value=signedInName();
       var lnt=el("input"); lnt.placeholder="anything that changed against the estimate";
-      lrow.appendChild(lf3("Liquidated by",lby)); lrow.appendChild(lf3("Note",lnt));
-      var lbw=el("div"); lbw.style.cssText="display:flex;align-items:flex-end";
-      closeBtn=el("button","btn pri","Liquidate and close");
-      lbw.appendChild(closeBtn); lrow.appendChild(lbw);
+      var lvc=el("input");
+      lvc.placeholder="Petty cash, GCash, or check voucher no.";
+      lvc.setAttribute("aria-label","Voucher No. (optional)");
+      lvc.autocomplete="off";
+      var lvcField=lf3("Voucher No. (optional)", lvc);
+      var lvcHelp=el("div","hint","Optional. Petty cash, GCash, or check voucher no.");
+      lvcField.appendChild(lvcHelp);
+      var lvcMatch=el("div","hint");
+      lvcMatch.setAttribute("data-voucher-match","form");
+      lvcField.appendChild(lvcMatch);
+      lrow.appendChild(lf3("Liquidated by",lby));
+      lrow.appendChild(lvcField);
+      lrow.appendChild(lf3("Note",lnt));
       body.appendChild(lrow);
+      var lbw=el("div"); lbw.style.cssText="display:flex;justify-content:flex-end;margin-top:var(--space-3)";
+      closeBtn=el("button","btn pri","Liquidate and close");
+      lbw.appendChild(closeBtn);
+      body.appendChild(lbw);
       var lmsg=el("div","hint"); lmsg.style.marginTop="var(--space-2)";
       body.appendChild(lmsg);
       function nothingBought(){ return liquidationOutcome(entry.rows, edits, added)==="not-bought"; }
@@ -14570,6 +14747,27 @@ function openVrf(entry,tab){
         lmsg.style.color = need.length ? "var(--danger)" : "";
       }
       lby.addEventListener("input",syncLiq);
+      var lvcTimer=null;
+      function refreshVoucherHint(){
+        var n=normalizeVoucherNo(lvc.value);
+        var looks=voucherHintText(n.hint);
+        lvcHelp.textContent=looks
+          ? looks+" Optional — leave blank if you do not have one."
+          : "Optional. Petty cash, GCash, or check voucher no.";
+        lvcMatch.textContent="";
+        lvcMatch.style.color="";
+        clearTimeout(lvcTimer);
+        if(!n.voucherNo) return;
+        lvcTimer=setTimeout(function(){
+          var asked=n.voucherKey;
+          financeVoucherLookup(n.voucherNo).then(function(hit){
+            if(!lvc.isConnected) return;
+            if(normalizeVoucherNo(lvc.value).voucherKey!==asked) return;
+            paintVoucherMatch(lvcMatch, hit);
+          });
+        }, 400);
+      }
+      lvc.addEventListener("input", refreshVoucherHint);
       syncLiq();
       closeBtn.addEventListener("click",async function(){
         if(!lby.value.trim()){ toast("The liquidation has to carry a name."); return; }
@@ -14610,7 +14808,7 @@ function openVrf(entry,tab){
           return;
         }
         try{
-          await liquidateVrf(prePlan==="seed"?entry:target,edits,added,lby.value.trim(),lnt.value.trim(),outcome);
+          await liquidateVrf(prePlan==="seed"?entry:target,edits,added,lby.value.trim(),lnt.value.trim(),outcome,lvc.value);
         }catch(err){
           closeBtn.disabled=false; syncLiq();
           toast(err&&err.message||"Could not liquidate VRF "+entry.vrf+".");
@@ -17920,6 +18118,7 @@ var bootP=boot();
 try{
   if(typeof location!=="undefined" && /^(localhost|127\.0\.0\.1)$/.test(location.hostname)){
     window.__mpS=S; window.__mpRender=render; window.__mpPrintVrf=printVrf; window.__mpPreviewVrf=previewVrfPrint;
+    window.__mpOpenVrf=openVrf;
     window.__mpPrintSample=printSigSample;
     var sigdemo="";
     try{ sigdemo=new URLSearchParams(location.search).get("sigdemo")||""; }catch(e){ sigdemo=""; }

@@ -1551,8 +1551,12 @@
     return false;
   }
 
+  function employeeDeleted(e) {
+    return !!(e && typeof root.employeeIsDeleted === "function" && root.employeeIsDeleted(e));
+  }
+
   function personListed(e) {
-    if (!e) return false;
+    if (!e || employeeDeleted(e)) return false;
     var name = String(e.name || "").replace(/\s+/g, " ").trim();
     if (!name || name === "—" || name === "-") return false;
     var no = String(e.empNo || "").replace(/\D/g, "");
@@ -1565,7 +1569,7 @@
     var list = [];
     Object.keys(S.employees || {}).forEach(function (id) {
       var e = S.employees[id];
-      if (!e || !personListed(e) || stillSeparated(e)) return;
+      if (!e || employeeDeleted(e) || !personListed(e) || stillSeparated(e)) return;
       if (payKindOf(e) !== kind) return;
       list.push(e);
     });
@@ -1638,14 +1642,14 @@
     var have = {};
     var list = [];
     (standing || []).forEach(function (e) {
-      if (!e || !e.id || have[e.id] || stillSeparated(e)) return;
+      if (!e || !e.id || have[e.id] || stillSeparated(e) || employeeDeleted(e)) return;
       have[e.id] = true;
       ensureEmpRate(e);
       list.push(e);
     });
     Object.keys(S.employees || {}).forEach(function (id) {
       var e = S.employees[id];
-      if (!e || have[id] || stillSeparated(e)) return;
+      if (!e || have[id] || stillSeparated(e) || employeeDeleted(e)) return;
       if (e.rosterConfirmed || first[id]) {
         ensureEmpRate(e);
         list.push(e);
@@ -1694,7 +1698,7 @@
     });
     ids.forEach(function (empId) {
       var e = S.employees && S.employees[empId];
-      if (!e || empStatusIsSeparated(e) || e.rosterConfirmed) return;
+      if (!e || employeeDeleted(e) || empStatusIsSeparated(e) || e.rosterConfirmed) return;
       var parked = false;
       if (typeof root.parkedIds === "function") {
         try {

@@ -12,6 +12,7 @@ const {
   shedDailySignatureBytes,
 } = require("../lib/supabase");
 const { formatManilaIso } = require("../lib/manila");
+const tombstones = require("../lib/employee-tombstones");
 const leaveNumbers = require("../../public/hr-leave-numbers");
 const caNumbers = require("../../public/hr-ca-numbers");
 const memoNumbers = require("../../public/hr-memo-numbers");
@@ -120,6 +121,16 @@ function serverIo(holder) {
   };
 }
 
+async function loadEmployeeTombstones() {
+  try {
+    const row = await getDoc("meta", tombstones.TOMBSTONE_DOC_ID);
+    const byId = row && row.data && row.data.byId;
+    return byId && typeof byId === "object" ? byId : {};
+  } catch (e) {
+    return null;
+  }
+}
+
 function snapshotFromRow(id, row) {
   if (!row) {
     return { id, exists: false, data: null, updated_at: null };
@@ -150,6 +161,12 @@ exports.handler = async (event) => {
     if (op === "get") {
       const { collection, id } = parsePath(body.path, body.id);
       const row = await getDoc(collection, id);
+      if (collection === "employees" && row) {
+        const byId = await loadEmployeeTombstones();
+        if (byId && tombstones.matches(byId, id, row.data)) {
+          return json(200, { ...snapshotFromRow(id, null), collection, ...tz });
+        }
+      }
       return json(200, { ...snapshotFromRow(id, row), collection, ...tz });
     }
 
@@ -233,6 +250,24 @@ exports.handler = async (event) => {
         const existing = await getDoc(collection, id);
         payload = preserveDailySignatures(existing && existing.data, payload);
       }
+      if (collection === "meta" && id === tombstones.TOMBSTONE_DOC_ID) {
+        const prev = await loadEmployeeTombstones();
+        if (prev == null) {
+          return json(503, {
+            error: "Could not read deleted-employee records. Try the delete again.",
+          });
+        }
+        payload = tombstones.prepareTombstoneDoc(prev, payload && payload.byId);
+      }
+      if (collection === "employees") {
+        const byId = await loadEmployeeTombstones();
+        if (byId) {
+          const guard = tombstones.prepareEmployeeSet(byId, id, payload);
+          if (!guard.ok) {
+            return json(409, { error: guard.error, code: guard.code });
+          }
+        }
+      }
       const row = await setDoc(collection, id, payload, {
         merge: Boolean(body.merge),
       });
@@ -254,8 +289,26 @@ exports.handler = async (event) => {
           await caNumbers.retireNumber(serverIo(body.holder || "delete"), caRow);
         }
       }
+      let tombstone = null;
+      if (collection === "employees") {
+        const existing = await getDoc(collection, id);
+        const prev = await loadEmployeeTombstones();
+        if (prev == null) {
+          return json(503, {
+            error: "Could not record the delete. The profile is still on the shared store.",
+          });
+        }
+        const next = tombstones.tombstoneAfterDelete(
+          prev,
+          id,
+          existing && existing.data,
+          formatManilaIso()
+        );
+        await setDoc("meta", tombstones.TOMBSTONE_DOC_ID, { byId: next.byId });
+        tombstone = next.record;
+      }
       await deleteDoc(collection, id);
-      return json(200, { ok: true, collection, id, exists: false, ...tz });
+      return json(200, { ok: true, collection, id, exists: false, tombstone, ...tz });
     }
 
     if (op === "acquire") {
@@ -281,7 +334,11 @@ exports.handler = async (event) => {
 
     if (op === "list") {
       const collection = assertCollection(body.collection || body.name);
-      const rows = await listCollection(collection);
+      let rows = await listCollection(collection);
+      if (collection === "employees") {
+        const byId = await loadEmployeeTombstones();
+        if (byId) rows = tombstones.filterEmployeeRows(rows, byId);
+      }
       return json(200, {
         collection,
         docs: rows.map((row) => {

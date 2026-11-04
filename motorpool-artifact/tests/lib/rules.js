@@ -1007,6 +1007,9 @@
     reserve.liquidatedAt = "";
     reserve.actual = null;
     clearVarianceApproval(reserve);
+    delete reserve.voucherNo;
+    delete reserve.voucherKey;
+    delete reserve.voucherHint;
     if (no) {
       var list = (reserve.vrfs || []).map(function (x) {
         return String(x);
