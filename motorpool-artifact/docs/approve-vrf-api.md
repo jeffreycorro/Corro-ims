@@ -22,7 +22,7 @@ Either env name works. If both are set, `APPROVE_VRF_SECRET` wins.
 - Writes **only** that reserve (`status: Approved`, `approvedBy`, `approvedAt`, audit) and the new ledger line(s) for that VRF (`vstatus: "Open"`). Other reserves and other ledger VRFs are not read or patched, so `updated_at` on those rows stays put.
 - The two writes go through Postgres function `motorpool_approve_vrf` when it is installed, so they commit in one transaction. Ledger lines are stored before the reserve is marked Approved.
 - Reuses the Office approve-from-hold rules (it does not mint a second number when that VRF is already posted).
-- Records `approvedVia: "api"` and optional `approverNote`.
+- Records `approvedBy` as the real person (never a bare `api`), `approvedAt` as a timestamp, `approvedVia: "api"`, `via: "api"`, and optional `approverNote`.
 - Returns in well under 10 seconds. A call is a few row lookups plus one or two row writes, not a rewrite of the month or the year.
 
 It does **not** list VRFs, reject, edit amounts, invent a number, or bypass uniqueness.
@@ -69,16 +69,24 @@ CORS allows Builder/Noah callers (`POST` + `OPTIONS`; `Authorization`, `Content-
 ## Body
 
 ```json
-{ "vrf": "5812" }
+{ "vrf": "5812", "approvedBy": "Jeffrey James M. Corro" }
 ```
 
 or
 
 ```json
-{ "vrfNumber": 5812, "approverNote": "jeffrey-yes via Noah" }
+{ "vrfNumber": 5812, "approvedBy": "Carmel", "approverNote": "jeffrey-yes via Noah" }
 ```
 
-`RSV-12` / `VRF-5812` spellings are normalized. Optional `approvedBy` is stored on the reserve; default is `api`.
+`RSV-12` / `VRF-5812` spellings are normalized.
+
+**`approvedBy` is required** on every call that marks a VRF Approved. Builder/Noah pass the person who said yes, in the JSON field `approvedBy`. Allowed values are **Jeffrey James M. Corro** (aliases `Jeffrey`, `Jeffrey Corro`, `Jeffrey James Corro` are stored as the full name) or **Carmel**. The stored name is the canonical one, with `approvedAt` set to a timestamp and `via` / `approvedVia` set to `"api"`. A missing name, a bare `"api"`, or any other name is **400** (`approver_required` or `approver_not_allowed`) and nothing is written.
+
+The allowed list is `DEFAULT_APPROVERS` in `netlify/lib/approvers.js`. To change it without a code edit, set `MOTORPOOL_APPROVER_NAMES` on the function:
+
+`Jeffrey James M. Corro=Jeffrey|Jeffrey Corro;Carmel`
+
+A repeat call that is already Approved and already on the ledger (`already: true`) does not rewrite `approvedBy`. Older rows that say `approvedBy: "api"` (VRF 6269, 6283, 6284) stay as they are.
 
 ## Example curl
 
@@ -86,7 +94,7 @@ or
 curl -sS -X POST 'https://corcondev-motorpool.netlify.app/.netlify/functions/approve-vrf' \
   -H 'Authorization: Bearer '"$APPROVE_VRF_SECRET" \
   -H 'Content-Type: application/json' \
-  -d '{"vrf":"5812","approverNote":"jeffrey-yes via Noah"}'
+  -d '{"vrf":"5812","approvedBy":"Jeffrey James M. Corro","approverNote":"jeffrey-yes via Noah"}'
 ```
 
 Success (`200`):
@@ -98,8 +106,10 @@ Success (`200`):
   "reserve": "12",
   "status": "Open",
   "ledgerLines": 1,
+  "approvedBy": "Jeffrey James M. Corro",
   "approvedVia": "api",
-  "approvedAt": "2026-09-21",
+  "via": "api",
+  "approvedAt": "2026-09-21T00:00:00+08:00",
   "approvedBudget": 12500,
   "approverNote": "jeffrey-yes via Noah"
 }
@@ -113,6 +123,8 @@ Success (`200`):
 | --- | --- | --- |
 | 401 | `unauthorized` | Secret missing or wrong |
 | 400 | `bad_request` | No `vrf` / `vrfNumber`, or not JSON |
+| 400 | `approver_required` | `approvedBy` is missing on a new approval |
+| 400 | `approver_not_allowed` | `approvedBy` is `api` or anyone other than Jeffrey James M. Corro or Carmel |
 | 404 | `not_found` | That VRF is not a live reserve |
 | 409 | `already_posted` | Another reserve already owns that posted number |
 | 409 | `ambiguous` | More than one pending hold matches |
@@ -123,7 +135,7 @@ Success (`200`):
 ## Builder / Noah call pattern
 
 1. Jeffrey says **yes** on that specific VRF (the human gate stays).
-2. Builder/Noah POST only that held number plus the secret. Do not open a remote browser and do not type the Office pass.
+2. Builder/Noah POST that held number, the secret, and `approvedBy` set to `Jeffrey James M. Corro` or `Carmel`. Do not send `approvedBy: "api"`. Do not open a remote browser and do not type the Office pass.
 3. Treat `200` + `status: "Open"` as posted, including `already: true` and `healed: true`. A second `200` is a no-op, not a duplicate. Do not retry a `404`.
 4. Do not call this endpoint to discover pending VRFs — there is no list.
 

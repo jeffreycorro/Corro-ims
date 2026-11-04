@@ -151,12 +151,12 @@ This endpoint does **not** use the Office passcode or a browser session cookie. 
 curl -sS -X POST 'https://corcondev-motorpool.netlify.app/.netlify/functions/approve-vrf' \
   -H 'Authorization: Bearer '"$APPROVE_VRF_SECRET" \
   -H 'Content-Type: application/json' \
-  -d '{"vrf":"5812","approverNote":"jeffrey-yes via Noah"}'
+  -d '{"vrf":"5812","approvedBy":"Jeffrey James M. Corro","approverNote":"jeffrey-yes via Noah"}'
 ```
 
 `X-Approve-Secret: …` is accepted instead of `Authorization`. Body may use `"vrfNumber": 5812` or `"vrf":"RSV-12"` (reserve-number form). Wrong or missing secret → `401`. Missing VRF → `404`. Already posted or ambiguous duplicate → `409`. The function never logs the secret.
 
-**Builder / Noah call pattern (after Jeffrey yes):** do not open a remote browser and do not type the Office pass. POST `{ "vrf": "<held number>" }` with the secret. Optional `approverNote` is stored on the reserve (`approvedVia: "api"`). Full notes: [`docs/approve-vrf-api.md`](docs/approve-vrf-api.md).
+**Builder / Noah call pattern (after Jeffrey or Carmel says yes):** do not open a remote browser and do not type the Office pass. POST `{ "vrf": "<held number>", "approvedBy": "Jeffrey James M. Corro" }` with the secret. `approvedBy` is required. `Carmel` is the other allowed name. Aliases such as `Jeffrey` are stored as `Jeffrey James M. Corro`. A bare `"api"` is rejected. `approvedVia` and `via` are `"api"`, and `approvedAt` is a timestamp. Optional `approverNote` is stored on the reserve. Full notes: [`docs/approve-vrf-api.md`](docs/approve-vrf-api.md).
 
 ### 6. Access control
 
