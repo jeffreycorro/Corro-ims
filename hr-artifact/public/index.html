@@ -941,7 +941,10 @@ const S = {
     hr201Inbox:"1Pp2xm6BfSCdCHfg7G0Vu1bT-OldakYvC"
   },
   ui:{ view:"dash", emp:null, tab:"info", q:"", period:null, nteFilter:"open" },
-  db:null, ready:false, subs:[], bootError:null, mcpReady:false, mcpChecked:false
+  db:null, ready:false, subs:[], bootError:null, mcpReady:false, mcpChecked:false,
+  /* Ids of 201 records HR deleted. A later snapshot or this browser's copy
+     must not write them back. */
+  tombstones:{}
 };
 
 const LSKEY = "corro201.v1";
@@ -1015,7 +1018,7 @@ function shedLocalEmployee(emp){
   return copy;
 }
 function lsPayload(){
-  const d={settings:settingsForLocal(S.settings)};
+  const d={settings:settingsForLocal(S.settings), tombstones:S.tombstones||{}};
   COLLS.forEach(c=>{
     if(c==="employees"){
       const map={};
@@ -1068,6 +1071,9 @@ function lsLoad(){
   try{ const r=localStorage.getItem(LSKEY); if(!r) return false; const d=JSON.parse(r);
     COLLS.forEach(k=>{ if(d[k]) S[k]=d[k]; });
     if(d.settings) S.settings=Object.assign(S.settings,d.settings);
+    if(d.tombstones && typeof d.tombstones==="object")
+      S.tombstones=mergeTombstoneMaps(S.tombstones||{}, d.tombstones);
+    if(typeof pruneDeletedEmployees==="function") pruneDeletedEmployees();
     return Object.keys(S.employees).length>0;
   }catch(e){ return false; }
 }
@@ -1218,6 +1224,14 @@ function keepPendingApplicants(next, local){
   return {map:map, retry:retry};
 }
 async function put(coll,id,obj,opts){
+  /* A deleted 201 must not be saved back by a field that was still open, or
+     by the boot check that retries rows missing from the shared store. */
+  if(coll==="employees" && typeof employeeIsDeleted==="function" && employeeIsDeleted(obj||{id:id})){
+    if(S.employees) delete S.employees[id];
+    if(typeof EMP_DIRTY==="object" && EMP_DIRTY) delete EMP_DIRTY[id];
+    lsSaveSoon();
+    return false;
+  }
   /* A hire added after start-up belongs on People & Pay straight away rather
      than waiting to be adopted from a manpower report. */
   if(coll==="employees" && obj && S.ready && !S.employees[id] && obj.status!=="Separated" && !obj.rosterConfirmed)
@@ -1253,6 +1267,14 @@ async function put(coll,id,obj,opts){
     return true;
   }
   catch(e){
+    if(e && e.code==="employee_deleted"){
+      if(typeof rememberDeletedEmployee==="function") rememberDeletedEmployee(obj||{id:id});
+      if(S.employees) delete S.employees[id];
+      if(typeof EMP_DIRTY==="object" && EMP_DIRTY) delete EMP_DIRTY[id];
+      lsSaveSoon();
+      if(!(opts && opts.quiet)) toast(e.message||"That employee was deleted and stays off the roster.","err");
+      return false;
+    }
     if(e && e.code==="duplicate_memo_number"){
       if(hadRow) S[coll][id]=prevRow;
       else delete S[coll][id];
@@ -1280,6 +1302,11 @@ async function putMany(coll, entries, onProgress){
   async function worker(){
     while(i<entries.length){
       const [id,obj]=entries[i++];
+      if(coll==="employees" && typeof employeeIsDeleted==="function" && employeeIsDeleted(obj||{id:id})){
+        if(S.employees) delete S.employees[id];
+        done++;
+        continue;
+      }
       S[coll][id]=obj;
       const payload=coll==="employees" ? employeePersist(obj) : obj;
       if(S.db){
@@ -1287,6 +1314,12 @@ async function putMany(coll, entries, onProgress){
         for(let t=0;t<TRIES && !ok;t++){
           try{ await S.db.doc(coll+"/"+id).set(payload); ok=true; }
           catch(e){
+            if(e && e.code==="employee_deleted"){
+              if(typeof rememberDeletedEmployee==="function") rememberDeletedEmployee(obj||{id:id});
+              if(S.employees) delete S.employees[id];
+              ok=true;
+              break;
+            }
             if(e && (e.code==="revoked" || e.code==="invalid_argument")) break;
             await new Promise(r=>setTimeout(r, 250*Math.pow(2,t)));
           }
@@ -1305,7 +1338,131 @@ function seedStatus(msg){
   const d=$("#dbdot"); if(d && d.lastElementChild) d.lastElementChild.textContent=msg;
 }
 
-async function drop(coll,id){
+/* Same rules as netlify/lib/employee-tombstones.js. Match the document id
+   only. Two 201s can share a name; deleting one must not hide the other. */
+function tombstoneFromEmployee(id, data, at){
+  const src=data && typeof data==="object" ? data : {};
+  return {
+    id:String(id||src.id||""),
+    name:src.name||"",
+    empNo:src.empNo!=null?String(src.empNo):"",
+    at:at||""
+  };
+}
+function mergeTombstoneMaps(prev, incoming){
+  const out={};
+  [prev||{}, incoming||{}].forEach(map=>{
+    Object.keys(map).forEach(id=>{
+      const next=map[id]||{};
+      const prior=out[id]||{};
+      out[id]={
+        id:String(id),
+        name:next.name||prior.name||"",
+        empNo:next.empNo||prior.empNo||"",
+        at:next.at||prior.at||""
+      };
+    });
+  });
+  return out;
+}
+function employeeMatchesTombstone(byId, id, data){
+  const map=byId && typeof byId==="object" ? byId : {};
+  const sid=String((data&&data.id)||id||"");
+  if(!sid || !map[sid]) return null;
+  return map[sid];
+}
+function employeeIsDeleted(empOrId){
+  const map=(typeof S!=="undefined" && S && S.tombstones)||{};
+  if(empOrId && typeof empOrId==="object")
+    return !!employeeMatchesTombstone(map, empOrId.id, empOrId);
+  return !!employeeMatchesTombstone(map, empOrId, {id:empOrId});
+}
+function rememberDeletedEmployee(emp){
+  const id=String((emp&&emp.id)||"");
+  if(!id || typeof S==="undefined" || !S) return {};
+  const rec=tombstoneFromEmployee(id, emp, new Date().toISOString());
+  S.tombstones=mergeTombstoneMaps(S.tombstones||{}, {[id]:rec});
+  return S.tombstones;
+}
+function pruneDeletedEmployees(){
+  if(typeof S==="undefined" || !S || !S.employees) return;
+  Object.keys(S.employees).forEach(id=>{
+    if(employeeMatchesTombstone(S.tombstones, id, S.employees[id])) delete S.employees[id];
+  });
+}
+function pruneEmployeeMap(employees, byId){
+  const src=employees||{};
+  const next={};
+  Object.keys(src).forEach(id=>{
+    if(employeeMatchesTombstone(byId, id, src[id])) return;
+    next[id]=src[id];
+  });
+  return next;
+}
+function rosterRetryIds(localIds, serverIds, employees, tombstones){
+  const have={};
+  (serverIds||[]).forEach(id=>{ have[id]=true; });
+  const map=tombstones||{};
+  return (localIds||[]).filter(id=>{
+    if(!id || have[id]) return false;
+    const e=employees && employees[id];
+    return !employeeMatchesTombstone(map, id, e||{id:id});
+  });
+}
+async function publishEmployeeTombstones(){
+  if(!S.db || !S.tombstones) return false;
+  try{
+    await S.db.doc("meta/employeeTombstones").set({byId:S.tombstones});
+    return true;
+  }catch(e){ return false; }
+}
+async function loadEmployeeTombstones(){
+  const before=Object.keys(S.employees||{}).filter(id=>employeeIsDeleted(S.employees[id]||{id:id}));
+  const stuckLater=[];
+  let serverMap=null;
+  if(S.db){
+    try{
+      const st=await S.db.doc("meta/employeeTombstones").get();
+      const incoming=st && st.exists && st.data() && st.data().byId;
+      if(incoming && typeof incoming==="object"){
+        serverMap=incoming;
+        S.tombstones=mergeTombstoneMaps(S.tombstones||{}, incoming);
+      }
+    }catch(e){}
+    const missing=Object.keys(S.tombstones||{}).filter(id=>!serverMap || !serverMap[id]);
+    if(missing.length) await publishEmployeeTombstones();
+    missing.forEach(id=>{ if(stuckLater.indexOf(id)<0) stuckLater.push(id); });
+  }
+  const stuck=Object.keys(S.employees||{}).filter(id=>employeeIsDeleted(S.employees[id]||{id:id}));
+  before.forEach(id=>{ if(stuck.indexOf(id)<0) stuck.push(id); });
+  (S._tombstoneHits||[]).forEach(id=>{ if(stuck.indexOf(id)<0) stuck.push(id); });
+  stuckLater.forEach(id=>{ if(stuck.indexOf(id)<0) stuck.push(id); });
+  pruneDeletedEmployees();
+  if(S.db){
+    for(let i=0;i<stuck.length;i++){
+      try{ await S.db.doc("employees/"+stuck[i]).delete(); }catch(e){}
+    }
+  }
+  lsSaveSoon();
+}
+async function drop(coll,id,opts){
+  const stamp=!(opts && opts.tombstone===false);
+  if(coll==="employees" && stamp){
+    const emp=(S.employees&&S.employees[id])||{id:id};
+    if(typeof EMP_DIRTY==="object" && EMP_DIRTY) delete EMP_DIRTY[id];
+    rememberDeletedEmployee(emp);
+    delete S.employees[id];
+    try{ lsSave(); }catch(e){}
+    if(!S.db) return;
+    const published=await publishEmployeeTombstones();
+    try{ await S.db.doc("employees/"+id).delete(); }
+    catch(e){
+      toast(published
+        ? "Removed on this device. The shared copy will drop once the connection succeeds."
+        : "Removed on this device. It could not be recorded for the rest of the team yet.","err");
+    }
+    return;
+  }
   delete S[coll][id]; lsSaveSoon();
   if(!S.db) return;
   try{ await S.db.doc(coll+"/"+id).delete(); }catch(e){}
@@ -1330,6 +1487,16 @@ async function connect(){
   dot.classList.add("live");
   dot.lastElementChild.textContent="shared · live";
   dot.title="Records are saved to the portal's shared store and visible to your HR team.";
+  /* Know which 201s were deleted before this snapshot is merged, or a row
+     that is still in the shared list (or only on this device) is put back. */
+  S._tombstoneHits=[];
+  try{
+    const tomb=await db.doc("meta/employeeTombstones").get();
+    const incoming=tomb && tomb.exists && tomb.data() && tomb.data().byId;
+    if(incoming && typeof incoming==="object")
+      S.tombstones=mergeTombstoneMaps(S.tombstones||{}, incoming);
+    pruneDeletedEmployees();
+  }catch(e){}
   /* One collection the server does not know yet must not cancel the load of
      the others. OT requests were that collection: the list failed, this whole
      sync threw, and the only snapshot was then ignored. */
@@ -1348,6 +1515,11 @@ async function connect(){
       snap.docs.forEach(d=>{
       seen[d.id]=1;
       const incoming=clone(d.data());
+      if(c==="employees" && employeeIsDeleted(Object.assign({id:d.id}, incoming||{}))){
+        if(S.employees) delete S.employees[d.id];
+        (S._tombstoneHits=S._tombstoneHits||[]).push(d.id);
+        return;
+      }
       const local=S[c]&&S[c][d.id];
       const merged=local?mergeIncomingDoc(c, incoming, local):incoming;
       if(c==="daily" && slimDailyRecord(merged)) merged._dmShed=1;
@@ -1417,6 +1589,10 @@ async function connect(){
       const repair=[];
       snap.docs.forEach(d=>{
         const incoming=clone(d.data());
+        if(c==="employees" && employeeIsDeleted(Object.assign({id:d.id}, incoming||{}))){
+          (S._tombstoneHits=S._tombstoneHits||[]).push(d.id);
+          return;
+        }
         const local=S[c]&&S[c][d.id];
         next[d.id]=local?mergeIncomingDoc(c, incoming, local):incoming;
         if(c==="daily" && slimDailyRecord(next[d.id])) next[d.id]._dmShed=1;
@@ -1477,6 +1653,7 @@ function flushLiveSnapshots(){
   if(!batch.length) return;
   batch.forEach(item=>{
     S[item.coll]=item.next;
+    if(item.coll==="employees" && typeof pruneDeletedEmployees==="function") pruneDeletedEmployees();
     if(item.coll==="daily") queueDailyShrink();
     item.repair.forEach((row)=>{ put(row[2]||"employees", row[0], row[1], row[3]); });
   });
@@ -1943,6 +2120,7 @@ async function importRoster(){
     const id = no ? "e"+no
       : "cf"+String(cfId||"x").replace(/[^A-Za-z0-9]/g,"").slice(0,18)
         +"-"+name.toLowerCase().replace(/[^a-z]/g,"").slice(0,9);
+    if(typeof employeeIsDeleted==="function" && employeeIsDeleted({id:id, empNo:no||"", name:name})) continue;
     const found = S.employees[id] || (no && byNo[no]);
     const cur = found ? clone(found) : null;
     if(cur){
@@ -2398,11 +2576,12 @@ async function migrate(){
 /* A write can still be refused under sustained load. Read the roster back and
    re-drive anything that did not land, so nobody is quietly missing. */
 async function verifyRoster(){
+  pruneDeletedEmployees();
   if(!S.db) return;
   try{
     const snap=await S.db.collection("employees").get();
-    const have=new Set(snap.docs.map(d=>d.id));
-    const missing=Object.keys(S.employees).filter(id=>!have.has(id));
+    const have=snap.docs.map(d=>d.id);
+    const missing=rosterRetryIds(Object.keys(S.employees), have, S.employees, S.tombstones||{});
     if(!missing.length) return;
     seedStatus("finishing "+missing.length+" record"+(missing.length===1?"":"s"));
     const r=await putMany("employees", missing.map(id=>[id,S.employees[id]]));
@@ -2446,7 +2625,9 @@ async function ensurePayrollProjects(){
 
 /* ============ derived ============ */
 function empList(){
-  return Object.values(S.employees).sort(cmpEmpAlpha);
+  return Object.values(S.employees)
+    .filter(e=>!(typeof employeeIsDeleted==="function" && employeeIsDeleted(e)))
+    .sort(cmpEmpAlpha);
 }
 /* empNo → {separatedOn, separationReason} from /separated-roster.json.
    Netlify 201 rows were never marked Separated; the Claude DB was. */
@@ -9437,6 +9618,7 @@ function dailyPeople(rec){
     return sortByRosterOrder(
       Object.keys(rec.rows||{}).map(id=>S.employees[id]).filter(e=>{
         if(!e) return false;
+        if(typeof employeeIsDeleted==="function" && employeeIsDeleted(e)) return false;
         return dailyRowShown(e.id, rec.date, (rec.rows||{})[e.id]);
       }),
       dailyOrderOf(rec)
@@ -9448,6 +9630,7 @@ function dailyPeople(rec){
   const have=new Set();
   const add=e=>{
     if(!e || !e.id || omit.has(e.id) || have.has(e.id)) return;
+    if(typeof employeeIsDeleted==="function" && employeeIsDeleted(e)) return;
     /* A filed scan keeps whoever it named. An open or standing day does not
        reach back through the gap before a rehire. */
     if(!rec.fixed && typeof beforeRehire==="function" && beforeRehire(e, rec.date)) return;
@@ -26337,7 +26520,7 @@ function wire(){
   const wp=$("#wipe",v); if(wp) wp.onclick=async()=>{
     if(!await askConfirm("Clear every record in this portal? Employees, NTEs, write-ups, memos, tasks, periods and the document register are all removed. This cannot be undone.")) return;
     if(!await askConfirm("Really clear everything?")) return;
-    for(const c of COLLS){ for(const id of Object.keys(S[c])){ await drop(c,id); } }
+    for(const c of COLLS){ for(const id of Object.keys(S[c])){ await drop(c,id,{tombstone:false}); } }
     S.ui.emp=null; S.ui.period=null; toast("All records cleared."); render();
   };
 
@@ -26603,6 +26786,7 @@ window.addEventListener("unhandledrejection", function(ev){
     render();
     if(window.claude && window.claude.use) await connect();
     else seedStatus("this device only");
+    await loadEmployeeTombstones();
     /* Seed first. migrate() creates records of its own for people who are on
        the payroll but have no 201 file, and if that runs on an empty store the
        roster looks already-populated and the real import never happens — a
