@@ -1035,7 +1035,10 @@
     }
     return Object.keys(ctx.employees || {})
       .map(function (id) { return ctx.employees[id]; })
-      .filter(function (e) { return e && !leaverStatus(e); });
+      .filter(function (e) {
+        return e && !leaverStatus(e) &&
+          !(typeof root.employeeIsDeleted === "function" && root.employeeIsDeleted(e));
+      });
   }
 
   function rosterPeopleForDay(rec, ctx) {
@@ -1057,6 +1060,7 @@
     var list = [];
     function add(e) {
       if (!e || !e.id || have[e.id] || omit[e.id]) return;
+      if (typeof root.employeeIsDeleted === "function" && root.employeeIsDeleted(e)) return;
       if (prehireRowHidden(e, date, (rec.rows || {})[e.id])) return;
       have[e.id] = true;
       list.push(e);
