@@ -6,19 +6,24 @@
  * role filter, a live search bar, applicant exam-score rows, a
  * "View 201 / application file" action on the applicant editor, and
  * Initial interviews: a date and time on the applicant, listed by position.
- * A name that is not on the pipeline can be typed in and is added there.
+ * The schedule opens on today's interviews (Asia/Manila). Another date,
+ * All dates, or Unscheduled is one click. A name that is not on the
+ * pipeline can be typed in and is added there.
  */
 (function (root) {
   "use strict";
 
-  if (root.hrRecruit && root.hrRecruit.version === "1.8.0") return;
+  if (root.hrRecruit && root.hrRecruit.version === "1.9.0") return;
 
   var api = {
-    version: "1.8.0",
+    version: "1.9.0",
     attached: false,
     openAppId: "",
     roleFilter: "",
     pipelineSearch: "",
+    interviewDay: "",
+    pipelineScheduleDay: "",
+    pipelineInterviewLimit: false,
     draftStaffNotes: [],
     draftExamScores: [],
   };
@@ -563,7 +568,9 @@
   }
 
   function applicantMatchesPipeline(a, filter, query, roles) {
-    return applicantMatchesRole(a, filter, roles) && applicantMatchesSearch(a, query, roles);
+    if (!applicantMatchesRole(a, filter, roles) || !applicantMatchesSearch(a, query, roles)) return false;
+    if (!pipelineInterviewLimitOn()) return true;
+    return applicantMatchesInterviewView(a, currentPipelineScheduleDay());
   }
 
   function roleFilterOptions(list, roles) {
@@ -689,7 +696,7 @@
     });
     var note = doc.getElementById("hr-recruit-role-count");
     if (note) {
-      var active = !!filter || !!String(query).trim();
+      var active = !!filter || !!String(query).trim() || pipelineInterviewLimitOn();
       note.textContent = active
         ? "Showing " + shown + " of " + total
         : total
@@ -2158,49 +2165,287 @@
     });
   }
 
-  function initialInterviewsHtml() {
-    var roles = rolesMap();
-    var groups = scheduledInterviewGroups(applicantList(), roles);
-    var total = 0;
-    groups.forEach(function (g) {
-      total += g.rows.length;
-    });
-    var h =
-      '<div id="hr-initial-interviews">' +
-      '<div class="note">Pick someone already on the pipeline, or type a name under Add someone who is not on the pipeline. The date and time are Philippines time. ' +
-      "Saving moves Applied, Screening, Shortlisted, On Hold, and Written Exam to Interview. " +
-      "Someone already at Interview, Background Check, For Final Interview, Offer, Hired, or Rejected stays on that stage. " +
-      "Change the status on the list when the interview is done, missed, moved, or failed.</div>" +
-      '<div class="sect-h"><h2>Schedule an initial interview</h2><span class="rule"></span>' +
-      '<span class="lbl">' +
-      total +
-      " on the schedule</span></div>" +
-      '<div class="card"><div class="card-b"><div class="stack">' +
-      '<div class="f"><label>Find an applicant</label>' +
-      '<input type="search" id="hr-iv-find" class="search" placeholder="Name, email, mobile, or position" aria-label="Find an applicant" autocomplete="off">' +
-      '<span class="lbl" id="hr-iv-find-hint"></span></div>' +
-      '<div class="grid3">' +
-      '<div class="f"><label>Applicant</label><select id="hr-iv-app">' +
-      applicantOptionsHtml(schedulableApplicants(), "", roles, "") +
-      "</select></div>" +
-      scheduleFieldsHtml({ interviewer: defaultInterviewer(), status: "Scheduled" }, PAGE_FIELDS) +
-      "</div>" +
-      '<div class="f" id="hr-iv-manual" style="margin-top:8px"><label>Add someone who is not on the pipeline</label>' +
-      '<div class="grid3">' +
-      '<div class="f"><label>Name</label><input id="hr-iv-new-name" placeholder="Full name" autocomplete="off"></div>' +
-      '<div class="f"><label>Position</label><input id="hr-iv-new-pos" placeholder="Optional" autocomplete="off"></div>' +
-      '<div class="f"><label>Mobile</label><input id="hr-iv-new-mob" placeholder="Optional" autocomplete="off"></div>' +
-      '<div class="f"><label>Email</label><input id="hr-iv-new-email" placeholder="Optional" autocomplete="off"></div>' +
-      "</div>" +
-      '<span class="hint">Leave this blank to schedule someone already chosen above. A name here is added to the pipeline when you save, unless that exact name is already on file.</span></div>' +
-      '<div class="row"><button class="btn pri" id="hr-iv-save" type="button">Save schedule</button>' +
-      '<span class="lbl" id="hr-iv-form-status"></span></div>' +
-      "</div></div></div>";
-    if (!groups.length) {
-      h +=
-        '<div class="card"><div class="empty">No initial interviews scheduled yet. Pick an applicant above, or type a name, and set the date and time.</div></div></div>';
-      return h;
+  function isIsoDate(value) {
+    var m = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return false;
+    var y = Number(m[1]);
+    var mo = Number(m[2]);
+    var d = Number(m[3]);
+    if (mo < 1 || mo > 12 || d < 1 || d > 31) return false;
+    var t = new Date(y, mo - 1, d);
+    return t.getFullYear() === y && t.getMonth() === mo - 1 && t.getDate() === d;
+  }
+
+  function manilaToday(now) {
+    var clock = now || root.__hrNow || new Date();
+    if (!(clock instanceof Date)) {
+      var parsed = new Date(clock);
+      clock = isNaN(parsed.getTime()) ? new Date() : parsed;
     }
+    try {
+      var fmt = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Asia/Manila",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      });
+      var parts = {};
+      fmt.formatToParts(clock).forEach(function (p) {
+        if (p.type !== "literal") parts[p.type] = p.value;
+      });
+      if (parts.year && parts.month && parts.day) return parts.year + "-" + parts.month + "-" + parts.day;
+    } catch (e) {}
+    return (
+      clock.getFullYear() +
+      "-" +
+      String(clock.getMonth() + 1).padStart(2, "0") +
+      "-" +
+      String(clock.getDate()).padStart(2, "0")
+    );
+  }
+
+  function shiftIsoDate(iso, days) {
+    var base = isIsoDate(iso) ? String(iso) : manilaToday();
+    var p = base.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    var t = new Date(Number(p[1]), Number(p[2]) - 1, Number(p[3]));
+    t.setDate(t.getDate() + (Number(days) || 0));
+    return (
+      t.getFullYear() +
+      "-" +
+      String(t.getMonth() + 1).padStart(2, "0") +
+      "-" +
+      String(t.getDate()).padStart(2, "0")
+    );
+  }
+
+  function formatDayLabel(iso) {
+    var m = String(iso || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return "";
+    var mon = WHEN_MONTHS[Number(m[2]) - 1] || m[2];
+    return Number(m[3]) + " " + mon + " " + m[1];
+  }
+
+  function interviewDay(applicant) {
+    var iv = normalizeInitialInterview(applicant && applicant.initialInterview);
+    if (!iv) return "";
+    return String(iv.at).slice(0, 10);
+  }
+
+  function readStoredDay(key) {
+    var S = store();
+    if (S && S.ui && Object.prototype.hasOwnProperty.call(S.ui, key)) return String(S.ui[key] == null ? "" : S.ui[key]);
+    if (api[key] != null && api[key] !== "") return String(api[key]);
+    return "";
+  }
+
+  function writeStoredDay(key, stored) {
+    api[key] = stored;
+    var S = store();
+    if (!S) return;
+    S.ui = S.ui || {};
+    if (stored === "") delete S.ui[key];
+    else S.ui[key] = stored;
+  }
+
+  function interpretDay(stored) {
+    stored = String(stored == null ? "" : stored);
+    if (stored === "all" || stored === "none") return stored;
+    if (isIsoDate(stored)) return stored;
+    return manilaToday();
+  }
+
+  function normalizeDayInput(raw) {
+    raw = raw == null ? "" : String(raw).trim();
+    if (raw === "" || raw === "default") return "";
+    if (raw === "today") return manilaToday();
+    if (raw === "all" || raw === "none") return raw;
+    if (isIsoDate(raw)) return raw;
+    return null;
+  }
+
+  function currentInterviewDay() {
+    return interpretDay(readStoredDay("interviewDay"));
+  }
+
+  function currentPipelineScheduleDay() {
+    return interpretDay(readStoredDay("pipelineScheduleDay"));
+  }
+
+  function pipelineInterviewLimitOn() {
+    var S = store();
+    if (S && S.ui && S.ui.pipelineInterviewLimit != null) return !!S.ui.pipelineInterviewLimit;
+    return !!api.pipelineInterviewLimit;
+  }
+
+  function setInterviewDay(day) {
+    var next = normalizeDayInput(day);
+    if (next == null) return currentInterviewDay();
+    writeStoredDay("interviewDay", next);
+    paintInterviewSchedule();
+    return currentInterviewDay();
+  }
+
+  function setPipelineScheduleDay(day) {
+    var next = normalizeDayInput(day);
+    if (next == null) return currentPipelineScheduleDay();
+    writeStoredDay("pipelineScheduleDay", next);
+    paintPipelineSchedule();
+    return currentPipelineScheduleDay();
+  }
+
+  function setPipelineInterviewLimit(on) {
+    var next = !!on;
+    api.pipelineInterviewLimit = next;
+    var S = store();
+    if (S) {
+      S.ui = S.ui || {};
+      S.ui.pipelineInterviewLimit = next;
+    }
+    paintPipelineSchedule();
+    return next;
+  }
+
+  function stepInterviewDay(delta) {
+    var cur = currentInterviewDay();
+    var base = isIsoDate(cur) ? cur : manilaToday();
+    return setInterviewDay(shiftIsoDate(base, delta));
+  }
+
+  function stepPipelineScheduleDay(delta) {
+    var cur = currentPipelineScheduleDay();
+    var base = isIsoDate(cur) ? cur : manilaToday();
+    return setPipelineScheduleDay(shiftIsoDate(base, delta));
+  }
+
+  function applicantMatchesInterviewView(a, mode) {
+    mode = interpretDay(mode);
+    var day = interviewDay(a);
+    if (mode === "all") return !!day;
+    if (mode === "none") {
+      if (day) return false;
+      var stage = canonicalStage(a && a.stage);
+      return stage !== "Hired" && stage !== "Rejected";
+    }
+    return day === mode;
+  }
+
+  function applicantsForInterviewView(mode) {
+    return applicantList().filter(function (a) {
+      return applicantMatchesInterviewView(a, mode);
+    });
+  }
+
+  function scheduledDays(list) {
+    var seen = Object.create(null);
+    var days = [];
+    (list || applicantList()).forEach(function (a) {
+      var day = interviewDay(a);
+      if (!day || seen[day]) return;
+      seen[day] = true;
+      days.push(day);
+    });
+    days.sort();
+    return days;
+  }
+
+  function dayButtonHtml(id, label, on, attr) {
+    var style = on ? ' style="font-weight:600;box-shadow:inset 0 0 0 2px var(--brass)"' : "";
+    return (
+      '<button type="button" class="btn sm' +
+      (on ? " on" : "") +
+      '"' +
+      (id ? ' id="' + id + '"' : "") +
+      style +
+      (attr || "") +
+      ">" +
+      esc(label) +
+      "</button>"
+    );
+  }
+
+  function dayChipsHtml(days, mode, attrName) {
+    var focus = isIsoDate(mode) ? mode : manilaToday();
+    var shown = days || [];
+    if (shown.length > 16) {
+      var idx = shown.indexOf(focus);
+      if (idx < 0) {
+        idx = 0;
+        shown.forEach(function (d, i) {
+          if (d <= focus) idx = i;
+        });
+      }
+      var start = Math.max(0, idx - 7);
+      var end = Math.min(shown.length, start + 15);
+      start = Math.max(0, end - 15);
+      shown = shown.slice(start, end);
+    }
+    return shown
+      .map(function (d) {
+        return dayButtonHtml("", formatDayLabel(d), mode === d, " " + attrName + '="' + esc(d) + '"');
+      })
+      .join("");
+  }
+
+  function interviewDayCountText(mode) {
+    var count = applicantsForInterviewView(mode).length;
+    if (mode === "all") return count + " on the schedule";
+    if (mode === "none") return count + " not scheduled";
+    return count + " on " + formatDayLabel(mode);
+  }
+
+  function interviewDayControlsHtml(prefix, mode, pickAttr) {
+    var today = manilaToday();
+    var dateValue = isIsoDate(mode) ? mode : "";
+    var days = scheduledDays();
+    var inputId = prefix === "hr-pipe-iv" ? "hr-pipe-iv-day" : "hr-iv-day";
+    var html =
+      '<div class="row" style="flex-wrap:wrap;gap:6px;align-items:flex-end">' +
+      '<div class="f" style="margin:0"><label for="' +
+      inputId +
+      '">Interview date</label>' +
+      '<input type="date" id="' +
+      inputId +
+      '" aria-label="Show interviews on this date" value="' +
+      esc(dateValue) +
+      '"></div>' +
+      dayButtonHtml(prefix + "-prev", "‹", false, ' aria-label="Previous day"') +
+      dayButtonHtml(prefix + "-next", "›", false, ' aria-label="Next day"') +
+      dayButtonHtml(prefix + "-today", "Today", mode === today) +
+      dayButtonHtml(prefix + "-all", "All dates", mode === "all") +
+      dayButtonHtml(prefix + "-none", "Unscheduled", mode === "none") +
+      '<span class="lbl" id="' +
+      prefix +
+      '-count">' +
+      esc(interviewDayCountText(mode)) +
+      "</span></div>";
+    if (days.length) {
+      html +=
+        '<div class="row" style="flex-wrap:wrap;gap:6px;margin-top:8px">' +
+        dayChipsHtml(days, mode, pickAttr) +
+        "</div>";
+    }
+    return html;
+  }
+
+  function interviewDayBarInnerHtml() {
+    return interviewDayControlsHtml("hr-iv-day", currentInterviewDay(), "data-hr-iv-pick");
+  }
+
+  function interviewTableHtml(groups, mode) {
+    if (!groups.length) {
+      if (mode === "none") {
+        return '<div class="card"><div class="empty">Everyone still in play already has an initial interview. Choose All dates to see the schedule.</div></div>';
+      }
+      if (mode === "all") {
+        return '<div class="card"><div class="empty">No initial interviews scheduled yet. Pick an applicant above, or type a name, and set the date and time.</div></div>';
+      }
+      return (
+        '<div class="card"><div class="empty">No one is scheduled on ' +
+        esc(formatDayLabel(mode)) +
+        ". Pick another date, or choose All dates.</div></div>"
+      );
+    }
+    var h = "";
     groups.forEach(function (g) {
       h +=
         '<div class="sect-h" style="margin:16px 0 9px"><h2 style="font-size:13px">' +
@@ -2208,16 +2453,34 @@
         '</h2><span class="rule"></span><span class="pill acc">' +
         g.rows.length +
         "</span></div>" +
-        '<div class="card"><div class="tw"><table><thead><tr><th>Applicant</th><th>Scheduled</th><th>Interviewer</th><th>Status</th><th>Stage</th><th></th></tr></thead><tbody>';
+        '<div class="card"><div class="tw"><table><thead><tr><th>Applicant</th><th>' +
+        (mode === "none" ? "Stage" : "Scheduled") +
+        "</th>" +
+        (mode === "none" ? "" : "<th>Interviewer</th><th>Status</th><th>Stage</th>") +
+        "<th></th></tr></thead><tbody>";
       g.rows.forEach(function (a) {
         var iv = normalizeInitialInterview(a.initialInterview);
+        var day = iv ? String(iv.at).slice(0, 10) : "";
+        if (mode === "none" || !iv) {
+          h +=
+            '<tr data-hr-iv-day=""><td class="nm">' +
+            esc(a.name || "(no name)") +
+            "</td><td>" +
+            esc(stageText(a.stage)) +
+            '</td><td><button class="btn sm" type="button" data-open-app="' +
+            esc(a.id) +
+            '">Open</button></td></tr>';
+          return;
+        }
         h +=
-          "<tr><td class=\"nm\">" +
+          '<tr data-hr-iv-day="' +
+          esc(day) +
+          '"><td class="nm">' +
           esc(a.name || "(no name)") +
           (iv.notes
             ? '<div style="font-size:11px;color:var(--ink3);font-weight:400">' + esc(iv.notes) + "</div>"
             : "") +
-          "</td><td class=\"mono\">" +
+          '</td><td class="mono">' +
           esc(formatWhen(iv.at)) +
           "</td><td>" +
           esc(iv.interviewer || "—") +
@@ -2239,7 +2502,120 @@
       });
       h += "</tbody></table></div></div>";
     });
-    h += "</div>";
+    return h;
+  }
+
+  function interviewScheduleListHtml(mode) {
+    var roles = rolesMap();
+    var people = applicantsForInterviewView(mode);
+    var groups =
+      mode === "none" ? groupApplicantsByPosition(people, roles) : scheduledInterviewGroups(people, roles);
+    return interviewTableHtml(groups, mode);
+  }
+
+  function paintInterviewSchedule() {
+    if (typeof document === "undefined" || !document.getElementById) return;
+    var bar = document.getElementById("hr-iv-day-bar");
+    var list = document.getElementById("hr-iv-day-list");
+    if (bar) bar.innerHTML = interviewDayBarInnerHtml();
+    if (list) list.innerHTML = interviewScheduleListHtml(currentInterviewDay());
+  }
+
+  function pipelineScheduleCardHtml() {
+    var mode = currentPipelineScheduleDay();
+    var limitOn = pipelineInterviewLimitOn();
+    return (
+      '<div class="card" style="margin:12px 0"><div class="card-h"><h3>Initial interviews</h3></div><div class="card-b">' +
+      '<div class="note">Philippines time. This list opens on today. Pick a date, or a day that already has someone scheduled. All dates shows every scheduled interview. Unscheduled shows applicants still in play who have no initial interview yet. The pipeline below stays the full list unless you limit it.</div>' +
+      '<div id="hr-pipe-iv-bar">' +
+      interviewDayControlsHtml("hr-pipe-iv", mode, "data-hr-pipe-pick") +
+      "</div>" +
+      '<div class="row" style="margin-top:8px">' +
+      dayButtonHtml(
+        "hr-pipe-iv-limit",
+        limitOn ? "Show everyone in the pipeline" : "Limit the pipeline to this view",
+        limitOn
+      ) +
+      "</div>" +
+      '<div id="hr-pipe-iv-list">' +
+      interviewScheduleListHtml(mode) +
+      "</div></div></div>"
+    );
+  }
+
+  function paintPipelineSchedule() {
+    if (typeof document === "undefined" || !document.getElementById) return;
+    var host = document.getElementById("hr-pipeline-iv-day");
+    if (host) host.innerHTML = pipelineScheduleCardHtml();
+    if (document.getElementById("new-app")) applyPipelineFilters(document);
+    try {
+      injectScheduleButtons();
+    } catch (e) {}
+  }
+
+  function injectPipelineSchedule() {
+    if (typeof document === "undefined" || !document.getElementById || !document.createElement) return null;
+    var log = document.getElementById("new-app");
+    var existing = document.getElementById("hr-pipeline-iv-day");
+    if (!log || !log.parentNode) {
+      if (existing && existing.parentNode && existing.parentNode.removeChild) existing.parentNode.removeChild(existing);
+      return null;
+    }
+    if (!existing) {
+      existing = document.createElement("div");
+      existing.setAttribute("id", "hr-pipeline-iv-day");
+      var sect = log.parentNode;
+      if (sect.parentNode && sect.parentNode.insertBefore) sect.parentNode.insertBefore(existing, sect.nextSibling || null);
+      else if (sect.appendChild) sect.appendChild(existing);
+    }
+    existing.innerHTML = pipelineScheduleCardHtml();
+    return existing;
+  }
+
+  function initialInterviewsHtml() {
+    var roles = rolesMap();
+    var scheduledTotal = applicantList().filter(function (a) {
+      return !!normalizeInitialInterview(a && a.initialInterview);
+    }).length;
+    var h =
+      '<div id="hr-initial-interviews">' +
+      '<div class="note">Philippines time. The list opens on today. Pick a date, the day before or after, or a day that already has someone scheduled. All dates shows every scheduled interview. Unscheduled shows applicants still in play who have no initial interview yet.</div>' +
+      '<div class="sect-h"><h2>Who is scheduled</h2><span class="rule"></span>' +
+      '<span class="lbl">' +
+      scheduledTotal +
+      " on the schedule</span></div>" +
+      '<div id="hr-iv-day-bar">' +
+      interviewDayBarInnerHtml() +
+      "</div>" +
+      '<div id="hr-iv-day-list">' +
+      interviewScheduleListHtml(currentInterviewDay()) +
+      "</div>" +
+      '<div class="sect-h" style="margin-top:16px"><h2>Schedule an initial interview</h2><span class="rule"></span></div>' +
+      '<div class="note">Pick someone already on the pipeline, or type a name under Add someone who is not on the pipeline. ' +
+      "Saving moves Applied, Screening, Shortlisted, On Hold, and Written Exam to Interview. " +
+      "Someone already at Interview, Background Check, For Final Interview, Offer, Hired, or Rejected stays on that stage. " +
+      "Change the status on the list when the interview is done, missed, moved, or failed.</div>" +
+      '<div class="card"><div class="card-b"><div class="stack">' +
+      '<div class="f"><label>Find an applicant</label>' +
+      '<input type="search" id="hr-iv-find" class="search" placeholder="Name, email, mobile, or position" aria-label="Find an applicant" autocomplete="off">' +
+      '<span class="lbl" id="hr-iv-find-hint"></span></div>' +
+      '<div class="grid3">' +
+      '<div class="f"><label>Applicant</label><select id="hr-iv-app">' +
+      applicantOptionsHtml(schedulableApplicants(), "", roles, "") +
+      "</select></div>" +
+      scheduleFieldsHtml({ interviewer: defaultInterviewer(), status: "Scheduled" }, PAGE_FIELDS) +
+      "</div>" +
+      '<div class="f" id="hr-iv-manual" style="margin-top:8px"><label>Add someone who is not on the pipeline</label>' +
+      '<div class="grid3">' +
+      '<div class="f"><label>Name</label><input id="hr-iv-new-name" placeholder="Full name" autocomplete="off"></div>' +
+      '<div class="f"><label>Position</label><input id="hr-iv-new-pos" placeholder="Optional" autocomplete="off"></div>' +
+      '<div class="f"><label>Mobile</label><input id="hr-iv-new-mob" placeholder="Optional" autocomplete="off"></div>' +
+      '<div class="f"><label>Email</label><input id="hr-iv-new-email" placeholder="Optional" autocomplete="off"></div>' +
+      "</div>" +
+      '<span class="hint">Leave this blank to schedule someone already chosen above. A name here is added to the pipeline when you save, unless that exact name is already on file.</span></div>' +
+      '<div class="row"><button class="btn pri" id="hr-iv-save" type="button">Save schedule</button>' +
+      '<span class="lbl" id="hr-iv-form-status"></span></div>' +
+      "</div></div></div></div>";
     return h;
   }
 
@@ -2523,13 +2899,41 @@
       function (ev) {
         var t = ev && ev.target;
         var id = "";
+        var pick = "";
+        var pipePick = "";
         while (t && t !== doc) {
-          if (t.id === "hr-iv-save" || t.id === "hr-iv-edit-save" || t.id === "hr-iv-modal-save" || t.id === "hr-iv-modal-cancel") {
+          if (
+            t.id === "hr-iv-save" ||
+            t.id === "hr-iv-edit-save" ||
+            t.id === "hr-iv-modal-save" ||
+            t.id === "hr-iv-modal-cancel" ||
+            t.id === "hr-iv-day-today" ||
+            t.id === "hr-iv-day-all" ||
+            t.id === "hr-iv-day-none" ||
+            t.id === "hr-iv-day-prev" ||
+            t.id === "hr-iv-day-next" ||
+            t.id === "hr-pipe-iv-today" ||
+            t.id === "hr-pipe-iv-all" ||
+            t.id === "hr-pipe-iv-none" ||
+            t.id === "hr-pipe-iv-prev" ||
+            t.id === "hr-pipe-iv-next" ||
+            t.id === "hr-pipe-iv-limit"
+          ) {
             id = t.id;
             break;
           }
           if (t.getAttribute && t.getAttribute("data-hr-iv-open")) {
             id = "open";
+            break;
+          }
+          if (t.getAttribute && t.getAttribute("data-hr-iv-pick") != null) {
+            id = "pick";
+            pick = t.getAttribute("data-hr-iv-pick");
+            break;
+          }
+          if (t.getAttribute && t.getAttribute("data-hr-pipe-pick") != null) {
+            id = "pipe-pick";
+            pipePick = t.getAttribute("data-hr-pipe-pick");
             break;
           }
           t = t.parentNode;
@@ -2541,7 +2945,20 @@
         else if (id === "hr-iv-modal-save") saveModalSchedule();
         else if (id === "hr-iv-modal-cancel") {
           if (typeof root.closeModal === "function") root.closeModal();
-        } else if (t && t.getAttribute) {
+        } else if (id === "hr-iv-day-today") setInterviewDay("today");
+        else if (id === "hr-iv-day-all") setInterviewDay("all");
+        else if (id === "hr-iv-day-none") setInterviewDay("none");
+        else if (id === "hr-iv-day-prev") stepInterviewDay(-1);
+        else if (id === "hr-iv-day-next") stepInterviewDay(1);
+        else if (id === "pick") setInterviewDay(pick);
+        else if (id === "hr-pipe-iv-today") setPipelineScheduleDay("today");
+        else if (id === "hr-pipe-iv-all") setPipelineScheduleDay("all");
+        else if (id === "hr-pipe-iv-none") setPipelineScheduleDay("none");
+        else if (id === "hr-pipe-iv-prev") stepPipelineScheduleDay(-1);
+        else if (id === "hr-pipe-iv-next") stepPipelineScheduleDay(1);
+        else if (id === "pipe-pick") setPipelineScheduleDay(pipePick);
+        else if (id === "hr-pipe-iv-limit") setPipelineInterviewLimit(!pipelineInterviewLimitOn());
+        else if (t && t.getAttribute) {
           if (ev.stopPropagation) ev.stopPropagation();
           openScheduleModal(t.getAttribute("data-hr-iv-open"));
         }
@@ -2555,6 +2972,14 @@
         if (!t) return;
         if (t.id === "hr-iv-app") {
           fillPageForm(t.value);
+          return;
+        }
+        if (t.id === "hr-iv-day") {
+          setInterviewDay(t.value || "all");
+          return;
+        }
+        if (t.id === "hr-pipe-iv-day") {
+          setPipelineScheduleDay(t.value || "all");
           return;
         }
         if (t.getAttribute && t.getAttribute("data-hr-iv-status") != null) {
@@ -2576,6 +3001,8 @@
       "input",
       function (ev) {
         var t = ev && ev.target;
+        if (t && t.id === "hr-iv-day") setInterviewDay(t.value || "all");
+        if (t && t.id === "hr-pipe-iv-day") setPipelineScheduleDay(t.value || "all");
         if (t && t.id === "hr-iv-find") filterApplicantSelect(t.value);
         if (t && t.id === "hr-iv-new-name") {
           if (String(t.value || "").trim()) {
@@ -2596,6 +3023,31 @@
       if (openBtn.closest && openBtn.closest("#hr-initial-interviews")) return;
       var id = openBtn.getAttribute("data-open-app");
       if (!id) return;
+      var inDayCard = openBtn.closest && openBtn.closest("#hr-pipeline-iv-day");
+      var person = findApplicant(id);
+      var iv = person && normalizeInitialInterview(person.initialInterview);
+      var when =
+        openBtn.parentNode.querySelector && openBtn.parentNode.querySelector('[data-hr-iv-when="' + id + '"]');
+      if (!inDayCard && iv) {
+        if (!when && document.createElement) {
+          when = document.createElement("div");
+          when.className = "lbl";
+          when.setAttribute("data-hr-iv-when", id);
+          if (when.style) {
+            when.style.fontWeight = "400";
+            when.style.textTransform = "none";
+            when.style.letterSpacing = "0";
+            when.style.fontFamily = "var(--f-ui)";
+            when.style.fontSize = "11px";
+            when.style.marginTop = "4px";
+            when.style.whiteSpace = "normal";
+          }
+          openBtn.parentNode.appendChild(when);
+        }
+        if (when) when.textContent = "Initial " + formatWhen(iv.at);
+      } else if (when && when.parentNode && when.parentNode.removeChild) {
+        when.parentNode.removeChild(when);
+      }
       if (openBtn.parentNode.querySelector && openBtn.parentNode.querySelector('[data-hr-iv-open="' + id + '"]')) return;
       var btn = document.createElement("button");
       btn.type = "button";
@@ -2642,6 +3094,7 @@
       injectConsolidateButton();
       injectSearch();
       injectRoleFilter();
+      injectPipelineSchedule();
       injectScheduleButtons();
     } catch (e) {}
   }
@@ -2727,9 +3180,21 @@
   api.commitInitialInterview = commitInitialInterview;
   api.commitInitialStatus = commitInitialStatus;
   api.formatWhen = formatWhen;
+  api.manilaToday = manilaToday;
+  api.shiftIsoDate = shiftIsoDate;
+  api.interviewDayOf = interviewDay;
+  api.currentInterviewDay = currentInterviewDay;
+  api.setInterviewDay = setInterviewDay;
+  api.currentPipelineScheduleDay = currentPipelineScheduleDay;
+  api.setPipelineScheduleDay = setPipelineScheduleDay;
+  api.pipelineInterviewLimitOn = pipelineInterviewLimitOn;
+  api.setPipelineInterviewLimit = setPipelineInterviewLimit;
+  api.applicantMatchesInterviewView = applicantMatchesInterviewView;
   api.scheduledInterviewGroups = scheduledInterviewGroups;
   api.applicantOptionsHtml = applicantOptionsHtml;
   api.initialInterviewsHtml = initialInterviewsHtml;
+  api.pipelineScheduleCardHtml = pipelineScheduleCardHtml;
+  api.injectPipelineSchedule = injectPipelineSchedule;
   api.schedulePanelHtml = schedulePanelHtml;
   api.openScheduleModal = openScheduleModal;
   api.injectScheduleButtons = injectScheduleButtons;

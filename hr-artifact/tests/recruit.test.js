@@ -708,6 +708,7 @@ describe("hr-recruit initial interviews", () => {
     await hr.commitInitialInterview("a3", { at: "2026-10-22T14:00", status: "Failed" });
     const reloaded = fakeWindow(JSON.parse(JSON.stringify(w.S.applicants)));
     const hr2 = loadRecruit(reloaded);
+    hr2.setInterviewDay("all");
     const html = hr2.initialInterviewsHtml();
     assert.match(html, /id="hr-initial-interviews"/);
     assert.match(html, /Project Manager/);
@@ -721,7 +722,7 @@ describe("hr-recruit initial interviews", () => {
     assert.match(html, /Done\/Passed/);
     assert.match(html, /No-show/);
     assert.match(html, /Failed/);
-    const list = html.split('id="hr-iv-save"')[1] || "";
+    const list = html.split('id="hr-iv-day-list"')[1] || "";
     const proc = list.indexOf(">Procurement Officer<");
     const proj = list.indexOf(">Project Manager<");
     assert.ok(proc >= 0 && proj > proc);
@@ -900,6 +901,7 @@ describe("hr-recruit initial interviews", () => {
     assert.equal(again.created, false);
     assert.equal(again.applicant.id, created.applicant.id);
     assert.equal(again.applicant.position, "Procurement Officer");
+    hr.setInterviewDay("all");
     assert.match(hr.initialInterviewsHtml(), /Nobody On File/);
     assert.match(hr.initialInterviewsHtml(), /id="hr-iv-new-name"/);
     assert.match(hr.initialInterviewsHtml(), /Add someone who is not on the pipeline/);
@@ -919,5 +921,112 @@ describe("hr-recruit initial interviews", () => {
     assert.equal(sel.value, "");
     assert.equal(name.value, "Totally Unknown Person");
     assert.equal(name.getAttribute("data-from-find"), "1");
+  });
+
+  it("opens on the Manila day and can switch days, all dates, or unscheduled", async () => {
+    const w = fakeWindow(copyPeople());
+    w.__hrNow = new Date("2026-11-03T16:30:00Z");
+    const hr = loadRecruit(w);
+    assert.equal(hr.manilaToday(new Date("2026-11-03T16:30:00Z")), "2026-11-04");
+    assert.equal(hr.manilaToday(new Date("2026-11-03T15:30:00Z")), "2026-11-03");
+    assert.equal(hr.shiftIsoDate("2026-10-31", 1), "2026-11-01");
+    assert.equal(hr.shiftIsoDate("2026-11-01", -1), "2026-10-31");
+
+    await hr.commitInitialInterview("a1", { at: "2026-11-04T09:30", interviewer: "Cassie", status: "Scheduled" });
+    await hr.commitInitialInterview("a3", { at: "2026-11-03T14:00", status: "Scheduled" });
+    await hr.commitInitialInterview("a4", { at: "2026-11-04T15:00", status: "Rescheduled" });
+
+    const listOf = (html) => {
+      const at = html.indexOf('id="hr-iv-day-list"');
+      assert.ok(at >= 0);
+      const rest = html.slice(at);
+      const end = rest.indexOf("Schedule an initial interview");
+      return end >= 0 ? rest.slice(0, end) : rest;
+    };
+
+    const todayHtml = hr.initialInterviewsHtml();
+    assert.match(todayHtml, /id="hr-iv-day"/);
+    assert.match(todayHtml, /aria-label="Show interviews on this date"/);
+    assert.match(todayHtml, /value="2026-11-04"/);
+    assert.match(todayHtml, /id="hr-iv-day-today"/);
+    assert.match(todayHtml, /id="hr-iv-day-all"/);
+    assert.match(todayHtml, /id="hr-iv-day-none"/);
+    assert.match(todayHtml, /data-hr-iv-pick="2026-11-04"/);
+    assert.match(todayHtml, /data-hr-iv-pick="2026-11-03"/);
+    assert.match(todayHtml, /4 Nov 2026/);
+    const todayList = listOf(todayHtml);
+    assert.match(todayList, /Monte, Domingo Jr/);
+    assert.match(todayList, /Reyes, Paolo/);
+    assert.match(todayList, /data-hr-iv-day="2026-11-04"/);
+    assert.doesNotMatch(todayList, /Santos, Ana/);
+    assert.doesNotMatch(todayList, /Barrios, Luisa/);
+    assert.match(todayHtml, /id="hr-iv-app"[\s\S]*Barrios, Luisa/);
+
+    w.__hrNow = new Date("2026-11-03T15:30:00Z");
+    hr.setInterviewDay("");
+    assert.equal(hr.currentInterviewDay(), "2026-11-03");
+    const manilaHtml = listOf(hr.initialInterviewsHtml());
+    assert.match(manilaHtml, /Santos, Ana/);
+    assert.doesNotMatch(manilaHtml, /Monte, Domingo Jr/);
+
+    hr.setInterviewDay("2026-11-04");
+    assert.equal(hr.currentInterviewDay(), "2026-11-04");
+    assert.equal(w.S.ui.interviewDay, "2026-11-04");
+    const picked = listOf(hr.initialInterviewsHtml());
+    assert.match(picked, /Monte, Domingo Jr/);
+    assert.match(picked, /Reyes, Paolo/);
+    assert.doesNotMatch(picked, /Santos, Ana/);
+
+    hr.setInterviewDay("2026-11-05");
+    assert.match(listOf(hr.initialInterviewsHtml()), /No one is scheduled on 5 Nov 2026/);
+
+    hr.setInterviewDay("all");
+    const all = listOf(hr.initialInterviewsHtml());
+    assert.match(all, /Monte, Domingo Jr/);
+    assert.match(all, /Santos, Ana/);
+    assert.match(all, /Reyes, Paolo/);
+    assert.doesNotMatch(all, /Barrios, Luisa/);
+    assert.doesNotMatch(all, /Hired Person/);
+
+    hr.setInterviewDay("none");
+    const none = listOf(hr.initialInterviewsHtml());
+    assert.match(none, /Barrios, Luisa/);
+    assert.doesNotMatch(none, /Monte, Domingo Jr/);
+    assert.doesNotMatch(none, /Hired Person/);
+
+    hr.setInterviewDay("");
+    w.__hrNow = new Date("2026-11-03T16:30:00Z");
+    const card = hr.pipelineScheduleCardHtml();
+    assert.match(card, /id="hr-pipe-iv-day"/);
+    assert.match(card, /value="2026-11-04"/);
+    assert.match(card, /Limit the pipeline to this view/);
+    const pipeList = card.slice(card.indexOf('id="hr-pipe-iv-list"'));
+    assert.match(pipeList, /Monte, Domingo Jr/);
+    assert.match(pipeList, /Reyes, Paolo/);
+    assert.doesNotMatch(pipeList, /Santos, Ana/);
+    assert.doesNotMatch(pipeList, /Barrios, Luisa/);
+
+    const roles = w.S.roles;
+    assert.equal(hr.applicantMatchesPipeline(w.S.applicants.a2, "", "", roles), true);
+    hr.setPipelineInterviewLimit(true);
+    assert.equal(hr.pipelineInterviewLimitOn(), true);
+    assert.match(hr.pipelineScheduleCardHtml(), /Show everyone in the pipeline/);
+    assert.equal(hr.applicantMatchesPipeline(w.S.applicants.a1, "", "", roles), true);
+    assert.equal(hr.applicantMatchesPipeline(w.S.applicants.a4, "ro02", "", roles), false);
+    assert.equal(hr.applicantMatchesPipeline(w.S.applicants.a1, "ro02", "monte", roles), true);
+    assert.equal(hr.applicantMatchesPipeline(w.S.applicants.a3, "", "", roles), false);
+    assert.equal(hr.applicantMatchesPipeline(w.S.applicants.a2, "", "", roles), false);
+    hr.setPipelineScheduleDay("all");
+    assert.equal(hr.applicantMatchesPipeline(w.S.applicants.a3, "", "", roles), true);
+    assert.equal(hr.applicantMatchesPipeline(w.S.applicants.a2, "", "", roles), false);
+    hr.setPipelineScheduleDay("none");
+    assert.equal(hr.applicantMatchesPipeline(w.S.applicants.a2, "", "", roles), true);
+    assert.equal(hr.applicantMatchesPipeline(w.S.applicants.a1, "", "", roles), false);
+    assert.equal(hr.applicantMatchesPipeline(w.S.applicants.a5, "", "", roles), false);
+    hr.setPipelineInterviewLimit(false);
+    assert.equal(hr.applicantMatchesPipeline(w.S.applicants.a1, "", "", roles), true);
+    assert.equal(hr.applicantMatchesPipeline(w.S.applicants.a2, "", "", roles), true);
+    assert.equal(hr.applicantMatchesPipeline(w.S.applicants.a5, "", "", roles), true);
+    assert.match(hr.pipelineScheduleCardHtml(), /Limit the pipeline to this view/);
   });
 });
