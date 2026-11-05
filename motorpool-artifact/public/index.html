@@ -1,4 +1,4 @@
-<!doctype html><html><head><script src="/claude-shim.js"></script><link rel="manifest" href="/manifest.json"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/favicon.svg"><link rel="stylesheet" href="/pwa.css"><script src="/pwa.js"></script><script src="/vrf-report.js"></script><script src="/fuel-audit.js"></script><script src="/stock-fifo.js"></script><script src="/voucher-no.js"></script><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1"><title>Corcondev Motorpool</title>
+<!doctype html><html><head><script src="/claude-shim.js"></script><link rel="manifest" href="/manifest.json"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/favicon.svg"><link rel="stylesheet" href="/pwa.css"><script src="/pwa.js"></script><script src="/vrf-report.js"></script><script src="/fuel-audit.js"></script><script src="/stock-fifo.js"></script><script src="/voucher-no.js"></script><script src="/vrf-save-guard.js"></script><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1"><title>Corcondev Motorpool</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600&family=Archivo+Narrow:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
@@ -4252,6 +4252,31 @@ function rememberLedger(month, vrfNo, rows, mode){
 }
 /* One request, this VRF only. A server that does not know merge yet returns
    null and the caller falls back to re-reading the document. */
+/* Stale-save guard (2026-11-01). VRF 6264 was approved on 10/30, then an old
+   tab saved over it and reset it to Requested. The server refuses that write
+   with code vrf_changed_elsewhere; this tells the user to reload. */
+function staleSaveNotice(e){
+  var msg=(e&&e.message)||"This VRF was approved/changed elsewhere. Reload the page before saving again.";
+  if(!/reload/i.test(msg)) msg+=" Reload the page before saving again.";
+  var old=document.getElementById("staleSaveBanner"); if(old) old.remove();
+  var b=el("div","banner crit");
+  b.id="staleSaveBanner";
+  b.setAttribute("role","alert");
+  b.style.cssText="position:fixed;left:8px;right:8px;top:8px;z-index:9999";
+  b.appendChild(el("div","",msg));
+  var r=el("button","btn sm","Reload now");
+  r.addEventListener("click", function(){ location.reload(); });
+  b.appendChild(r);
+  document.body.appendChild(b);
+  try{ toast("This VRF was approved/changed elsewhere — reload"); }catch(x){}
+}
+function isStaleSave(e){
+  return !!(window.VrfSaveGuard&&VrfSaveGuard.isStaleError(e))||(e&&e.code==="vrf_changed_elsewhere");
+}
+function stampLedgerRev(month, no, rev){
+  if(!rev||!S.ledger||!S.ledger[month]) return;
+  S.ledger[month].forEach(function(row){ if(row&&String(row.vrf)===String(no)) row.rev=rev; });
+}
 async function remoteMerge(path, spec){
   if(!S.db||!S.db.doc(path).merge) return null;
   try{
@@ -4259,6 +4284,7 @@ async function remoteMerge(path, spec){
   }catch(e){
     var msg=String((e&&e.message)||"");
     if(e&&(e.status===400||e.statusCode===400)&&/Unknown op/.test(msg)) return null;
+    if(isStaleSave(e)){ e.code="vrf_changed_elsewhere"; staleSaveNotice(e); }
     throw e;
   }
 }
@@ -4385,6 +4411,7 @@ async function replaceLedgerVrf(month, vrfNo, rows){
       throw missedLedger;
     }
     rememberLedger(month, no, rows, "replace");
+    stampLedgerRev(month, no, ack.rev);
     return S.ledger[month];
   }
   var cur=await readLedgerRows(month, no);
@@ -4430,6 +4457,7 @@ async function appendLedger(month,rows){
       throw missedAppend;
     }
     rememberLedger(month, no, rows, "append");
+    stampLedgerRev(month, no, ack.rev);
     return;
   }
   var cur=await readLedgerRows(month, no);
@@ -4907,6 +4935,19 @@ async function saveReserves(onlyNos){
     var y=years[i];
     var incoming=byYear[y];
     if(S.db){
+      /* Client check before the write: refuse to push an approved/Open/Closed/
+         Cancelled VRF back to Requested or draft, or to save over a newer copy. */
+      if(window.VrfSaveGuard){
+        var pre=null;
+        try{ pre=await readDocLive("reserves/"+y); }catch(e){ pre=null; }
+        var preRows=(pre&&Array.isArray(pre.rows))?pre.rows:[];
+        for(var pg=0;pg<incoming.length;pg++){
+          var mineR=incoming[pg];
+          var srv=preRows.filter(function(r){ return r&&String(r.no)===String(mineR&&mineR.no); })[0];
+          var ref=VrfSaveGuard.checkReserveWrite(srv, mineR);
+          if(ref){ var se=VrfSaveGuard.toError(ref); staleSaveNotice(se); throw se; }
+        }
+      }
       for(var rj=0;rj<incoming.length;rj++){
         var ackR=await remoteMerge("reserves/"+y,{kind:"reserve", year:y, reserve:incoming[rj],
           device:SID, user:(incoming[rj]&&incoming[rj].requestedBy)||""});
