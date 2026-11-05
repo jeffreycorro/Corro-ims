@@ -16,8 +16,8 @@ function sliceFn(source, startMark, endMark) {
 }
 
 describe("fuel gauge photo does not block Send for approval", () => {
-  it("is build 2026-11-04 a", () => {
-    assert.match(html, /var BUILD = "2026-11-04 a"/);
+  it("is build 2026-11-05 a", () => {
+    assert.match(html, /var BUILD = "2026-11-05 a"/);
   });
 
   it("reports No gauge photo and does not mark the photo set as a hard miss", () => {
@@ -65,7 +65,9 @@ describe("fuel gauge photo does not block Send for approval", () => {
     assert.match(reserve, /missingPhotosChip\(/);
 
     assert.match(html, /auditChip\("No gauge photo", "warn"\)/);
-    assert.match(html, /photoLine\.textContent="No gauge photo"/);
+    assert.match(html, /photoLine\.textContent=gaugeText/);
+    assert.match(html, /gaugeText="No gauge photo"/);
+    assert.match(html, /Gauge photo attached/);
     assert.doesNotMatch(html, /Add a fuel-gauge photo and an odometer or hour-meter photo/);
 
     const paint = sliceFn(html, "function paintFuelAuditNote(host, d)", "function fuelChecklistNeeds");
@@ -76,15 +78,18 @@ describe("fuel gauge photo does not block Send for approval", () => {
     assert.match(checklist, /do not stop Send for approval/);
   });
 
-  it("treats an Other-tagged photo as a warning, not a gauge photo", () => {
-    const other = audit.fuelPhotoStatus([
-      { role: "", caption: "tank before fill" },
-      { role: "Other", caption: "photo" }
-    ]);
+  it("treats an Other-tagged photo as a warning, and an unlabeled still as the gauge photo", () => {
+    const other = audit.fuelPhotoStatus([{ role: "Other", caption: "photo" }]);
     assert.equal(other.gauge, false);
     assert.equal(other.meter, false);
     assert.equal(other.missing, false);
     assert.equal(other.label, "No gauge photo");
+    const unlabeled = audit.fuelPhotoStatus([
+      { kind: "photo", role: "", caption: "LRF-0013 photo 1.jpg" }
+    ]);
+    assert.equal(unlabeled.gauge, true);
+    assert.equal(unlabeled.noGauge, false);
+    assert.equal(unlabeled.label, "");
     const hour = audit.fuelPhotoStatus([{ role: "hour-meter", caption: "BH-05 meter" }]);
     assert.equal(hour.meter, true);
     assert.equal(hour.label, "No gauge photo");

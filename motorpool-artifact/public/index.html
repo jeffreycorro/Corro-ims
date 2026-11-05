@@ -289,6 +289,10 @@ svg text{font-family:var(--font-body)}
   font-size:8.5px;letter-spacing:.07em;text-transform:uppercase;color:#333;text-align:left}
 .vrfdoc td{border:1px solid #bbb;padding:4px 5px;vertical-align:top}
 .vrfdoc td.n{text-align:right;font-family:var(--font-mono);white-space:nowrap}
+.vrfdoc td.u{white-space:nowrap;min-width:16mm}
+.vrfdoc .vgauge{margin:0 0 8px;max-width:90mm}
+.vrfdoc .vgauge img{width:100%;border:1px solid #999;display:block}
+.vrfdoc .vgauge figcaption{font-size:9px;color:#444;margin-top:3px}
 .vrfdoc .scoperow td{background:#f7f7f7;font-family:var(--font-heading);font-weight:700;
   font-size:9px;letter-spacing:.08em;text-transform:uppercase}
 .vrfdoc .vtot{display:flex;justify-content:flex-end;gap:14px;align-items:baseline;margin-top:8px;
@@ -441,7 +445,7 @@ var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
    This label is inside the page function. The shim reads window.BUILD when it
    sends a save. Without that copy every save goes out with an empty build and
    the server answers "Reload the page". */
-var BUILD = "2026-11-04 a";
+var BUILD = "2026-11-05 a";
 try { window.BUILD = BUILD; } catch (e) {}
 var DAY = 86400000, MO = 30.44;
 
@@ -1831,6 +1835,7 @@ function addHeldReserveVrfs(){
         total:amt, work:l.work||r.work||"", project:r.project||"",
         notes:r.draftPurpose||r.scope||"", requestedBy:r.requestedBy||"",
         odo:meter, liters:l.liters, reserve:String(r.no), notBought:deadHold||!!l.notBought,
+        unit:(function(){ var u=String(l.unit==null?"":l.unit).trim(); if(u) return u; return isFuel(l.cat)?"liters":""; })(),
         vstatus:heldVrfStatus(r,"Open"),
         src:"reserve-hold"};
     });
@@ -5260,7 +5265,7 @@ var photoDocCache={};
 var photoDocFlight={};
 var photoJobActive=0;
 var photoJobWait=[];
-var PHOTO_META_KEYS=["id","vrf","idx","caption","kind","linkKind","url","w","h","bytes","mime","by","at","link","thumb"];
+var PHOTO_META_KEYS=["id","vrf","idx","caption","kind","linkKind","url","w","h","bytes","mime","by","at","link","thumb","role","fuelRole"];
 function photoMetaOf(x){
   if(!x) return null;
   var o={};
@@ -5491,6 +5496,21 @@ function mountLazyCell(x, opts){
   var meta=(x.by||"—")+" · "+(x.at||"");
   if(x.bytes) meta+=" · "+Math.round((parseFloat(x.bytes)||0)/1024)+" KB";
   cp.appendChild(el("div","hint",meta));
+  if(opts.onTagGauge && !isVideoMeta(x)){
+    var tagged=false;
+    try{ tagged=!!(fuelAudit()&&fuelAudit().photoRole(x)==="gauge"); }catch(e){ tagged=false; }
+    if(tagged) cp.appendChild(el("div","hint","Gauge photo"));
+    else {
+      var tag=el("button","btn sm","This is the gauge photo");
+      tag.style.margin="4px 0 0";
+      tag.addEventListener("click",function(ev){
+        ev.stopPropagation();
+        tag.disabled=true;
+        Promise.resolve(opts.onTagGauge(x)).catch(function(){ tag.disabled=false; });
+      });
+      cp.appendChild(tag);
+    }
+  }
   if(opts.onRemove){
     var rm=el("button","btn sm","Remove");
     rm.style.margin="4px 0 0";
@@ -5603,12 +5623,19 @@ async function addLink(owner,rec){
   await bumpPhotoCount(String(owner),1);
   return idx;
 }
+function photoRoleFields(rec){
+  var role=String(rec&&(rec.role||rec.fuelRole)||"").trim();
+  if(!role) return null;
+  return {role:role, fuelRole:role};
+}
 async function addPhoto(vrf,rec){
   var existing=await listPhotoMeta(vrf);
   if(existing.length>=PHOTO_PER_VRF) throw new Error("This record already has "+PHOTO_PER_VRF+" attachments.");
   var idx=existing.reduce(function(a,x){ return Math.max(a,x.idx||0); },0)+1;
   var body={vrf:String(vrf),idx:idx,caption:rec.caption||"",by:rec.by||"",at:iso(),
     data:rec.data,w:rec.w,h:rec.h,bytes:rec.bytes,link:rec.link||"",kind:rec.kind||"photo"};
+  var roles=photoRoleFields(rec);
+  if(roles){ body.role=roles.role; body.fuelRole=roles.fuelRole; }
   if(rec.mime) body.mime=rec.mime;
   var row=Object.assign({id:photoKey(vrf,idx)},body);
   var loc=lsGet("photos/"+vrf,{items:[]});
@@ -5633,6 +5660,44 @@ async function addPhotoToOwners(owners,rec){
   }
   return last;
 }
+/* Writes fuelPhotos on the reserve for this upload only. Opening an old VRF
+   does not rewrite the flag — the print derives it from the photo store. */
+async function rememberFuelPhotoFlags(entry, photo){
+  var api=fuelAudit();
+  if(!api||!api.nextFuelPhotos||!photo) return;
+  var fuel=false;
+  try{ fuel=entryIsFuel(entry); }catch(e){ fuel=false; }
+  if(!fuel) return;
+  var r=null;
+  try{ r=reserveForVrf(entry); }catch(e2){ r=null; }
+  if(!r && entry && entry.no!=null && entry.draftLines) r=entry;
+  if(!r) return;
+  var next=api.nextFuelPhotos(r.fuelPhotos, photo);
+  var prev=r.fuelPhotos||{};
+  if(!!prev.gauge===!!next.gauge && !!prev.meter===!!next.meter && !!prev.receipt===!!next.receipt) return;
+  r.fuelPhotos=next;
+  if(entry && entry!==r) entry.fuelPhotos=next;
+  try{ await saveReserves(r.no); }catch(e3){}
+  _vrfs=null;
+}
+async function tagGaugePhoto(entry, photo){
+  if(!photo) return;
+  photo.role="fuel-gauge";
+  photo.fuelRole="fuel-gauge";
+  var owner=String((photo.vrf)||(entry&&entry.vrf)||"");
+  if(owner){
+    var loc=lsGet("photos/"+owner,{items:[]});
+    (loc.items||[]).forEach(function(it){
+      if(it && photo.id && it.id===photo.id){ it.role="fuel-gauge"; it.fuelRole="fuel-gauge"; }
+    });
+    lsSet("photos/"+owner, loc);
+  }
+  if(photo.id && S.db){
+    try{ await S.db.doc("photos/"+photo.id).update({role:"fuel-gauge", fuelRole:"fuel-gauge"}); }
+    catch(e){}
+  }
+  await rememberFuelPhotoFlags(entry, photo);
+}
 /* Photo copies are not part of saving the VRF. They used to sit on the
    approve click, after the ledger and the reserve, and the button waited
    for every file. Queue them so the row can leave Approving… first. */
@@ -5654,7 +5719,7 @@ async function copyPhotos(from,to){
         await addLink(to,{url:x.url,linkKind:x.linkKind,caption:x.caption,by:x.by});
       }else if(x.data){
         await addPhoto(to,{data:x.data,w:x.w,h:x.h,bytes:x.bytes,caption:x.caption,by:x.by,
-          kind:x.kind,mime:x.mime});
+          kind:x.kind,mime:x.mime,role:x.role||"",fuelRole:x.fuelRole||x.role||""});
       }else continue;
       n++;
     }catch(e){}
@@ -5682,7 +5747,7 @@ async function copyMissingPhotos(from, to){
         await addLink(to,{url:x.url,linkKind:x.linkKind,caption:x.caption,by:x.by});
       }else if(x.data){
         await addPhoto(to,{data:x.data,w:x.w,h:x.h,bytes:x.bytes,caption:x.caption,by:x.by,
-          kind:x.kind,mime:x.mime});
+          kind:x.kind,mime:x.mime,role:x.role||"",fuelRole:x.fuelRole||x.role||""});
       }else continue;
       if(fp2) have[fp2]=1;
       n++;
@@ -7040,13 +7105,17 @@ function fuelRequestReview(spec){
   if(!fuel) return empty;
   var out={fuel:true, badges:[], notes:[], blocks:[], needsNote:{}, benchmark:api.benchmarkPanel(spec.veh)};
   var photos=spec.photos;
-  var photoSt=photos?api.fuelPhotoStatus(photos):{known:false, label:"n/a", missing:false, noGauge:false, gauge:null, meter:null};
+  var photoSt=Array.isArray(photos)?api.fuelPhotoStatus(photos):{known:false, label:"n/a", missing:false, noGauge:false, gauge:null, meter:null};
   out.photos=photoSt;
-  /* A missing gauge or odometer photo is a warning. It does not block Send for approval. */
-  var noGauge=false;
-  if(photoSt.known&&photoSt.gauge===false) noGauge=true;
-  else if(!photoSt.known && spec.photoCount===0) noGauge=true;
-  else if(spec.fuelPhotos&&spec.fuelPhotos.gauge===false && !photoSt.known) noGauge=true;
+  /* A missing gauge or odometer photo is a warning. It does not block Send for approval.
+     An attachment anywhere on the fuel VRF counts, even when fuelPhotos.gauge is still false. */
+  var gaugeLine=api.gaugePhotoLine?api.gaugePhotoLine({
+    fuel:true,
+    photos:Array.isArray(photos)?photos:undefined,
+    photoCount:spec.photoCount,
+    fuelPhotos:spec.fuelPhotos||null
+  }):"";
+  var noGauge=gaugeLine==="No gauge photo";
   if(noGauge){
     out.badges.push("No gauge photo");
     out.notes.push("No gauge photo.");
@@ -7114,13 +7183,31 @@ function missingPhotosChip(entry){
   if(!entryIsFuel(entry)) return null;
   var api=fuelAudit();
   if(!api) return null;
+  var counted=0;
+  try{ counted=photoCountMany(photoOwnersForOpenVrf(entry)); }catch(e){ counted=photoCount(entry&&entry.vrf); }
   var label=api.missingPhotoBadge({
     fuel:true,
     fuelPhotos:entry.fuelPhotos||null,
-    photoCount:(function(){ try{ return photoCountMany(photoOwnersForOpenVrf(entry)); }catch(e){ return photoCount(entry&&entry.vrf); } })()
+    photoCount:counted
   });
   if(!label) return null;
-  return auditChip(label, "warn");
+  var node=auditChip(label, "warn");
+  /* The photo index can lag the files. Names only — not the image bytes —
+     decide the chip. A false fuelPhotos.gauge does not win over a picture. */
+  if(typeof listPhotoMetaMany==="function" && api.gaugePhotoLine){
+    listPhotoMetaMany(photoOwnersForOpenVrf(entry)).then(function(list){
+      if(!node.isConnected) return;
+      var live=api.missingPhotoBadge({
+        fuel:true,
+        photos:list||[],
+        photoCount:(list&&list.length)||counted,
+        fuelPhotos:entry.fuelPhotos||null
+      });
+      if(!live) node.remove();
+      else node.textContent=live;
+    }).catch(function(){});
+  }
+  return node;
 }
 function vrfPrintGate(entry){
   var api=fuelAudit();
@@ -12225,6 +12312,14 @@ function partsView(){
    with the lines grouped under the jobs they belong to and the photos on their
    own page so finance gets the receipts with the form. Print → Save as PDF
    gives the file to put in Drive. */
+function printLineUnit(line){
+  var api=fuelAudit();
+  if(api&&api.lineUnitText) return api.lineUnitText(line);
+  var u=String(line&&line.unit!=null?line.unit:"").trim();
+  if(u) return u;
+  if(line&&isFuel(line.cat)) return "liters";
+  return "";
+}
 function buildVrfDoc(entry,photos,opts){
   opts=opts||{};
   var v=vehicle(entry.veh)||{};
@@ -12291,23 +12386,45 @@ function buildVrfDoc(entry,photos,opts){
     var apiPhotos=fuelAudit();
     var photoLine=el("div");
     photoLine.style.cssText="margin:0 0 8px;font-weight:700";
-    var showNoGauge=false, showNa=false;
-    if(photos==null && !(entry.fuelPhotos)){
-      var counted=0;
-      try{ counted=photoCountMany(photoOwnersForOpenVrf(entry)); }catch(e){ counted=photoCount(entry.vrf); }
-      if(!counted) showNoGauge=true;
-      else showNa=true;
-    }else if(entry.fuelPhotos && photos==null){
-      showNoGauge=entry.fuelPhotos.gauge===false;
-    }else if(apiPhotos){
-      var pst=apiPhotos.fuelPhotoStatus(photos||[]);
-      showNoGauge=!!(pst.known&&pst.gauge===false);
-    }else showNa=true;
-    if(showNoGauge){ photoLine.textContent="No gauge photo"; d.appendChild(photoLine); }
-    else if(showNa){
+    var countedPhotos=0;
+    try{ countedPhotos=photoCountMany(photoOwnersForOpenVrf(entry)); }catch(e){ countedPhotos=photoCount(entry.vrf); }
+    var reservePhotos=null;
+    try{ reservePhotos=reserveForVrf(entry); }catch(e2){ reservePhotos=null; }
+    var gaugeText="";
+    if(apiPhotos&&apiPhotos.gaugePhotoLine){
+      gaugeText=apiPhotos.gaugePhotoLine({
+        fuel:true,
+        photos:Array.isArray(photos)?photos:undefined,
+        photoCount:countedPhotos,
+        fuelPhotos:(entry.fuelPhotos)||(reservePhotos&&reservePhotos.fuelPhotos)||null
+      });
+    }else if(!(countedPhotos>0) && !(entry.fuelPhotos&&entry.fuelPhotos.gauge===true)){
+      gaugeText="No gauge photo";
+    }else gaugeText="Gauge photo attached";
+    if(gaugeText==="Fuel photos: n/a"){
       photoLine.style.fontWeight="500"; photoLine.style.color="#555";
       photoLine.textContent="Fuel photos: n/a";
       d.appendChild(photoLine);
+    }else if(gaugeText){
+      photoLine.textContent=gaugeText;
+      d.appendChild(photoLine);
+      if(gaugeText==="Gauge photo attached" && apiPhotos && apiPhotos.firstGaugePhoto){
+        var gp=apiPhotos.firstGaugePhoto(photos||[]);
+        if(gp){
+          var gfig=document.createElement("figure");
+          gfig.className="vgauge";
+          var gim=document.createElement("img");
+          gim.alt=gp.caption||"Gauge photo";
+          gim.setAttribute("data-gauge-photo", gp.id?String(gp.id):"");
+          if(gp.data) gim.src=gp.data;
+          else gim.style.display="none";
+          gfig.appendChild(gim);
+          var gcap=document.createElement("figcaption");
+          gcap.textContent=gp.caption||"Gauge photo";
+          gfig.appendChild(gcap);
+          d.appendChild(gfig);
+        }
+      }
     }
   }
   var printAudits=vrfAuditList(entry);
@@ -12345,7 +12462,7 @@ function buildVrfDoc(entry,photos,opts){
       tr.appendChild(el("td",null,itemText));
       tr.appendChild(el("td",null,x.supplier||"—"));
       tr.appendChild(el("td","n",skipped?"0.00":(x.qty!=null?nnum(x.qty,2):"—")));
-      tr.appendChild(el("td",null,x.unit||""));
+      tr.appendChild(el("td","u",printLineUnit(x)));
       tr.appendChild(el("td","n",skipped?"0.00":(x.price!=null?nnum(x.price,2):"—")));
       tr.appendChild(el("td","n",nnum(lineAmt,2)));
       grand+=lineAmt;
@@ -12479,6 +12596,10 @@ var VRFDOC_CSS = [
 "th{background:#f0f0f0;border:1px solid #999;padding:4px 5px;font-family:'Archivo Narrow',sans-serif;font-size:8.5px;letter-spacing:.07em;text-transform:uppercase;color:#333;text-align:left}",
 "td{border:1px solid #bbb;padding:4px 5px;vertical-align:top}",
 "td.n{text-align:right;font-family:'IBM Plex Mono',monospace;white-space:nowrap}",
+"td.u{white-space:nowrap;min-width:16mm}",
+".vgauge{margin:0 0 8px;max-width:90mm}",
+".vgauge img{width:100%;border:1px solid #999;display:block}",
+".vgauge figcaption{font-size:9px;color:#444;margin-top:3px}",
 ".scoperow td{background:#f7f7f7;font-family:'Archivo Narrow',sans-serif;font-weight:700;font-size:9px;letter-spacing:.08em;text-transform:uppercase}",
 ".vtot{display:flex;justify-content:flex-end;gap:14px;align-items:baseline;margin-top:8px;font-family:'IBM Plex Mono',monospace;font-size:14px;font-weight:600}",
 ".vvar{margin-top:8px;border:1px solid #bbb;padding:6px 8px;font-size:11px}",
@@ -12591,9 +12712,23 @@ function markPrintFigureFailed(fig, x, retry){
   wrap.appendChild(b);
   setPrintFigureBody(fig, wrap);
 }
+function paintGaugeStill(page, x){
+  if(!page||!x||!x.data) return;
+  var id=String(x.id||"");
+  var imgs=page.querySelectorAll("img[data-gauge-photo]");
+  var i, want;
+  for(i=0;i<imgs.length;i++){
+    want=imgs[i].getAttribute("data-gauge-photo")||"";
+    if(id&&want&&want!==id) continue;
+    if(!id&&want) continue;
+    imgs[i].src=x.data;
+    imgs[i].style.display="block";
+  }
+}
 /* One picture, by its id. A miss is marked on that figure only. */
 function pullPrintPhoto(x, page, onDone){
   if(!x||x.kind==="link"||isVideoMeta(x)||x.data){
+    if(x&&x.data) paintGaugeStill(page, x);
     if(onDone) onDone();
     return Promise.resolve(!!(x&&x.data));
   }
@@ -12611,6 +12746,7 @@ function pullPrintPhoto(x, page, onDone){
       x.data=doc.data;
       if(doc.mime) x.mime=doc.mime;
       x._failed=false;
+      paintGaugeStill(page, x);
       if(fig){
         var im=document.createElement("img");
         im.alt=x.caption||"attachment";
@@ -14927,7 +15063,11 @@ function openVrf(entry,tab){
         try{
           var shrunk=await shrinkImage(files[i]);
           await addPhoto(String(entry.vrf),{data:shrunk.data,w:shrunk.w,h:shrunk.h,bytes:shrunk.bytes,
-            caption:cap.value.trim()||files[i].name,by:by.value.trim()||signedInName()});
+            caption:cap.value.trim()||files[i].name,by:by.value.trim()||signedInName(),
+            kind:"photo"});
+          if(entryIsFuel(entry)){
+            await rememberFuelPhotoFlags(entry, {kind:"photo", caption:cap.value.trim()||files[i].name, role:""});
+          }
           ok++;
         }catch(e){ failed++; }
       }
@@ -14946,6 +15086,12 @@ function openVrf(entry,tab){
       eager:true,
       emptyHtml:"<b>Nothing attached to this VRF yet.</b>",
       captionFallback:"attachment",
+      onTagGauge:entryIsFuel(entry)?function(x){
+        return tagGaugePhoto(entry, x).then(function(){
+          toast("Marked as the gauge photo.");
+          openVrf(entry,"photos");
+        });
+      }:null,
       onRemove:function(x){
         return removePhoto(x.vrf||entry.vrf, x.id).then(function(){
           toast(x.kind==="link"?"Link removed.":"Attachment removed.");
@@ -15596,7 +15742,7 @@ function vrfView(){
   var pfi=el("input"); pfi.type="file"; pfi.accept="image/*"; pfi.multiple=true;
   var pcap=el("input"); pcap.placeholder="what these show";
   var prole=el("select");
-  [["","Other"],["fuel-gauge","Fuel gauge"],["odometer","Odometer / hour meter"],["receipt","Receipt"]].forEach(function(o){
+  [["","Unlabeled"],["fuel-gauge","Fuel gauge"],["odometer","Odometer / hour meter"],["receipt","Receipt"],["other","Other"]].forEach(function(o){
     prole.appendChild(new Option(o[1],o[0]));
   });
   pr2.appendChild(f4("Add photos",pfi)); pr2.appendChild(f4("Caption",pcap)); pr2.appendChild(f4("Fuel photo",prole));
@@ -15821,7 +15967,8 @@ async function sendForApproval(d,btn,opts){
           for(var pi=0;pi<staged.length;pi++){
             try{
               await addPhotoToOwners([liveNo, rsvOwner(hold.no)],{data:staged[pi].data,w:staged[pi].w,
-                h:staged[pi].h,bytes:staged[pi].bytes,caption:staged[pi].caption,by:who});
+                h:staged[pi].h,bytes:staged[pi].bytes,caption:staged[pi].caption,by:who,
+                role:staged[pi].role||"",fuelRole:staged[pi].role||""});
             }catch(e){
               toast("Photo could not be saved: "+((e&&e.message)||"try again")); }
           }
@@ -16080,9 +16227,12 @@ function fuelView(){
     }
     for(var pi=0;pi<dphotos.length;pi++){
       try{ await addPhoto(no,{data:dphotos[pi].data,w:dphotos[pi].w,h:dphotos[pi].h,
-        bytes:dphotos[pi].bytes,caption:dphotos[pi].caption,by:op.value}); }catch(e){}
+        bytes:dphotos[pi].bytes,caption:dphotos[pi].caption,by:op.value,role:"fuel-gauge"}); }catch(e){}
     }
     var rr=reserveBy(rsvNo);
+    if(rr && dphotos.length && fuelAudit() && fuelAudit().nextFuelPhotos){
+      rr.fuelPhotos=fuelAudit().nextFuelPhotos(rr.fuelPhotos, {kind:"photo", role:"fuel-gauge", caption:dphotos[0].caption||"Gauge after fill"});
+    }
     if(rr){
       if((rr.vrfs||[]).indexOf(String(no))<0) rr.vrfs=(rr.vrfs||[]).concat([String(no)]);
       await saveReserves(rr.no);
@@ -16193,9 +16343,12 @@ function fuelView(){
     }
     for(var pi=0;pi<bphotos.length;pi++){
       try{ await addPhoto(no,{data:bphotos[pi].data,w:bphotos[pi].w,h:bphotos[pi].h,
-        bytes:bphotos[pi].bytes,caption:bphotos[pi].caption,by:brc.value}); }catch(e){}
+        bytes:bphotos[pi].bytes,caption:bphotos[pi].caption,by:brc.value,kind:"photo"}); }catch(e){}
     }
     var brr=reserveBy(brs.value);
+    if(brr && bphotos.length && fuelAudit() && fuelAudit().nextFuelPhotos){
+      brr.fuelPhotos=fuelAudit().nextFuelPhotos(brr.fuelPhotos, {kind:"photo", caption:bphotos[0].caption||"", role:""});
+    }
     if(brr){ brr.vrfs=(brr.vrfs||[]).concat([String(no)]); await saveReserves(brr.no); }
     toast(nnum(L,0)+" L received on VRF "+no+" against RSV-"+brs.value+".");
     render();
@@ -17720,6 +17873,60 @@ function consumeView(){
   return w;
 }
 
+function refineGaugeAudit(noGaugeList, outstanding, gaugeCard, outCard){
+  var api=fuelAudit();
+  if(!api||!api.gaugePhotoLine||typeof listPhotoMetaMany!=="function") return;
+  var flagged={};
+  (noGaugeList||[]).forEach(function(row){ if(row&&row.vrf) flagged[row.vrf]=row; });
+  (outstanding||[]).forEach(function(row){
+    if(row&&row.noGauge&&row.vrf&&!flagged[row.vrf]) flagged[row.vrf]=row;
+  });
+  var vrfs=Object.keys(flagged);
+  if(!vrfs.length) return;
+  Promise.all(vrfs.map(function(no){
+    var entry=null;
+    try{ entry=vrfByNo(no); }catch(e){ entry=null; }
+    if(!entry) return Promise.resolve();
+    return listPhotoMetaMany(photoOwnersForOpenVrf(entry)).then(function(list){
+      var line=api.gaugePhotoLine({
+        fuel:true,
+        photos:list||[],
+        photoCount:(list&&list.length)||0,
+        fuelPhotos:entry.fuelPhotos||null
+      });
+      flagged[no]._attached=line==="Gauge photo attached";
+    }).catch(function(){});
+  })).then(function(){
+    if(!gaugeCard||!gaugeCard.isConnected) return;
+    var changed=false;
+    (noGaugeList||[]).forEach(function(row){ if(row&&row._attached) changed=true; });
+    (outstanding||[]).forEach(function(row){
+      if(!row||!row.noGauge) return;
+      if(flagged[row.vrf]&&flagged[row.vrf]._attached){ row.noGauge=false; changed=true; }
+    });
+    if(!changed) return;
+    var kept=(noGaugeList||[]).filter(function(row){ return !(row&&row._attached); });
+    var freshGauge=card("No gauge photo", kept.length+" fuel VRF"+(kept.length===1?"":"s")+" — a warning, not a block on Send for approval",
+      table([
+        {h:"VRF",get:function(r){ return el("span","mono",r.vrf); }},
+        {h:"Unit",get:function(r){ return el("span","mono",r.veh); }},
+        {h:"Date",get:function(r){ return r.date||"—"; }},
+        {h:"",get:function(){ return el("span","chip warn","No gauge photo"); }}
+      ], kept, {empty:"No fuel VRF is flagged for a missing gauge photo."}));
+    var freshOut=card("Fuel liquidation outstanding","receipt, liquidated date, and age",
+      table([
+        {h:"VRF",get:function(r){ return el("span","mono",r.vrf); }},
+        {h:"Unit",get:function(r){ return el("span","mono",r.veh||"—"); }},
+        {h:"Date",get:function(r){ return r.date||"n/a"; }},
+        {h:"Receipt",get:function(r){ return r.receipt; }},
+        {h:"Liquidated",get:function(r){ return r.liquidatedDate||"—"; }},
+        {h:"Aging",num:true,get:function(r){ return r.agingLabel==="n/a"?"n/a":r.agingLabel+" d"; }},
+        {h:"Gauge",get:function(r){ return r.noGauge?el("span","chip warn","No gauge photo"):"—"; }}
+      ], outstanding, {empty:"No outstanding fuel VRF."}));
+    gaugeCard.replaceWith(freshGauge);
+    if(outCard&&outCard.isConnected) outCard.replaceWith(freshOut);
+  });
+}
 function fuelAuditView(){
   var api=fuelAudit();
   var w=el("div");
@@ -17804,14 +18011,15 @@ function fuelAuditView(){
     if(!entryIsFuel(v)||!missingPhotosChip(v)) return;
     noGaugeList.push({vrf:v.vrf, veh:(v.units&&v.units[0])||v.veh||"—", date:v.date||""});
   });
-  g.appendChild(card("No gauge photo", noGaugeList.length+" fuel VRF"+(noGaugeList.length===1?"":"s")+" — a warning, not a block on Send for approval",
+  var gaugeCard=card("No gauge photo", noGaugeList.length+" fuel VRF"+(noGaugeList.length===1?"":"s")+" — a warning, not a block on Send for approval",
     table([
       {h:"VRF",get:function(r){ return el("span","mono",r.vrf); }},
       {h:"Unit",get:function(r){ return el("span","mono",r.veh); }},
       {h:"Date",get:function(r){ return r.date||"—"; }},
       {h:"",get:function(){ return el("span","chip warn","No gauge photo"); }}
-    ], noGaugeList, {empty:"No fuel VRF is flagged for a missing gauge photo."})));
-  g.appendChild(card("Fuel liquidation outstanding","receipt, liquidated date, and age",
+    ], noGaugeList, {empty:"No fuel VRF is flagged for a missing gauge photo."}));
+  g.appendChild(gaugeCard);
+  var outCard=card("Fuel liquidation outstanding","receipt, liquidated date, and age",
     table([
       {h:"VRF",get:function(r){ return el("span","mono",r.vrf); }},
       {h:"Unit",get:function(r){ return el("span","mono",r.veh||"—"); }},
@@ -17820,7 +18028,9 @@ function fuelAuditView(){
       {h:"Liquidated",get:function(r){ return r.liquidatedDate||"—"; }},
       {h:"Aging",num:true,get:function(r){ return r.agingLabel==="n/a"?"n/a":r.agingLabel+" d"; }},
       {h:"Gauge",get:function(r){ return r.noGauge?el("span","chip warn","No gauge photo"):"—"; }}
-    ], outstanding, {empty:"No outstanding fuel VRF."})));
+    ], outstanding, {empty:"No outstanding fuel VRF."}));
+  g.appendChild(outCard);
+  refineGaugeAudit(noGaugeList, outstanding, gaugeCard, outCard);
   g.appendChild(reserveReconcileCard());
   w.appendChild(g);
   return w;

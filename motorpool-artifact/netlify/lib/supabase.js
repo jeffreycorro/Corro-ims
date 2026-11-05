@@ -818,6 +818,8 @@ function photoMetaSelect() {
     "at:data->>at",
     "link:data->>link",
     "thumb:data->>thumb",
+    "role:data->>role",
+    "fuelRole:data->>fuelRole",
   ].join(",");
 }
 
@@ -872,7 +874,7 @@ function photoIdRangeQuery(owner) {
 function photoMetaRow(row) {
   if (!row || typeof row !== "object") return null;
   const out = {};
-  ["id", "vrf", "idx", "caption", "kind", "linkKind", "url", "w", "h", "bytes", "mime", "by", "at", "link", "thumb"].forEach(
+  ["id", "vrf", "idx", "caption", "kind", "linkKind", "url", "w", "h", "bytes", "mime", "by", "at", "link", "thumb", "role", "fuelRole"].forEach(
     (key) => {
       if (row[key] != null && row[key] !== "") out[key] = row[key];
     }

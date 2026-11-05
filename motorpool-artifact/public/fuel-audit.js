@@ -273,20 +273,38 @@ function photoRole(photo) {
   if (role === "gauge" || role === "fuel-gauge" || role === "fuel gauge") return "gauge";
   if (role === "odo" || role === "odometer" || role === "hour" || role === "hour-meter" || role === "hour meter" || role === "meter") return "meter";
   if (role === "receipt") return "receipt";
+  if (role === "other" || role === "misc") return "other";
   var cap = String(photo.caption || "").toLowerCase();
   if (/fuel\s*gauge|\bgauge\b/.test(cap)) return "gauge";
   if (/hour\s*meter|\bodometer\b|\bodo\b/.test(cap)) return "meter";
   if (/\breceipt\b|official receipt/.test(cap)) return "receipt";
   return "";
 }
+function photoIsVideo(photo) {
+  if (!photo) return false;
+  if (String(photo.kind || "") === "video") return true;
+  if (String(photo.mime || "").indexOf("video/") === 0) return true;
+  return false;
+}
+/* An unlabeled still on a fuel VRF is the gauge photo. A meter, receipt,
+   video, link, or an explicit Other tag is not. */
+function photoCountsAsGauge(photo) {
+  if (!photo) return false;
+  var role = photoRole(photo);
+  if (role === "gauge") return true;
+  if (role === "meter" || role === "receipt" || role === "other") return false;
+  if (String(photo.kind || "") === "link" || String(photo.kind || "") === "doc") return false;
+  if (photoIsVideo(photo)) return false;
+  return true;
+}
 function fuelPhotoStatus(photos) {
-  if (photos == null) return { known: false, gauge: null, meter: null, receipt: null, missing: false, label: "n/a" };
+  if (photos == null) return { known: false, gauge: null, meter: null, receipt: null, missing: false, noGauge: false, label: "n/a" };
   var gauge = false, meter = false, receipt = false;
   (photos || []).forEach(function (p) {
     var role = photoRole(p);
-    if (role === "gauge") gauge = true;
     if (role === "meter") meter = true;
     if (role === "receipt") receipt = true;
+    if (photoCountsAsGauge(p)) gauge = true;
   });
   /* Gauge and odometer photos are optional. A missing gauge is a warning tag,
      never a reason to refuse Send for approval. */
@@ -301,16 +319,58 @@ function fuelPhotoStatus(photos) {
     label: noGauge ? "No gauge photo" : ""
   };
 }
+/* Page-1 print line. A stored fuelPhotos.gauge of false is ignored when a
+   picture is already attached — the flag lags the photo store. */
+function gaugePhotoLine(spec) {
+  spec = spec || {};
+  if (!spec.fuel) return "";
+  if (Array.isArray(spec.photos) && spec.photos.length) {
+    var live = fuelPhotoStatus(spec.photos);
+    return live.gauge ? "Gauge photo attached" : "No gauge photo";
+  }
+  if (spec.fuelPhotos && spec.fuelPhotos.gauge === true) return "Gauge photo attached";
+  var count = num(spec.photoCount);
+  if (count != null && count > 0) return "Gauge photo attached";
+  if (Array.isArray(spec.photos) && spec.photos.length === 0) return "No gauge photo";
+  if (spec.fuelPhotos && spec.fuelPhotos.gauge === false) return "No gauge photo";
+  if (count === 0) return "No gauge photo";
+  return "Fuel photos: n/a";
+}
 function missingPhotoBadge(spec) {
   spec = spec || {};
   if (!spec.fuel) return "";
-  if (spec.photos) {
-    var live = fuelPhotoStatus(spec.photos);
-    return live.known && live.noGauge ? "No gauge photo" : "";
+  return gaugePhotoLine(spec) === "No gauge photo" ? "No gauge photo" : "";
+}
+function firstGaugePhoto(photos) {
+  var list = photos || [];
+  var i;
+  for (i = 0; i < list.length; i++) {
+    if (photoCountsAsGauge(list[i])) return list[i];
   }
-  if (spec.fuelPhotos && spec.fuelPhotos.gauge === false) return "No gauge photo";
-  if (spec.fuelPhotos && spec.fuelPhotos.gauge === true) return "";
-  if (spec.photoCount === 0) return "No gauge photo";
+  return null;
+}
+/* Turns a new upload into the fuelPhotos flags. Bits only turn on, so a
+   later receipt does not wipe a gauge photo that is already recorded. */
+function nextFuelPhotos(flags, photo) {
+  var base = { gauge: false, meter: false, receipt: false };
+  if (flags && typeof flags === "object") {
+    base.gauge = flags.gauge === true;
+    base.meter = flags.meter === true;
+    base.receipt = flags.receipt === true;
+  }
+  if (!photo) return base;
+  var role = photoRole(photo);
+  if (role === "meter") base.meter = true;
+  else if (role === "receipt") base.receipt = true;
+  else if (role === "other") return base;
+  else if (photoCountsAsGauge(photo)) base.gauge = true;
+  return base;
+}
+function lineUnitText(line) {
+  if (!line) return "";
+  var u = String(line.unit == null ? "" : line.unit).trim();
+  if (u) return u;
+  if (/^\s*fuel\s*[—–-]/i.test(String(line.cat || ""))) return "liters";
   return "";
 }
 
@@ -720,8 +780,13 @@ var api = {
   floorFor: floorFor,
   benchmarkPanel: benchmarkPanel,
   photoRole: photoRole,
+  photoCountsAsGauge: photoCountsAsGauge,
   fuelPhotoStatus: fuelPhotoStatus,
+  gaugePhotoLine: gaugePhotoLine,
   missingPhotoBadge: missingPhotoBadge,
+  firstGaugePhoto: firstGaugePhoto,
+  nextFuelPhotos: nextFuelPhotos,
+  lineUnitText: lineUnitText,
   odoLowerThanLast: odoLowerThanLast,
   shortGapFlag: shortGapFlag,
   allocationFlags: allocationFlags,
