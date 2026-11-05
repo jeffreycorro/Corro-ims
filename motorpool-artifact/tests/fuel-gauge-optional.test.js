@@ -16,8 +16,8 @@ function sliceFn(source, startMark, endMark) {
 }
 
 describe("fuel gauge photo does not block Send for approval", () => {
-  it("is build 2026-11-05 e", () => {
-    assert.match(html, /var BUILD = "2026-11-05 e"/);
+  it("is build 2026-11-05 f", () => {
+    assert.match(html, /var BUILD = "2026-11-05 f"/);
   });
 
   it("reports No gauge photo and does not mark the photo set as a hard miss", () => {

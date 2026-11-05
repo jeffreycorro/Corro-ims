@@ -97,8 +97,8 @@ describe("VRF print preview — page wiring", () => {
     assert.equal(checked.status, 0, checked.stderr || "node --check failed");
   });
 
-  it("is build 2026-11-05 e", () => {
-    assert.match(html, /var BUILD = "2026-11-05 e"/);
+  it("is build 2026-11-05 f", () => {
+    assert.match(html, /var BUILD = "2026-11-05 f"/);
   });
 
   it("offers Preview on the VRF form, the approval view, and the VRF log", () => {

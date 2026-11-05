@@ -445,7 +445,7 @@ var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
    This label is inside the page function. The shim reads window.BUILD when it
    sends a save. Without that copy every save goes out with an empty build and
    the server answers "Reload the page". */
-var BUILD = "2026-11-05 e";
+var BUILD = "2026-11-05 f";
 try { window.BUILD = BUILD; } catch (e) {}
 var DAY = 86400000, MO = 30.44;
 
@@ -5341,6 +5341,49 @@ function photoOwnersForOpenVrf(entry){
   }
   return owners.filter(function(x,i,a){ return x&&a.indexOf(x)===i; });
 }
+/* Liquidation receipts are not the request photos. They live under liq-{vrf}
+   and carry role "liquidation", so the Attachments tab, the proof gate, and
+   the fuel-photo checks keep reading the original list only. */
+function liquidationPhotoOwner(entry){
+  var no=entry&&typeof entry==="object"?entry.vrf:entry;
+  no=String(no==null?"":no).trim();
+  return no?("liq-"+no):"";
+}
+function isLiquidationAttachment(x){
+  if(!x) return false;
+  if(String(x.role||"")==="liquidation"||String(x.fuelRole||"")==="liquidation") return true;
+  return String(x.vrf||"").indexOf("liq-")===0;
+}
+function splitVrfAttachments(list){
+  var request=[], liquidation=[];
+  (list||[]).forEach(function(x){
+    if(!x) return;
+    if(isLiquidationAttachment(x)) liquidation.push(x);
+    else request.push(x);
+  });
+  return {request:request, liquidation:liquidation};
+}
+function liquidationFileKind(file){
+  var type=String(file&&file.type||"").toLowerCase();
+  var name=String(file&&file.name||"");
+  if(type.indexOf("image/")===0||IMAGE_EXT.test(name)) return "photo";
+  if(type==="application/pdf"||/\.pdf$/i.test(name)) return "pdf";
+  return "";
+}
+function liquidationFileTooLarge(file){
+  if(liquidationFileKind(file)!=="pdf") return "";
+  var n=(file&&file.size)||0;
+  if(n<=VIDEO_MAX_BYTES) return "";
+  var mb=Math.max(1,Math.round(n/1048576));
+  var cap=Math.round(VIDEO_MAX_BYTES/1048576);
+  return "This PDF is "+mb+" MB. The portal can keep a PDF up to "+cap+" MB — paste a link instead.";
+}
+function isDocAttachment(x){
+  if(!x||x.kind==="link") return false;
+  if(x.kind==="doc"||x.kind==="pdf") return true;
+  if(String(x.mime||"").indexOf("application/pdf")===0) return true;
+  return /^data:application\/pdf/i.test(String(x.data||""));
+}
 async function listPhotos(vrf){
   var owner=String(vrf);
   var loc=(lsGet("photos/"+owner,null)||{}).items||[];
@@ -5586,9 +5629,26 @@ function paintLazyThumb(ph, x){
 function openPhotoFull(x){
   return loadPhotoDoc(x&&x.id).then(function(doc){
     if(!doc||!doc.data){ toast("That picture is not here yet."); return; }
+    if(isDocAttachment(x)||isDocAttachment(doc)){ openPdfAttachment(x); return; }
     if(isVideoMeta(x)||isVideoAttachment(doc)) lightboxVideo(doc.data);
     else lightbox(doc.data);
   }).catch(function(){ toast("That picture is not here yet."); });
+}
+function openPdfAttachment(x){
+  return loadPhotoDoc(x&&x.id).then(function(doc){
+    var data=(doc&&doc.data)||"";
+    if(!data){ toast("That PDF is not here yet."); return; }
+    var a=document.createElement("a");
+    a.href=data;
+    a.target="_blank";
+    a.rel="noopener noreferrer";
+    var name=String((x&&x.caption)||"attachment.pdf");
+    if(!/\.pdf$/i.test(name)) name+=".pdf";
+    a.download=name.replace(/[^\w.\- ]+/g,"_")||"attachment.pdf";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }).catch(function(){ toast("That PDF is not here yet."); });
 }
 function mountLazyCell(x, opts){
   var c=el("div","pcell");
@@ -5639,14 +5699,38 @@ function fillLazyGallery(pgal, owners, opts){
     if(!pgal.isConnected) return;
     pgal.innerHTML="";
     var links=list.filter(function(x){ return x.kind==="link"; });
-    var files=list.filter(function(x){ return x.kind!=="link"; });
-    if(!files.length&&!links.length){
+    var docs=list.filter(function(x){ return isDocAttachment(x); });
+    var files=list.filter(function(x){ return x.kind!=="link"&&!isDocAttachment(x); });
+    if(!files.length&&!links.length&&!docs.length){
       var nb=el("div","banner warn");
       nb.innerHTML=opts.emptyHtml||"<b>No pictures on this request.</b>";
       pgal.appendChild(nb);
       return;
     }
     files.forEach(function(x){ pgal.appendChild(mountLazyCell(x, opts)); });
+    if(docs.length){
+      var dw=el("div"); dw.style.cssText="grid-column:1/-1";
+      dw.appendChild(el("div","hint","PDF — opens from this VRF"));
+      docs.forEach(function(x){
+        var drow=el("div","row");
+        drow.style.cssText="padding:6px 0;border-bottom:1px solid var(--rule)";
+        drow.appendChild(el("span","chip accent","PDF"));
+        var openPdf=el("button","btn sm",x.caption||"PDF");
+        openPdf.addEventListener("click",function(){ openPdfAttachment(x); });
+        drow.appendChild(openPdf);
+        drow.appendChild(el("span","hint",(x.by||"—")+" · "+(x.at||"")));
+        if(opts.onRemove){
+          var rmD=el("button","btn sm","Remove");
+          rmD.addEventListener("click",function(){
+            rmD.disabled=true;
+            Promise.resolve(opts.onRemove(x)).catch(function(){ rmD.disabled=false; });
+          });
+          drow.appendChild(rmD);
+        }
+        dw.appendChild(drow);
+      });
+      pgal.appendChild(dw);
+    }
     if(links.length){
       var lw=el("div"); lw.style.cssText="grid-column:1/-1";
       lw.appendChild(el("div","hint","Linked — opens in a new tab"));
@@ -5698,6 +5782,155 @@ function mountLazyGallery(pgal, owners, opts){
     : "Picture names load in the background."));
   setTimeout(function(){ fillLazyGallery(pgal, owners, opts); }, 0);
 }
+function liquidationGalleryOpts(owner, onChange){
+  return {
+    eager:true,
+    emptyHtml:"<b>No liquidation attachments yet.</b> Photos and PDFs added here stay with the liquidation, separate from the original request attachments.",
+    captionFallback:"liquidation attachment",
+    onRemove:function(x){
+      return removePhoto(x.vrf||owner, x.id).then(function(){
+        toast(x.kind==="link"?"Liquidation link removed.":"Liquidation attachment removed.");
+        if(onChange) onChange();
+      });
+    }
+  };
+}
+/* The liquidation section's own attachments. Bytes live under liq-{vrf}
+   with role "liquidation", never on the request photo owner. */
+function appendLiquidationAttachments(host, entry){
+  if(!host||!entry) return null;
+  var owner=liquidationPhotoOwner(entry);
+  if(!owner) return null;
+  var card=el("div","card");
+  card.setAttribute("data-liquidation-attachments", owner);
+  card.style.marginTop="var(--space-4)";
+  var hd=el("div","hd");
+  hd.appendChild(el("h3",null,"Liquidation attachments"));
+  var countNote=el("span","note");
+  function paintCount(){
+    var n=photoCount(owner);
+    countNote.textContent=n?(n+" file"+(n===1?"":"s")):"none yet";
+  }
+  paintCount();
+  hd.appendChild(countNote);
+  card.appendChild(hd);
+  var bd=el("div","bd");
+  bd.appendChild(el("div","hint",
+    "Receipts, photos, and PDFs for this liquidation. They are not mixed into the original request attachments."));
+  var gal=el("div","pgrid");
+  gal.style.margin="var(--space-3) 0";
+  bd.appendChild(gal);
+  function refresh(){
+    paintCount();
+    if(gal.isConnected) mountLazyGallery(gal, [owner], liquidationGalleryOpts(owner, refresh));
+  }
+  var up=el("div","f3");
+  function fld(label,node){ var x=el("div","field"); x.appendChild(el("label",null,label)); x.appendChild(node); return x; }
+  var fi=el("input");
+  fi.type="file";
+  fi.multiple=true;
+  fi.accept="image/*,application/pdf,.pdf";
+  fi.setAttribute("aria-label","Liquidation attachments");
+  fi.style.cssText="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0";
+  var cap=el("input");
+  cap.placeholder="what this shows, e.g. official receipt";
+  var by=el("input");
+  by.placeholder="your name";
+  by.value=typeof signedInName==="function"?signedInName():"";
+  var btnWrap=el("div","field");
+  btnWrap.appendChild(el("label",null,"Add to this liquidation"));
+  var btn=el("button","btn","Liquidation attachments");
+  btn.type="button";
+  btn.title="Add a photo or PDF that belongs to this liquidation";
+  btn.addEventListener("click",function(){ try{ fi.click(); }catch(e){} });
+  btnWrap.appendChild(btn);
+  btnWrap.appendChild(fi);
+  up.appendChild(btnWrap);
+  up.appendChild(fld("Caption",cap));
+  up.appendChild(fld("Added by",by));
+  bd.appendChild(up);
+  var status=el("div","hint");
+  status.style.marginTop="var(--space-2)";
+  bd.appendChild(status);
+  fi.addEventListener("change",async function(){
+    var files=Array.prototype.slice.call(fi.files||[]);
+    if(!files.length) return;
+    var ok=0, failed=0, failMsg="";
+    btn.disabled=true;
+    for(var i=0;i<files.length;i++){
+      status.textContent="Adding "+(i+1)+" of "+files.length+"…";
+      var kind=liquidationFileKind(files[i]);
+      var tooBig=liquidationFileTooLarge(files[i]);
+      if(!kind){
+        failed++;
+        failMsg="Choose a photo or a PDF. Other files can be pasted as a link below.";
+        continue;
+      }
+      if(tooBig){ failed++; failMsg=tooBig; continue; }
+      try{
+        var who=by.value.trim()||signedInName();
+        var caption=cap.value.trim()||files[i].name;
+        if(kind==="photo"){
+          var shrunk=await shrinkImage(files[i]);
+          await addPhoto(owner,{data:shrunk.data,w:shrunk.w,h:shrunk.h,bytes:shrunk.bytes,
+            caption:caption,by:who,kind:"photo",mime:"image/jpeg",role:"liquidation"});
+        }else{
+          var data=await readFileDataURL(files[i]);
+          await addPhoto(owner,{data:data,w:null,h:null,bytes:files[i].size||0,
+            caption:caption,by:who,kind:"doc",mime:"application/pdf",role:"liquidation"});
+        }
+        ok++;
+      }catch(e){
+        failed++;
+        failMsg=(e&&e.message)||"could not attach";
+      }
+    }
+    status.textContent=failMsg||"";
+    status.style.color=failed?"var(--danger)":"";
+    fi.value="";
+    btn.disabled=false;
+    if(ok||failed){
+      toast(ok+" liquidation attachment"+(ok===1?"":"s")+" added"+(failed?", "+failed+" could not be added":"")+".");
+    }
+    refresh();
+  });
+  var linkRow=el("div","f3");
+  linkRow.style.marginTop="var(--space-4)";
+  var lu=el("input");
+  lu.placeholder="https://…  a PDF or Drive link";
+  var lk=el("select");
+  Object.keys(LINK_KINDS).forEach(function(k){ lk.appendChild(new Option(LINK_KINDS[k],k)); });
+  lk.value="doc";
+  var lc=el("input");
+  lc.placeholder="what it shows";
+  linkRow.appendChild(fld("Or add a link (PDF, document)",lu));
+  linkRow.appendChild(fld("Kind",lk));
+  linkRow.appendChild(fld("Caption",lc));
+  bd.appendChild(linkRow);
+  var lbtn=el("button","btn");
+  lbtn.textContent="Attach liquidation link";
+  lbtn.style.marginTop="var(--space-2)";
+  lbtn.addEventListener("click",async function(){
+    if(!isHttpUrl(lu.value)){ toast("Paste a full link starting with https://"); return; }
+    lbtn.disabled=true; lbtn.textContent="Attaching…";
+    try{
+      await addLink(owner,{url:lu.value.trim(),linkKind:lk.value,
+        caption:lc.value.trim(),by:by.value.trim()||signedInName(),role:"liquidation"});
+    }catch(e){
+      lbtn.disabled=false; lbtn.textContent="Attach liquidation link";
+      toast("Could not attach: "+(e&&e.message||"")); return;
+    }
+    toast("Liquidation link attached.");
+    lu.value=""; lc.value="";
+    lbtn.disabled=false; lbtn.textContent="Attach liquidation link";
+    refresh();
+  });
+  bd.appendChild(lbtn);
+  card.appendChild(bd);
+  host.appendChild(card);
+  mountLazyGallery(gal, [owner], liquidationGalleryOpts(owner, refresh));
+  return card;
+}
 async function bumpPhotoCount(vrf,delta){
   var c=Object.assign({},S.photoCounts);
   c[vrf]=Math.max(0,(c[vrf]||0)+delta);
@@ -5722,6 +5955,8 @@ async function addLink(owner,rec){
   var body={vrf:String(owner), idx:idx, kind:"link", url:rec.url,
     linkKind:rec.linkKind||guessLinkKind(rec.url),
     caption:rec.caption||"", by:rec.by||"", at:iso()};
+  var roles=photoRoleFields(rec);
+  if(roles){ body.role=roles.role; body.fuelRole=roles.fuelRole; }
   var row=Object.assign({id:photoKey(owner,idx)},body);
   var loc=lsGet("photos/"+owner,{items:[]});
   loc.items=mergePhotoLists([loc.items||[],[row]]);
@@ -5825,7 +6060,8 @@ async function copyPhotos(from,to){
     var x=items[i];
     try{
       if(x.kind==="link"){
-        await addLink(to,{url:x.url,linkKind:x.linkKind,caption:x.caption,by:x.by});
+        await addLink(to,{url:x.url,linkKind:x.linkKind,caption:x.caption,by:x.by,
+          role:x.role||"",fuelRole:x.fuelRole||x.role||""});
       }else if(x.data){
         await addPhoto(to,{data:x.data,w:x.w,h:x.h,bytes:x.bytes,caption:x.caption,by:x.by,
           kind:x.kind,mime:x.mime,role:x.role||"",fuelRole:x.fuelRole||x.role||""});
@@ -5853,7 +6089,8 @@ async function copyMissingPhotos(from, to){
     if((fp2&&have[fp2])||(x&&x.id&&have["id:"+x.id])) continue;
     try{
       if(x.kind==="link"){
-        await addLink(to,{url:x.url,linkKind:x.linkKind,caption:x.caption,by:x.by});
+        await addLink(to,{url:x.url,linkKind:x.linkKind,caption:x.caption,by:x.by,
+          role:x.role||"",fuelRole:x.fuelRole||x.role||""});
       }else if(x.data){
         await addPhoto(to,{data:x.data,w:x.w,h:x.h,bytes:x.bytes,caption:x.caption,by:x.by,
           kind:x.kind,mime:x.mime,role:x.role||"",fuelRole:x.fuelRole||x.role||""});
@@ -5889,6 +6126,20 @@ function photoCountMany(owners){
     seen[o]=1; n+=photoCount(o);
   });
   return n;
+}
+/* Request count stays the paperclip. Liquidation files, when present, sit on
+   their own chip so the log does not mix the two lists. */
+function vrfAttachmentChips(v){
+  var n=photoCount(v&&v.vrf);
+  var chip=el("span","chip "+(n?"accent":"mute"),n?"📎 "+n:"—");
+  var liqN=photoCount(liquidationPhotoOwner(v));
+  if(!liqN) return chip;
+  var wrap=el("div");
+  wrap.appendChild(chip);
+  var row=el("div"); row.style.marginTop="3px";
+  row.appendChild(el("span","chip accent","Liquidation "+liqN));
+  wrap.appendChild(row);
+  return wrap;
 }
 
 /* A unit picker you can type into. Eighty-nine codes in a dropdown is a scroll;
@@ -12074,9 +12325,7 @@ function vrfLogView(){
         return d; }},
       {h:"Lines",num:true,get:function(v){return nnum(v.rows.length);}},
       {h:"Total",num:true,get:function(v){return peso(vrfLogAmount(v));}},
-      {h:"Files",num:true,get:function(v){
-        var n=photoCount(v.vrf);
-        return el("span","chip "+(n?"accent":"mute"),n?"📎 "+n:"—"); }},
+      {h:"Files",num:true,get:function(v){ return vrfAttachmentChips(v); }},
       {h:"Status",get:function(v){
         var d=el("div");
         d.appendChild(vrfLogStatus(v));
@@ -12428,9 +12677,7 @@ function partsView(){
             c==="none"?"cannot tell":"inferred · "+c); }},
         {h:"Status",get:vrfChip},
         {h:"Reserve",get:function(v){ return v.reserve?"RSV-"+v.reserve:"—"; }},
-        {h:"Files",num:true,get:function(v){
-          var n=photoCount(v.vrf);
-          return el("span","chip "+(n?"accent":"mute"),n?"📎 "+n:"—"); }},
+        {h:"Files",num:true,get:function(v){ return vrfAttachmentChips(v); }},
         {h:"",get:function(v){
           var b2=el("button","btn sm","Open");
           b2.addEventListener("click",function(ev){ ev.stopPropagation(); openVrf(v); });
@@ -12740,55 +12987,69 @@ function buildVrfDoc(entry,photos,opts){
   });
   d.appendChild(sig);
 
-  var linkList=(photos||[]).filter(function(x){ return x&&x.kind==="link"; });
-  var files=(photos||[]).filter(function(x){ return x&&x.kind!=="link"; });
-  if(files.length){
-    var ph=el("div","vph");
-    ph.appendChild(vrfMarkNode(mark));
-    ph.appendChild(el("h4",null,"Attachments — VRF "+entry.vrf+"  ("+files.length+")"));
-    var gr=el("div","vgrid");
-    files.forEach(function(x,n){
-      var f=document.createElement("figure");
-      if(x.id) f.setAttribute("data-photo-id", String(x.id));
-      if(isVideoMeta(x)){
-        var vnote=document.createElement("div");
-        vnote.className="vmiss";
-        vnote.textContent="Video attached"+(x.caption?": "+x.caption:"")+" — play it on the VRF. It is not embedded in this print.";
-        f.appendChild(vnote);
-      }else if(x.data){
-        var im=document.createElement("img");
-        im.alt=x.caption||"attachment";
-        im.src=x.data;
-        f.appendChild(im);
-      }else if(x._failed){
-        var miss=document.createElement("div");
-        miss.className="vmiss";
-        miss.textContent="Picture failed to load"+(x.caption?": "+x.caption:"")+". It is not on this print.";
-        f.appendChild(miss);
-      }else{
-        var wait=document.createElement("div");
-        wait.className="vwait";
-        wait.textContent="Loading picture…";
-        f.appendChild(wait);
-      }
-      var cp=document.createElement("figcaption");
-      cp.textContent=(n+1)+". "+(x.caption||"attachment")+
-        (x.by?"  —  "+x.by:"")+(x.at?"  ·  "+x.at:"");
-      f.appendChild(cp); gr.appendChild(f);
-    });
-    ph.appendChild(gr); d.appendChild(ph);
+  function appendAttachmentPages(list, fileHeading, linkHeading){
+    var linkList=(list||[]).filter(function(x){ return x&&x.kind==="link"; });
+    var files=(list||[]).filter(function(x){ return x&&x.kind!=="link"; });
+    if(files.length){
+      var ph=el("div","vph");
+      ph.appendChild(vrfMarkNode(mark));
+      ph.appendChild(el("h4",null,fileHeading+" — VRF "+entry.vrf+"  ("+files.length+")"));
+      var gr=el("div","vgrid");
+      files.forEach(function(x,n){
+        var f=document.createElement("figure");
+        if(x.id) f.setAttribute("data-photo-id", String(x.id));
+        if(isDocAttachment(x)){
+          var dnote=document.createElement("div");
+          dnote.className="vmiss";
+          dnote.textContent="PDF attached"+(x.caption?": "+x.caption:"")+" — open it on the VRF. It is not embedded in this print.";
+          f.appendChild(dnote);
+        }else if(isVideoMeta(x)){
+          var vnote=document.createElement("div");
+          vnote.className="vmiss";
+          vnote.textContent="Video attached"+(x.caption?": "+x.caption:"")+" — play it on the VRF. It is not embedded in this print.";
+          f.appendChild(vnote);
+        }else if(x.data){
+          var im=document.createElement("img");
+          im.alt=x.caption||"attachment";
+          im.src=x.data;
+          f.appendChild(im);
+        }else if(x._failed){
+          var miss=document.createElement("div");
+          miss.className="vmiss";
+          miss.textContent="Picture failed to load"+(x.caption?": "+x.caption:"")+". It is not on this print.";
+          f.appendChild(miss);
+        }else{
+          var wait=document.createElement("div");
+          wait.className="vwait";
+          wait.textContent="Loading picture…";
+          f.appendChild(wait);
+        }
+        var cp=document.createElement("figcaption");
+        cp.textContent=(n+1)+". "+(x.caption||"attachment")+
+          (x.by?"  —  "+x.by:"")+(x.at?"  ·  "+x.at:"");
+        f.appendChild(cp); gr.appendChild(f);
+      });
+      ph.appendChild(gr); d.appendChild(ph);
+    }
+    if(linkList.length){
+      var lb=el("div"); lb.style.marginTop="10px";
+      lb.appendChild(el("h4",null,linkHeading+" — VRF "+entry.vrf));
+      linkList.forEach(function(x){
+        var r2=el("div");
+        r2.style.cssText="font-size:9px;color:#333;padding:2px 0;border-bottom:1px solid #eee";
+        r2.textContent="["+((LINK_KINDS[x.linkKind]||"Link").toUpperCase())+"] "+
+          (x.caption||"")+"  —  "+x.url+(x.by?"   ("+x.by+")":"");
+        lb.appendChild(r2);
+      });
+      d.appendChild(lb);
+    }
   }
-  if(linkList.length){
-    var lb=el("div"); lb.style.marginTop="10px";
-    lb.appendChild(el("h4",null,"Linked files — VRF "+entry.vrf));
-    linkList.forEach(function(x){
-      var r2=el("div");
-      r2.style.cssText="font-size:9px;color:#333;padding:2px 0;border-bottom:1px solid #eee";
-      r2.textContent="["+((LINK_KINDS[x.linkKind]||"Link").toUpperCase())+"] "+
-        (x.caption||"")+"  —  "+x.url+(x.by?"   ("+x.by+")":"");
-      lb.appendChild(r2);
-    });
-    d.appendChild(lb);
+  var grouped=splitVrfAttachments(photos);
+  if(grouped.liquidation.length){
+    appendAttachmentPages(grouped.request, "Request attachments", "Request links");
+    appendAttachmentPages(grouped.liquidation, "Liquidation attachments", "Liquidation links");
+  }else{
+    appendAttachmentPages(grouped.request, "Attachments", "Linked files");
   }
   d.appendChild(el("div","vfoot","Printed from the Corcondev Motorpool portal on "+iso()+
     ".  Grand total "+peso(grand)+" across "+entry.rows.length+" line"+(entry.rows.length>1?"s":"")+"."));
@@ -12890,7 +13151,7 @@ async function entryWithPrintableSig(entry){
   return next;
 }
 function printPhotoFiles(list){
-  return (list||[]).filter(function(x){ return x&&x.kind!=="link"&&!isVideoMeta(x); });
+  return (list||[]).filter(function(x){ return x&&x.kind!=="link"&&!isVideoMeta(x)&&!isDocAttachment(x); });
 }
 function whenImgReady(im){
   return new Promise(function(resolve){
@@ -12954,8 +13215,8 @@ function paintGaugeStill(page, x){
 }
 /* One picture, by its id. A miss is marked on that figure only. */
 function pullPrintPhoto(x, page, onDone){
-  if(!x||x.kind==="link"||isVideoMeta(x)||x.data){
-    if(x&&x.data) paintGaugeStill(page, x);
+  if(!x||x.kind==="link"||isVideoMeta(x)||isDocAttachment(x)||x.data){
+    if(x&&x.data&&!isDocAttachment(x)) paintGaugeStill(page, x);
     if(onDone) onDone();
     return Promise.resolve(!!(x&&x.data));
   }
@@ -13183,7 +13444,8 @@ async function openVrfPrintSheet(entry,photos,preview,edition,model){
     })).then(function(){
       /* The same picture can sit on the VRF number and the reserve.
          Once the bytes are here, keep one copy — the same rule as the ledger. */
-      var merged=mergePhotoLists([live]);
+      var groups=splitVrfAttachments(live);
+      var merged=mergePhotoLists([groups.request]).concat(mergePhotoLists([groups.liquidation]));
       if(merged.length!==live.length){
         live=merged;
         show(live);
@@ -13204,8 +13466,22 @@ async function openVrfPrintSheet(entry,photos,preview,edition,model){
     syncBar();
     return loadAll();
   }
+  function loadPrintAttachmentList(){
+    var owner=liquidationPhotoOwner(entry);
+    return Promise.all([
+      listPhotoMetaMany(photoOwnersForOpenVrf(entry)),
+      owner?listPhotoMetaMany([owner]):Promise.resolve([])
+    ]).then(function(parts){
+      var req=parts[0]||[];
+      var liq=(parts[1]||[]).map(function(x){
+        if(x&&!isLiquidationAttachment(x)) x.role="liquidation";
+        return x;
+      });
+      return req.concat(liq);
+    });
+  }
   if(!supplied){
-    listPhotoMetaMany(photoOwnersForOpenVrf(entry)).then(takeList).catch(function(){
+    loadPrintAttachmentList().then(takeList).catch(function(){
       if(!m.isConnected) return;
       listReady=true;
       live=[];
@@ -13217,7 +13493,7 @@ async function openVrfPrintSheet(entry,photos,preview,edition,model){
         retry.disabled=true;
         listReady=false;
         syncBar();
-        listPhotoMetaMany(photoOwnersForOpenVrf(entry)).then(function(list){
+        loadPrintAttachmentList().then(function(list){
           retry.remove();
           return takeList(list);
         }).catch(function(){
@@ -15011,6 +15287,7 @@ function openVrf(entry,tab){
   var ex=document.getElementById("cfSheet"); if(ex) ex.remove();
   tab=tab||"lines";
   var lazyGal=null;
+  var lazyLiqGal=null;
   var m=el("div","modal"); m.id="cfSheet";
   var sheet=el("div","sheet"); sheet.style.maxWidth="900px";
   var b=el("div"); b.style.padding="var(--space-5) var(--space-6)";
@@ -15380,6 +15657,7 @@ function openVrf(entry,tab){
       tot0.appendChild(el("span","hint",entry.status==="Closed"?"Closed at":"Amount"));
       var tv0=el("span","mono",peso(entry.status==="Closed"?entry.total:0)); tv0.style.cssText="font-size:20px;font-weight:600";
       tot0.appendChild(tv0); body.appendChild(tot0);
+      appendLiquidationAttachments(body, entry);
       if(entry.status!=="Closed"){
         body.appendChild(el("div","hint","This VRF is no longer open spend."));
       }
@@ -15463,7 +15741,7 @@ function openVrf(entry,tab){
       body.appendChild(stopCard);
 
       var intro=el("div","hint",
-        "Liquidating is where the estimate becomes the actual. Correct any amount that came back different, attach what proves it, and close it. Anything on the estimate that was never bought — mark it “Not bought”. That line becomes ₱0.00. If every line is not bought, the whole VRF closes at zero.");
+        "Liquidating is where the estimate becomes the actual. Correct any amount that came back different, attach what proves it, and close it. Receipts for this liquidation go under Liquidation attachments — they stay separate from the original request attachments. Anything on the estimate that was never bought — mark it “Not bought”. That line becomes ₱0.00. If every line is not bought, the whole VRF closes at zero.");
       body.appendChild(intro);
 
       var edits=entry.rows.map(function(){ return {}; });
@@ -15659,6 +15937,7 @@ function openVrf(entry,tab){
         goto2.addEventListener("click",function(){ openVrf(entry,"photos"); });
         body.appendChild(goto2);
       }
+      appendLiquidationAttachments(body, entry);
 
       var lrow=el("div","f3"); lrow.style.marginTop="var(--space-4)";
       function lf3(l,n){ var x=el("div","field"); x.appendChild(el("label",null,l)); x.appendChild(n); return x; }
@@ -15847,6 +16126,17 @@ function openVrf(entry,tab){
       toast(ok+" photo"+(ok===1?"":"s")+" attached"+(failed?", "+failed+" could not be read":"")+".");
       openVrf(entry,"photos");
     });
+    if(!waiting){
+      var liqView=el("div");
+      liqView.style.marginTop="var(--space-5)";
+      liqView.setAttribute("data-liquidation-attachments-view", liquidationPhotoOwner(entry));
+      liqView.appendChild(el("h3",null,"Liquidation attachments"));
+      liqView.appendChild(el("div","hint","Separate from the request attachments above. Add a receipt or PDF with the Liquidation attachments button on the Liquidate tab."));
+      lazyLiqGal=el("div","pgrid");
+      lazyLiqGal.style.margin="var(--space-3) 0";
+      liqView.appendChild(lazyLiqGal);
+      body.appendChild(liqView);
+    }
   }
 
   sheet.appendChild(b); m.appendChild(sheet);
@@ -15866,6 +16156,19 @@ function openVrf(entry,tab){
       onRemove:function(x){
         return removePhoto(x.vrf||entry.vrf, x.id).then(function(){
           toast(x.kind==="link"?"Link removed.":"Attachment removed.");
+          openVrf(entry,"photos");
+        });
+      }
+    });
+  }
+  if(lazyLiqGal){
+    mountLazyGallery(lazyLiqGal, [liquidationPhotoOwner(entry)], {
+      eager:true,
+      emptyHtml:"<b>No liquidation attachments yet.</b>",
+      captionFallback:"liquidation attachment",
+      onRemove:function(x){
+        return removePhoto(x.vrf||liquidationPhotoOwner(entry), x.id).then(function(){
+          toast(x.kind==="link"?"Liquidation link removed.":"Liquidation attachment removed.");
           openVrf(entry,"photos");
         });
       }
