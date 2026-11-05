@@ -212,8 +212,8 @@ describe("liquidation variance report endpoint", () => {
 });
 
 describe("artifact HTML — liquidated print versions", () => {
-  it("is build 2026-11-05 d and keeps the script valid", () => {
-    assert.match(html, /var BUILD = "2026-11-05 d"/);
+  it("is build 2026-11-05 e and keeps the script valid", () => {
+    assert.match(html, /var BUILD = "2026-11-05 e"/);
     assert.match(html, /var VARIANCE_PRINT_MAX=0\.50/);
     const match = html.match(/<script(?![^>]*src)[^>]*>([\s\S]*?)<\/script>/);
     const tmp = path.join(os.tmpdir(), "motorpool-liq-print-check.js");
