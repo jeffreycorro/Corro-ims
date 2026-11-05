@@ -82,8 +82,8 @@ function ledgerFuel(over) {
 }
 
 describe("fuel VRF previous-fill note", () => {
-  it("is build 2026-11-05 b", () => {
-    assert.match(html, /var BUILD = "2026-11-05 b"/);
+  it("is build 2026-11-05 c", () => {
+    assert.match(html, /var BUILD = "2026-11-05 c"/);
   });
 
   it("states km per liter when both odometers increase", () => {

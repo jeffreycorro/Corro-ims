@@ -152,8 +152,8 @@ describe("artifact HTML — VRF log shows every number", () => {
   const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
 
   it("keeps the search, the badges, and the guard against a short re-read", () => {
-    assert.match(html, /var BUILD = "2026-11-05 b"/);
-    assert.match(html, /placeholder="VRF number, unit, item, supplier, voucher no…"/);
+    assert.match(html, /var BUILD = "2026-11-05 c"/);
+    assert.match(html, /placeholder="VRF number, unit, item, supplier, voucher no, LRF or PSRF no…"/);
     assert.match(html, /var numberQuery=/);
     assert.match(html, /function vrfLogStatus/);
     assert.match(html, /"FOR APPROVAL"/);

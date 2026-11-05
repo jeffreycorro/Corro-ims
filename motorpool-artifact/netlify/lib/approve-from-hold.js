@@ -314,6 +314,27 @@ function bypassAttribution(override, extra) {
   return parts.join(" · ");
 }
 
+function canonVrfSource(v) {
+  const key = String(v == null ? "" : v)
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+  if (key === "motor pool" || key === "motorpool") return "Motor Pool";
+  if (key === "psrf") return "PSRF";
+  if (key === "lrf") return "LRF";
+  return "";
+}
+
+/** Copy an optional VRF source onto a ledger or issued row. Blank stays absent. */
+function copyVrfSource(target, from) {
+  if (!target || !from) return target;
+  const source = canonVrfSource(from.source);
+  const sourceNo = String(from.sourceNo == null ? "" : from.sourceNo).trim();
+  if (source) target.source = source;
+  if (sourceNo) target.sourceNo = sourceNo;
+  return target;
+}
+
 /**
  * Absent backfill is the normal approve. A present object must be
  * { note, noRelease: true } so a typo cannot approve without the flag.
@@ -438,6 +459,7 @@ function buildLedgerRows(hold, vrfNo, snapshot, today, backfill) {
     /* The ledger line is the whole backfill. fuel/withdrawals is not written. */
     if (backfill) row.backfill = true;
     if (hold.fuelPrevNote) row.fuelPrevNote = String(hold.fuelPrevNote);
+    copyVrfSource(row, hold);
     return row;
   });
 }
@@ -879,6 +901,30 @@ function missingApproveRpc(err) {
   return /could not find the function|schema cache/i.test(msg);
 }
 
+function issuedReserveSnapshot(hold, no) {
+  const reserve = {
+    no: hold.no,
+    vrfNo: no,
+    vrfs: hold.vrfs || [],
+    date: hold.date,
+    status: hold.status,
+    veh: hold.veh,
+    project: hold.project,
+    work: hold.work,
+    requestedBy: hold.requestedBy,
+    approvedBy: hold.approvedBy,
+    approvedAt: hold.approvedAt,
+    printedAt: hold.printedAt || "",
+    draftPurpose: hold.draftPurpose || "",
+    draftLines: hold.draftLines || [],
+    budget: hold.budget,
+    approvedBudget: hold.approvedBudget,
+    fuelPrevNote: hold.fuelPrevNote ? String(hold.fuelPrevNote) : "",
+  };
+  copyVrfSource(reserve, hold);
+  return reserve;
+}
+
 function issuedEntry(hold, rows, month) {
   const no = normNo(hold.vrfNo);
   return {
@@ -890,25 +936,7 @@ function issuedEntry(hold, rows, month) {
     snapshot: {
       month: month || "",
       rows: rows || [],
-      reserve: {
-        no: hold.no,
-        vrfNo: no,
-        vrfs: hold.vrfs || [],
-        date: hold.date,
-        status: hold.status,
-        veh: hold.veh,
-        project: hold.project,
-        work: hold.work,
-        requestedBy: hold.requestedBy,
-        approvedBy: hold.approvedBy,
-        approvedAt: hold.approvedAt,
-        printedAt: hold.printedAt || "",
-        draftPurpose: hold.draftPurpose || "",
-        draftLines: hold.draftLines || [],
-        budget: hold.budget,
-        approvedBudget: hold.approvedBudget,
-        fuelPrevNote: hold.fuelPrevNote ? String(hold.fuelPrevNote) : "",
-      },
+      reserve: issuedReserveSnapshot(hold, no),
     },
   };
 }
@@ -1049,25 +1077,7 @@ async function sealApprovedNumber(store, hold, rows, month) {
     snapshot: {
       month: month || "",
       rows: rows || [],
-      reserve: {
-        no: hold.no,
-        vrfNo: no,
-        vrfs: hold.vrfs || [],
-        date: hold.date,
-        status: hold.status,
-        veh: hold.veh,
-        project: hold.project,
-        work: hold.work,
-        requestedBy: hold.requestedBy,
-        approvedBy: hold.approvedBy,
-        approvedAt: hold.approvedAt,
-        printedAt: hold.printedAt || "",
-        draftPurpose: hold.draftPurpose || "",
-        draftLines: hold.draftLines || [],
-        budget: hold.budget,
-        approvedBudget: hold.approvedBudget,
-        fuelPrevNote: hold.fuelPrevNote ? String(hold.fuelPrevNote) : "",
-      },
+      reserve: issuedReserveSnapshot(hold, no),
     },
   };
   const rec = store.getRecord

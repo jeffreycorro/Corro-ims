@@ -919,7 +919,7 @@ function draftFromIssued(entry) {
           unit: row.unit || "",
           work: row.work || "",
         }));
-  return {
+  const draft = {
     no: "draft-unnumbered",
     vrfNo: "",
     vrfs: [],
@@ -938,6 +938,11 @@ function draftFromIssued(entry) {
     renumberNote: "Printed without a number. Send this draft so it receives the next VRF number.",
     printedAt: (entry && entry.at) || reserve.printedAt || "",
   };
+  const source = String(reserve.source || first.source || "").trim();
+  const sourceNo = String(reserve.sourceNo || first.sourceNo || "").trim();
+  if (source) draft.source = source;
+  if (sourceNo) draft.sourceNo = sourceNo;
+  return draft;
 }
 
 function holdTotal(r) {
