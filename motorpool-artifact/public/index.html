@@ -445,7 +445,7 @@ var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
    This label is inside the page function. The shim reads window.BUILD when it
    sends a save. Without that copy every save goes out with an empty build and
    the server answers "Reload the page". */
-var BUILD = "2026-11-05 d";
+var BUILD = "2026-11-05 e";
 try { window.BUILD = BUILD; } catch (e) {}
 var DAY = 86400000, MO = 30.44;
 
@@ -10384,6 +10384,16 @@ function openReserve(no,asApprover){
     }).join("<br>");
     b.appendChild(amtNote);
   }
+  var itemChanges=(r.audit||[]).filter(function(n){ return n&&itemAuditField(n.field); });
+  if(itemChanges.length){
+    var itemNote=el("div","banner info");
+    itemNote.setAttribute("data-item-change","1");
+    itemNote.style.cssText="margin:0 0 var(--space-4);white-space:pre-line";
+    itemNote.innerHTML="<b>Item change</b><br>"+itemChanges.map(function(n){
+      return esc(lineItemChangeText(n));
+    }).join("<br>");
+    b.appendChild(itemNote);
+  }
   var meterAll=reserveMeter(r);
   if(rsvKind(r)==="job"){
     var meterNote=el("div"); meterNote.style.margin="0 0 var(--space-3)";
@@ -10446,9 +10456,11 @@ function openReserve(no,asApprover){
       " — exactly what the yard typed on the form"));
     dlc.appendChild(dlh);
     var canSup=supplierEditAllowed(r);
+    var canItem=lineItemEditAllowed(r);
+    var canLine=canSup||canItem;
     var dt2=el("table"), dth=el("thead"), dhr=el("tr");
     var supHeads=["#","Part category","Item","Supplier","Qty","Unit price","Total"];
-    if(canSup) supHeads.push("");
+    if(canLine) supHeads.push("");
     supHeads.forEach(function(x,i){
       var h=el("th",null,x); if(x==="Qty"||x==="Unit price"||x==="Total") h.style.textAlign="right"; dhr.appendChild(h); });
     dth.appendChild(dhr); dt2.appendChild(dth);
@@ -10457,35 +10469,58 @@ function openReserve(no,asApprover){
       var q=parseFloat(l.qty)||0, pz=parseFloat(l.price)||0, tt=q*pz; dsum+=tt;
       var tr=el("tr");
       tr.appendChild(el("td","num mono",String(i+1)));
-      tr.appendChild(el("td",null,normCat(l.cat)||"—"));
-      tr.appendChild(el("td",null,l.item||"—"));
+      var catCell=el("td",null,normCat(l.cat)||"—");
+      var itemCell=el("td",null,l.item||"—");
+      if(!canItem){
+        catCell.title="Part category is locked after approval";
+        itemCell.title="Item name is locked after approval";
+        catCell.setAttribute("data-item-locked","cat");
+        itemCell.setAttribute("data-item-locked","item");
+      }
+      tr.appendChild(catCell);
+      tr.appendChild(itemCell);
       tr.appendChild(el("td",null,l.supplier||"—"));
       tr.appendChild(el("td","num",(l.qty||"—")+" "+(l.unit||"")));
       tr.appendChild(el("td","num",pz?peso(pz):"—"));
       tr.appendChild(el("td","num mono",tt?peso(tt):"—"));
-      if(canSup){
+      if(canLine){
         var edTd=el("td");
         var edRow=el("div"); edRow.style.cssText="display:flex;gap:4px;flex-wrap:wrap";
-        edRow.appendChild(supplierEditButton(r, function(){
-          m.remove(); render(); openReserve(no, asApprover);
-        }, {small:true, lineIndex:i}));
-        edRow.appendChild(amountEditButton(r, function(){
-          m.remove(); render(); openReserve(no, asApprover);
-        }, {small:true, lineIndex:i}));
+        if(canItem){
+          edRow.appendChild(lineItemEditButton(r, function(){
+            m.remove(); render(); openReserve(no, asApprover);
+          }, {small:true, lineIndex:i}));
+        }
+        if(canSup){
+          edRow.appendChild(supplierEditButton(r, function(){
+            m.remove(); render(); openReserve(no, asApprover);
+          }, {small:true, lineIndex:i}));
+          edRow.appendChild(amountEditButton(r, function(){
+            m.remove(); render(); openReserve(no, asApprover);
+          }, {small:true, lineIndex:i}));
+        }
         edTd.appendChild(edRow);
         tr.appendChild(edTd);
       }
       dtb.appendChild(tr);
     });
     var ftr=el("tr");
-    var fc=el("td",null,"Estimated total"); fc.colSpan=canSup?7:6;
+    var fc=el("td",null,"Estimated total"); fc.colSpan=canLine?7:6;
     fc.style.cssText="text-align:right;font-weight:600";
     ftr.appendChild(fc);
     var fv=el("td","num mono",peso(dsum)); fv.style.fontWeight="600";
+    fv.setAttribute("data-estimated-total","1");
     ftr.appendChild(fv); dtb.appendChild(ftr);
     dt2.appendChild(dtb);
     var dsc=el("div","scroll"); dsc.appendChild(dt2);
-    var dlb=el("div","bd flush"); dlb.appendChild(dsc); dlc.appendChild(dlb);
+    var dlb=el("div","bd flush"); dlb.appendChild(dsc);
+    if(!canItem){
+      var itemLock=el("div","hint","Item name and part category are locked.");
+      itemLock.setAttribute("data-item-locked","1");
+      itemLock.style.margin="var(--space-2) var(--space-3)";
+      dlb.appendChild(itemLock);
+    }
+    dlc.appendChild(dlb);
     b.appendChild(dlc);
   }
 
@@ -10506,6 +10541,7 @@ function openReserve(no,asApprover){
   else if(r.liquidatedAt) steps.push(["Liquidated",r.liquidatedAt+" at "+peso(rv.actual)+(r.voucherNo?" · Voucher "+r.voucherNo:"")]);
   supChanges.forEach(function(n){ steps.push(["Supplier", supplierChangeText(n)]); });
   amtChanges.forEach(function(n){ steps.push(["Amount", pendingAmountText(n)]); });
+  itemChanges.forEach(function(n){ steps.push(["Item", lineItemChangeText(n)]); });
   if(r.varianceAt) steps.push(["Variance decision",r.varianceAt+" by "+(r.varianceBy||"—")+
     (r.varianceNote?" — "+r.varianceNote:"")]);
   steps.forEach(function(sx){
@@ -13418,6 +13454,9 @@ function vrfMayEdit(entry){
   var st=String(entry.status||"");
   return st==="Open"||st==="Requested"||st==="Closed";
 }
+/* Header edit stays as it is. Item name and part category use lineItemEditAllowed:
+   open on Requested, Pending, and a hold that is still open before approval;
+   locked once the VRF is Approved, Closed, Cancelled, or Flagged. */
 /* Drafts and VRFs still for approval can change supplier, quantity, and amount.
    Approved, open, liquidated, filed and cancelled cannot. */
 function supplierStatusKey(st){
@@ -14029,7 +14068,28 @@ function openAmountEdit(no, opts, after){
     (r.status||"a draft")+"."));
   var slots=[];
   var usage=null;
+  var grand=el("div","mono");
+  grand.setAttribute("data-amount-vrf-total","1");
+  grand.style.cssText="margin-top:var(--space-3);font-weight:600";
+  function paintGrand(){
+    var sum=0;
+    if(shape.mode==="line"){
+      var lines=(r.draftLines||[]).map(function(l){ return l?Object.assign({}, l):l; });
+      slots.forEach(function(s){
+        var line=lines[s.index];
+        if(!line) return;
+        line.qty=s.qty;
+        line.price=s.price;
+        line.total=s.amount;
+      });
+      lines.forEach(function(l){ sum+=lineMoney(l); });
+    }else{
+      sum=slots[0]?slots[0].amount:moneyNum(r.budget);
+    }
+    grand.textContent="VRF total "+peso(moneyRound(sum));
+  }
   function paintUsage(){
+    paintGrand();
     if(!usage) return;
     var asked=0;
     if(shape.mode==="line"){
@@ -14205,6 +14265,8 @@ function openAmountEdit(no, opts, after){
     b.appendChild(usage);
     paintUsage();
   }
+  paintGrand();
+  b.appendChild(grand);
   var byF=el("div","field"); byF.style.cssText="margin-top:var(--space-3);max-width:280px";
   byF.appendChild(el("label",null,"Your name"));
   var byIn=el("input"); byIn.value=signedInName(); byIn.placeholder="your name";
@@ -14259,10 +14321,468 @@ function openAmountEdit(no, opts, after){
   document.body.appendChild(m);
   try{ byIn.focus(); }catch(eFocus){}
 }
+function lineItemDecided(reserve){
+  if(!reserve||typeof reserve!=="object") return true;
+  if(reserve.cancelledAt||reserve.liquidatedAt) return true;
+  if(String(reserve.approvedAt||"").trim()) return true;
+  if(String(reserve.approvedBy||"").trim()) return true;
+  if(reserve.approvedBudget!=null && String(reserve.approvedBudget)!=="") return true;
+  var st=supplierStatusKey(reserve.status);
+  if(/^(approved|closed|cancelled|canceled|flagged|rejected|disapproved|liquidated|filed|posted|archived|not bought|duplicate|legacy)\b/.test(st)) return true;
+  if(/awaiting liquidation/.test(st)) return true;
+  return false;
+}
+/* Requested, Pending, and a hold still open before approval can change the
+   item name and the part category. Approved, Closed, Cancelled, and Flagged
+   cannot. "Open" with no approval stamp is still waiting. "Open — awaiting
+   liquidation" is already decided. */
+function lineItemEditAllowed(reserve){
+  if(!reserve||typeof reserve!=="object") return false;
+  if(lineItemDecided(reserve)) return false;
+  var st=supplierStatusKey(reserve.status);
+  if(!st) return true;
+  if(st==="requested"||st==="pending"||st==="for approval"||st==="sent for approval") return true;
+  if(st==="draft"||st.indexOf("draft ")===0) return true;
+  if(st.indexOf("requested")===0||st.indexOf("pending")>=0||st.indexOf("for approval")>=0) return true;
+  if(st==="on hold"||st==="hold"||st==="open hold"||st==="open-hold"||
+     st==="open before approve"||st==="open before approval"||/^on hold\b/.test(st)) return true;
+  if(st==="open") return true;
+  return false;
+}
+function itemAuditField(field){
+  return field==="item"||field==="cat"||field==="unit";
+}
+function lineItemChangeText(n){
+  if(!n) return "";
+  var where=n.note?String(n.note)+" · ":"";
+  var label=n.field==="cat"?"part category":n.field==="item"?"item":n.field==="unit"?"unit":(n.field||"");
+  return where+label+" "+(n.from||"—")+" → "+(n.to||"—")+" · "+(n.by||"—")+" · "+(n.at||"—");
+}
+function pushTextNote(notes, field, from, to, at, who, note){
+  var a=String(from==null?"":from).trim();
+  var b=String(to==null?"":to).trim();
+  if(a===b) return;
+  notes.push({at:at, by:who, field:field, from:a||"—", to:b||"—", note:note||""});
+}
+function lineItemMoney(line, edit, reserve, notes, at, who, where){
+  if(!line||!edit) return null;
+  if(edit.qty==null&&edit.price==null&&edit.amount==null&&(edit.liters==null||edit.liters==="")) return null;
+  var oldQty=moneyNum(line.qty);
+  var oldPrice=moneyNum(line.price);
+  var oldAmt=lineMoney(line);
+  var fuel=lineIsFuelSpend(reserve, line);
+  var litreUnit=isLitreUnit(line.unit);
+  var oldLitres=fuel?fuelLitresOf(line):0;
+  var nextQty=edit.qty!=null?moneyNum(edit.qty):oldQty;
+  var nextPrice=edit.price!=null?moneyNum(edit.price):oldPrice;
+  /* Same quantity and unit price stay put. A rounded amount sent with them
+     must not rewrite a price that does not land on exact cents. */
+  if(amountSame("qty", oldQty, nextQty)&&amountSame("price", oldPrice, nextPrice)) return null;
+  var nextAmt=edit.amount!=null?moneyRound(edit.amount):moneyRound(nextQty*nextPrice);
+  var nextLitres=oldLitres;
+  if(fuel&&litreUnit) nextLitres=nextQty;
+  else if(fuel&&edit.liters!=null&&edit.liters!=="") nextLitres=moneyNum(edit.liters);
+  var moneyTouched=!amountSame("qty", oldQty, nextQty)||!amountSame("price", oldPrice, nextPrice)||!amountSame("amount", oldAmt, nextAmt);
+  var litresTouched=fuel&&!amountSame("liters", oldLitres, nextLitres);
+  if(!moneyTouched&&!litresTouched) return null;
+  if(!(nextQty>0)) return {code:"zero", message:"Quantity has to be more than zero."};
+  if(!(nextAmt>0)) return {code:"zero", message:"Amount has to be more than zero."};
+  if(Math.round(nextQty*nextPrice*100)!==Math.round(nextAmt*100)){
+    nextPrice=priceFromAmount(nextQty, nextAmt);
+    nextAmt=moneyRound(nextQty*nextPrice);
+  }
+  if(!(nextAmt>0)) return {code:"zero", message:"Amount has to be more than zero."};
+  if(fuel&&!litreUnit&&oldLitres>0&&!(nextLitres>0)) return {code:"zero", message:"Litres has to be more than zero."};
+  pushAmountNote(notes, "qty", oldQty, nextQty, at, who, where);
+  pushAmountNote(notes, "price", oldPrice, nextPrice, at, who, where);
+  pushAmountNote(notes, "amount", oldAmt, nextAmt, at, who, where);
+  if(litresTouched){
+    var sameAsQty=amountSame("qty", oldLitres, oldQty)&&amountSame("qty", nextLitres, nextQty);
+    if(!sameAsQty) pushAmountNote(notes, "liters", oldLitres, nextLitres, at, who, where);
+  }
+  line.qty=nextQty;
+  line.price=nextPrice;
+  line.total=nextAmt;
+  if(fuel&&(litreUnit||(line.liters!=null&&line.liters!=="")||(line.litres!=null&&line.litres!=="")||nextLitres>0)){
+    line.liters=nextLitres;
+    if(line.litres!=null&&line.litres!=="") line.litres=nextLitres;
+  }
+  return null;
+}
+function planLineItemEdit(reserve, spec){
+  spec=spec||{};
+  if(!reserve) return {ok:false, code:"missing", message:"That VRF is not on the reserve log."};
+  if(!lineItemEditAllowed(reserve)){
+    return {ok:false, code:"locked", message:"Item and part category are locked once the VRF is approved, closed, cancelled, or flagged."};
+  }
+  var who=String(spec.by||"").trim();
+  if(!who) return {ok:false, code:"name", message:"Put your name on the item change."};
+  var at=String(spec.at||"").trim();
+  var lines=Array.isArray(reserve.draftLines)?reserve.draftLines:[];
+  if(!lines.length) return {ok:false, code:"missing", message:"This VRF has no lines to edit."};
+  var draft=lines.map(function(l){ return l?Object.assign({}, l):l; });
+  var byIndex={};
+  (spec.lines||[]).forEach(function(edit){
+    if(edit&&edit.index!=null) byIndex[String(edit.index)]=edit;
+  });
+  var notes=[];
+  var changed=false;
+  var bad=null;
+  Object.keys(byIndex).forEach(function(key){
+    if(bad) return;
+    var edit=byIndex[key];
+    var index=parseInt(key,10);
+    var line=draft[index];
+    if(!line){ bad={code:"missing", message:"That line is not on this VRF."}; return; }
+    var nextItem=edit.item!=null?String(edit.item).trim():String(line.item||"").trim();
+    var nextCat=edit.cat!=null?String(edit.cat).trim():String(line.cat||"").trim();
+    if(edit.item!=null&&!nextItem){ bad={code:"blank", message:"The item name cannot be blank."}; return; }
+    if(edit.cat!=null&&!nextCat){ bad={code:"blank", message:"Pick a part category."}; return; }
+    var where=lineAmountLabel(line, index);
+    var before=notes.length;
+    var oldUnit=String(line.unit==null?"":line.unit);
+    var oldLiters=line.liters;
+    var wasFuel=isFuel(line.cat);
+    pushTextNote(notes, "item", line.item, nextItem, at, who, where);
+    pushTextNote(notes, "cat", line.cat, nextCat, at, who, where);
+    line.item=nextItem;
+    line.cat=nextCat;
+    if(isFuel(line.cat)) normalizeFuelLine(line);
+    else if(wasFuel){
+      if(isLitreUnit(line.unit)||String(line.unit||"")==="liters") line.unit="pc";
+      line.liters="";
+      if(line.litres!=null&&line.litres!=="") line.litres="";
+    }
+    if(String(line.unit||"")!==oldUnit) pushTextNote(notes, "unit", oldUnit, line.unit, at, who, where);
+    var moneyErr=lineItemMoney(line, edit, reserve, notes, at, who, where);
+    if(moneyErr){ bad=moneyErr; return; }
+    if(String(oldLiters==null?"":oldLiters)!==String(line.liters==null?"":line.liters) &&
+       !notes.some(function(n){ return n.field==="liters"&&n.note===where; })){
+      pushAmountNote(notes, "liters", oldLiters||0, line.liters, at, who, where);
+    }
+    if(notes.length>before) changed=true;
+  });
+  if(bad) return {ok:false, code:bad.code, message:bad.message};
+  var nextBudget=moneyRound(vrfSpendTotal(draft));
+  if(!(nextBudget>0)){
+    nextBudget=moneyRound((draft||[]).reduce(function(a,l){ return a+lineMoney(l); },0));
+  }
+  if(changed && !amountSame("amount", reserve.budget, nextBudget)){
+    if(!(nextBudget>0)) return {ok:false, code:"zero", message:"Amount has to be more than zero."};
+    pushAmountNote(notes, "amount", reserve.budget, nextBudget, at, who, "VRF total");
+  }
+  var fuelMeta=draftFuelMeta(reserve, draft);
+  var planLitres, planPrice;
+  if(fuelMeta.any){
+    planLitres=Math.round(fuelMeta.litres*10000)/10000;
+    if(fuelMeta.pricedLitres>0) planPrice=Math.round((fuelMeta.fuelAmount/fuelMeta.pricedLitres)*10000)/10000;
+  }else if(changed && moneyNum(reserve.litres)>0) planLitres=0;
+  return {ok:true, changed:changed, notes:notes, draftLines:changed?draft:null,
+    budget:changed?nextBudget:reserve.budget,
+    litres:changed&&planLitres!==undefined?planLitres:undefined,
+    pricePerL:changed&&planPrice!=null?planPrice:undefined,
+    vrfNo:reserve.vrfNo, status:reserve.status};
+}
+function applyLineItemEdit(reserve, plan){
+  if(!reserve||!plan||!plan.ok||!plan.changed) return plan;
+  var keep={
+    vrfNo:reserve.vrfNo, status:reserve.status, fuelPrevNote:reserve.fuelPrevNote,
+    draftOdo:reserve.draftOdo, approvedBy:reserve.approvedBy,
+    approvedAt:reserve.approvedAt, approvedBudget:reserve.approvedBudget, decisionNote:reserve.decisionNote
+  };
+  if(plan.draftLines) reserve.draftLines=plan.draftLines;
+  if(plan.budget!=null) reserve.budget=plan.budget;
+  if(plan.litres!==undefined) reserve.litres=plan.litres;
+  if(plan.pricePerL!==undefined) reserve.pricePerL=plan.pricePerL;
+  reserve.audit=(reserve.audit||[]).concat(plan.notes||[]);
+  reserve.vrfNo=keep.vrfNo;
+  reserve.status=keep.status;
+  if(keep.fuelPrevNote===undefined) delete reserve.fuelPrevNote;
+  else reserve.fuelPrevNote=keep.fuelPrevNote;
+  reserve.draftOdo=keep.draftOdo;
+  reserve.approvedBy=keep.approvedBy;
+  reserve.approvedAt=keep.approvedAt;
+  reserve.approvedBudget=keep.approvedBudget;
+  reserve.decisionNote=keep.decisionNote;
+  return plan;
+}
+async function saveLineItemEdit(reserve, spec){
+  var plan=planLineItemEdit(reserve, spec);
+  if(!plan.ok){
+    var err=new Error(plan.message||"Could not change the item.");
+    err.code=plan.code;
+    throw err;
+  }
+  if(!plan.changed) return plan;
+  var backup={
+    draftLines:reserve.draftLines, audit:reserve.audit,
+    status:reserve.status, vrfNo:reserve.vrfNo, fuelPrevNote:reserve.fuelPrevNote,
+    draftOdo:reserve.draftOdo, budget:reserve.budget, litres:reserve.litres, pricePerL:reserve.pricePerL,
+    approvedBy:reserve.approvedBy, approvedAt:reserve.approvedAt,
+    approvedBudget:reserve.approvedBudget, decisionNote:reserve.decisionNote
+  };
+  applyLineItemEdit(reserve, plan);
+  try{ await saveReserves(reserve.no); }
+  catch(saveErr){
+    reserve.draftLines=backup.draftLines;
+    reserve.audit=backup.audit;
+    reserve.status=backup.status;
+    reserve.vrfNo=backup.vrfNo;
+    if(backup.fuelPrevNote===undefined) delete reserve.fuelPrevNote;
+    else reserve.fuelPrevNote=backup.fuelPrevNote;
+    reserve.draftOdo=backup.draftOdo;
+    reserve.budget=backup.budget;
+    if(backup.litres===undefined) delete reserve.litres;
+    else reserve.litres=backup.litres;
+    if(backup.pricePerL===undefined) delete reserve.pricePerL;
+    else reserve.pricePerL=backup.pricePerL;
+    reserve.approvedBy=backup.approvedBy;
+    reserve.approvedAt=backup.approvedAt;
+    reserve.approvedBudget=backup.approvedBudget;
+    reserve.decisionNote=backup.decisionNote;
+    throw saveErr;
+  }
+  _vrfs=null;
+  return plan;
+}
+function lineItemEditButton(reserve, after, opts){
+  opts=opts||{};
+  var bt=el("button", opts.small?"btn sm":"btn", "Edit item");
+  bt.type="button";
+  bt.setAttribute("data-edit-item", opts.lineIndex!=null?String(opts.lineIndex):"vrf");
+  bt.addEventListener("click",function(ev){
+    if(ev&&ev.stopPropagation) ev.stopPropagation();
+    openLineItemEdit(reserve.no, opts.lineIndex!=null?{lineIndex:opts.lineIndex}:{}, after);
+  });
+  return bt;
+}
+function openLineItemEdit(no, opts, after){
+  opts=opts||{};
+  var r=reserveBy(no);
+  if(!r){ toast("That VRF is not on the reserve log."); return; }
+  if(!lineItemEditAllowed(r)){
+    toast("Item and part category are locked once the VRF is approved, closed, cancelled, or flagged.");
+    return;
+  }
+  var all=(r.draftLines||[]).map(function(l,i){
+    if(!l) return null;
+    var cat=String(l.cat||"").trim();
+    var item=String(l.item||"").trim();
+    if(!cat&&!item&&!moneyNum(l.qty)&&!moneyNum(l.price)&&!moneyNum(l.total)) return null;
+    return {index:i, cat:cat, item:item, label:item||cat||("Line "+(i+1))};
+  }).filter(Boolean);
+  if(opts.lineIndex!=null){
+    all=all.filter(function(line){ return line.index===opts.lineIndex; });
+    if(!all.length){ toast("That line is not on this VRF."); return; }
+  }
+  if(!all.length){ toast("This VRF has no lines to edit."); return; }
+  var ex=document.getElementById("itemEditSheet"); if(ex) ex.remove();
+  var m=el("div","modal"); m.id="itemEditSheet";
+  var sheet=el("div","sheet"); sheet.style.maxWidth="720px";
+  var b=el("div"); b.style.padding="var(--space-5) var(--space-6)";
+  var title=r.vrfNo?("Edit item · VRF "+r.vrfNo):"Edit item";
+  if(all.length===1) title+=" · "+all[0].label;
+  b.appendChild(el("h3",null,title));
+  b.appendChild(el("div","hint",
+    "Changes the item name and the part category while this VRF is still for approval. Quantity and price can be corrected here too. Nothing is approved, and VRF "+
+    (r.vrfNo||"number")+" stays "+(r.status||"pending")+"."));
+  var slots=[];
+  function catSelect(val){
+    var sel=el("select");
+    sel.setAttribute("aria-label","Part category");
+    sel.appendChild(new Option("— part category —",""));
+    var seen={};
+    (S.parts||[]).forEach(function(p){
+      var c=p&&p.cat?String(p.cat):"";
+      if(!c||seen[c]) return;
+      seen[c]=1;
+      sel.appendChild(new Option(c,c));
+    });
+    ["Fuel — Diesel","Fuel — Gasoline"].forEach(function(f){
+      if(!seen[f]){ seen[f]=1; sel.appendChild(new Option(f,f)); }
+    });
+    if(val&&!seen[val]) sel.appendChild(new Option(val,val));
+    sel.value=val||"";
+    return sel;
+  }
+  function workingLines(){
+    var lines=(r.draftLines||[]).map(function(l){ return l?Object.assign({}, l):l; });
+    slots.forEach(function(s){
+      var line=lines[s.index];
+      if(!line) return;
+      line.cat=s.cat;
+      line.item=s.item;
+      line.qty=s.qty;
+      line.price=s.price;
+      line.total=moneyRound(s.qty*s.price);
+      if(isFuel(line.cat)){ line.unit="liters"; if(fuelLitersMissing(line.liters)&&fuelQtyNum(line.qty)>0) line.liters=fuelQtyNum(line.qty); }
+    });
+    return lines;
+  }
+  var totalEl=el("div","mono");
+  totalEl.setAttribute("data-item-vrf-total","1");
+  totalEl.style.cssText="margin-top:var(--space-3);font-weight:600";
+  function paintTotal(){
+    var sum=0;
+    workingLines().forEach(function(l){ sum+=lineMoney(l); });
+    totalEl.textContent="VRF total "+peso(moneyRound(sum));
+  }
+  all.forEach(function(target){
+    var src=(r.draftLines||[])[target.index]||{};
+    var slot={
+      index:target.index,
+      cat:String(src.cat||""),
+      item:String(src.item||""),
+      qty:moneyNum(src.qty),
+      price:moneyNum(src.price),
+      amount:moneyRound(lineMoney(src)),
+      unit:String(src.unit||""),
+      startedFuel:isFuel(src.cat)
+    };
+    var box=el("div"); box.style.marginTop="var(--space-3)";
+    box.appendChild(el("div",null,"Line "+(target.index+1)));
+    var grid=el("div");
+    grid.style.cssText="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:var(--space-2);margin-top:var(--space-2)";
+    function field(label, input){
+      var f=el("div","field");
+      f.appendChild(el("label",null,label));
+      f.appendChild(input);
+      grid.appendChild(f);
+      return input;
+    }
+    var catIn=catSelect(slot.cat);
+    field("Part category", catIn);
+    var itemIn=el("input");
+    itemIn.value=slot.item;
+    itemIn.placeholder="item / brand";
+    itemIn.setAttribute("aria-label","Item name");
+    field("Item", itemIn);
+    var unitIn=el("input");
+    unitIn.readOnly=true;
+    unitIn.setAttribute("aria-label","Unit");
+    field("Unit", unitIn);
+    var qtyIn=el("input"); qtyIn.inputMode="decimal"; qtyIn.autocomplete="off";
+    var priceIn=el("input"); priceIn.inputMode="decimal"; priceIn.autocomplete="off";
+    var amtIn=el("input"); amtIn.inputMode="decimal"; amtIn.autocomplete="off";
+    field("Quantity", qtyIn);
+    field("Unit price", priceIn);
+    field("Amount", amtIn);
+    var lock=false;
+    function syncUnit(){
+      var fuel=isFuel(catIn.value);
+      if(fuel){
+        unitIn.value="liters";
+        unitIn.readOnly=true;
+        unitIn.disabled=true;
+        unitIn.setAttribute("aria-readonly","true");
+        unitIn.setAttribute("data-fuel-unit","locked");
+        unitIn.title="Fuel is measured in liters";
+        unitIn.style.background="var(--grey-100)";
+        unitIn.style.cursor="not-allowed";
+      }else{
+        var next=slot.unit||"pc";
+        if(slot.startedFuel && String(slot.unit||"")==="liters") next="pc";
+        else if(String(unitIn.value||"")==="liters" && slot.startedFuel) next="pc";
+        unitIn.value=next;
+        unitIn.readOnly=true;
+        unitIn.disabled=false;
+        unitIn.removeAttribute("data-fuel-unit");
+        unitIn.title="";
+        unitIn.style.background="";
+        unitIn.style.cursor="";
+      }
+    }
+    function showMoney(){
+      lock=true;
+      qtyIn.value=trimPlainNum(slot.qty);
+      priceIn.value=trimPriceNum(slot.price);
+      amtIn.value=moneyRound(slot.amount).toFixed(2);
+      lock=false;
+    }
+    catIn.addEventListener("change",function(){
+      slot.cat=catIn.value;
+      syncUnit();
+      paintTotal();
+    });
+    itemIn.addEventListener("input",function(){ slot.item=itemIn.value; });
+    qtyIn.addEventListener("input",function(){
+      if(lock) return;
+      slot.qty=moneyNum(qtyIn.value);
+      slot.amount=moneyRound(slot.qty*slot.price);
+      lock=true; amtIn.value=slot.amount.toFixed(2); lock=false;
+      paintTotal();
+    });
+    priceIn.addEventListener("input",function(){
+      if(lock) return;
+      slot.price=moneyNum(priceIn.value);
+      slot.amount=moneyRound(slot.qty*slot.price);
+      lock=true; amtIn.value=slot.amount.toFixed(2); lock=false;
+      paintTotal();
+    });
+    amtIn.addEventListener("input",function(){
+      if(lock) return;
+      slot.amount=moneyRound(amtIn.value);
+      if(slot.qty>0) slot.price=priceFromAmount(slot.qty, slot.amount);
+      lock=true; priceIn.value=trimPriceNum(slot.price); lock=false;
+      paintTotal();
+    });
+    syncUnit();
+    showMoney();
+    box.appendChild(grid);
+    b.appendChild(box);
+    slots.push(slot);
+    if(!slots._focus) slots._focus=itemIn;
+  });
+  paintTotal();
+  b.appendChild(totalEl);
+  var byF=el("div","field"); byF.style.cssText="margin-top:var(--space-3);max-width:280px";
+  byF.appendChild(el("label",null,"Your name"));
+  var byIn=el("input"); byIn.value=signedInName(); byIn.placeholder="your name";
+  byF.appendChild(byIn); b.appendChild(byF);
+  var prior=(r.audit||[]).filter(function(n){ return n&&(itemAuditField(n.field)||amountAuditField(n.field)||n.field==="supplier"); });
+  if(prior.length){
+    var old=el("div"); old.style.marginTop="var(--space-3)";
+    old.appendChild(el("div","hint","Changes already on this VRF"));
+    prior.forEach(function(n){ old.appendChild(el("div",null,auditLineText(n))); });
+    b.appendChild(old);
+  }
+  var msg=el("div","hint"); msg.style.marginTop="var(--space-2)";
+  b.appendChild(msg);
+  var acts=el("div"); acts.style.cssText="display:flex;gap:var(--space-2);justify-content:flex-end;margin-top:var(--space-5)";
+  var back=el("button","btn","Cancel");
+  back.addEventListener("click",function(){ m.remove(); });
+  var go=el("button","btn pri","Save item");
+  go.addEventListener("click",async function(){
+    var spec={by:byIn.value.trim(), at:iso(), lines:slots.map(function(s){
+      return {index:s.index, item:s.item, cat:s.cat, qty:s.qty, price:s.price, amount:s.amount};
+    })};
+    go.disabled=true; go.textContent="Saving…";
+    var plan=null;
+    try{ plan=await saveLineItemEdit(r, spec); }
+    catch(saveErr){
+      go.disabled=false; go.textContent="Save item";
+      msg.style.color="var(--danger)";
+      msg.textContent=(saveErr&&saveErr.message)||"Could not save the item.";
+      return;
+    }
+    m.remove();
+    toast(plan.changed
+      ? ((r.vrfNo?"VRF "+r.vrfNo:"This request")+" is still "+(r.status||"pending")+" — item updated. Total "+peso(r.budget)+".")
+      : "Item and part category were not changed.");
+    if(after) after();
+  });
+  acts.appendChild(back); acts.appendChild(go);
+  b.appendChild(acts);
+  sheet.appendChild(b); m.appendChild(sheet);
+  m.addEventListener("click",function(e){ if(e.target===m) m.remove(); });
+  document.body.appendChild(m);
+  try{ (slots._focus||byIn).focus(); }catch(eFocus){}
+}
 function auditLineText(n){
   if(!n) return "";
   if(n.field==="supplier") return supplierChangeText(n);
   if(amountAuditField(n.field)) return pendingAmountText(n);
+  if(itemAuditField(n.field)) return lineItemChangeText(n);
   return (n.at||"—")+" · "+(n.by||"—")+" · "+n.field+" · "+(n.from||"—")+" → "+(n.to||"—")+(n.note?" · "+n.note:"");
 }
 function vrfAuditList(entry){
@@ -14568,11 +15088,15 @@ function openVrf(entry,tab){
   var supReserveTop=reserveForVrf(entry);
   if(waiting){
     var wait=el("div","banner warn"); wait.style.marginTop="var(--space-3)";
+    var editBits=[];
+    if(supplierEditAllowed(supReserveTop)){
+      editBits.push("Edit supplier if the shop was different");
+      editBits.push("Edit amount if the quantity or price changed");
+    }
+    if(lineItemEditAllowed(supReserveTop)) editBits.push("Edit item if the name or part category was wrong");
     wait.innerHTML="<b>Sent for approval — VRF "+esc(String(entry.vrf))+" is held.</b> "+
       "Photos can be attached now. Printing waits until this VRF is approved."+
-      (supplierEditAllowed(supReserveTop)
-        ?" Edit supplier if the shop was different, or Edit amount if the quantity or price changed — that keeps this VRF for approval."
-        :"");
+      (editBits.length?(" "+editBits.join(", ")+" — that keeps this VRF for approval."):"");
     b.appendChild(wait);
     if(tab==="liq") tab="photos";
   }
@@ -14613,6 +15137,12 @@ function openVrf(entry,tab){
       });
     });
     tabs.appendChild(edTop);
+  }
+  if(lineItemEditAllowed(supReserveTop)){
+    tabs.appendChild(lineItemEditButton(supReserveTop, function(){
+      var fresh=vrfByNo(entry.vrf)||entry;
+      openVrf(fresh, tab);
+    }));
   }
   if(supplierEditAllowed(supReserveTop)){
     tabs.appendChild(supplierEditButton(supReserveTop, function(){
@@ -14670,6 +15200,14 @@ function openVrf(entry,tab){
     var codes=entry.rows.map(function(r){ return lineWork(r); });
     var sels=[];
     var canLineSup=supplierEditAllowed(supReserveTop);
+    var canLineItem=lineItemEditAllowed(supReserveTop);
+    var canLineEdit=canLineSup||canLineItem;
+    if(!canLineItem && supReserveTop){
+      var itemLock=el("div","hint","Item name and part category are locked.");
+      itemLock.setAttribute("data-item-locked","1");
+      itemLock.style.marginBottom="var(--space-2)";
+      body.appendChild(itemLock);
+    }
     var bulk=el("div","row"); bulk.style.margin="var(--space-4) 0";
     var ball=workSelect("","— set every line to… —");
     ball.style.maxWidth="300px";
@@ -14683,7 +15221,7 @@ function openVrf(entry,tab){
 
     var wrap=el("div","scroll"), t=el("table"), th=el("thead"), hr=el("tr");
     var lineHeads=["Part category","Item on the line","Supplier","Qty","Total","Why","Job this line belongs to"];
-    if(canLineSup) lineHeads.push("");
+    if(canLineEdit) lineHeads.push("");
     lineHeads.forEach(function(x){
       var h=el("th",null,x); if(x==="Qty"||x==="Total") h.style.textAlign="right"; hr.appendChild(h); });
     th.appendChild(hr); t.appendChild(th);
@@ -14693,8 +15231,17 @@ function openVrf(entry,tab){
       var c1=el("td");
       c1.appendChild(el("div",null,normCat(r.cat)||"—"));
       if(isAmbiguous(r.cat)||!r.cat) c1.appendChild(el("span","chip mute","says nothing about the job"));
+      if(!canLineItem){
+        c1.title="Part category is locked after approval";
+        c1.setAttribute("data-item-locked","cat");
+      }
       tr.appendChild(c1);
-      tr.appendChild(el("td",null,r.item||"—"));
+      var itemTd=el("td",null,r.item||"—");
+      if(!canLineItem){
+        itemTd.title="Item name is locked after approval";
+        itemTd.setAttribute("data-item-locked","item");
+      }
+      tr.appendChild(itemTd);
       tr.appendChild(el("td",null,r.supplier||"—"));
       tr.appendChild(el("td","num",lineWasNotPurchased(r)?"0.00":(r.qty!=null?nnum(r.qty,2):"—")));
       tr.appendChild(el("td","num",lineWasNotPurchased(r)?peso(0):(r.total!=null?peso(r.total):"—")));
@@ -14703,18 +15250,26 @@ function openVrf(entry,tab){
       var sl=workSelect(codes[i],"— unclassified —");
       sl.addEventListener("change",function(){ codes[i]=sl.value; });
       sels.push(sl); c6.appendChild(sl); tr.appendChild(c6);
-      if(canLineSup){
+      if(canLineEdit){
         var lineIdx=draftLineIndexForRow(supReserveTop, r);
         var cSup=el("td");
         var cRow=el("div"); cRow.style.cssText="display:flex;gap:4px;flex-wrap:wrap";
-        cRow.appendChild(supplierEditButton(supReserveTop, function(){
-          var fresh=vrfByNo(entry.vrf)||entry;
-          openVrf(fresh, "lines");
-        }, lineIdx<0?{small:true}:{small:true, lineIndex:lineIdx}));
-        cRow.appendChild(amountEditButton(supReserveTop, function(){
-          var fresh=vrfByNo(entry.vrf)||entry;
-          openVrf(fresh, "lines");
-        }, lineIdx<0?{small:true}:{small:true, lineIndex:lineIdx}));
+        if(canLineItem){
+          cRow.appendChild(lineItemEditButton(supReserveTop, function(){
+            var fresh=vrfByNo(entry.vrf)||entry;
+            openVrf(fresh, "lines");
+          }, lineIdx<0?{small:true}:{small:true, lineIndex:lineIdx}));
+        }
+        if(canLineSup){
+          cRow.appendChild(supplierEditButton(supReserveTop, function(){
+            var fresh=vrfByNo(entry.vrf)||entry;
+            openVrf(fresh, "lines");
+          }, lineIdx<0?{small:true}:{small:true, lineIndex:lineIdx}));
+          cRow.appendChild(amountEditButton(supReserveTop, function(){
+            var fresh=vrfByNo(entry.vrf)||entry;
+            openVrf(fresh, "lines");
+          }, lineIdx<0?{small:true}:{small:true, lineIndex:lineIdx}));
+        }
         cSup.appendChild(cRow);
         tr.appendChild(cSup);
       }
