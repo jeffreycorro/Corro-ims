@@ -9,14 +9,16 @@
  * The schedule opens on today's interviews (Asia/Manila). Another date,
  * All dates, or Unscheduled is one click. A name that is not on the
  * pipeline can be typed in and is added there.
+ * Open roles, re-applicants, and per-position metrics read the same
+ * applicant and role records. A manpower request is stored on the role.
  */
 (function (root) {
   "use strict";
 
-  if (root.hrRecruit && root.hrRecruit.version === "1.9.0") return;
+  if (root.hrRecruit && root.hrRecruit.version === "1.10.0") return;
 
   var api = {
-    version: "1.9.0",
+    version: "1.10.0",
     attached: false,
     openAppId: "",
     roleFilter: "",
@@ -1638,6 +1640,7 @@
         if (opts && isApplicantEditorModal(opts)) {
           injectStaffNotesPanel();
           injectSchedulePanel();
+          injectReapplicantEditorNote();
         }
       } catch (e) {}
       return out;
@@ -2465,6 +2468,7 @@
           h +=
             '<tr data-hr-iv-day=""><td class="nm">' +
             esc(a.name || "(no name)") +
+            reapplicantBadgeHtml(a) +
             "</td><td>" +
             esc(stageText(a.stage)) +
             '</td><td><button class="btn sm" type="button" data-open-app="' +
@@ -2477,6 +2481,7 @@
           esc(day) +
           '"><td class="nm">' +
           esc(a.name || "(no name)") +
+          reapplicantBadgeHtml(a) +
           (iv.notes
             ? '<div style="font-size:11px;color:var(--ink3);font-weight:400">' + esc(iv.notes) + "</div>"
             : "") +
@@ -2573,6 +2578,7 @@
   }
 
   function initialInterviewsHtml() {
+    clearReappMap();
     var roles = rolesMap();
     var scheduledTotal = applicantList().filter(function (a) {
       return !!normalizeInitialInterview(a && a.initialInterview);
@@ -3077,6 +3083,1428 @@
     return document.getElementById("hr-recruit-iv-panel");
   }
 
+  var WEEK_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  var WEEK_LONG = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  var SHOWED_STATUS = { "Done/Passed": true, Failed: true };
+
+  function identityNameKey(name) {
+    var d = dedupe();
+    if (typeof d.nameKey === "function") return d.nameKey(name);
+    return String(name || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .sort()
+      .join("|");
+  }
+
+  function identityEmailKey(email) {
+    var d = dedupe();
+    if (typeof d.emailKey === "function") return d.emailKey(email);
+    var s = String(email || "").trim().toLowerCase();
+    if (!s || s.indexOf("@") < 1) return "";
+    return s;
+  }
+
+  function identityPhoneKey(phone) {
+    var d = dedupe();
+    if (typeof d.phoneKey === "function") return d.phoneKey(phone);
+    var digits = String(phone || "").replace(/\D/g, "");
+    if (digits.length >= 10) return digits.slice(-10);
+    if (digits.length >= 7) return digits;
+    return "";
+  }
+
+  function isoDate(value) {
+    var m = String(value == null ? "" : value).trim().match(/^(\d{4}-\d{2}-\d{2})/);
+    if (!m || !isIsoDate(m[1])) return "";
+    return m[1];
+  }
+
+  function daysBetween(start, end) {
+    var a = isoDate(start);
+    var b = isoDate(end);
+    if (!a || !b) return null;
+    var ap = a.split("-");
+    var bp = b.split("-");
+    var utcA = Date.UTC(Number(ap[0]), Number(ap[1]) - 1, Number(ap[2]));
+    var utcB = Date.UTC(Number(bp[0]), Number(bp[1]) - 1, Number(bp[2]));
+    return Math.round((utcB - utcA) / 86400000);
+  }
+
+  function formatIsoLong(iso) {
+    var m = String(isoDate(iso)).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return "";
+    var mon = WHEN_MONTHS[Number(m[2]) - 1] || m[2];
+    return Number(m[3]) + " " + mon + " " + m[1];
+  }
+
+  function openForLabel(days) {
+    if (days == null) return "—";
+    if (days < 0) return "not open yet";
+    if (days === 0) return "opened today";
+    if (days === 1) return "1 day";
+    return days + " days";
+  }
+
+  function hireSpanLabel(days) {
+    if (days == null) return "—";
+    if (days <= 0) return "same day";
+    if (days === 1) return "1 day";
+    return days + " days";
+  }
+
+  function averageDays(list) {
+    if (!list || !list.length) return null;
+    var sum = 0;
+    var i;
+    for (i = 0; i < list.length; i += 1) sum += list[i];
+    return Math.round(sum / list.length);
+  }
+
+  function weekdayIndex(iso) {
+    var d = isoDate(iso);
+    if (!d) return -1;
+    var p = d.split("-");
+    return new Date(Date.UTC(Number(p[0]), Number(p[1]) - 1, Number(p[2]))).getUTCDay();
+  }
+
+  function blankWeek() {
+    return [0, 0, 0, 0, 0, 0, 0];
+  }
+
+  function cloneRole(role) {
+    var next = {};
+    Object.keys(role || {}).forEach(function (k) {
+      next[k] = role[k];
+    });
+    return next;
+  }
+
+  function isHiredApplicant(a) {
+    if (!a) return false;
+    if (canonicalStage(a.stage) === "Hired") return true;
+    return !!String(a.hiredEmpId || "").trim();
+  }
+
+  function hireDateOf(a) {
+    var direct = isoDate(a && (a.hiredOn || a.dateHired));
+    if (direct) return direct;
+    var id = a && a.hiredEmpId;
+    var S = store();
+    var emp = id && S && S.employees ? S.employees[id] : null;
+    return isoDate(emp && emp.dateHired);
+  }
+
+  function isFinalType(interview) {
+    var t = String((interview && interview.type) || "")
+      .trim()
+      .toLowerCase();
+    return t === "final" || t.indexOf("final interview") >= 0;
+  }
+
+  function initialOf(a) {
+    return normalizeInitialInterview(a && a.initialInterview);
+  }
+
+  function finalOf(a) {
+    return normalizeInitialInterview(a && a.finalInterview);
+  }
+
+  function applicantFinalScheduled(a) {
+    if (!a) return false;
+    if (finalOf(a)) return true;
+    var interviews = a.interviews || [];
+    var i;
+    for (i = 0; i < interviews.length; i += 1) {
+      if (isFinalType(interviews[i])) return true;
+    }
+    var stage = canonicalStage(a.stage);
+    return stage === "Final Interview" || stage === "Offer";
+  }
+
+  function applicantFinalShowed(a) {
+    if (!a) return false;
+    var fv = finalOf(a);
+    if (fv && SHOWED_STATUS[fv.status]) return true;
+    var interviews = a.interviews || [];
+    var i;
+    for (i = 0; i < interviews.length; i += 1) {
+      if (isFinalType(interviews[i]) && isoDate(interviews[i].date)) return true;
+    }
+    return canonicalStage(a.stage) === "Offer";
+  }
+
+  function applicantShowed(a) {
+    var iv = initialOf(a);
+    if (iv && SHOWED_STATUS[iv.status]) return true;
+    return applicantFinalShowed(a);
+  }
+
+  function showUpDates(a) {
+    var seen = Object.create(null);
+    var out = [];
+    function add(value) {
+      var d = isoDate(value);
+      if (!d || seen[d]) return;
+      seen[d] = true;
+      out.push(d);
+    }
+    var iv = initialOf(a);
+    if (iv && SHOWED_STATUS[iv.status]) add(iv.at);
+    var fv = finalOf(a);
+    if (fv && SHOWED_STATUS[fv.status]) add(fv.at);
+    (a && a.interviews ? a.interviews : []).forEach(function (n) {
+      if (isFinalType(n)) add(n.date);
+    });
+    return out;
+  }
+
+  function earliestApplied(list) {
+    var best = "";
+    (list || []).forEach(function (a) {
+      var d = isoDate(a && a.appliedOn);
+      if (d && (!best || d < best)) best = d;
+    });
+    return best;
+  }
+
+  function isOpenRole(role) {
+    return String((role && role.status) || "") === "Open";
+  }
+
+  function roleRecords() {
+    var roles = rolesMap();
+    return Object.keys(roles)
+      .map(function (id) {
+        var role = roles[id];
+        if (!role) return null;
+        if (!role.id) role.id = id;
+        return role;
+      })
+      .filter(Boolean);
+  }
+
+  function positionBuckets() {
+    var roles = rolesMap();
+    var map = Object.create(null);
+    var order = [];
+    function ensure(key, title, dept, role) {
+      if (!map[key]) {
+        map[key] = {
+          key: key,
+          title: title || "Untitled role",
+          dept: dept || "",
+          role: role || null,
+          applicants: [],
+        };
+        order.push(map[key]);
+      } else if (role && !map[key].role) map[key].role = role;
+      return map[key];
+    }
+    roleRecords().forEach(function (role) {
+      ensure(String(role.id), role.title, role.dept, role);
+    });
+    applicantList().forEach(function (a) {
+      var key = roleFilterKey(a, roles);
+      if (!map[key]) {
+        ensure(
+          key,
+          displayRoleTitle(a, roles) || "No position on the application",
+          (a && a.dept) || "",
+          roles[key] || null
+        );
+      }
+      map[key].applicants.push(a);
+    });
+    return order.filter(function (bucket) {
+      return bucket.applicants.length || isOpenRole(bucket.role);
+    });
+  }
+
+  function recruitmentSpan(bucket) {
+    var role = bucket && bucket.role;
+    var explicit = isoDate(role && role.openedOn);
+    var inferred = earliestApplied(bucket && bucket.applicants);
+    var start = explicit || inferred;
+    var end = today();
+    var status = String((role && role.status) || "");
+    if (status === "Filled" || status === "Closed") {
+      var hires = [];
+      (bucket.applicants || []).forEach(function (a) {
+        if (!isHiredApplicant(a)) return;
+        var d = hireDateOf(a);
+        if (d) hires.push(d);
+      });
+      hires.sort();
+      if (isoDate(role && role.closedOn)) end = isoDate(role.closedOn);
+      else if (hires.length) end = hires[hires.length - 1];
+    }
+    return {
+      start: start,
+      end: start ? end : "",
+      days: start ? daysBetween(start, end) : null,
+      explicit: !!explicit,
+      inferred: !explicit && !!inferred,
+    };
+  }
+
+  function timeToHireList(applicants) {
+    var out = [];
+    (applicants || []).forEach(function (a) {
+      if (!isHiredApplicant(a)) return;
+      var applied = isoDate(a.appliedOn);
+      var hired = hireDateOf(a);
+      if (!applied || !hired) return;
+      var days = daysBetween(applied, hired);
+      if (days == null || days < 0) return;
+      out.push(days);
+    });
+    return out;
+  }
+
+  function funnelSteps(counts) {
+    return [
+      { key: "applied", label: "Applied", n: counts.applied },
+      { key: "initialScheduled", label: "Scheduled for initial", n: counts.initialScheduled },
+      { key: "initialShowed", label: "Showed for initial", n: counts.initialShowed },
+      { key: "finalScheduled", label: "Scheduled for final", n: counts.finalScheduled },
+      { key: "finalShowed", label: "Showed for final", n: counts.finalShowed },
+      { key: "hired", label: "Hired", n: counts.hired },
+    ];
+  }
+
+  function leakOf(steps) {
+    var best = null;
+    var i;
+    for (i = 1; i < steps.length; i += 1) {
+      var lost = steps[i - 1].n - steps[i].n;
+      if (lost <= 0) continue;
+      if (!best || lost > best.lost) {
+        best = {
+          from: steps[i - 1].label,
+          to: steps[i].label,
+          fromKey: steps[i - 1].key,
+          toKey: steps[i].key,
+          fromN: steps[i - 1].n,
+          toN: steps[i].n,
+          lost: lost,
+        };
+      }
+    }
+    return best;
+  }
+
+  function improvementText(m) {
+    if (!m || !m.applied) {
+      return "No applications yet. The funnel starts once someone is logged against this position.";
+    }
+    var parts = [];
+    if (m.leak && m.leak.lost) {
+      var rate = m.leak.fromN ? Math.round((m.leak.toN / m.leak.fromN) * 100) : 0;
+      parts.push(
+        m.leak.lost +
+          (m.leak.lost === 1 ? " person drops" : " people drop") +
+          " off between " +
+          m.leak.from.toLowerCase() +
+          " and " +
+          m.leak.to.toLowerCase() +
+          " (" +
+          rate +
+          "% continue). That is where this position loses people."
+      );
+      if (m.leak.toKey === "initialShowed") {
+        parts.push(
+          "Confirm the appointment the day before" +
+            (m.showDay && m.showDay.label
+              ? ", and offer " + m.showDay.label + " — that is when people already show up."
+              : ".")
+        );
+      } else if (m.leak.toKey === "initialScheduled") {
+        parts.push("Applications are waiting before an initial interview is set.");
+      } else if (m.leak.toKey === "finalScheduled") {
+        parts.push("People who pass the initial interview are not being moved to a final interview.");
+      } else if (m.leak.toKey === "finalShowed" || m.leak.toKey === "hired") {
+        parts.push("People who reach this step are not being taken on. Review the interview result and the offer.");
+      }
+    } else if (m.hired) {
+      parts.push("No step on record is losing people. Keep the same path on the next opening.");
+    } else {
+      parts.push("The dates on file do not show a drop yet. Set interview results so show-up can be measured.");
+    }
+    if (m.hired > m.finalShowed) {
+      var gap = m.hired - m.finalShowed;
+      parts.push(
+        gap +
+          (gap === 1 ? " hire has" : " hires have") +
+          " no final interview on the record, so that step is only partly measured."
+      );
+    }
+    if (m.span && m.span.days != null && m.span.days >= 21 && !m.hired && isOpenRole(m.role)) {
+      parts.push("The role has been open " + m.span.days + " days with no hire.");
+    }
+    return parts.join(" ");
+  }
+
+  function modeWeekday(week) {
+    var best = 0;
+    var days = [];
+    var i;
+    for (i = 0; i < 7; i += 1) {
+      if (week[i] > best) {
+        best = week[i];
+        days = [i];
+      } else if (week[i] === best && best > 0) days.push(i);
+    }
+    if (!best) return { label: "", short: "", count: 0, days: [] };
+    return {
+      label: days
+        .map(function (d) {
+          return WEEK_LONG[d];
+        })
+        .join(" and "),
+      short: days
+        .map(function (d) {
+          return WEEK_SHORT[d];
+        })
+        .join(", "),
+      count: best,
+      days: days,
+    };
+  }
+
+  function positionMetrics(bucket) {
+    var applicants = (bucket && bucket.applicants) || [];
+    var counts = {
+      applied: applicants.length,
+      initialScheduled: 0,
+      initialShowed: 0,
+      initialNoShow: 0,
+      finalScheduled: 0,
+      finalShowed: 0,
+      showed: 0,
+      hired: 0,
+    };
+    var week = blankWeek();
+    applicants.forEach(function (a) {
+      var iv = initialOf(a);
+      if (iv) {
+        counts.initialScheduled += 1;
+        if (SHOWED_STATUS[iv.status]) counts.initialShowed += 1;
+        if (iv.status === "No-show") counts.initialNoShow += 1;
+      }
+      if (applicantFinalScheduled(a)) counts.finalScheduled += 1;
+      if (applicantFinalShowed(a)) counts.finalShowed += 1;
+      if (applicantShowed(a)) counts.showed += 1;
+      if (isHiredApplicant(a)) counts.hired += 1;
+      showUpDates(a).forEach(function (d) {
+        var idx = weekdayIndex(d);
+        if (idx >= 0) week[idx] += 1;
+      });
+    });
+    var hireDays = timeToHireList(applicants);
+    var steps = funnelSteps(counts);
+    var metrics = {
+      key: bucket.key,
+      title: bucket.title,
+      dept: bucket.dept,
+      role: bucket.role,
+      status: (bucket.role && bucket.role.status) || "",
+      applied: counts.applied,
+      initialScheduled: counts.initialScheduled,
+      initialShowed: counts.initialShowed,
+      initialNoShow: counts.initialNoShow,
+      finalScheduled: counts.finalScheduled,
+      finalShowed: counts.finalShowed,
+      showed: counts.showed,
+      hired: counts.hired,
+      span: recruitmentSpan(bucket),
+      avgHire: averageDays(hireDays),
+      hireSamples: hireDays.length,
+      hireDayList: hireDays,
+      week: week,
+      showDay: modeWeekday(week),
+      steps: steps,
+      leak: leakOf(steps),
+    };
+    metrics.improvement = improvementText(metrics);
+    return metrics;
+  }
+
+  function metricsReport() {
+    var rows = positionBuckets()
+      .map(positionMetrics)
+      .sort(function (a, b) {
+        var ao = isOpenRole(a.role) ? 0 : 1;
+        var bo = isOpenRole(b.role) ? 0 : 1;
+        if (ao !== bo) return ao - bo;
+        return String(a.dept || "").localeCompare(String(b.dept || "")) || String(a.title || "").localeCompare(String(b.title || ""));
+      });
+    var summary = {
+      positions: rows.length,
+      applied: 0,
+      initialScheduled: 0,
+      showed: 0,
+      hired: 0,
+      week: blankWeek(),
+      hireDayList: [],
+    };
+    var biggest = null;
+    rows.forEach(function (m) {
+      summary.applied += m.applied;
+      summary.initialScheduled += m.initialScheduled;
+      summary.showed += m.showed;
+      summary.hired += m.hired;
+      summary.hireDayList = summary.hireDayList.concat(m.hireDayList);
+      m.week.forEach(function (n, i) {
+        summary.week[i] += n;
+      });
+      if (m.leak && (!biggest || m.leak.lost > biggest.leak.lost)) biggest = m;
+    });
+    summary.avgHire = averageDays(summary.hireDayList);
+    summary.showDay = modeWeekday(summary.week);
+    summary.biggest = biggest;
+    return { rows: rows, summary: summary };
+  }
+
+  function safeUrl(link) {
+    var s = String(link || "").trim();
+    if (/^https?:\/\//i.test(s)) return s;
+    return "";
+  }
+
+  function normalizeManpowerRequest(raw) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+    var title = String(raw.title || "").trim();
+    var link = String(raw.link || raw.url || "").trim();
+    var ref = String(raw.ref || raw.number || raw.formNo || "").trim();
+    var note = String(raw.note || raw.notes || "").trim();
+    var attachedOn = isoDate(raw.attachedOn || raw.date);
+    if (!title && !link && !ref && !note) return null;
+    return {
+      title: title || "Manpower request",
+      link: link,
+      ref: ref,
+      note: note,
+      attachedOn: attachedOn,
+    };
+  }
+
+  function registerManpower(role) {
+    if (!role) return null;
+    var S = store() || {};
+    var docs = S.docreg || {};
+    var wanted = String(role.manpowerRequestId || role.mrfId || "");
+    var fallback = null;
+    var id;
+    for (id in docs) {
+      if (!Object.prototype.hasOwnProperty.call(docs, id)) continue;
+      var doc = docs[id];
+      if (!doc) continue;
+      var title = String(doc.title || "");
+      var moduleName = String(doc.module || "");
+      var isMrf = moduleName === "mrf" || moduleName === "manpower" || /manpower request/i.test(title);
+      if (!isMrf && wanted && (doc.id === wanted || id === wanted)) isMrf = true;
+      if (!isMrf) continue;
+      if (wanted && (id === wanted || doc.id === wanted)) return doc;
+      if (doc.refId === role.id || doc.roleId === role.id) return doc;
+      if (
+        !fallback &&
+        role.title &&
+        title.toLowerCase().indexOf(String(role.title).toLowerCase()) >= 0
+      ) {
+        fallback = doc;
+      }
+    }
+    return fallback;
+  }
+
+  function manpowerFromRegister(doc) {
+    if (!doc) return null;
+    return normalizeManpowerRequest({
+      title: doc.title || "Manpower request",
+      link: doc.link || doc.url || doc.fileUrl || "",
+      ref: doc.no || doc.ref || "",
+      note: doc.note || "",
+      attachedOn: doc.date || doc.attachedOn || "",
+    });
+  }
+
+  function manpowerRequestOf(role) {
+    var direct = normalizeManpowerRequest(role && role.manpowerRequest);
+    if (direct) return direct;
+    return manpowerFromRegister(registerManpower(role));
+  }
+
+  function manpowerFromFields(fields) {
+    fields = fields || {};
+    var link = String(fields.link || "").trim();
+    var ref = String(fields.ref || "").trim();
+    var note = String(fields.note || "").trim();
+    var title = String(fields.title || "").trim();
+    if (link && !safeUrl(link)) return { ok: false, error: "link" };
+    if (!link && !ref && !note) return { ok: false, error: "empty" };
+    return {
+      ok: true,
+      request: {
+        title: title || "Manpower request",
+        link: link,
+        ref: ref,
+        note: note,
+        attachedOn: isoDate(fields.attachedOn),
+      },
+    };
+  }
+
+  function mrfError(kind) {
+    if (kind === "link") return "The form link has to start with http:// or https://.";
+    if (kind === "empty") return "Add the form link or its number.";
+    if (kind === "missing") return "That role is not on file.";
+    return "Could not save the manpower request.";
+  }
+
+  async function commitRole(roleId, next) {
+    var S = store();
+    if (!S || !S.roles || !S.roles[roleId]) return { ok: false, error: "missing" };
+    S.roles[roleId] = next;
+    var saved = true;
+    if (typeof root.put === "function") saved = await root.put("roles", roleId, next);
+    if (saved === false) return { ok: false, error: "save", role: next, local: true };
+    return { ok: true, role: next };
+  }
+
+  async function saveOpenedOn(roleId, value) {
+    var S = store();
+    var cur = S && S.roles ? S.roles[roleId] : null;
+    if (!cur) return { ok: false, error: "missing" };
+    var date = String(value || "").trim();
+    if (date && !isoDate(date)) {
+      toast("Use a real date for when the role opened.", "err");
+      return { ok: false, error: "date" };
+    }
+    date = date ? isoDate(date) : "";
+    if (String(cur.openedOn || "") === date) return { ok: true, unchanged: true, role: cur };
+    var next = cloneRole(cur);
+    if (date) next.openedOn = date;
+    else delete next.openedOn;
+    var result = await commitRole(roleId, next);
+    if (!result.ok && result.error === "missing") {
+      toast(mrfError("missing"), "err");
+      return result;
+    }
+    if (result.ok) toast(date ? "Opened date saved." : "Opened date cleared.", "ok");
+    if (typeof root.render === "function") root.render();
+    return result;
+  }
+
+  async function saveManpowerRequest(roleId, fields) {
+    var S = store();
+    var cur = S && S.roles ? S.roles[roleId] : null;
+    if (!cur) return { ok: false, error: "missing" };
+    var next = cloneRole(cur);
+    if (fields == null) {
+      delete next.manpowerRequest;
+      delete next.manpowerRequestId;
+      delete next.mrfId;
+    } else {
+      var built = manpowerFromFields(fields);
+      if (!built.ok) return built;
+      next.manpowerRequest = built.request;
+    }
+    return commitRole(roleId, next);
+  }
+
+  function parentOf(parents, id) {
+    var guard = 0;
+    while (parents[id] !== id && guard < 10000) {
+      parents[id] = parents[parents[id]];
+      id = parents[id];
+      guard += 1;
+    }
+    return id;
+  }
+
+  function unionIds(parents, a, b) {
+    if (!a || !b) return;
+    var pa = parentOf(parents, a);
+    var pb = parentOf(parents, b);
+    if (pa !== pb) parents[pb] = pa;
+  }
+
+  function reapplicantReason(recs) {
+    var names = Object.create(null);
+    var emails = Object.create(null);
+    var phones = Object.create(null);
+    recs.forEach(function (a) {
+      var nk = identityNameKey(a && a.name);
+      var ek = identityEmailKey(a && a.email);
+      var pk = identityPhoneKey(a && (a.mobile || a.phone));
+      if (nk) names[nk] = true;
+      if (ek) emails[ek] = true;
+      if (pk) phones[pk] = true;
+    });
+    var bits = [];
+    var nameN = Object.keys(names).length;
+    if (nameN === 1) bits.push("same name");
+    if (Object.keys(emails).length === 1) bits.push("same email");
+    if (Object.keys(phones).length === 1) bits.push("same mobile");
+    if (!bits.length) bits.push("similar names");
+    return bits.join(", ");
+  }
+
+  function reapplicantGroups(list) {
+    var rows = (list || applicantList()).filter(function (a) {
+      return a && (a.id || a.name || a.email || a.mobile);
+    });
+    var parents = Object.create(null);
+    var ids = rows.map(function (a, i) {
+      var id = String(a.id || "idx:" + i);
+      parents[id] = id;
+      return id;
+    });
+    var byName = Object.create(null);
+    var byEmail = Object.create(null);
+    var byPhone = Object.create(null);
+    rows.forEach(function (a, i) {
+      var id = ids[i];
+      var nk = identityNameKey(a.name);
+      var ek = identityEmailKey(a.email);
+      var pk = identityPhoneKey(a.mobile || a.phone);
+      if (nk) {
+        if (byName[nk]) unionIds(parents, byName[nk], id);
+        else byName[nk] = id;
+      }
+      if (ek) {
+        if (byEmail[ek]) unionIds(parents, byEmail[ek], id);
+        else byEmail[ek] = id;
+      }
+      if (pk) {
+        if (byPhone[pk]) unionIds(parents, byPhone[pk], id);
+        else byPhone[pk] = id;
+      }
+    });
+    var nameKeys = Object.keys(byName);
+    nameKeys.forEach(function (aKey) {
+      nameKeys.forEach(function (bKey) {
+        if (aKey >= bKey) return;
+        var aTok = aKey.split("|");
+        var bTok = bKey.split("|");
+        var small = aTok.length < bTok.length ? aTok : bTok;
+        var large = aTok.length < bTok.length ? bTok : aTok;
+        if (small.length < 2 || small.length === large.length) return;
+        var subset = small.every(function (token) {
+          return large.indexOf(token) >= 0;
+        });
+        if (subset) unionIds(parents, byName[aKey], byName[bKey]);
+      });
+    });
+    var buckets = Object.create(null);
+    rows.forEach(function (a, i) {
+      var rootId = parentOf(parents, ids[i]);
+      (buckets[rootId] = buckets[rootId] || []).push(a);
+    });
+    var groups = [];
+    Object.keys(buckets).forEach(function (rootId) {
+      var recs = buckets[rootId];
+      if (recs.length < 2) return;
+      recs.sort(function (a, b) {
+        return String(a.appliedOn || "").localeCompare(String(b.appliedOn || "")) || String(a.id || "").localeCompare(String(b.id || ""));
+      });
+      var name = "";
+      recs.forEach(function (a) {
+        var n = String(a.name || "").trim();
+        if (n.length > name.length) name = n;
+      });
+      groups.push({
+        key: rootId,
+        name: name || "Unnamed applicant",
+        reason: reapplicantReason(recs),
+        applicants: recs,
+      });
+    });
+    groups.sort(function (a, b) {
+      return b.applicants.length - a.applicants.length || String(a.name).localeCompare(String(b.name));
+    });
+    return groups;
+  }
+
+  function reapplicantCount() {
+    return reapplicantGroups().length;
+  }
+
+  function reapplicantMap() {
+    if (api.__reappMap) return api.__reappMap;
+    var map = Object.create(null);
+    reapplicantGroups().forEach(function (g) {
+      g.applicants.forEach(function (a) {
+        if (a && a.id) map[a.id] = g;
+      });
+    });
+    api.__reappMap = map;
+    return map;
+  }
+
+  function clearReappMap() {
+    api.__reappMap = null;
+  }
+
+  function reapplicantBadgeHtml(a) {
+    if (!a || !a.id) return "";
+    var g = reapplicantMap()[a.id];
+    if (!g) return "";
+    var n = g.applicants.length;
+    return (
+      ' <span class="pill warn" data-hr-reapp="' +
+      esc(a.id) +
+      '" title="' +
+      esc(n + " applications on file. " + (g.reason || "")) +
+      '">Re-applicant · ' +
+      n +
+      "</span>"
+    );
+  }
+
+  function tileHtml(value, label, sub, sev) {
+    return (
+      '<div class="tile ' +
+      esc(sev || "") +
+      '"><div class="v">' +
+      esc(value) +
+      '</div><div class="k">' +
+      esc(label) +
+      "</div>" +
+      (sub ? '<div class="sub">' + esc(sub) + "</div>" : "") +
+      "</div>"
+    );
+  }
+
+  function manpowerCellHtml(role) {
+    var mrf = manpowerRequestOf(role);
+    var button =
+      '<button type="button" class="btn sm" data-hr-mrf="' +
+      esc(role.id) +
+      '">' +
+      (mrf ? "Change" : "Attach form") +
+      "</button>";
+    if (!mrf) return button + '<div class="lbl">No manpower request on this role yet.</div>';
+    var url = safeUrl(mrf.link);
+    var label = esc(mrf.title || "Manpower request");
+    if (mrf.ref) label += ' <span class="mono">' + esc(mrf.ref) + "</span>";
+    var body = url
+      ? '<a href="' + esc(url) + '" target="_blank" rel="noopener">' + label + "</a>"
+      : label;
+    if (mrf.attachedOn) body += '<div class="lbl">' + esc(formatIsoLong(mrf.attachedOn)) + "</div>";
+    if (mrf.note) body += '<div class="lbl">' + esc(mrf.note) + "</div>";
+    return body + '<div style="margin-top:6px">' + button + "</div>";
+  }
+
+  function openForCell(metrics) {
+    var span = metrics && metrics.span;
+    if (!span || span.days == null) return "—";
+    var text = openForLabel(span.days);
+    if (span.inferred) text += '<div class="lbl">from the first application</div>';
+    return text;
+  }
+
+  function showedTitle(metrics) {
+    var bits = [];
+    if (metrics.initialNoShow) bits.push(metrics.initialNoShow + " no-show");
+    var waiting = metrics.initialScheduled - metrics.initialShowed - metrics.initialNoShow;
+    if (waiting > 0) bits.push(waiting + " still scheduled or moved");
+    return bits.join(", ");
+  }
+
+  function openRolesHtml() {
+    clearReappMap();
+    var byKey = Object.create(null);
+    metricsReport().rows.forEach(function (m) {
+      byKey[m.key] = m;
+    });
+    var rows = roleRecords()
+      .filter(isOpenRole)
+      .map(function (role) {
+        return {
+          role: role,
+          metrics:
+            byKey[String(role.id)] ||
+            positionMetrics({
+              key: String(role.id),
+              title: role.title,
+              dept: role.dept,
+              role: role,
+              applicants: [],
+            }),
+        };
+      })
+      .sort(function (a, b) {
+        return (
+          String(a.role.dept || "").localeCompare(String(b.role.dept || "")) ||
+          String(a.role.title || "").localeCompare(String(b.role.title || ""))
+        );
+      });
+    var withForm = rows.filter(function (row) {
+      return !!manpowerRequestOf(row.role);
+    }).length;
+    var reN = reapplicantCount();
+    var h =
+      '<div id="hr-open-roles">' +
+      '<div class="note">Open roles are the ones marked Open on the role. Days open use the date saved here. If that date is blank, the count uses the first application and says so. Showed up means the initial interview is Done/Passed or Failed, or a final interview was actually held. Hired is the Hired stage or an application already linked to a 201 file. There is no manpower-request form in the portal, so attach the Drive link or the form number.</div>' +
+      '<div class="strip">' +
+      tileHtml(rows.length, "Open roles", "currently hiring", rows.length ? "acc" : "ok") +
+      tileHtml(withForm, "Manpower request attached", rows.length - withForm + " still to attach", withForm && withForm === rows.length ? "ok" : "warn") +
+      tileHtml(reN, "Re-applicants", "people who applied more than once", reN ? "warn" : "ok") +
+      "</div>";
+    if (!rows.length) {
+      return (
+        h +
+        '<div class="card"><div class="empty">No role is marked Open. Set the status on Roles when hiring starts.</div></div></div>'
+      );
+    }
+    h +=
+      '<div class="sect-h"><h2>Current open roles</h2><span class="rule"></span></div>' +
+      '<div class="card"><div class="tw"><table><thead><tr>' +
+      "<th>Role</th><th>Opened</th><th>Manpower request</th><th>Open for</th>" +
+      '<th class="num">Initial scheduled</th><th class="num">Initial showed</th>' +
+      '<th class="num">Final scheduled</th><th class="num">Final showed</th><th class="num">Hired</th>' +
+      "</tr></thead><tbody>";
+    rows.forEach(function (row) {
+      var role = row.role;
+      var m = row.metrics;
+      var opened = isoDate(role.openedOn);
+      h +=
+        '<tr data-hr-open-role="' +
+        esc(role.id) +
+        '"><td class="nm">' +
+        esc(role.title || "Untitled role") +
+        '<div class="lbl">' +
+        esc(role.dept || "No department") +
+        " · headcount " +
+        esc(String(role.headcount || 1)) +
+        "</div></td><td>" +
+        '<input type="date" data-hr-opened="' +
+        esc(role.id) +
+        '" value="' +
+        esc(opened) +
+        '" aria-label="Date ' +
+        esc(role.title || "this role") +
+        ' opened">' +
+        (m.span && m.span.inferred
+          ? '<div class="lbl">First application ' + esc(formatIsoLong(m.span.start)) + ". Set the opened date to keep it.</div>"
+          : "") +
+        "</td><td>" +
+        manpowerCellHtml(role) +
+        "</td><td>" +
+        openForCell(m) +
+        '</td><td class="num">' +
+        m.initialScheduled +
+        '</td><td class="num"' +
+        (showedTitle(m) ? ' title="' + esc(showedTitle(m)) + '"' : "") +
+        ">" +
+        m.initialShowed +
+        '</td><td class="num">' +
+        m.finalScheduled +
+        '</td><td class="num">' +
+        m.finalShowed +
+        '</td><td class="num">' +
+        m.hired +
+        "</td></tr>";
+    });
+    h += "</tbody></table></div></div></div>";
+    return h;
+  }
+
+  function reapplicantsHtml() {
+    clearReappMap();
+    var groups = reapplicantGroups();
+    var applications = groups.reduce(function (n, g) {
+      return n + g.applicants.length;
+    }, 0);
+    var h =
+      '<div id="hr-reapplicants">' +
+      '<div class="note">A re-applicant is someone already on the pipeline who applies again. Matches use the same name (including Last, First), the same email, or the same mobile. The badge on the applicant uses this list. Merging duplicates under Consolidate still keeps one record.</div>' +
+      '<div class="strip">' +
+      tileHtml(groups.length, "Re-applicants", "people with more than one application", groups.length ? "warn" : "ok") +
+      tileHtml(applications, "Applications", "from those people", applications ? "acc" : "ok") +
+      tileHtml(
+        Math.max(0, applications - groups.length),
+        "Extra applications",
+        "beyond the first one",
+        applications > groups.length ? "warn" : "ok"
+      ) +
+      "</div>";
+    if (!groups.length) {
+      return (
+        h +
+        '<div class="card"><div class="empty">No one on the pipeline has applied more than once.</div></div></div>'
+      );
+    }
+    h +=
+      '<div class="sect-h"><h2>Who applied again</h2><span class="rule"></span></div>' +
+      '<div class="card"><div class="tw"><table><thead><tr><th>Applicant</th><th>Why they match</th><th>Applications</th></tr></thead><tbody>';
+    groups.forEach(function (g) {
+      var lines = g.applicants
+        .map(function (a) {
+          return (
+            '<div style="margin:0 0 6px">' +
+            esc(a.appliedOn || "no date") +
+            " · " +
+            esc(displayRoleTitle(a) || a.position || "No position") +
+            " · " +
+            esc(stageText(a.stage)) +
+            (a.email ? " · " + esc(a.email) : "") +
+            (a.mobile ? " · " + esc(a.mobile) : "") +
+            ' <button type="button" class="btn sm" data-open-app="' +
+            esc(a.id) +
+            '">Open</button></div>'
+          );
+        })
+        .join("");
+      h +=
+        "<tr><td class=\"nm\">" +
+        esc(g.name) +
+        reapplicantBadgeHtml(g.applicants[0]) +
+        "</td><td>" +
+        esc(g.reason) +
+        "</td><td>" +
+        lines +
+        "</td></tr>";
+    });
+    h += "</tbody></table></div></div></div>";
+    return h;
+  }
+
+  function weekdayBarHtml(week, showDay) {
+    var peak = 0;
+    week.forEach(function (n) {
+      if (n > peak) peak = n;
+    });
+    if (!peak) {
+      return '<div class="lbl">No show-up recorded yet. A show-up is an initial interview marked Done/Passed or Failed, or a final interview with a date.</div>';
+    }
+    var order = [1, 2, 3, 4, 5, 6, 0];
+    var cells = order
+      .map(function (idx) {
+        var hot = week[idx] && week[idx] === peak;
+        return (
+          '<span class="pill ' +
+          (hot ? "ok" : "mut") +
+          '">' +
+          esc(WEEK_SHORT[idx]) +
+          " " +
+          week[idx] +
+          "</span>"
+        );
+      })
+      .join(" ");
+    return (
+      "<div>" +
+      cells +
+      '<div class="lbl" style="margin-top:8px">Applicants mostly show up on ' +
+      esc(showDay && showDay.label ? showDay.label : "—") +
+      " (" +
+      (showDay ? showDay.count : 0) +
+      ").</div></div>"
+    );
+  }
+
+  function funnelHtml(steps, leak) {
+    var max = 0;
+    steps.forEach(function (step) {
+      if (step.n > max) max = step.n;
+    });
+    if (!max) max = 1;
+    return (
+      '<div class="chklist">' +
+      steps
+        .map(function (step, i) {
+          var prev = i ? steps[i - 1] : null;
+          var width = Math.max(2, Math.round((step.n / max) * 100));
+          var conv = prev && prev.n ? Math.round((step.n / prev.n) * 100) : null;
+          var dropHere = leak && leak.toKey === step.key;
+          return (
+            '<div class="chk"><span class="idx">' +
+            String(i + 1).padStart(2, "0") +
+            '</span><span class="n"><b>' +
+            esc(step.label) +
+            "</b><span>" +
+            step.n +
+            (conv == null ? "" : " · " + conv + "% of the previous step") +
+            "</span></span>" +
+            '<span style="width:88px"><span class="meter"><i style="width:' +
+            width +
+            '%"></i></span></span>' +
+            (dropHere ? '<span class="pill warn">drops here</span>' : "") +
+            "</div>"
+          );
+        })
+        .join("") +
+      "</div>"
+    );
+  }
+
+  function metricsHtml() {
+    clearReappMap();
+    var report = metricsReport();
+    var summary = report.summary;
+    var showLabel = summary.showDay && summary.showDay.label ? summary.showDay.label : "no show-ups yet";
+    var h =
+      '<div id="hr-recruit-metrics">' +
+      '<div class="note">Counts come from the pipeline. Scheduled is an interview with a date. Showed up for an initial interview is Done/Passed or Failed. A final interview counts when the stage is For Final Interview or Offer, a final script is on the file, or a final interview date is saved. Time to hire is the applied date to the hire date. The longest drop between those steps is where that position can improve.</div>' +
+      '<div class="strip">' +
+      tileHtml(summary.positions, "Positions", "open roles and roles with applicants", "acc") +
+      tileHtml(summary.applied, "Applied", "applications on record", summary.applied ? "acc" : "ok") +
+      tileHtml(summary.showed, "Showed up", "initial or final", summary.showed ? "ok" : "warn") +
+      tileHtml(summary.hired, "Hired", "stage Hired or a 201 file", "ok") +
+      tileHtml(summary.avgHire == null ? "—" : hireSpanLabel(summary.avgHire), "Average time to hire", "applied date to hire date", "acc") +
+      tileHtml(showLabel, "Mostly show up", summary.showDay && summary.showDay.count ? summary.showDay.count + " on that day" : "once a show-up is recorded", summary.showDay && summary.showDay.count ? "ok" : "mut") +
+      "</div>";
+    if (summary.biggest && summary.biggest.leak) {
+      h +=
+        '<div class="note" style="border-left-color:var(--warn)"><b>Largest gap: ' +
+        esc(summary.biggest.title) +
+        ".</b> " +
+        esc(summary.biggest.improvement) +
+        "</div>";
+    }
+    h +=
+      '<div class="sect-h"><h2>Show-up by day of the week</h2><span class="rule"></span></div>' +
+      '<div class="card"><div class="card-b">' +
+      weekdayBarHtml(summary.week, summary.showDay) +
+      "</div></div>";
+    if (!report.rows.length) {
+      return h + '<div class="card"><div class="empty">No open role and no applications yet.</div></div></div>';
+    }
+    h +=
+      '<div class="sect-h"><h2>Every position</h2><span class="rule"></span></div>' +
+      '<div class="card"><div class="tw"><table><thead><tr>' +
+      "<th>Position</th><th class=\"num\">Applied</th><th class=\"num\">Initial scheduled</th><th class=\"num\">Showed up</th>" +
+      "<th class=\"num\">Final scheduled</th><th class=\"num\">Final showed</th><th class=\"num\">Hired</th>" +
+      "<th>Recruitment</th><th>Avg time to hire</th><th>Show-up day</th><th>Where it drops</th>" +
+      "</tr></thead><tbody>";
+    report.rows.forEach(function (m) {
+      var where = m.leak ? m.leak.from + " → " + m.leak.to + " (" + m.leak.lost + ")" : m.applied ? "no drop on record" : "—";
+      h +=
+        '<tr data-hr-metrics="' +
+        esc(m.key) +
+        '"><td class="nm">' +
+        esc(m.title) +
+        '<div class="lbl">' +
+        esc(m.dept || (m.status ? m.status : "")) +
+        "</div></td><td class=\"num\">" +
+        m.applied +
+        '</td><td class="num">' +
+        m.initialScheduled +
+        '</td><td class="num">' +
+        m.showed +
+        '</td><td class="num">' +
+        m.finalScheduled +
+        '</td><td class="num">' +
+        m.finalShowed +
+        '</td><td class="num">' +
+        m.hired +
+        "</td><td>" +
+        (m.span && m.span.days != null
+          ? esc(openForLabel(m.span.days)) +
+            (m.span.start ? '<div class="lbl">' + esc(formatIsoLong(m.span.start)) + " – " + esc(formatIsoLong(m.span.end)) + "</div>" : "")
+          : "—") +
+        "</td><td>" +
+        esc(m.avgHire == null ? "—" : hireSpanLabel(m.avgHire)) +
+        (m.hireSamples ? '<div class="lbl">' + m.hireSamples + (m.hireSamples === 1 ? " hire" : " hires") + "</div>" : "") +
+        "</td><td>" +
+        esc(m.showDay && m.showDay.short ? m.showDay.short : "—") +
+        "</td><td>" +
+        esc(where) +
+        "</td></tr>";
+    });
+    h += "</tbody></table></div></div>";
+    report.rows.forEach(function (m) {
+      if (!m.applied) return;
+      h +=
+        '<div class="card" style="margin-top:12px" data-hr-metrics-card="' +
+        esc(m.key) +
+        '"><div class="card-h"><h3>' +
+        esc(m.title) +
+        "</h3>" +
+        (m.status ? '<span class="pill ' + (m.status === "Open" ? "warn" : "mut") + '">' + esc(m.status) + "</span>" : "") +
+        "</div><div class=\"card-b\">" +
+        funnelHtml(m.steps, m.leak) +
+        '<div style="margin-top:10px">' +
+        weekdayBarHtml(m.week, m.showDay) +
+        '</div><div class="note" style="margin-top:10px">' +
+        esc(m.improvement) +
+        "</div></div></div>";
+    });
+    h += "</div>";
+    return h;
+  }
+
+  function reapplicantEditorNoteHtml(a) {
+    if (!a || !a.id) return "";
+    clearReappMap();
+    var g = reapplicantMap()[a.id];
+    if (!g) return "";
+    var lines = g.applicants
+      .map(function (row) {
+        return (
+          "<div>" +
+          esc(row.appliedOn || "no date") +
+          " · " +
+          esc(displayRoleTitle(row) || row.position || "No position") +
+          " · " +
+          esc(stageText(row.stage)) +
+          (row.id === a.id ? " · this record" : "") +
+          "</div>"
+        );
+      })
+      .join("");
+    return (
+      '<div class="note" id="hr-reapp-editor" style="border-left-color:var(--warn)"><b>Re-applicant · ' +
+      g.applicants.length +
+      " applications.</b> " +
+      esc(g.reason) +
+      "." +
+      lines +
+      "</div>"
+    );
+  }
+
+  function injectReapplicantBadges() {
+    if (typeof document === "undefined" || !document.querySelectorAll) return;
+    clearReappMap();
+    var map = reapplicantMap();
+    Array.prototype.forEach.call(document.querySelectorAll("[data-open-app]"), function (btn) {
+      if (!btn || !btn.getAttribute) return;
+      var id = btn.getAttribute("data-open-app");
+      var tr = btn;
+      while (tr && tr.tagName !== "TR") tr = tr.parentNode;
+      if (!tr || !tr.querySelector) return;
+      var cell = tr.querySelector("td.nm");
+      if (!cell) return;
+      var badge = cell.querySelector("[data-hr-reapp]");
+      var g = map[id];
+      if (!g) {
+        if (badge && badge.parentNode) badge.parentNode.removeChild(badge);
+        return;
+      }
+      var label = "Re-applicant · " + g.applicants.length;
+      if (!badge && document.createElement) {
+        badge = document.createElement("span");
+        badge.className = "pill warn";
+        badge.setAttribute("data-hr-reapp", id);
+        if (badge.style) badge.style.marginLeft = "6px";
+        cell.appendChild(badge);
+      }
+      if (!badge) return;
+      badge.textContent = label;
+      badge.title = g.applicants.length + " applications on file. " + (g.reason || "");
+    });
+  }
+
+  function injectReapplicantPipelineNote() {
+    if (typeof document === "undefined" || !document.getElementById || !document.createElement) return;
+    var log = document.getElementById("new-app");
+    var existing = document.getElementById("hr-reapp-pipeline-note");
+    if (!log || !log.parentNode) {
+      if (existing && existing.parentNode && existing.parentNode.removeChild) existing.parentNode.removeChild(existing);
+      return;
+    }
+    var groups = reapplicantGroups();
+    if (!groups.length) {
+      if (existing && existing.parentNode && existing.parentNode.removeChild) existing.parentNode.removeChild(existing);
+      return;
+    }
+    var applications = groups.reduce(function (n, g) {
+      return n + g.applicants.length;
+    }, 0);
+    if (!existing) {
+      existing = document.createElement("div");
+      existing.id = "hr-reapp-pipeline-note";
+      existing.className = "note";
+      var sect = log.parentNode;
+      if (sect.parentNode && sect.parentNode.insertBefore) sect.parentNode.insertBefore(existing, sect);
+      else if (sect.insertBefore) sect.insertBefore(existing, log);
+    }
+    existing.innerHTML =
+      "<b>" +
+      groups.length +
+      " re-applicant" +
+      (groups.length === 1 ? "" : "s") +
+      "</b> — " +
+      applications +
+      " applications share a name, email, or mobile. " +
+      '<button type="button" class="btn sm" id="hr-reapp-open">Open the list</button>';
+  }
+
+  function injectReapplicantEditorNote() {
+    if (typeof document === "undefined" || !document.getElementById || !document.createElement) return;
+    var name = document.getElementById("a-name");
+    var existing = document.getElementById("hr-reapp-editor");
+    if (!name) return;
+    var applicant = applicantFromEditor();
+    var html = reapplicantEditorNoteHtml(applicant);
+    if (!html) {
+      if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+      return;
+    }
+    if (existing) {
+      var holder = document.createElement("div");
+      holder.innerHTML = html;
+      if (holder.firstChild && existing.parentNode) existing.parentNode.replaceChild(holder.firstChild, existing);
+      return;
+    }
+    var wrap = document.createElement("div");
+    wrap.innerHTML = html;
+    var node = wrap.firstChild;
+    if (!node) return;
+    var grid = name.parentNode;
+    while (grid && String(grid.className || "").indexOf("grid3") < 0) grid = grid.parentNode;
+    if (grid && grid.parentNode) grid.parentNode.insertBefore(node, grid);
+    else if (name.parentNode) name.parentNode.insertBefore(node, name);
+  }
+
+  function openRecruitMode(mode) {
+    var S = store();
+    if (S) {
+      S.ui = S.ui || {};
+      S.ui.view = "recruit";
+      S.ui.rmode = mode;
+    }
+    if (typeof root.render === "function") root.render();
+  }
+
+  function openManpowerRequest(roleId) {
+    var role = rolesMap()[roleId];
+    if (!role || typeof root.openModal !== "function") {
+      toast("That role is not on file.", "err");
+      return;
+    }
+    var mrf = normalizeManpowerRequest(role.manpowerRequest) || {
+      title: "Manpower request",
+      link: "",
+      ref: "",
+      note: "",
+      attachedOn: today(),
+    };
+    root.openModal({
+      title: "Manpower request — " + (role.title || "role"),
+      body:
+        '<div class="stack" id="hr-mrf-form" data-hr-mrf-for="' +
+        esc(role.id) +
+        '"><div class="note">Paste the link to the manpower request, or its form number. The portal does not keep a separate manpower-request file, so this attachment stays on the open role.</div>' +
+        '<div class="f"><label>Title</label><input id="hr-mrf-title" value="' +
+        esc(mrf.title || "Manpower request") +
+        '"></div>' +
+        '<div class="grid2"><div class="f"><label>Form link</label><input id="hr-mrf-link" type="url" value="' +
+        esc(mrf.link || "") +
+        '" placeholder="https://"></div>' +
+        '<div class="f"><label>Form number</label><input id="hr-mrf-ref" value="' +
+        esc(mrf.ref || "") +
+        '" placeholder="MRF-2026-014"></div></div>' +
+        '<div class="f"><label>Date of the request</label><input id="hr-mrf-on" type="date" value="' +
+        esc(mrf.attachedOn || "") +
+        '"></div>' +
+        '<div class="f"><label>Note</label><input id="hr-mrf-note" value="' +
+        esc(mrf.note || "") +
+        '"></div></div>',
+      foot:
+        '<button class="btn danger" id="hr-mrf-clear" type="button">Remove</button>' +
+        '<button class="btn" id="hr-mrf-cancel" type="button">Cancel</button>' +
+        '<button class="btn pri" id="hr-mrf-save" type="button">Save attachment</button>',
+    });
+  }
+
+  async function saveManpowerFromModal() {
+    if (typeof document === "undefined" || !document.getElementById) return;
+    var host = document.getElementById("hr-mrf-form");
+    var roleId = host && host.getAttribute ? host.getAttribute("data-hr-mrf-for") : "";
+    var result = await saveManpowerRequest(roleId, {
+      title: fieldValue("hr-mrf-title"),
+      link: fieldValue("hr-mrf-link"),
+      ref: fieldValue("hr-mrf-ref"),
+      note: fieldValue("hr-mrf-note"),
+      attachedOn: fieldValue("hr-mrf-on"),
+    });
+    if (!result.ok) {
+      toast(mrfError(result.error), "err");
+      return;
+    }
+    toast("Manpower request attached.", "ok");
+    if (typeof root.closeModal === "function") root.closeModal();
+    if (typeof root.render === "function") root.render();
+  }
+
+  async function clearManpowerFromModal() {
+    if (typeof document === "undefined" || !document.getElementById) return;
+    var host = document.getElementById("hr-mrf-form");
+    var roleId = host && host.getAttribute ? host.getAttribute("data-hr-mrf-for") : "";
+    var result = await saveManpowerRequest(roleId, null);
+    if (!result.ok) {
+      toast(mrfError(result.error), "err");
+      return;
+    }
+    toast("Manpower request removed from this role.", "ok");
+    if (typeof root.closeModal === "function") root.closeModal();
+    if (typeof root.render === "function") root.render();
+  }
+
+  function bindRecruitDesk(doc) {
+    doc = doc || (typeof document !== "undefined" ? document : null);
+    if (!doc || doc.__hrRecruitDesk || !doc.addEventListener) return;
+    doc.__hrRecruitDesk = true;
+    doc.addEventListener(
+      "change",
+      function (ev) {
+        var t = ev && ev.target;
+        if (!t || !t.getAttribute) return;
+        var roleId = t.getAttribute("data-hr-opened");
+        if (roleId == null) return;
+        saveOpenedOn(roleId, t.value);
+      },
+      false
+    );
+    doc.addEventListener(
+      "click",
+      function (ev) {
+        var t = ev && ev.target;
+        var id = "";
+        var roleId = "";
+        while (t && t !== doc) {
+          if (t.id === "hr-reapp-open" || t.id === "hr-mrf-save" || t.id === "hr-mrf-clear" || t.id === "hr-mrf-cancel") {
+            id = t.id;
+            break;
+          }
+          if (t.getAttribute && t.getAttribute("data-hr-mrf") != null) {
+            id = "mrf";
+            roleId = t.getAttribute("data-hr-mrf");
+            break;
+          }
+          t = t.parentNode;
+        }
+        if (!id) return;
+        if (ev.preventDefault) ev.preventDefault();
+        if (id === "hr-reapp-open") openRecruitMode("reapplicants");
+        else if (id === "mrf") openManpowerRequest(roleId);
+        else if (id === "hr-mrf-save") saveManpowerFromModal();
+        else if (id === "hr-mrf-clear") clearManpowerFromModal();
+        else if (id === "hr-mrf-cancel" && typeof root.closeModal === "function") root.closeModal();
+      },
+      false
+    );
+  }
+
+  function refreshDeskView() {
+    var S = store();
+    if (!S || !S.ui || S.ui.view !== "recruit") return;
+    var mode = S.ui.rmode;
+    var hostId =
+      mode === "openroles" ? "hr-open-roles" : mode === "reapplicants" ? "hr-reapplicants" : mode === "metrics" ? "hr-recruit-metrics" : "";
+    if (!hostId) return;
+    if (typeof document !== "undefined" && document.getElementById && document.getElementById(hostId)) return;
+    if (typeof root.render === "function") root.render();
+  }
+
   function refreshInitialView() {
     var S = store();
     if (!S || !S.ui || S.ui.view !== "recruit" || S.ui.rmode !== "initial") return;
@@ -3096,6 +4524,9 @@
       injectRoleFilter();
       injectPipelineSchedule();
       injectScheduleButtons();
+      bindRecruitDesk();
+      injectReapplicantBadges();
+      injectReapplicantPipelineNote();
     } catch (e) {}
   }
 
@@ -3120,6 +4551,7 @@
     api.attached = true;
     try {
       refreshInitialView();
+      refreshDeskView();
     } catch (e1) {}
     return api;
   }
@@ -3200,6 +4632,20 @@
   api.injectScheduleButtons = injectScheduleButtons;
   api.injectSchedulePanel = injectSchedulePanel;
   api.refreshApplicants = refreshApplicants;
+  api.openRolesHtml = openRolesHtml;
+  api.reapplicantsHtml = reapplicantsHtml;
+  api.metricsHtml = metricsHtml;
+  api.reapplicantGroups = reapplicantGroups;
+  api.reapplicantCount = reapplicantCount;
+  api.reapplicantBadgeHtml = reapplicantBadgeHtml;
+  api.reapplicantEditorNoteHtml = reapplicantEditorNoteHtml;
+  api.metricsReport = metricsReport;
+  api.positionMetrics = positionMetrics;
+  api.manpowerRequestOf = manpowerRequestOf;
+  api.normalizeManpowerRequest = normalizeManpowerRequest;
+  api.saveManpowerRequest = saveManpowerRequest;
+  api.saveOpenedOn = saveOpenedOn;
+  api.daysBetween = daysBetween;
   api.install = attach;
   root.hrRecruit = api;
 

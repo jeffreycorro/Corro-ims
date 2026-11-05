@@ -1030,3 +1030,249 @@ describe("hr-recruit initial interviews", () => {
     assert.match(hr.pipelineScheduleCardHtml(), /Limit the pipeline to this view/);
   });
 });
+
+describe("hr-recruit open roles, re-applicants, and metrics", () => {
+  function deskWindow() {
+    const w = fakeWindow({
+      a1: {
+        id: "a1",
+        name: "Dela Cruz, Ana",
+        roleId: "ro02",
+        position: "Project Manager",
+        dept: "Technical",
+        email: "ana@example.com",
+        mobile: "09171234567",
+        appliedOn: "2026-10-01",
+        stage: "Interview",
+        initialInterview: { at: "2026-11-03T09:00", status: "Done/Passed", interviewer: "Cassie" },
+      },
+      a2: {
+        id: "a2",
+        name: "Ana Dela Cruz",
+        roleId: "ro02",
+        position: "Project Manager",
+        email: "ana.cruz@example.com",
+        mobile: "+63 917 123 4567",
+        appliedOn: "2026-10-20",
+        stage: "For Final Interview",
+        initialInterview: { at: "2026-10-22T14:00", status: "No-show" },
+      },
+      a3: {
+        id: "a3",
+        name: "Reyes, Paolo",
+        roleId: "ro02",
+        appliedOn: "2026-09-01",
+        stage: "Hired",
+        hiredOn: "2026-09-15",
+        hiredEmpId: "e1",
+        initialInterview: { at: "2026-09-03T10:00", status: "Done/Passed" },
+        interviews: [{ type: "Final", date: "2026-09-10", interviewer: "Jeffrey" }],
+      },
+      a4: {
+        id: "a4",
+        name: "Santos, Bea",
+        email: "bea@example.com",
+        mobile: "09180001111",
+        appliedOn: "2026-10-05",
+        stage: "Applied",
+        position: "Bookkeeper",
+      },
+      a5: {
+        id: "a5",
+        name: "Bea Marie Santos",
+        email: "bea@example.com",
+        appliedOn: "2026-11-01",
+        stage: "Offer",
+        position: "Bookkeeper",
+      },
+      b1: {
+        id: "b1",
+        name: "Luz Gomez",
+        mobile: "09181230000",
+        appliedOn: "2026-08-01",
+        stage: "Rejected",
+        position: "Driver",
+      },
+      b2: {
+        id: "b2",
+        name: "Pedro Ramos",
+        mobile: "0918-123-0000",
+        appliedOn: "2026-11-02",
+        stage: "Applied",
+        position: "Driver",
+      },
+      c1: {
+        id: "c1",
+        name: "Ivy Tan",
+        email: "ivy@example.com",
+        mobile: "09190002222",
+        appliedOn: "2026-11-04",
+        stage: "Applied",
+        roleId: "ro06",
+      },
+    });
+    w.TODAY = "2026-11-05";
+    w.S.roles.ro02.status = "Open";
+    w.S.roles.ro02.dept = "Technical";
+    w.S.roles.ro02.headcount = 2;
+    w.S.roles.ro02.openedOn = "2026-10-01";
+    w.S.roles.ro06.status = "Open";
+    w.S.roles.ro06.dept = "Procurement";
+    w.S.roles.ro06.headcount = 1;
+    w.S.employees.e1 = { id: "e1", name: "Reyes, Paolo", dateHired: "2026-09-15" };
+    w.S.docreg = {
+      d1: {
+        id: "d1",
+        module: "mrf",
+        title: "Manpower request — Procurement Officer",
+        no: "MRF-REG-9",
+        roleId: "ro06",
+        date: "2026-09-20",
+        link: "https://drive.google.com/file/d/reg/view",
+      },
+    };
+    return w;
+  }
+
+  it("lists open roles with age, interviews, hires, and an attached manpower request", async () => {
+    const w = deskWindow();
+    const hr = loadRecruit(w);
+    assert.equal(hr.daysBetween("2026-10-01", "2026-11-05"), 35);
+    const saved = await hr.saveManpowerRequest("ro02", {
+      title: "Manpower request",
+      link: "https://drive.google.com/file/d/abc/view",
+      ref: "MRF-2026-014",
+      attachedOn: "2026-09-28",
+      note: "Approved by operations",
+    });
+    assert.equal(saved.ok, true);
+    assert.equal(w.S.roles.ro02.headcount, 2);
+    assert.equal(w.S.roles.ro02.status, "Open");
+    assert.equal(w.S.roles.ro02.manpowerRequest.ref, "MRF-2026-014");
+    const rejected = await hr.saveManpowerRequest("ro02", { link: "not a link", ref: "" });
+    assert.equal(rejected.ok, false);
+    assert.equal(w.S.roles.ro02.manpowerRequest.ref, "MRF-2026-014");
+
+    const html = hr.openRolesHtml();
+    assert.match(html, /id="hr-open-roles"/);
+    assert.match(html, /Project Manager/);
+    assert.match(html, /Procurement Officer/);
+    assert.match(html, /MRF-2026-014/);
+    assert.match(html, /https:\/\/drive\.google\.com\/file\/d\/abc\/view/);
+    assert.match(html, /MRF-REG-9/);
+    assert.match(html, /value="2026-10-01"/);
+    assert.match(html, /35 days/);
+    assert.match(html, /Initial scheduled/);
+    assert.match(html, /Final showed/);
+    assert.match(html, /Attach form|Change/);
+    const pmStart = html.indexOf('data-hr-open-role="ro02"');
+    const pm = html.slice(pmStart, html.indexOf("</tr>", pmStart));
+    assert.match(
+      pm,
+      /<td class="num">3<\/td><td class="num" title="1 no-show">2<\/td><td class="num">2<\/td><td class="num">1<\/td><td class="num">1<\/td>/
+    );
+
+    const opened = await hr.saveOpenedOn("ro06", "2026-11-01");
+    assert.equal(opened.ok, true);
+    assert.equal(w.S.roles.ro06.openedOn, "2026-11-01");
+    assert.match(hr.openRolesHtml(), /4 days/);
+    const cleared = await hr.saveManpowerRequest("ro02", null);
+    assert.equal(cleared.ok, true);
+    assert.equal(w.S.roles.ro02.manpowerRequest, undefined);
+    assert.match(hr.openRolesHtml(), /Attach form/);
+  });
+
+  it("counts re-applicants by name, email, or mobile and badges the applicant", () => {
+    const w = deskWindow();
+    const hr = loadRecruit(w);
+    const groups = hr.reapplicantGroups();
+    assert.equal(hr.reapplicantCount(), 3);
+    const ana = groups.find((g) => /dela cruz/i.test(g.name));
+    const bea = groups.find((g) => /santos/i.test(g.name));
+    const phone = groups.find((g) => /gomez|ramos/i.test(g.name));
+    assert.ok(ana);
+    assert.equal(ana.applicants.length, 2);
+    assert.match(ana.reason, /same name/);
+    assert.match(ana.reason, /same mobile/);
+    assert.ok(bea);
+    assert.match(bea.reason, /same email/);
+    assert.ok(phone);
+    assert.equal(phone.reason, "same mobile");
+    assert.equal(groups.some((g) => g.applicants.some((a) => a.id === "c1")), false);
+
+    assert.match(hr.reapplicantBadgeHtml(w.S.applicants.a1), /Re-applicant · 2/);
+    assert.equal(hr.reapplicantBadgeHtml(w.S.applicants.c1), "");
+    const list = hr.reapplicantsHtml();
+    assert.match(list, /id="hr-reapplicants"/);
+    assert.match(list, /3/);
+    assert.match(list, /Dela Cruz, Ana|Ana Dela Cruz/);
+    assert.match(list, /data-open-app="a1"/);
+    assert.match(list, /data-open-app="b2"/);
+    const note = hr.reapplicantEditorNoteHtml(w.S.applicants.a2);
+    assert.match(note, /Re-applicant · 2/);
+    assert.match(note, /2026-10-01/);
+    assert.match(note, /2026-10-20/);
+    assert.match(note, /this record/);
+  });
+
+  it("builds per-position metrics from interviews, hires, and show-up weekdays", () => {
+    const w = deskWindow();
+    const hr = loadRecruit(w);
+    const report = hr.metricsReport();
+    const pm = report.rows.find((row) => row.key === "ro02");
+    assert.ok(pm);
+    assert.equal(pm.applied, 3);
+    assert.equal(pm.initialScheduled, 3);
+    assert.equal(pm.initialShowed, 2);
+    assert.equal(pm.initialNoShow, 1);
+    assert.equal(pm.finalScheduled, 2);
+    assert.equal(pm.finalShowed, 1);
+    assert.equal(pm.hired, 1);
+    assert.equal(pm.showed, 2);
+    assert.equal(pm.span.days, 35);
+    assert.equal(pm.span.explicit, true);
+    assert.equal(pm.avgHire, 14);
+    assert.equal(pm.showDay.short, "Thu");
+    assert.equal(pm.leak.fromKey, "initialScheduled");
+    assert.equal(pm.leak.toKey, "initialShowed");
+    assert.match(pm.improvement, /showed for initial/);
+    assert.match(pm.improvement, /Thursday/);
+
+    const book = report.rows.find((row) => row.key === "title:bookkeeper");
+    assert.ok(book);
+    assert.equal(book.applied, 2);
+    assert.equal(book.finalScheduled, 1);
+    assert.equal(book.finalShowed, 1);
+    assert.equal(book.hired, 0);
+    assert.equal(book.span.explicit, false);
+    assert.equal(book.span.inferred, true);
+
+    const empty = report.rows.find((row) => row.key === "ro06");
+    assert.ok(empty);
+    assert.equal(empty.applied, 1);
+    assert.match(empty.improvement, /No step on record is losing people|waiting before an initial/);
+
+    assert.equal(report.summary.avgHire, 14);
+    assert.equal(report.summary.showDay.short, "Thu");
+    const html = hr.metricsHtml();
+    assert.match(html, /id="hr-recruit-metrics"/);
+    assert.match(html, /Average time to hire/);
+    assert.match(html, /Show-up by day of the week/);
+    assert.match(html, /Thursday/);
+    assert.match(html, /drops here/);
+    assert.match(html, /Project Manager/);
+    assert.match(html, /14 days/);
+    assert.match(html, /Where it drops/);
+  });
+
+  it("adds the three recruitment tabs on the artifact screen", () => {
+    const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
+    assert.match(html, /data-rmode="openroles"/);
+    assert.match(html, /data-rmode="reapplicants"/);
+    assert.match(html, /data-rmode="metrics"/);
+    assert.match(html, /recruitApi\.openRolesHtml/);
+    assert.match(html, /recruitApi\.reapplicantsHtml/);
+    assert.match(html, /recruitApi\.metricsHtml/);
+    assert.match(html, /hr-open-roles-pending/);
+  });
+});
