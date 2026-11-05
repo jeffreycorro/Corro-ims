@@ -2151,7 +2151,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-10-29b";
+const BUILD = "2026-11-05";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -18307,16 +18307,39 @@ function viewInitialInterviews(){
 
 function viewRecruit(){
   const mode=S.ui.rmode||"roles";
-  setCrumb("Recruitment", {roles:"Role definitions",pipeline:"Applicant pipeline",initial:"Initial interviews",exams:"Written exams and IQ tests",guides:"Interview scripts"}[mode]);
-  let h='<div class="row" style="margin-bottom:14px"><div class="seg">'
+  const recruitApi=typeof window!=="undefined" && window.hrRecruit;
+  const reCount=recruitApi && typeof recruitApi.reapplicantCount==="function" ? recruitApi.reapplicantCount() : 0;
+  setCrumb("Recruitment", {
+    roles:"Role definitions",
+    openroles:"Open roles",
+    pipeline:"Applicant pipeline",
+    reapplicants:"Re-applicants",
+    initial:"Initial interviews",
+    metrics:"Recruitment metrics",
+    exams:"Written exams and IQ tests",
+    guides:"Interview scripts"
+  }[mode]);
+  let h='<div class="row" style="margin-bottom:14px"><div class="seg" style="flex-wrap:wrap;overflow:visible;max-width:100%">'
    + '<button class="'+(mode==="roles"?"on":"")+'" data-rmode="roles">Roles</button>'
+   + '<button class="'+(mode==="openroles"?"on":"")+'" data-rmode="openroles">Open roles</button>'
    + '<button class="'+(mode==="pipeline"?"on":"")+'" data-rmode="pipeline">Pipeline</button>'
+   + '<button class="'+(mode==="reapplicants"?"on":"")+'" data-rmode="reapplicants">Re-applicants'+(reCount?" ("+reCount+")":"")+'</button>'
    + '<button class="'+(mode==="initial"?"on":"")+'" data-rmode="initial">Initial interviews</button>'
+   + '<button class="'+(mode==="metrics"?"on":"")+'" data-rmode="metrics">Metrics</button>'
    + '<button class="'+(mode==="exams"?"on":"")+'" data-rmode="exams">Exams</button>'
    + '<button class="'+(mode==="guides"?"on":"")+'" data-rmode="guides">Interview scripts</button></div></div>';
 
   if(mode==="roles") return h+viewRoles();
+  if(mode==="openroles") return h+(recruitApi && typeof recruitApi.openRolesHtml==="function"
+    ? recruitApi.openRolesHtml()
+    : '<div class="card" id="hr-open-roles-pending"><div class="empty">Open roles are loading. Open this tab again if the list does not appear.</div></div>');
+  if(mode==="reapplicants") return h+(recruitApi && typeof recruitApi.reapplicantsHtml==="function"
+    ? recruitApi.reapplicantsHtml()
+    : '<div class="card" id="hr-reapplicants-pending"><div class="empty">Re-applicants are loading. Open this tab again if the list does not appear.</div></div>');
   if(mode==="initial") return h+viewInitialInterviews();
+  if(mode==="metrics") return h+(recruitApi && typeof recruitApi.metricsHtml==="function"
+    ? recruitApi.metricsHtml()
+    : '<div class="card" id="hr-recruit-metrics-pending"><div class="empty">Recruitment metrics are loading. Open this tab again if the view does not appear.</div></div>');
 
   if(mode==="exams"){
     const xs=examList();
