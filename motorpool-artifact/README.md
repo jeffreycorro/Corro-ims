@@ -108,6 +108,8 @@ Site settings → Environment variables. Copy `.env.example`.
 | `SUPABASE_AUTH_ENABLED` | Functions, optional | Default **on** when URL + anon key are set. Set `false` only to disable Auth. |
 | `MOTORPOOL_OPEN_YARD` | Functions, optional | Local / demo only. When `true`, the yard stays open even if Auth is configured. Leave unset on production. |
 | `MOTORPOOL_OFFICE_PASS_HASH` | Functions, optional | SHA-256 **hex** of the office pass (64 lowercase hex chars). Never put the plaintext here. Generate locally: `printf '%s' 'your-pass' \| openssl dgst -sha256` |
+| `MOTORPOOL_CANCEL_APPROVERS` | Functions, optional | Comma-separated emails/names allowed to approve or reject VRF cancellation requests (admins and the Office passcode also count). |
+| `MOTORPOOL_ALLOW_CANCEL_WITHOUT_APPROVAL` | Functions, repair only | `on` lets the functions write a Cancelled VRF/line with no approved request. Leave unset. SQL: `set local motorpool.allow_cancel_without_approval = 'on';` |
 | `APPROVE_VRF_SECRET` (or `MOTORPOOL_APPROVE_SECRET`) | Functions **only** | Shared secret for `/.netlify/functions/approve-vrf`. Noah/Builder send it instead of the Office passcode. Never commit the value. See **Gated approve-vrf API** below. |
 | `ANTHROPIC_API_KEY` | Functions **only** | Enables Ask the log (`claude.use("sample")`). Never put this in the shim or `index.html`. |
 | `ANTHROPIC_MODEL` | Functions, optional | Override the default model (`claude-sonnet-4-5`). |

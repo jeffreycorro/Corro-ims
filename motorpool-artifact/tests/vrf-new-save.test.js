@@ -915,7 +915,16 @@ describe("new VRF save against the live store", () => {
     state.reserves = [JSON.parse(JSON.stringify(records["reserve:108"].data))];
     state.ledger = { "2026-10": JSON.parse(JSON.stringify(records["ledger:6122"].data.rows)) };
     page.__api.resetIndex();
-    const posted = page.__api.vrfByNo("6122");
+    let posted = page.__api.vrfByNo("6122");
+    /* Cancel approval guard (2026-11-02): no approved request, no cancel. */
+    await assert.rejects(page.__api.cancelApprovedVrf(posted, "Ana Cruz", "supplier had none"));
+    assert.notEqual(records["ledger:6122"].data.rows[0].vstatus, "Cancelled");
+    const approvedReq = { id: "cx-t", vrf: "6122", reserveNo: "108", scope: "vrf", lines: null, reason: "supplier had none",
+      by: "Ana Cruz", at: "2026-10-20", status: "Approved", decidedBy: "Jeffrey", decidedAt: "2026-10-21", decisionNote: "" };
+    records["reserve:108"].data.cancelRequests = [approvedReq];
+    state.reserves[0].cancelRequests = [approvedReq];
+    page.__api.resetIndex();
+    posted = page.__api.vrfByNo("6122");
     await page.__api.cancelApprovedVrf(posted, "Ana Cruz", "supplier had none");
     assert.equal(records["ledger:6122"].data.rows[0].vstatus, "Cancelled");
     assert.equal(records["reserve:108"].data.status, "Cancelled");

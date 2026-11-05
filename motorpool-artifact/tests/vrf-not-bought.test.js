@@ -116,7 +116,7 @@ describe("artifact HTML — not bought and cancel", () => {
     assert.match(html, /function askCancelVrf/);
     assert.match(html, /function liquidationOutcome/);
     assert.match(html, /function heldLineAmount/);
-    assert.match(html, /Cancel VRF — purchase did not go through/);
+    assert.match(html, /"Request cancellation"/);
     assert.match(html, /Close as not bought/);
     assert.match(html, /outcome==="cancelled"\|\|outcome==="not-bought"/);
     assert.doesNotMatch(html, /if\(e\.remove\)\{ arr\.splice\(idx,1\)/);

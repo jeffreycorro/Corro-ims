@@ -1,6 +1,7 @@
 "use strict";
 
 const { json, requireSession } = require("../lib/session");
+const cancelGuard = require("../lib/cancel-guard");
 const { parsePath, assertCollection, requiresFullWrite, normalizeListFilters } = require("../lib/collections");
 const {
   acquireLock,
@@ -113,6 +114,20 @@ exports.handler = async (event) => {
       if (!spec || typeof spec !== "object" || Array.isArray(spec)) {
         return json(400, { error: "spec is required", code: "bad_request" });
       }
+      /* Cancellation approvals: the Office passcode rides beside the spec and
+         is never stored. lib/cancel-guard.js checks it inside writeRecord. */
+      const approverPass = spec.approverPass;
+      delete spec.approverPass;
+      let cfgPass = "";
+      if (approverPass) {
+        const cfg = await getDoc("config", "app").catch(() => null);
+        cfgPass = (cfg && cfg.data && cfg.data.pass) || "";
+      }
+      const cancelCtx = {
+        approver: cancelGuard.isApprover(session, { pass: approverPass, cfgPass }),
+        by: session.name || session.full_name || session.email || "",
+      };
+      return cancelGuard.runWithContext(cancelCtx, async () => {
       if (!spec.user) {
         spec.user = session.name || session.full_name || session.email || session.sub || "";
       }
@@ -179,6 +194,7 @@ exports.handler = async (event) => {
       };
       const result = await applyClientMerge(spec, io);
       return json(200, Object.assign({ ok: true }, result, tz));
+      });
     }
 
     if (op === "listIds") {
