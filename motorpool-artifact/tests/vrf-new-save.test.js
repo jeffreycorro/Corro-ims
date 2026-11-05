@@ -904,7 +904,25 @@ describe("new VRF save against the live store", () => {
   it("liquidates, cancels, and marks a duplicate without a year or month blob", async () => {
     page.__api.resetIndex();
     const open = page.__api.vrfByNo("6122");
-    await page.__api.liquidateVrf(open, [{ price: 1400 }], [], "Ana Cruz", "bought the belt", "bought");
+    await assert.rejects(
+      () => page.__api.liquidateVrf(open, [{ price: 1400 }], [], "Ana Cruz", "bought the belt", "bought"),
+      /without proof/
+    );
+    assert.notEqual((records["ledger:6122"].data.rows[0] || {}).vstatus, "Closed");
+    docs["photos/vrf-LIQ-6122__1"] = {
+      collection: "photos",
+      id: "vrf-LIQ-6122__1",
+      data: { vrf: "LIQ-6122", idx: 1, caption: "OR 5521", kind: "image", by: "Ana Cruz", at: "2026-10-09T09:00:00+08:00", data: "x" },
+      updated_at: "2026-10-09T01:00:00Z",
+    };
+    const today = require("../public/vrf-liquidation").manilaToday();
+    const proof = {
+      v: 1, actual: 1400, approved: 1500, date: today, by: "Ana Cruz", at: new Date().toISOString(), receipts: 1,
+      change: { amount: 100, how: "Cash returned to Finance", date: today },
+    };
+    page.__api.resetIndex();
+    await page.__api.liquidateVrf(page.__api.vrfByNo("6122"), [{ price: 1400 }], [], "Ana Cruz", "bought the belt", "bought", proof);
+    assert.equal(records["ledger:6122"].data.rows[0].liq.proof.change.amount, 100);
     assert.equal(records["ledger:6122"].data.rows[0].vstatus, "Closed");
     assert.equal(records["ledger:6122"].data.rows[0].price, 1400);
     assert.ok(records["reserve:108"].data.status === "Closed" || records["reserve:108"].data.status === "Flagged");
