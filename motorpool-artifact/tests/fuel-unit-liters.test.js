@@ -50,8 +50,8 @@ function loadPage() {
 }
 
 describe("fuel lines on the VRF form", () => {
-  it("is build 2026-11-05 c", () => {
-    assert.match(html, /var BUILD = "2026-11-05 c"/);
+  it("is build 2026-11-05 d", () => {
+    assert.match(html, /var BUILD = "2026-11-05 d"/);
   });
 
   it("still starts a new line at pc", () => {
