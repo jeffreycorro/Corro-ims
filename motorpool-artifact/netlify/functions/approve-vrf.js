@@ -86,6 +86,7 @@ function createHandler(deps) {
         return reply(400, { error: "Body must be a JSON object", code: "bad_request" });
       }
 
+      /* Optional body.backfill = { note, noRelease: true } is forwarded as-is. */
       const result = await approvePendingVrf(store, body);
       return reply(200, result);
     } catch (err) {

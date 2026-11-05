@@ -11,6 +11,10 @@
  * A hold already marked Approved with no ledger line is healed: the missing
  * lines are inserted and the reserve is left Approved. A repeat call writes
  * nothing when both the reserve and the ledger line are already in place.
+ *
+ * Optional body.backfill = { note, noRelease: true } keeps the hold date,
+ * copies the fuel draft litres onto the ledger row, and still does not
+ * write fuel/withdrawals.
  */
 
 const { manilaDate, manilaYear, formatManilaIso } = require("./manila");
@@ -310,9 +314,79 @@ function bypassAttribution(override, extra) {
   return parts.join(" · ");
 }
 
-function buildLedgerRows(hold, vrfNo, snapshot, today) {
+/**
+ * Absent backfill is the normal approve. A present object must be
+ * { note, noRelease: true } so a typo cannot approve without the flag.
+ */
+function parseBackfill(raw) {
+  if (raw == null || raw === false) return null;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw approveError(400, "bad_request", "backfill must be { note, noRelease: true }");
+  }
+  if (raw.noRelease !== true) {
+    throw approveError(400, "bad_request", "backfill.noRelease must be true");
+  }
+  const note = String(raw.note == null ? "" : raw.note).trim();
+  if (!note) {
+    throw approveError(400, "bad_request", "backfill.note is required");
+  }
+  return { note, noRelease: true };
+}
+
+/* Litres already on the fuel draft. A typed litres figure wins. Qty is the
+   fallback for a sheet line that stored 40 on qty and left litres blank. */
+function draftFuelLiters(line) {
+  if (!line || !isFuel(line.cat)) return null;
+  const named =
+    line.liters != null && line.liters !== ""
+      ? line.liters
+      : line.litres != null && line.litres !== ""
+        ? line.litres
+        : "";
+  const fromNamed = parseFloat(named);
+  if (isFinite(fromNamed) && fromNamed > 0) return fromNamed;
+  const fromQty = parseFloat(line.qty);
+  if (isFinite(fromQty) && fromQty > 0) return fromQty;
+  return null;
+}
+
+function approvalAuditNote(approverNote, backfill) {
+  const parts = [];
+  const who = String(approverNote || "").trim();
+  const sheet = backfill && backfill.note ? String(backfill.note).trim() : "";
+  if (who) parts.push(who);
+  if (sheet && parts.indexOf(sheet) < 0) parts.push(sheet);
+  return parts.join(" — ") || "approved";
+}
+
+function assertBackfillDraft(hold, backfill) {
+  if (!backfill) return;
+  if (!monthKey(hold && hold.date)) {
+    throw approveError(
+      400,
+      "bad_request",
+      "Backfill keeps the VRF date on the hold, and this hold has none"
+    );
+  }
+  (hold.draftLines || []).forEach((line) => {
+    if (!line || !line.cat || !isFuel(line.cat)) return;
+    if (!(draftFuelLiters(line) > 0)) {
+      throw approveError(400, "bad_request", "Backfill fuel line has no litres");
+    }
+  });
+}
+
+function buildLedgerRows(hold, vrfNo, snapshot, today, backfill) {
+  if (backfill && !monthKey(hold && hold.date)) {
+    throw approveError(
+      400,
+      "bad_request",
+      "Backfill keeps the VRF date on the hold, and this hold has none"
+    );
+  }
   const lines = (hold.draftLines || []).filter((l) => l && l.cat);
-  const mk = monthKey(hold.date) || String(today || manilaDate()).slice(0, 7);
+  const dated = backfill ? hold.date : hold.date || today;
+  const mk = monthKey(dated) || String(today || manilaDate()).slice(0, 7);
   const veh = vehicleOf(snapshot.vehicles, hold.veh);
   return lines.map((l) => {
     const sp = partSpecOf(snapshot.parts, l.cat);
@@ -327,9 +401,17 @@ function buildLedgerRows(hold, vrfNo, snapshot, today) {
       });
       note = note ? note + " — " + extra : extra;
     }
+    let liters = parseFloat(l.liters) || null;
+    if (backfill && isFuel(l.cat)) {
+      const fromDraft = draftFuelLiters(l);
+      if (!(fromDraft > 0)) {
+        throw approveError(400, "bad_request", "Backfill fuel line has no litres");
+      }
+      liters = fromDraft;
+    }
     const row = {
       month: mk,
-      date: hold.date || today,
+      date: dated || today,
       vrf: String(vrfNo),
       veh: hold.veh,
       name: veh ? veh.desc : "",
@@ -344,15 +426,17 @@ function buildLedgerRows(hold, vrfNo, snapshot, today) {
       supplier: l.supplier || "",
       unit: l.unit || "pc",
       project: normProjectLabel(hold.project || ""),
-      liters: parseFloat(l.liters) || null,
+      liters,
       odo: holdOdo(hold),
       reserve: String(hold.no),
       vstatus: "Open",
       requestedBy: hold.requestedBy || "",
       override: hold.bypass || hold.fuelOverride ? hold.fuelOverride || null : null,
       bypass: !!hold.bypass,
-      notes: note,
+      notes: backfill ? backfill.note : note,
     };
+    /* The ledger line is the whole backfill. fuel/withdrawals is not written. */
+    if (backfill) row.backfill = true;
     if (hold.fuelPrevNote) row.fuelPrevNote = String(hold.fuelPrevNote);
     return row;
   });
@@ -412,6 +496,9 @@ function approvePayload(hold, vrfNo, extra) {
   if (extra.already) payload.already = true;
   if (extra.healed) payload.healed = true;
   if (extra.approverNote) payload.approverNote = extra.approverNote;
+  if (extra.backfill) {
+    payload.backfill = { note: extra.backfill.note, noRelease: true };
+  }
   return payload;
 }
 
@@ -430,15 +517,18 @@ function linkApprovedHold(hold, vrfNo, today, opts) {
   if ((hold.vrfs || []).indexOf(String(vrfNo)) < 0) {
     hold.vrfs = (hold.vrfs || []).concat([String(vrfNo)]);
   }
-  appendAudit(hold, {
+  const backfill = opts && opts.backfill;
+  const entry = {
     at: hold.approvedAt || (opts && opts.now) || today,
     by: hold.approvedBy || "",
     field: "ledger",
     from: "",
     to: String(vrfNo),
     via: hold.via || hold.approvedVia || "",
-    note: "Posted missing ledger lines",
-  });
+    note: backfill && backfill.note ? backfill.note : "Posted missing ledger lines",
+  };
+  if (backfill) entry.backfill = true;
+  appendAudit(hold, entry);
   return JSON.stringify(hold) !== before;
 }
 
@@ -457,6 +547,9 @@ function applyApproveFromHold(snapshot, hold, opts) {
       "Pending hold has no VRF number — refusing to invent one"
     );
   }
+
+  const backfill = parseBackfill(opts.backfill);
+  opts = Object.assign({}, opts, { backfill: backfill });
 
   const lines = (hold.draftLines || []).filter((l) => l && l.cat);
   const posted = !!postedVrfNumbers(snapshot.ledgerRows)[String(vrfNo)];
@@ -503,6 +596,7 @@ function applyApproveFromHold(snapshot, hold, opts) {
         "Pending hold has no draft lines to post — refusing to invent a VRF"
       );
     }
+    assertBackfillDraft(hold, backfill);
     if (typeof hold.project === "string") hold.project = normProjectLabel(hold.project);
     if (!String(hold.approvedBy || "").trim()) {
       hold.approvedBy = namedApiApprover(opts);
@@ -511,7 +605,7 @@ function applyApproveFromHold(snapshot, hold, opts) {
       hold.via = hold.via || "api";
     }
     const changed = linkApprovedHold(hold, vrfNo, today, opts);
-    const rows = buildLedgerRows(hold, vrfNo, snapshot, today);
+    const rows = buildLedgerRows(hold, vrfNo, snapshot, today, backfill);
     const mk = rows[0] ? rows[0].month : month;
     rememberLedgerRows(snapshot, mk, rows);
     return {
@@ -526,6 +620,7 @@ function applyApproveFromHold(snapshot, hold, opts) {
         ledgerLines: rows.length,
         status: "Open",
         approverNote: note,
+        backfill: backfill,
       }),
     };
   }
@@ -541,6 +636,7 @@ function applyApproveFromHold(snapshot, hold, opts) {
       "Pending hold has no draft lines to post — refusing to invent a VRF"
     );
   }
+  if (!posted) assertBackfillDraft(hold, backfill);
 
   if (typeof hold.project === "string") hold.project = normProjectLabel(hold.project);
   const approverName = namedApiApprover(opts);
@@ -556,15 +652,17 @@ function applyApproveFromHold(snapshot, hold, opts) {
   if ((hold.vrfs || []).indexOf(String(vrfNo)) < 0) {
     hold.vrfs = (hold.vrfs || []).concat([String(vrfNo)]);
   }
-  appendAudit(hold, {
+  const auditEntry = {
     at: hold.approvedAt || stampedAt,
     by: approverName,
     field: "status",
     from: "Requested",
     to: "Approved",
     via: "api",
-    note: note || "approved",
-  });
+    note: approvalAuditNote(note, backfill),
+  };
+  if (backfill) auditEntry.backfill = true;
+  appendAudit(hold, auditEntry);
 
   if (posted) {
     return {
@@ -583,7 +681,7 @@ function applyApproveFromHold(snapshot, hold, opts) {
     };
   }
 
-  const rows = buildLedgerRows(hold, vrfNo, snapshot, today);
+  const rows = buildLedgerRows(hold, vrfNo, snapshot, today, backfill);
   const mk = rows[0] ? rows[0].month : month;
   rememberLedgerRows(snapshot, mk, rows);
   return {
@@ -596,6 +694,7 @@ function applyApproveFromHold(snapshot, hold, opts) {
       ledgerLines: rows.length,
       status: "Open",
       approverNote: note,
+      backfill: backfill,
     }),
   };
 }
@@ -995,6 +1094,7 @@ async function approvePendingVrf(store, body, options) {
     approverNote: body && body.approverNote,
     approvedBy: body && body.approvedBy,
     now: options && options.now,
+    backfill: body && body.backfill,
   };
   if (store.readApproveRecords) {
     const slice = await store.readApproveRecords(key);

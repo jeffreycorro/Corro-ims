@@ -80,6 +80,27 @@ or
 
 `RSV-12` / `VRF-5812` spellings are normalized.
 
+### Backfill (`body.backfill`)
+
+Optional. Omit it for a normal approve. When the hold is a sheet backfill, send:
+
+```json
+{
+  "vrf": "6296",
+  "approvedBy": "Jeffrey James M. Corro",
+  "backfill": { "note": "Sep 29 FUEL RESERVE sheet backfill", "noRelease": true }
+}
+```
+
+`noRelease` must be `true` and `note` must be non-empty. The call then:
+
+- writes the ledger line on `hold.date` (29 Sep stays September, even if the approve runs later)
+- sets `liters` from that fuel draft line (`liters` / `litres` when present, otherwise `qty`)
+- sets `backfill: true` on the ledger row, puts `note` on `row.notes`, and copies the note into the reserve audit entry
+- does not write `fuel/withdrawals`
+
+A bad `backfill` object is `400` (`bad_request`) and nothing is written. A repeat after the line exists is the usual `200` with `already: true` and does not rewrite the row.
+
 **`approvedBy` is required** on every call that marks a VRF Approved. Builder/Noah pass the person who said yes, in the JSON field `approvedBy`. Allowed values are **Jeffrey James M. Corro** (aliases `Jeffrey`, `Jeffrey Corro`, `Jeffrey James Corro` are stored as the full name) or **Carmel**. The stored name is the canonical one, with `approvedAt` set to a timestamp and `via` / `approvedVia` set to `"api"`. A missing name, a bare `"api"`, or any other name is **400** (`approver_required` or `approver_not_allowed`) and nothing is written.
 
 The allowed list is `DEFAULT_APPROVERS` in `netlify/lib/approvers.js`. To change it without a code edit, set `MOTORPOOL_APPROVER_NAMES` on the function:
