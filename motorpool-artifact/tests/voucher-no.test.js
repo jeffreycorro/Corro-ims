@@ -280,7 +280,7 @@ describe("artifact HTML — optional voucher on liquidate", () => {
     assert.match(html, /Petty cash, GCash, or check voucher no\./);
     assert.match(html, /function applyVoucherToStamp/);
     assert.match(html, /function applyVoucherToReserve/);
-    assert.match(html, /liquidateVrf\(prePlan==="seed"\?entry:target,edits,added,lby\.value\.trim\(\),lnt\.value\.trim\(\),outcome,lvc\.value\)/);
+    assert.match(html, /liquidateVrf\(prePlan==="seed"\?entry:target,edits,added,lby\.value\.trim\(\),lnt\.value\.trim\(\),outcome,lvc\.value,proof\)/);
     assert.match(html, /if\(setVoucher\) applyVoucherToStamp\(stamp, voucherRaw\)/);
     assert.match(html, /Matched in Finance/);
     assert.match(html, /voucherSearchHit/);

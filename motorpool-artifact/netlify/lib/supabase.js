@@ -3,6 +3,7 @@
 const { ledgerMonthFromParts } = require("../../public/vrf-report");
 const { normalizeLedgerRows, normalizeReserve } = require("./project-name");
 const saveGuard = require("../../public/vrf-save-guard");
+const { guardRecordWrite: guardLiquidationWrite } = require("./liquidation-guard");
 
 function supabaseUrl() {
   return (
@@ -528,6 +529,13 @@ function bumpRev(next, existing) {
 
 async function writeRecord(row, exists, expectUpdatedAt) {
   await require("./cancel-guard").guardCancelWrite(row, { readRecord });
+  /* Liquidation proof: refuses a write that newly sets a VRF Liquidated
+     without receipts / after-fueling photo (see liquidation-guard.js). */
+  await guardLiquidationWrite(row, {
+    readRecord,
+    listPhotoMeta,
+    getDoc: (collection, id) => fetchDoc(collection, id),
+  });
   if (exists) {
     const cas = expectUpdatedAt ? `&updated_at=eq.${encodeURIComponent(expectUpdatedAt)}` : "";
     const out = await rest({
