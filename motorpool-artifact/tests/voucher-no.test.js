@@ -287,6 +287,6 @@ describe("artifact HTML — optional voucher on liquidate", () => {
     assert.match(html, /\["Voucher no\.", printVoucher\]/);
     assert.match(html, /h:"Voucher no\."/);
     assert.doesNotMatch(html, /lvc\.required/);
-    assert.match(html, /var BUILD = "2026-11-04 a"/);
+    assert.match(html, /var BUILD = "2026-11-05 a"/);
   });
 });
