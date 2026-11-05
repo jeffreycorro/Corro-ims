@@ -293,6 +293,10 @@ svg text{font-family:var(--font-body)}
   font-size:9px;letter-spacing:.08em;text-transform:uppercase}
 .vrfdoc .vtot{display:flex;justify-content:flex-end;gap:14px;align-items:baseline;margin-top:8px;
   font-family:var(--font-mono);font-size:14px;font-weight:600}
+.vrfdoc .vvar{margin-top:8px;border:1px solid #bbb;padding:6px 8px;font-size:11px}
+.vrfdoc .vvar div{padding:1px 0}
+.vrfdoc .vnote{margin-top:6px;font-size:11px;color:#333}
+.vrfdoc .vmark.edition span{font-size:42px;letter-spacing:.04em;white-space:normal;text-align:center;max-width:150mm;line-height:1.05}
 .vrfdoc .vsig{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:26px}
 .vrfdoc .vsig .line{border-bottom:1px solid #111;min-height:64px;display:flex;align-items:flex-end;justify-content:center;background:transparent}
 .vrfdoc .vsig img.sig{display:block;height:56px;max-height:56px;max-width:180px;width:auto;object-fit:contain;object-position:center bottom;background:transparent;mix-blend-mode:multiply;-webkit-print-color-adjust:exact;print-color-adjust:exact}
@@ -608,24 +612,26 @@ function auditMoney(n){
   var v=moneyNum(n);
   return (Math.round(v*100)/100).toFixed(2);
 }
-function reopenAuditNote(by, at, oldAmount, prevLiq){
+function reopenAuditNote(by, at, oldAmount, prevLiq, reason){
   var note="";
   if(prevLiq&&(prevLiq.at||prevLiq.by)){
     note="Was liquidated"+(prevLiq.at?" on "+prevLiq.at:"")+(prevLiq.by?" by "+prevLiq.by:"");
   }
+  var why=String(reason||"").trim();
+  if(why) note=(note?note+". ":"")+"Reason: "+why;
   return {at:at||"", by:String(by||"").trim(), field:"reopen",
-    from:auditMoney(oldAmount), to:"awaiting liquidation", note:note};
+    from:auditMoney(oldAmount), to:"awaiting liquidation", note:note, reason:why};
 }
 /* Drop the liquidation stamp. Leaving liq in place keeps the VRF Closed,
    which is why Reopen redrew the same sheet and looked like a dead button. */
-function reopenClosedLedgerRow(row, by, at, oldAmount, prevLiq){
+function reopenClosedLedgerRow(row, by, at, oldAmount, prevLiq, reason){
   var next=Object.assign({}, row||{});
   next.vrf=String(next.vrf||"").trim();
   next.vstatus="Open";
   next.notBought=false;
   delete next.liq;
   if(next.src==="reserve-hold") delete next.src;
-  next.audit=((row&&row.audit)||[]).concat([reopenAuditNote(by, at, oldAmount, prevLiq||(row&&row.liq))]);
+  next.audit=((row&&row.audit)||[]).concat([reopenAuditNote(by, at, oldAmount, prevLiq||(row&&row.liq), reason)]);
   return next;
 }
 function reserveNeedsReopen(reserve){
@@ -635,12 +641,19 @@ function reserveNeedsReopen(reserve){
 }
 /* Back to Approved, same VRF number. vrfs must still list that number or a
    reload will treat the posted lines as a collision and mint a new one. */
-function applyReserveReopen(reserve, by, at, oldAmount, prevLiq){
+function clearVarianceApproval(reserve){
+  if(!reserve) return;
+  reserve.varianceApprovedBy="";
+  reserve.varianceApprovedAt="";
+  reserve.varianceApprovedNote="";
+}
+function applyReserveReopen(reserve, by, at, oldAmount, prevLiq, reason){
   if(!reserveNeedsReopen(reserve)) return false;
   var no=String(reserve.vrfNo||"").trim();
   reserve.status="Approved";
   reserve.liquidatedAt="";
   reserve.actual=null;
+  clearVarianceApproval(reserve);
   delete reserve.voucherNo;
   delete reserve.voucherKey;
   delete reserve.voucherHint;
@@ -648,7 +661,7 @@ function applyReserveReopen(reserve, by, at, oldAmount, prevLiq){
     var list=(reserve.vrfs||[]).map(function(x){ return String(x); });
     if(list.indexOf(no)<0) reserve.vrfs=list.concat([no]);
   }
-  reserve.audit=(reserve.audit||[]).concat([reopenAuditNote(by, at, oldAmount, prevLiq)]);
+  reserve.audit=(reserve.audit||[]).concat([reopenAuditNote(by, at, oldAmount, prevLiq, reason)]);
   return true;
 }
 function priorReopenNote(rows, reserve){
@@ -712,6 +725,10 @@ function reserveForReclose(entry){
 /* local-date ISO: never build this from UTC getters, it shifts the day */
 function iso(d){ d=d||new Date();
   return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
+function isoAt(d){
+  d=d||new Date();
+  return iso(d)+"T"+String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0")+":"+String(d.getSeconds()).padStart(2,"0");
+}
 function parseDate(s){
   if(!s) return null;
   var m=/^(\d{4})-(\d{2})-(\d{2})/.exec(String(s));
@@ -2627,12 +2644,18 @@ async function saveVrfOdo(entry, n){
 
 /* Reopen a liquidated VRF onto the same number. Amounts stay so the form
    is prefilled. The ledger rows are replaced, not appended. */
-async function reopenLiquidatedVrf(entry, by){
+async function reopenLiquidatedVrf(entry, by, reason){
   by=String(by||"").trim();
+  reason=String(reason||"").trim();
   if(!by){
     var need=new Error("Put your name on the reopen. Nothing was changed.");
     need.code="reopen_name";
     throw need;
+  }
+  if(!reason){
+    var needWhy=new Error("Say why this liquidation is being reopened. Nothing was changed.");
+    needWhy.code="reopen_reason";
+    throw needWhy;
   }
   var no=String(entry&&entry.vrf||"").trim();
   if(!no) throw new Error("VRF number is required.");
@@ -2651,7 +2674,7 @@ async function reopenLiquidatedVrf(entry, by){
   if(hits.length){
     var byMk={};
     hits.forEach(function(hit){
-      var next=reopenClosedLedgerRow(hit.row, by, at, oldAmount, prevLiq);
+      var next=reopenClosedLedgerRow(hit.row, by, at, oldAmount, prevLiq, reason);
       next.vrf=no;
       (byMk[hit.mk]=byMk[hit.mk]||[]).push(next);
     });
@@ -2663,7 +2686,7 @@ async function reopenLiquidatedVrf(entry, by){
   var rsv=reserveForReclose(entry);
   var reserveOpened=false;
   if(rsv&&reserveNeedsReopen(rsv)){
-    applyReserveReopen(rsv, by, at, oldAmount, prevLiq);
+    applyReserveReopen(rsv, by, at, oldAmount, prevLiq, reason);
     if(!String(rsv.vrfNo||"").trim()) rsv.vrfNo=no;
     var owned=(rsv.vrfs||[]).map(function(x){ return String(x); });
     if(owned.indexOf(no)<0) rsv.vrfs=owned.concat([no]);
@@ -4328,9 +4351,230 @@ async function replaceRows(key,rows){
    tolerance, not equality — going past it needs a justification a person
    signs, not a silent adjustment. */
 var VARIANCE_TOL_DEFAULT=0.10;
+/* Liquidated print stays open at 50% and blocks only when the overrun is above it. */
+var VARIANCE_PRINT_MAX=0.50;
+var VRF_VARIANCE_PREVIEW_MARK="VARIANCE NOT APPROVED \u2013 PREVIEW ONLY";
+var VRF_PROOF_PREVIEW_MARK="LIQUIDATION NOT PROVED \u2013 PREVIEW ONLY";
+var VRF_ORIGINAL_MARK="APPROVED \u2013 ORIGINAL";
+var VRF_LIQUIDATED_MARK="LIQUIDATED";
 function varianceTol(){
   var v=(S.cfg&&S.cfg.varianceTol);
   return (typeof v==="number"&&v>=0)?v:VARIANCE_TOL_DEFAULT;
+}
+function liqApi(){
+  return (typeof MotorpoolLiquidation!=="undefined"&&MotorpoolLiquidation)?MotorpoolLiquidation:null;
+}
+function vrfIsLiquidatedEntry(entry){
+  var api=liqApi();
+  return !!(api&&api.vrfIsLiquidated(entry));
+}
+function approvedSourceFor(entry, reserve){
+  var api=liqApi();
+  if(!api) return {source:"missing", label:"", rows:[], amount:0, liters:0};
+  if(!reserve){ try{ reserve=reserveForVrf(entry); }catch(e){ reserve=null; } }
+  return api.originalApprovedSource(entry&&entry.vrf, S.issued, reserve);
+}
+function liquidatedVarianceFor(entry, reserve){
+  var api=liqApi();
+  if(!api) return null;
+  if(!reserve){ try{ reserve=reserveForVrf(entry); }catch(e){ reserve=null; } }
+  return api.liquidatedVariance((entry&&entry.rows)||[], approvedSourceFor(entry, reserve), reserve);
+}
+function entryFromApprovedRows(entry, src){
+  var rows=(src&&src.rows||[]).map(function(r){ return Object.assign({}, r, {vrf:entry.vrf}); });
+  if(!rows.length && src&&src.amount){
+    rows=[{vrf:entry.vrf, cat:"", item:"Approved budget", qty:1, price:src.amount, total:src.amount,
+      work:(entry.works&&entry.works[0])||"", veh:entry.veh||"", date:entry.date||"", supplier:"", unit:""}];
+  }
+  var works=[], seen={};
+  rows.forEach(function(r){
+    var code=r.work||"UNCLASS";
+    if(!seen[code]){ seen[code]=1; works.push(code); }
+  });
+  var scopes=works.map(function(code){
+    var rs=rows.filter(function(r){ return (r.work||"UNCLASS")===code; });
+    return {code:code, name:workName(code), rows:rs, confirmed:true,
+      total:rs.reduce(function(a,r){ return a+lineMoney(r); },0)};
+  });
+  if(!scopes.length) scopes=[{code:"", name:"", rows:rows, confirmed:true, total:0}];
+  return Object.assign({}, entry, {
+    rows:rows, scopes:scopes, works:works, multi:works.length>1,
+    total:rows.reduce(function(a,r){ return a+lineMoney(r); },0),
+    _printSource:src&&src.source, _printLabel:src&&src.label||""
+  });
+}
+async function liquidatedPrintGate(entry){
+  var api=liqApi();
+  var reserve=null;
+  try{ reserve=reserveForVrf(entry); }catch(e){ reserve=null; }
+  var variance=liquidatedVarianceFor(entry, reserve);
+  var photos=0;
+  try{ photos=photoCountMany(photoOwnersForOpenVrf(entry)); }catch(e2){ photos=photoCount(entry&&entry.vrf); }
+  var gauge=!!(entry&&entry.fuelPhotos&&entry.fuelPhotos.gauge===true);
+  if(reserve&&reserve.fuelPhotos&&reserve.fuelPhotos.gauge===true) gauge=true;
+  var fuelReserve=api?api.vrfIsFuelReserveDraw(entry, reserve):false;
+  if(fuelReserve && !gauge && photos>0){
+    try{
+      var metas=await listPhotoMetaMany(photoOwnersForOpenVrf(entry));
+      var audit=fuelAudit();
+      if(audit&&audit.fuelPhotoStatus(metas).gauge) gauge=true;
+    }catch(e3){}
+  }
+  var proof=api?api.liquidationProofGate({photoCount:photos, fuelReserve:fuelReserve, gauge:gauge}):{ok:true, block:false, message:""};
+  var block=api?api.liquidatedPrintBlock(variance, proof):{print:false, messages:[], previewMark:""};
+  return {variance:variance, proof:proof, block:block, reserve:reserve};
+}
+async function vrfPrintModel(entry, edition){
+  var api=liqApi();
+  var reserve=null;
+  try{ reserve=reserveForVrf(entry); }catch(e){ reserve=null; }
+  var model={edition:edition||"", entry:entry, reserve:reserve, variance:null, block:null, source:null, stamp:""};
+  if(edition==="original"){
+    var src=approvedSourceFor(entry, reserve);
+    model.source=src;
+    model.entry=entryFromApprovedRows(entry, src);
+    model.stamp=api?api.editionStamp(entry, "original", null):"APPROVED \u2013 ORIGINAL";
+  }else if(edition==="liquidated"){
+    var gate=await liquidatedPrintGate(entry);
+    model.variance=gate.variance;
+    model.block=gate.block;
+    model.reserve=gate.reserve;
+    model.stamp=api?api.editionStamp(entry, "liquidated", gate.block&&gate.block.print?gate.block:null):"LIQUIDATED";
+  }
+  return model;
+}
+function appendPrintEdition(host){
+  var edition="liquidated";
+  var wrap=el("div","row");
+  wrap.setAttribute("data-vrf-print-edition","1");
+  wrap.style.gap="4px";
+  function paint(){
+    wrap.innerHTML="";
+    [["original","Original (approved)"],["liquidated","Liquidated"]].forEach(function(pair){
+      var b=el("button","btn sm"+(edition===pair[0]?" pri":""), pair[1]);
+      b.type="button";
+      b.setAttribute("data-edition", pair[0]);
+      b.addEventListener("click", function(ev){
+        ev.preventDefault();
+        ev.stopPropagation();
+        edition=pair[0];
+        paint();
+      });
+      wrap.appendChild(b);
+    });
+  }
+  paint();
+  host.appendChild(wrap);
+  return {get:function(){ return edition; }};
+}
+function paintLiquidationNotices(host, entry){
+  if(!vrfIsLiquidatedEntry(entry)) return;
+  var v=liquidatedVarianceFor(entry);
+  if(!v) return;
+  if(v.label){
+    var lab=el("div","hint"); lab.style.marginTop="var(--space-2)";
+    lab.textContent=v.label;
+    host.appendChild(lab);
+  }
+  if(v.changeOwed>0){
+    var c=el("div","banner info");
+    c.setAttribute("data-change-owed","1");
+    c.style.marginTop="var(--space-3)";
+    c.textContent="Change owed / returned "+peso(v.changeOwed);
+    host.appendChild(c);
+  }
+  if(v.fuel&&v.fuel.flag){
+    var f=el("div","banner warn");
+    f.setAttribute("data-fuel-litre-notice","1");
+    f.style.marginTop="var(--space-3)";
+    f.textContent=v.fuel.note+" Approved "+nnum(v.fuel.approvedLiters,2)+" L, actual "+nnum(v.fuel.actualLiters,2)+" L.";
+    host.appendChild(f);
+  }
+  if(v.printBlocked){
+    var p=el("div","banner crit");
+    p.setAttribute("data-variance-block","1");
+    p.style.marginTop="var(--space-3)";
+    p.textContent=v.message;
+    host.appendChild(p);
+  }else if(v.varianceApproved){
+    var okb=el("div","banner info");
+    okb.style.marginTop="var(--space-3)";
+    var rsv=reserveForVrf(entry);
+    okb.textContent="Variance approved by "+((rsv&&rsv.varianceApprovedBy)||"")+" · "+((rsv&&rsv.varianceApprovedAt)||"");
+    host.appendChild(okb);
+  }
+}
+function appendVarianceApproval(host, reserve, canApprove){
+  if(!reserve||!liqApi()) return;
+  var live=vrfByNo(reserve.vrfNo);
+  if(!live||!vrfIsLiquidatedEntry(live)) return;
+  var v=liquidatedVarianceFor(live, reserve);
+  if(!v||!v.overPrintMax) return;
+  var card=el("div","card");
+  card.setAttribute("data-variance-approval","1");
+  card.style.marginTop="var(--space-4)";
+  var hd=el("div","hd"); hd.appendChild(el("h3",null,"Variance above 50%"));
+  card.appendChild(hd);
+  var bd=el("div","bd");
+  if(v.varianceApproved){
+    bd.appendChild(el("div",null,"Approved by "+(reserve.varianceApprovedBy||"")+" · "+(reserve.varianceApprovedAt||"")+(reserve.varianceApprovedNote?" — "+reserve.varianceApprovedNote:"")));
+    card.appendChild(bd); host.appendChild(card); return;
+  }
+  var msg=el("div","banner crit");
+  msg.textContent=v.message;
+  bd.appendChild(msg);
+  if(!(canApprove||S.office)){
+    bd.appendChild(el("div","hint","The office approves this variance. Until then the liquidated VRF can be previewed, not printed. The original approved print is still available."));
+    card.appendChild(bd); host.appendChild(card); return;
+  }
+  var name=el("input"); name.placeholder="Jeffrey James M. Corro or Carmel"; name.value=signedInName();
+  var note=el("input"); note.placeholder="note";
+  var row=el("div","f3"); row.style.marginTop="var(--space-3)";
+  function fld(l,n){ var x=el("div","field"); x.appendChild(el("label",null,l)); x.appendChild(n); return x; }
+  row.appendChild(fld("Approved by", name));
+  row.appendChild(fld("Note", note));
+  var go=el("button","btn pri","Approve this variance");
+  go.addEventListener("click", async function(){
+    var who=MotorpoolApprovers.resolveApprover(name.value);
+    if(!who.ok){ toast(who.error); return; }
+    liqApi().applyVarianceApproval(reserve, who.name, isoAt(), note.value.trim(), liqApi().formatVariancePct(v.pct));
+    try{ await saveReserves(reserve.no); }
+    catch(err){ toast(err&&err.message||"Could not save the variance approval."); return; }
+    toast("Variance approved by "+who.name+".");
+    render();
+  });
+  bd.appendChild(row);
+  var acts=el("div","row"); acts.style.marginTop="var(--space-3)"; acts.appendChild(go);
+  bd.appendChild(acts);
+  bd.appendChild(el("div","hint","Same approvers as a VRF approval: Jeffrey James M. Corro or Carmel. The name is stored with the time."));
+  card.appendChild(bd); host.appendChild(card);
+}
+function showLiquidatedPrintBlocked(entry, model){
+  var ex=document.getElementById("printBlockSheet"); if(ex) ex.remove();
+  var m=el("div","modal"); m.id="printBlockSheet";
+  var sheet=el("div","sheet"); sheet.style.maxWidth="520px";
+  var b=el("div"); b.style.padding="var(--space-5) var(--space-6)";
+  b.appendChild(el("h3",null,"Liquidated VRF cannot print"));
+  (model&&model.block&&model.block.messages||[]).forEach(function(msg){
+    var ban=el("div","banner crit");
+    ban.setAttribute("data-liquidated-block","1");
+    ban.style.marginTop="var(--space-3)";
+    ban.textContent=msg;
+    b.appendChild(ban);
+  });
+  b.appendChild(el("div","hint","Preview stays on screen with a watermark. The original approved print is not blocked."));
+  var acts=el("div"); acts.style.cssText="display:flex;gap:var(--space-2);justify-content:flex-end;margin-top:var(--space-4)";
+  var pv=el("button","btn","Preview");
+  pv.addEventListener("click", function(){
+    m.remove();
+    previewVrfPrint(entry, null, "liquidated");
+  });
+  var cb=el("button","btn pri","Close");
+  cb.addEventListener("click", function(){ m.remove(); });
+  acts.appendChild(pv); acts.appendChild(cb); b.appendChild(acts);
+  sheet.appendChild(b); m.appendChild(sheet);
+  m.addEventListener("click", function(e){ if(e.target===m) m.remove(); });
+  document.body.appendChild(m);
 }
 /* Fuel spend is raised on the VRF maker like any other line. A reserve row
    is only the log entry for an approved, not-yet-liquidated VRF — never a
@@ -7672,8 +7916,9 @@ async function ensureApprovedEsig(){
   try{ await saveEsigs(); }catch(e){}
 }
 function vrfMarkNode(label){
-  var preview=label===VRF_PREVIEW_MARK;
-  var mk=el("div","vmark"+(preview?" preview":""));
+  var preview=label===VRF_PREVIEW_MARK||/PREVIEW ONLY/.test(label||"");
+  var edition=!preview&&(label==="APPROVED \u2013 ORIGINAL"||label==="LIQUIDATED");
+  var mk=el("div","vmark"+(preview?" preview":"")+(edition?" edition":""));
   mk.setAttribute("aria-hidden","true");
   mk.appendChild(el("span",null,label||"FOR APPROVAL"));
   return mk;
@@ -9801,16 +10046,21 @@ function openReserve(no,asApprover){
       topActs.appendChild(voidHold);
     }
     if(r.vrfNo){
+      var holdEd=null;
+      var heldNow=heldVrfEntry(r);
+      if(heldNow&&vrfIsLiquidatedEntry(heldNow)) holdEd=appendPrintEdition(topActs);
       var prHold=el("button","btn pri","Print");
       prHold.addEventListener("click",function(){
         var held=heldVrfEntry(r);
         if(!held){ toast("VRF "+r.vrfNo+" is not on the log yet — refresh once."); return; }
+        if(holdEd){ printVrf(held, null, holdEd.get()); return; }
         printVrfNo(held);
       });
       var pvHold=el("button","btn","Preview");
       pvHold.addEventListener("click",function(){
         var held=heldVrfEntry(r);
         if(!held){ toast("VRF "+r.vrfNo+" is not on the log yet — refresh once."); return; }
+        if(holdEd){ previewVrfPrint(held, null, holdEd.get()); return; }
         previewVrfPrint(held);
       });
       var openHold=el("button","btn","Open VRF");
@@ -10162,8 +10412,17 @@ function openReserve(no,asApprover){
     var nb2=el("div","banner warn");
     nb2.innerHTML="<b>Came in "+esc(peso(nrv.diff))+" over — "+esc((nrv.pct*100).toFixed(1))+
       "% above the "+esc(peso(nrv.approved))+" approved.</b> The yard can explain it below; "+
-      "the office closes the notice once it has been seen.";
+      "the office closes the notice once it has been seen. This 10% notice does not block closing or printing.";
     jb.insertBefore(nb2,jb.firstChild);
+    var fuelLive=vrfByNo(r.vrfNo);
+    var fuelVar=fuelLive?liquidatedVarianceFor(fuelLive, r):null;
+    if(fuelVar&&fuelVar.fuel&&fuelVar.fuel.flag){
+      var fuelNote=el("div","banner warn");
+      fuelNote.setAttribute("data-fuel-litre-notice","1");
+      fuelNote.style.marginTop="var(--space-3)";
+      fuelNote.textContent=fuelVar.fuel.note+" Approved "+nnum(fuelVar.fuel.approvedLiters,2)+" L, actual "+nnum(fuelVar.fuel.actualLiters,2)+" L.";
+      jb.insertBefore(fuelNote, nb2.nextSibling);
+    }
     var jact=el("div","row"); jact.style.marginTop="var(--space-3)";
     var jsv=el("button","btn","Save explanation");
     jsv.addEventListener("click",async function(){
@@ -10272,6 +10531,8 @@ function openReserve(no,asApprover){
     okb.addEventListener("click",async function(){
       if(S._approvingRsv) return;
       if(!aw.value.trim()){ toast("The approval has to carry a name."); return; }
+      var approver=MotorpoolApprovers.resolveApprover(aw.value);
+      if(!approver.ok){ toast(approver.error); return; }
       var amt=parseFloat(ab2.value);
       if(!(amt>0)){ toast("Put an approved budget on it."); return; }
       var backup={status:r.status, approvedBudget:r.approvedBudget, approvedBy:r.approvedBy,
@@ -10285,8 +10546,8 @@ function openReserve(no,asApprover){
       amsg.style.color="";
       var madeVrf=null;
       try{
-        r.status="Approved"; r.approvedBudget=amt; r.approvedBy=aw.value.trim();
-        r.approvedAt=iso(); r.decisionNote=an.value.trim();
+        r.status="Approved"; r.approvedBudget=amt; r.approvedBy=approver.name;
+        r.approvedAt=isoAt(); r.decisionNote=an.value.trim();
         madeVrf=await postAndSaveReserve(r);
       }catch(err){
         r.status=backup.status; r.approvedBudget=backup.approvedBudget; r.approvedBy=backup.approvedBy;
@@ -10373,6 +10634,10 @@ function openReserve(no,asApprover){
   pcb.appendChild(pgal);
   pcard.appendChild(pcb);
   b.appendChild(pcard);
+
+  var liveHold=heldVrfEntry(r);
+  if(liveHold) paintLiquidationNotices(b, liveHold);
+  appendVarianceApproval(b, r, !!(asApprover||S.office));
 
   var close=el("div"); close.style.cssText="display:flex;justify-content:flex-end;margin-top:var(--space-5)";
   var cb=el("button","btn","Close"); cb.addEventListener("click",function(){ m.remove(); });
@@ -11524,10 +11789,20 @@ function vrfLogView(){
           sb.addEventListener("click",function(ev){ ev.stopPropagation(); sendUnnumberedDraft(v); });
           row.appendChild(sb);
         }
+        var logEd=null;
+        if(vrfIsLiquidatedEntry(v)) logEd=appendPrintEdition(row);
         var pb=el("button","btn sm","Print");
-        pb.addEventListener("click",function(ev){ ev.stopPropagation(); printVrfNo(v); });
+        pb.addEventListener("click",function(ev){
+          ev.stopPropagation();
+          if(logEd){ printVrf(v, null, logEd.get()); return; }
+          printVrfNo(v);
+        });
         var pvb=el("button","btn sm","Preview");
-        pvb.addEventListener("click",function(ev){ ev.stopPropagation(); previewVrfPrint(v); });
+        pvb.addEventListener("click",function(ev){
+          ev.stopPropagation();
+          if(logEd){ previewVrfPrint(v, null, logEd.get()); return; }
+          previewVrfPrint(v);
+        });
         row.appendChild(pvb);
         row.appendChild(pb);
         var link=vrfDrive(v);
@@ -11956,6 +12231,8 @@ function buildVrfDoc(entry,photos,opts){
   var preview=!!opts.preview;
   var unapproved=preview&&vrfPreviewUnapproved(entry);
   var mark=preview?vrfPreviewWatermark(entry):vrfPrintWatermark(entry);
+  if(opts.stamp) mark=opts.stamp;
+  if(/PREVIEW ONLY/.test(mark)) unapproved=true;
   var d=el("div","vrfdoc"+(unapproved?" unapproved-preview":""));
   d.appendChild(vrfMarkNode(mark));
   var hd=el("div","vhead");
@@ -12080,6 +12357,22 @@ function buildVrfDoc(entry,photos,opts){
   tot.appendChild(el("span",null,"GRAND TOTAL"));
   tot.appendChild(el("span",null,peso(grand)));
   d.appendChild(tot);
+  if(opts.edition==="liquidated" && opts.variance){
+    var vbox=el("div","vvar");
+    var srcName=opts.variance.source==="snapshot"?"sealed snapshot":"reserve budget — no sealed snapshot on file";
+    vbox.appendChild(el("div",null,"Approved ("+srcName+")  "+peso(opts.variance.approved)));
+    vbox.appendChild(el("div",null,"Actual  "+peso(opts.variance.actual)));
+    vbox.appendChild(el("div",null,"Variance  "+(liqApi()?liqApi().formatVariancePct(opts.variance.pct):"")));
+    if(opts.variance.changeOwed>0) vbox.appendChild(el("div",null,"Change owed / returned "+peso(opts.variance.changeOwed)));
+    if(opts.variance.fuel&&opts.variance.fuel.flag){
+      vbox.appendChild(el("div",null,"Approved litres "+nnum(opts.variance.fuel.approvedLiters,2)+" · Actual litres "+nnum(opts.variance.fuel.actualLiters,2)));
+      vbox.appendChild(el("div",null,opts.variance.fuel.note));
+    }
+    d.appendChild(vbox);
+  }
+  if(opts.edition==="original" && (opts.sourceLabel||entry._printLabel)){
+    d.appendChild(el("div","vnote", opts.sourceLabel||entry._printLabel));
+  }
 
   var sig=el("div","vsig");
   var preparedSrc=vrfPreparedSig(entry);
@@ -12188,6 +12481,9 @@ var VRFDOC_CSS = [
 "td.n{text-align:right;font-family:'IBM Plex Mono',monospace;white-space:nowrap}",
 ".scoperow td{background:#f7f7f7;font-family:'Archivo Narrow',sans-serif;font-weight:700;font-size:9px;letter-spacing:.08em;text-transform:uppercase}",
 ".vtot{display:flex;justify-content:flex-end;gap:14px;align-items:baseline;margin-top:8px;font-family:'IBM Plex Mono',monospace;font-size:14px;font-weight:600}",
+".vvar{margin-top:8px;border:1px solid #bbb;padding:6px 8px;font-size:11px}",
+".vnote{margin-top:6px;font-size:11px;color:#333}",
+".vmark.edition span{font-size:42px;letter-spacing:.04em;white-space:normal;text-align:center;max-width:150mm;line-height:1.05}",
 ".vsig{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:26px}",
 ".vsig .line{border-bottom:1px solid #111;min-height:64px;display:flex;align-items:flex-end;justify-content:center;background:transparent}",
 ".vsig img.sig{display:block;height:56px;max-height:56px;max-width:180px;width:auto;object-fit:contain;object-position:center bottom;background:transparent;mix-blend-mode:multiply;-webkit-print-color-adjust:exact;print-color-adjust:exact}",
@@ -12208,8 +12504,8 @@ var VRFDOC_CSS = [
 "@media screen{body{background:#eee;padding:14px}.vrfdoc{background:#fff;padding:14mm 12mm;box-shadow:0 2px 12px rgba(0,0,0,.2)}}"
 ].join("\n");
 
-function vrfDocFile(entry,photos){
-  var d=buildVrfDoc(entry,photos);
+function vrfDocFile(entry,photos,opts){
+  var d=buildVrfDoc(entry,photos,opts||null);
   return "<!doctype html><html><head><meta charset=\"utf-8\">"+
     "<title>VRF "+esc(String(entry.vrf))+"</title>"+
     "<link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600&family=Archivo+Narrow:wght@600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap\">"+
@@ -12340,22 +12636,35 @@ function pullPrintPhoto(x, page, onDone){
     return false;
   });
 }
-async function printVrf(entry,photos){
+async function printVrf(entry,photos,edition){
   var printGate=vrfPrintGate(entry);
   if(!printGate.ok){
     showPrintBlocked(printGate.message||"Not approved — cannot print", entry);
     return;
   }
-  try{ markVrfPrinted(entry); }catch(e){}
-  return openVrfPrintSheet(entry, photos, false);
+  edition=edition||"";
+  var model=null;
+  if(edition==="liquidated"||edition==="original"){
+    model=await vrfPrintModel(entry, edition);
+    if(edition==="liquidated" && model.block && model.block.print){
+      showLiquidatedPrintBlocked(entry, model);
+      return;
+    }
+  }
+  try{ markVrfPrinted(entry, {edition:edition}); }catch(e){}
+  if(!edition) return openVrfPrintSheet(entry, photos, false);
+  return openVrfPrintSheet(model.entry, photos, false, edition, model);
 }
 /* On-screen copy of the print layout. Does not print, set printedAt, seal or
    issue the VRF, or run the printed-before-approval gate. */
-function previewVrfPrint(entry,photos){
+function previewVrfPrint(entry,photos,edition){
   if(!entry) return;
-  return openVrfPrintSheet(entry, photos, true);
+  if(!edition) return openVrfPrintSheet(entry, photos, true);
+  return vrfPrintModel(entry, edition).then(function(model){
+    return openVrfPrintSheet(model.entry, photos, true, edition, model);
+  });
 }
-async function openVrfPrintSheet(entry,photos,preview){
+async function openVrfPrintSheet(entry,photos,preview,edition,model){
   var source=entry;
   try{ entry=await entryWithPrintableSig(entry); }catch(e){}
   var supplied=Array.isArray(photos);
@@ -12369,8 +12678,11 @@ async function openVrfPrintSheet(entry,photos,preview){
   var bar=el("div","noprint");
   bar.style.cssText="display:flex;gap:var(--space-2);align-items:center;padding:var(--space-3) var(--space-4);border-bottom:1px solid var(--rule);position:sticky;top:0;background:var(--surface);z-index:6;flex-wrap:wrap";
   var markLabel=preview?vrfPreviewWatermark(source):vrfPrintWatermark(source);
+  if(model&&model.stamp) markLabel=model.stamp;
+  if(preview && model && model.block && model.block.print) markLabel=model.block.previewMark;
   bar.appendChild(el("strong",null,(preview?"Preview · ":"")+"VRF "+(source&&source.vrf!=null?source.vrf:"")));
-  bar.appendChild(el("span","chip "+(markLabel==="APPROVED"?"ok":"warn"),markLabel));
+  var chipOk=markLabel==="APPROVED"||markLabel==="APPROVED \u2013 ORIGINAL"||markLabel==="LIQUIDATED";
+  bar.appendChild(el("span","chip "+(chipOk?"ok":"warn"),markLabel));
   var hint=el("span","hint","Opening the form…");
   bar.appendChild(hint);
   var sp=el("div"); sp.style.flex="1"; bar.appendChild(sp);
@@ -12423,7 +12735,7 @@ async function openVrfPrintSheet(entry,photos,preview){
   saveb.addEventListener("click",async function(){
     if(saveb.disabled) return;
     saveb.disabled=true; saveb.textContent="Preparing…";
-    var html=vrfDocFile(entry,live);
+    var html=vrfDocFile(entry,live,sheetOpts());
     var dl=null;
     try{ dl=await claude.use("downloads"); }catch(e){ dl=null; }
     if(dl){
@@ -12445,6 +12757,7 @@ async function openVrfPrintSheet(entry,photos,preview){
     if(preview){
       var shot=listReady?live.slice():undefined;
       m.remove();
+      if(edition){ printVrf(source, shot, edition); return; }
       printVrf(source, shot);
       return;
     }
@@ -12477,8 +12790,15 @@ async function openVrfPrintSheet(entry,photos,preview){
 
   var scrollBox=el("div","pv-scroll");
   scrollBox.style.cssText="background:#e9eaeb;padding:var(--space-4)";
+  function sheetOpts(){
+    if(!edition) return preview?{preview:true}:null;
+    var o={preview:!!preview, edition:edition, stamp:(model&&model.stamp)||"", variance:(model&&model.variance)||null,
+      sourceLabel:(model&&model.source&&model.source.label)||(entry&&entry._printLabel)||""};
+    if(preview && model && model.block && model.block.print) o.stamp=model.block.previewMark;
+    return o;
+  }
   function show(list){
-    var next=buildVrfDoc(entry, list, preview?{preview:true}:null);
+    var next=buildVrfDoc(entry, list, sheetOpts());
     next.style.boxShadow="0 2px 12px rgba(0,0,0,.18)";
     if(pageBox.node&&pageBox.node.parentNode) pageBox.node.replaceWith(next);
     else scrollBox.appendChild(next);
@@ -13662,20 +13982,23 @@ function headerAuditNotes(before, patch, by, at){
   });
   return notes;
 }
-async function markVrfPrinted(entry){
+async function markVrfPrinted(entry, opts){
+  opts=opts||{};
   var no=String(entry&&entry.vrf||"").trim();
   if(!vrfSeq(no)) return;
+  /* A liquidated or original reprint must not replace the sealed approved lines. */
+  var keepSeal=opts.edition==="liquidated"||opts.edition==="original";
   var r=reserveForVrf(entry);
   if(r && reserveOwnsVrfNo(r, no) && reservesOwningVrf(no).length<=1){
     if(!r.printedAt) r.printedAt=iso();
     try{ await saveReserves(r.no); }catch(e){}
-    try{ await rememberSealedVrf(sealSnapshot(r, (entry&&entry.rows)||[], "printed")); }catch(e){}
+    if(!keepSeal){ try{ await rememberSealedVrf(sealSnapshot(r, (entry&&entry.rows)||[], "printed")); }catch(e){} }
     if(String(r.status)==="Approved" && !vrfPostedInLedger(no)){
       try{ await materializeApprovedVrf(entry); }catch(e){}
     }
     return;
   }
-  if(entry && (entry.rows||[]).length){
+  if(!keepSeal && entry && (entry.rows||[]).length){
     try{
       await rememberSealedVrf({no:no, sealed:true, reason:"printed", at:iso(),
         snapshot:{month:(entry.rows[0]&&entry.rows[0].month)||entry.month||"", rows:entry.rows,
@@ -13849,6 +14172,8 @@ function openVrf(entry,tab){
   rgt.appendChild(el("div","hint","grand total"));
   hd.appendChild(rgt);
   b.appendChild(hd);
+  paintLiquidationNotices(b, entry);
+  appendVarianceApproval(b, reserveForVrf(entry), !!S.office);
 
   var odoRow=el("div","row"); odoRow.style.marginTop="var(--space-3)";
   odoRow.appendChild(el("span","hint","Odometer"));
@@ -13947,13 +14272,17 @@ function openVrf(entry,tab){
       openVrf(fresh, tab);
     }));
   }
+  var printEd=null;
+  if(vrfIsLiquidatedEntry(entry)) printEd=appendPrintEdition(tabs);
   var pr=el("button","btn","Print / save as PDF");
   pr.addEventListener("click",function(){
+    if(printEd){ printVrf(entry, null, printEd.get()); return; }
     printVrf(entry);
   });
   tabs.appendChild(pr);
   var prv=el("button","btn","Preview");
   prv.addEventListener("click",function(){
+    if(printEd){ previewVrfPrint(entry, null, printEd.get()); return; }
     previewVrfPrint(entry);
   });
   tabs.appendChild(prv);
@@ -14159,21 +14488,34 @@ function openVrf(entry,tab){
         roName.value=signedInName();
         roName.setAttribute("aria-label","Your name");
         roNameWrap.appendChild(roName);
+        var roWhyWrap=el("div","field"); roWhyWrap.style.flex="1";
+        roWhyWrap.appendChild(el("label",null,"Why"));
+        var roWhy=el("input");
+        roWhy.placeholder="why this liquidation is being reopened";
+        roWhy.setAttribute("aria-label","Why");
+        roWhyWrap.appendChild(roWhy);
         var rop=el("button","btn","Reopen");
         var roMsg=el("div","hint"); roMsg.style.marginTop="var(--space-2)";
         rop.addEventListener("click",async function(){
           var who=String(roName.value||"").trim();
+          var why=String(roWhy.value||"").trim();
           if(!who){
             roMsg.style.color="var(--danger)";
             roMsg.textContent="Put your name on the reopen. Nothing was changed.";
             try{ roName.focus(); }catch(eFocus){}
             return;
           }
+          if(!why){
+            roMsg.style.color="var(--danger)";
+            roMsg.textContent="Say why this liquidation is being reopened. Nothing was changed.";
+            try{ roWhy.focus(); }catch(eWhy){}
+            return;
+          }
           rop.disabled=true;
           roMsg.style.color="";
           roMsg.textContent="Reopening VRF "+entry.vrf+"…";
           try{
-            await reopenLiquidatedVrf(entry, who);
+            await reopenLiquidatedVrf(entry, who, why);
           }catch(err){
             rop.disabled=false;
             var msg=(err&&err.message)||("Could not reopen VRF "+entry.vrf+".");
@@ -14188,6 +14530,7 @@ function openVrf(entry,tab){
           if(e2) openVrf(e2,"liq");
         });
         roRow.appendChild(roNameWrap);
+        roRow.appendChild(roWhyWrap);
         roRow.appendChild(rop);
         roWrap.appendChild(roRow);
         roWrap.appendChild(roMsg);

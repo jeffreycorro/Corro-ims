@@ -111,7 +111,7 @@ describe("approve-from-hold (Office approve path)", () => {
     const store = createMemoryStore(seedDocs());
     const out = await approvePendingVrf(
       store,
-      { vrf: "5812", approverNote: "jeffrey-yes via Noah" },
+      { vrf: "5812", approvedBy: "Jeffrey James M. Corro", approverNote: "jeffrey-yes via Noah" },
       { now: "2026-09-21" }
     );
     assert.equal(out.ok, true);
@@ -141,14 +141,14 @@ describe("approve-from-hold (Office approve path)", () => {
 
   it("accepts RSV-12 as the hold key", async () => {
     const store = createMemoryStore(seedDocs());
-    const out = await approvePendingVrf(store, { vrf: "RSV-12" }, { now: "2026-09-21" });
+    const out = await approvePendingVrf(store, { vrf: "RSV-12", approvedBy: "Carmel" }, { now: "2026-09-21" });
     assert.equal(out.vrf, "5812");
     assert.equal(out.reserve, "12");
   });
 
   it("does not remint a uniquely pending number", async () => {
     const store = createMemoryStore(seedDocs());
-    const out = await approvePendingVrf(store, { vrfNumber: 5812 }, { now: "2026-09-21" });
+    const out = await approvePendingVrf(store, { vrfNumber: 5812, approvedBy: "Jeffrey" }, { now: "2026-09-21" });
     assert.equal(out.vrf, "5812");
     const cfg = await store.get("config", "app");
     assert.equal(cfg.nextVrf, 5813);
@@ -197,7 +197,7 @@ describe("approve-from-hold (Office approve path)", () => {
         ledgerRows: [{ vrf: "5812", date: "2026-09-21", total: 12500, src: "ledger", vstatus: "Open" }],
       })
     );
-    const out = await approvePendingVrf(store, { vrf: "RSV-44" }, { now: "2026-09-21" });
+    const out = await approvePendingVrf(store, { vrf: "RSV-44", approvedBy: "Jeffrey James M. Corro" }, { now: "2026-09-21" });
     assert.equal(out.ok, true);
     assert.equal(out.already, true);
     assert.equal(out.vrf, "5812");
@@ -285,7 +285,7 @@ describe("approve-vrf Netlify function", () => {
     const handler = createHandler({ store });
     const res = await call(handler, {
       headers: { authorization: `Bearer ${SECRET}` },
-      body: JSON.stringify({ vrf: "5812", approverNote: "jeffrey-yes via Noah" }),
+      body: JSON.stringify({ vrf: "5812", approvedBy: "Jeffrey James M. Corro", approverNote: "jeffrey-yes via Noah" }),
     });
     assert.equal(res.statusCode, 200);
     const body = JSON.parse(res.body);
@@ -330,7 +330,7 @@ describe("approve-vrf Netlify function", () => {
     );
     const res = await call(createHandler({ store }), {
       headers: { authorization: `Bearer ${SECRET}` },
-      body: JSON.stringify({ vrf: "5812" }),
+      body: JSON.stringify({ vrf: "5812", approvedBy: "Jeffrey James M. Corro" }),
     });
     assert.equal(res.statusCode, 200);
     const body = JSON.parse(res.body);
@@ -362,7 +362,7 @@ describe("approve-vrf Netlify function", () => {
     process.env.SUPABASE_ANON_KEY = "anon-test";
     const res = await call(handlerWithSeed(), {
       headers: { "x-approve-secret": SECRET },
-      body: JSON.stringify({ vrf: "5812" }),
+      body: JSON.stringify({ vrf: "5812", approvedBy: "Carmel" }),
     });
     assert.equal(res.statusCode, 200);
     assert.equal(JSON.parse(res.body).vrf, "5812");
@@ -394,7 +394,7 @@ describe("approve-vrf Netlify function", () => {
     process.env.MOTORPOOL_APPROVE_SECRET = SECRET;
     const res = await call(handlerWithSeed(), {
       headers: { "x-approve-secret": SECRET },
-      body: JSON.stringify({ vrf: "5812" }),
+      body: JSON.stringify({ vrf: "5812", approvedBy: "Jeffrey" }),
     });
     assert.equal(res.statusCode, 200);
   });

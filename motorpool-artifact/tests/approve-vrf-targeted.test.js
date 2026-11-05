@@ -243,7 +243,7 @@ describe("approve writes only the reserve and the ledger lines that change", () 
       ["ledger:5893", "reserve:12"]
     );
     assert.equal(store.records["reserve:12"].data.status, "Approved");
-    assert.equal(store.records["reserve:12"].data.approvedBy, "Jeffrey");
+    assert.equal(store.records["reserve:12"].data.approvedBy, "Jeffrey James M. Corro");
     assert.ok(store.records["reserve:12"].data.approvedAt);
     assert.ok((store.records["reserve:12"].data.audit || []).some((note) => note.field === "status"));
     assert.equal(store.records["ledger:5893"].data.rows.length, 2);
@@ -256,7 +256,7 @@ describe("approve writes only the reserve and the ledger lines that change", () 
   it("falls back ledger-first then reserve when the SQL function is not installed", async () => {
     const store = createRecordsStore(bigBook(hold()), { missingRpc: true });
     const before = neighborStamps(store);
-    const out = await approvePendingVrf(store, { vrf: "5893" }, { now: "2026-09-18" });
+    const out = await approvePendingVrf(store, { vrf: "5893", approvedBy: "Jeffrey" }, { now: "2026-09-18" });
     assert.equal(out.ok, true);
     assert.equal(out.ledgerLines, 2);
     const ledgerAt = store.writes.indexOf("fallback-ledger:5893");
@@ -372,8 +372,8 @@ describe("approve does not duplicate ledger lines", () => {
       "master/vehicles": { rows: [{ code: "MC-01", desc: "Hilux" }] },
       "master/parts": { rows: [] },
     });
-    await approvePendingVrf(store, { vrf: "5812" }, { now: "2026-09-18" });
-    await approvePendingVrf(store, { vrf: "5812" }, { now: "2026-09-18" });
+    await approvePendingVrf(store, { vrf: "5812", approvedBy: "Carmel" }, { now: "2026-09-18" });
+    await approvePendingVrf(store, { vrf: "5812", approvedBy: "Carmel" }, { now: "2026-09-18" });
     const month = await store.get("ledger", "2026-09");
     assert.equal(month.rows.filter((row) => row.vrf === "5812").length, 2);
   });

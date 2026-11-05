@@ -13,9 +13,10 @@
  * nothing when both the reserve and the ledger line are already in place.
  */
 
-const { manilaDate, manilaYear } = require("./manila");
+const { manilaDate, manilaYear, formatManilaIso } = require("./manila");
 const { mergeIssuedNumbers, mergeLedgerRows, mergeReserveRows } = require("./doc-merge");
 const { normProjectLabel } = require("./project-name");
+const { resolveApprover } = require("./approvers");
 
 function approveError(statusCode, code, error) {
   const err = new Error(error);
@@ -376,6 +377,24 @@ function appendAudit(hold, entry) {
   hold.audit = audit;
 }
 
+/** Date-only `now` from tests becomes a Manila timestamp. Live calls use the clock. */
+function approvalTimestamp(now) {
+  const s = String(now || "").trim();
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s)) return s;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s + "T00:00:00+08:00";
+  return formatManilaIso();
+}
+
+/**
+ * A new API approval must name Jeffrey or Carmel. Historical approvedBy
+ * values, including a bare "api", are not rewritten.
+ */
+function namedApiApprover(opts) {
+  const resolved = resolveApprover(opts && opts.approvedBy);
+  if (!resolved.ok) throw approveError(400, resolved.code, resolved.error);
+  return resolved.name;
+}
+
 function approvePayload(hold, vrfNo, extra) {
   extra = extra || {};
   const payload = {
@@ -384,7 +403,9 @@ function approvePayload(hold, vrfNo, extra) {
     reserve: String(hold.no),
     status: extra.status || "Open",
     ledgerLines: extra.ledgerLines || 0,
+    approvedBy: hold.approvedBy || "",
     approvedVia: hold.approvedVia || "api",
+    via: hold.via || hold.approvedVia || "api",
     approvedAt: hold.approvedAt,
     approvedBudget: hold.approvedBudget,
   };
@@ -411,10 +432,11 @@ function linkApprovedHold(hold, vrfNo, today, opts) {
   }
   appendAudit(hold, {
     at: hold.approvedAt || (opts && opts.now) || today,
-    by: hold.approvedBy || (opts && opts.approvedBy) || "api",
+    by: hold.approvedBy || "",
     field: "ledger",
     from: "",
     to: String(vrfNo),
+    via: hold.via || hold.approvedVia || "",
     note: "Posted missing ledger lines",
   });
   return JSON.stringify(hold) !== before;
@@ -482,6 +504,12 @@ function applyApproveFromHold(snapshot, hold, opts) {
       );
     }
     if (typeof hold.project === "string") hold.project = normProjectLabel(hold.project);
+    if (!String(hold.approvedBy || "").trim()) {
+      hold.approvedBy = namedApiApprover(opts);
+      hold.approvedAt = hold.approvedAt || approvalTimestamp(opts.now);
+      hold.approvedVia = hold.approvedVia || "api";
+      hold.via = hold.via || "api";
+    }
     const changed = linkApprovedHold(hold, vrfNo, today, opts);
     const rows = buildLedgerRows(hold, vrfNo, snapshot, today);
     const mk = rows[0] ? rows[0].month : month;
@@ -515,22 +543,26 @@ function applyApproveFromHold(snapshot, hold, opts) {
   }
 
   if (typeof hold.project === "string") hold.project = normProjectLabel(hold.project);
+  const approverName = namedApiApprover(opts);
+  const stampedAt = approvalTimestamp(opts.now);
   hold.status = "Approved";
   hold.approvedBudget = hold.approvedBudget != null ? hold.approvedBudget : hold.budget;
-  hold.approvedBy = String(opts.approvedBy || "").trim() || hold.approvedBy || "api";
-  hold.approvedAt = posted ? hold.approvedAt || today : today;
+  hold.approvedBy = approverName;
+  hold.approvedAt = posted ? hold.approvedAt || stampedAt : stampedAt;
   hold.decisionNote = note || hold.decisionNote || "";
-  hold.approvedVia = hold.approvedVia || "api";
+  hold.approvedVia = "api";
+  hold.via = "api";
   if (note) hold.approverNote = note;
   if ((hold.vrfs || []).indexOf(String(vrfNo)) < 0) {
     hold.vrfs = (hold.vrfs || []).concat([String(vrfNo)]);
   }
   appendAudit(hold, {
-    at: hold.approvedAt || today,
-    by: hold.approvedBy || "api",
+    at: hold.approvedAt || stampedAt,
+    by: approverName,
     field: "status",
     from: "Requested",
     to: "Approved",
+    via: "api",
     note: note || "approved",
   });
 
