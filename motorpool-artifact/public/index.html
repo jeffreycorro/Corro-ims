@@ -1,4 +1,4 @@
-<!doctype html><html><head><script src="/claude-shim.js"></script><link rel="manifest" href="/manifest.json"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/favicon.svg"><link rel="stylesheet" href="/pwa.css"><script src="/pwa.js"></script><script src="/vrf-report.js"></script><script src="/fuel-audit.js"></script><script src="/voucher-no.js"></script><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1"><title>Corcondev Motorpool</title>
+<!doctype html><html><head><script src="/claude-shim.js"></script><link rel="manifest" href="/manifest.json"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/favicon.svg"><link rel="stylesheet" href="/pwa.css"><script src="/pwa.js"></script><script src="/vrf-report.js"></script><script src="/fuel-audit.js"></script><script src="/stock-fifo.js"></script><script src="/voucher-no.js"></script><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1"><title>Corcondev Motorpool</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600&family=Archivo+Narrow:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
@@ -445,7 +445,7 @@ var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
    This label is inside the page function. The shim reads window.BUILD when it
    sends a save. Without that copy every save goes out with an empty build and
    the server answers "Reload the page". */
-var BUILD = "2026-11-05 c";
+var BUILD = "2026-11-05 d";
 try { window.BUILD = BUILD; } catch (e) {}
 var DAY = 86400000, MO = 30.44;
 
@@ -6081,33 +6081,75 @@ async function saveVehicles(rows){
 }
 
 /* ============================ derived ============================ */
-/* FIFO across fuel-reserve lots: each withdrawal eats the oldest litres first. */
-function fifo(){
-  var lots = S.purchases.slice().filter(function(p){return p.liters>0;})
-    .sort(function(a,b){ return (parseDate(a.date)||0)-(parseDate(b.date)||0); })
-    .map(function(p){ return {date:p.date, left:p.liters, rate:(p.pricePerL|| (p.total/p.liters) ||0), vrf:p.vrf}; });
-  var draws = S.withdrawals.slice().filter(function(w){return w.liters>0;})
-    .sort(function(a,b){ return (parseDate(a.date)||0)-(parseDate(b.date)||0); });
-  var li=0, costed=[], short=0;
-  draws.forEach(function(w){
-    var need=w.liters, cost=0;
-    while(need>0.0001 && li<lots.length){
-      if(lots[li].left<=0.0001){ li++; continue; }
-      var take=Math.min(need,lots[li].left);
-      cost += take*lots[li].rate; lots[li].left-=take; need-=take;
+function stockFifo(){
+  try{ if(typeof StockFifo!=="undefined" && StockFifo && StockFifo.fifoConsume) return StockFifo; }catch(e){}
+  try{ if(window.StockFifo && window.StockFifo.fifoConsume) return window.StockFifo; }catch(e2){}
+  return null;
+}
+/* Price a new draft. A FUEL RESERVE draw and a store issue take FIFO cost.
+   A drum delivery and a store receipt keep the typed price. A station fill
+   keeps its own price. Fuel units stay on the liters lock. Stored VRFs
+   are not rewritten. */
+function applyDraftStockPrices(d){
+  var api=stockFifo();
+  if(!api||!d) return;
+  var header={work:d.work,veh:d.veh};
+  var book=fifo();
+  var fuelLeft=(book.lots||[]).map(function(l){ return {left:l.left, rate:l.rate}; });
+  var issued={};
+  (d.lines||[]).forEach(function(l){
+    if(!l||!l.cat) return;
+    if(isFuel(l.cat)) normalizeFuelLine(l);
+    var role=api.lineRole(l,header);
+    if(api.priceInputMode(l,header)!=="auto") return;
+    var qty=parseFloat(l.qty)||0;
+    if(role==="drum-out"){
+      var q=api.consumeQuote(fuelLeft, qty);
+      var b=api.blended(q.cost, qty);
+      l.price=b.price?trimPriceNum(b.price):"";
+      if(qty>0) l.liters=qty;
+      l._fifoShort=q.shortfall||0;
+    }else if(role==="store-out"){
+      var key=itemKey(l);
+      var q2=api.quoteStore(allLines(), function(row){ return itemKey(row); }, key, qty, issued[key]||0);
+      var b2=api.blended(q2.cost, qty);
+      l.price=b2.price?trimPriceNum(b2.price):"";
+      l._fifoShort=q2.shortfall||0;
+      issued[key]=(issued[key]||0)+qty;
     }
-    if(need>0.0001){ short+=need; }
-    costed.push(Object.assign({},w,{fifoCost:cost, fifoRate: w.liters? cost/w.liters : 0}));
   });
-  var onHand=0, onHandValue=0;
-  lots.forEach(function(l){ onHand+=l.left; onHandValue+=l.left*l.rate; });
-  return {
-    lots:lots, draws:costed, onHand:onHand, onHandValue:onHandValue, shortfall:short,
-    purchasedL: S.purchases.reduce(function(a,p){return a+(p.liters||0);},0),
-    purchasedValue: S.purchases.reduce(function(a,p){return a+(p.total||0);},0),
-    consumedL: draws.reduce(function(a,d){return a+(d.liters||0);},0),
-    costOfUse: costed.reduce(function(a,d){return a+d.fifoCost;},0)
-  };
+}
+function draftPriceMessage(d){
+  var api=stockFifo();
+  if(!api||!d) return "";
+  var header={work:d.work,veh:d.veh};
+  var lines=(d.lines||[]).filter(function(l){ return l&&l.cat; });
+  for(var i=0;i<lines.length;i++){
+    if(!api.missingPrice(lines[i], header)) continue;
+    var role=api.lineRole(lines[i], header);
+    if(role==="drum-in") return "A delivery into the drums needs a price per litre.";
+    if(role==="store-in") return "A purchase into the store needs a price.";
+    return "Enter a price on that line.";
+  }
+  return "";
+}
+/* FIFO across fuel-reserve lots: each withdrawal eats the oldest litres first.
+   The arithmetic is the stock-fifo rule. Lots are AV fuel lines and FUEL-BULK
+   deliveries, plus a purchases-list row only when that VRF has no ledger line.
+   Draws are FUEL RESERVE lines, plus a withdrawals-list row only when that VRF
+   has no ledger draw. A station fill does not move the drums. */
+function fifo(){
+  var api=stockFifo();
+  if(!api){
+    return {lots:[],draws:[],onHand:0,onHandValue:0,shortfall:0,purchasedL:0,purchasedValue:0,consumedL:0,costOfUse:0};
+  }
+  var mov=api.fuelMovements({
+    purchases:S.purchases||[],
+    withdrawals:S.withdrawals||[],
+    lines:allLines(),
+    reserves:S.reserves||[]
+  });
+  return api.fifoConsume(mov.lots, mov.draws);
 }
 
 /* The sheet flagged nearly every part "REPLACED TOO SOON" because it tested one
@@ -7504,26 +7546,39 @@ function renderEncoderChecklist(rec){
 }
 function reserveIssueLedger(){
   var api=fuelAudit();
+  var stock=null;
+  try{ if(typeof stockFifo==="function") stock=stockFifo(); }catch(eStock){ stock=null; }
   var lots=[], seen={};
-  (S.purchases||[]).forEach(function(p){
-    if(!p) return;
-    var id=p.vrf?("VRF-"+String(p.vrf).replace(/\D/g,"")):("buy-"+(p.date||""));
-    if(!id||seen[id]) return;
-    seen[id]=1;
-    lots.push({id:id, date:p.date||"", liters:Number(p.liters)||0, source:"purchase"});
-  });
-  (S.reserves||[]).forEach(function(r){
-    if(!r) return;
-    if(!(rsvKind(r)==="fuel-bulk"||r.veh==="AV")) return;
-    var st=String(r.status||"");
-    if(st==="Rejected"||st==="Cancelled"||st==="Archived") return;
-    var id=r.vrfNo?("VRF-"+String(r.vrfNo).replace(/\D/g,"")):("RSV-"+r.no);
-    if(seen[id]) return;
-    var L=reserveFuelLitres(r)||Number(r.litres)||0;
-    if(!(L>0)) return;
-    seen[id]=1;
-    lots.push({id:id, date:r.date||"", liters:L, source:"reserve"});
-  });
+  /* Lots are drum deliveries only. A FUEL-STN reserve is a station fill even
+     when its kind is fuel-bulk, and a FUEL RESERVE draw is not a lot. */
+  if(stock){
+    var mov=stock.fuelMovements({
+      purchases:S.purchases||[], withdrawals:[], lines:allLines(), reserves:S.reserves||[]
+    });
+    (mov.lots||[]).forEach(function(lot){
+      var id=lot.vrf?("VRF-"+String(lot.vrf).replace(/\D/g,""))
+        :(lot.reserveNo!=null && String(lot.reserveNo)!=="" ? ("RSV-"+lot.reserveNo) : (lot.id||""));
+      if(!id||seen[id]||!(lot.liters>0)) return;
+      seen[id]=1;
+      lots.push({id:id, date:lot.date||"", liters:lot.liters, source:lot.source||"ledger"});
+    });
+  }else{
+    (S.reserves||[]).forEach(function(r){
+      if(!r) return;
+      var work=String(r.work||"").toUpperCase();
+      if(work==="FUEL-STN"||work==="FUEL-RES") return;
+      var st=String(r.status||"");
+      if(st==="Rejected"||st==="Cancelled"||st==="Archived") return;
+      var bulk=work==="FUEL-BULK"||(rsvKind(r)==="fuel-bulk"&&(r.veh==="AV"||work==="FUEL-BULK"));
+      if(!bulk) return;
+      var id=r.vrfNo?("VRF-"+String(r.vrfNo).replace(/\D/g,"")):("RSV-"+r.no);
+      if(!id||seen[id]) return;
+      var L=reserveFuelLitres(r)||Number(r.litres)||0;
+      if(!(L>0)) return;
+      seen[id]=1;
+      lots.push({id:id, date:r.date||"", liters:L, source:"reserve"});
+    });
+  }
   var issues=[], dedupe={};
   function addIssue(row){
     var key=[row.reserve||"", row.vrf||"", row.veh||"", row.date||"", row.liters||""].join("|");
@@ -7571,8 +7626,9 @@ var OVERRIDE_REASONS=["Meter not working / not readable","Unit idled or ran stat
    IN  = a VRF line coded to unit AV            (a receipt into the store)
    OUT = a VRF line on the real unit whose      (an issue from the store)
          supplier is MOTORPOOL INVENTORY
-   Value is weighted average, not FIFO: FIFO earns its keep on one commodity
-   with a moving price (the diesel), not on a hundred part numbers.
+   Value is FIFO, the same oldest-first rule as the fuel drums. A draw is
+   priced from that cost when it is raised. A receipt is what puts the price
+   on the lot. Fuel coded to AV stays on the drum card, not in this store.
    A receipt is NOT project cost — it moves cash into stock. The issue is the
    cost, charged to the unit that took it. Counting both is the same peso twice. */
 var STORE_SUPPLIER="MOTORPOOL INVENTORY";
@@ -7580,9 +7636,15 @@ var STORE_SUPPLIER="MOTORPOOL INVENTORY";
    drums, already carried as FIFO lots on the fuel reserve. Counting it here too
    was the same ₱344,544 twice and made the store look four times its size. */
 function isStoreIssue(r){
+  var api=stockFifo();
+  if(api) return api.lineRole(r)==="store-out";
   return !isFuel(r.cat) && String(r.supplier||"").trim().toUpperCase()===STORE_SUPPLIER;
 }
-function isStoreReceipt(r){ return (r.veh||"")==="AV" && !isFuel(r.cat); }
+function isStoreReceipt(r){
+  var api=stockFifo();
+  if(api) return api.lineRole(r)==="store-in";
+  return (r.veh||"")==="AV" && !isFuel(r.cat);
+}
 /* The item master is what stops the store drifting. "Brake Fluild" going out
    and "Brake & Clutch Fluid National" coming in are the same tin; without a
    master they read as two items, one of them permanently negative. Every master
@@ -7657,9 +7719,11 @@ function inventory(){
   });
   _inv=Object.keys(m).map(function(k){
     var e=m[k];
-    e.avgCost = e.inQty>0 ? e.inValue/e.inQty : null;
     e.onHand = e.inQty-e.outQty;
-    e.onHandValue = (e.avgCost!=null) ? e.onHand*e.avgCost : 0;
+    var fifoVal=stockFifo()?stockFifo().valueRemaining(e.receipts, e.outQty):null;
+    e.fifoRate = fifoVal?fifoVal.rate:null;
+    e.avgCost = e.fifoRate!=null ? e.fifoRate : (e.inQty>0 ? e.inValue/e.inQty : null);
+    e.onHandValue = (e.onHand>0 && fifoVal) ? fifoVal.value : 0;
     e.neverReceived = e.inQty===0 && e.outQty>0;
     e.negative = e.onHand<-0.0001;
     e.belowReorder = (e.reorder>0) && e.onHand<=e.reorder && !e.neverReceived;
@@ -11716,12 +11780,12 @@ function invView(){
   var months=inventoryInByMonth();
   var w=el("div");
   w.appendChild(pageHead("Office · Inventory","The store, valued",
-    "Stock is valued at weighted average cost. Money spent buying into the store is its own ledger — it is not what the fleet cost to run, because the cost lands when the part is issued to a unit."));
+    "Stock is valued at FIFO cost, oldest receipt first. Money spent buying into the store is its own ledger — it is not what the fleet cost to run, because the cost lands when the part is issued to a unit."));
   var g=el("div","grid"); g.style.gap="var(--space-5)";
   g.appendChild(stats([
     ["Bought into stock", peso(tot.inValue), "all time"],
     ["Issued to units", peso(tot.outValue), "charged to the fleet"],
-    ["Value on hand", peso(tot.onHandValue), "weighted average"],
+    ["Value on hand", peso(tot.onHandValue), "FIFO"],
     ["Items", String(inv.length), "distinct lines"],
     ["Needs checking", String(tot.exceptions.length), "issued but never received", false,
       tot.exceptions.length?"var(--danger)":"var(--ok)"]
@@ -11790,7 +11854,7 @@ function invView(){
       {h:"In",num:true,get:function(e){return nnum(e.inQty,2);}},
       {h:"Out",num:true,get:function(e){return nnum(e.outQty,2);}},
       {h:"On hand",num:true,get:function(e){return nnum(e.onHand,2);}},
-      {h:"Avg cost",num:true,get:function(e){return e.avgCost!=null?peso(e.avgCost):"—";}},
+      {h:"FIFO / unit",num:true,get:function(e){return e.avgCost!=null?peso(e.avgCost):"—";}},
       {h:"Value on hand",num:true,get:function(e){
         return e.onHand>0?peso(e.onHandValue):"—"; }},
       {h:"Bought in",num:true,get:function(e){return peso(e.inValue);}},
@@ -15661,7 +15725,23 @@ function vrfView(){
   function lineTotal(l){
     var q=parseFloat(l.qty)||0, p=parseFloat(l.price)||0; return q*p;
   }
+  function syncDraftStockPrices(){
+    applyDraftStockPrices(d);
+    (d.lines||[]).forEach(function(l, idx){
+      var inp=tb.querySelector('[data-line-price="'+idx+'"]');
+      if(inp && inp.readOnly) inp.value=l.price==null?"":l.price;
+      var tot=tb.querySelector('[data-line-total="'+idx+'"]');
+      if(tot) tot.textContent=lineTotal(l)?peso(lineTotal(l)):"—";
+      var warn=tb.querySelector('[data-peso-warn="'+idx+'"]');
+      if(warn){
+        var api=stockFifo();
+        var flag=api&&isFuel(l.cat)?api.qtyLooksLikePesos(l):null;
+        warn.textContent=flag&&flag.flag?flag.label:"";
+      }
+    });
+  }
   function recalc(){
+    syncDraftStockPrices();
     var t=0; d.lines.forEach(function(l){ t+=lineTotal(l); });
     totalCell.textContent=peso(t);
     var spend=vrfSpendTotal(d.lines);
@@ -15682,7 +15762,7 @@ function vrfView(){
       /* job — defaults to the header, changed only for the odd line out */
       var jt=el("td");
       var js=workSelect(l.work||d.work,"— same as header —");
-      js.addEventListener("change",function(){ l.work=js.value; });
+      js.addEventListener("change",function(){ l.work=js.value; drawLines(); recalc(); });
       jt.appendChild(js); tr.appendChild(jt);
       /* category */
       var cs=el("select"); cs.appendChild(new Option("—",""));
@@ -15731,7 +15811,7 @@ function vrfView(){
           stockBadge.textContent="not in the store yet"; stockBadge.style.color="var(--warn)"; return;
         }
         stockBadge.textContent=nnum(e.onHand,2)+" on hand"+
-          (e.avgCost!=null?" · avg "+peso(e.avgCost):"");
+          (e.avgCost!=null?" · FIFO "+peso(e.avgCost):"");
         stockBadge.style.color=e.onHand<=0?"var(--danger)":"var(--text-muted)";
       }
       it.addEventListener("input",function(){
@@ -15753,11 +15833,10 @@ function vrfView(){
         if(isFuelReserveSupplier(name)){
           toast("Fuel Reserve — litres come off the yard drums. For a Fuel Purchase pick the station or supplier instead.");
         }
-        if(String(name).toUpperCase()==="MOTORPOOL INVENTORY"){
-          var e2=onHandOf(l.cat,l.item);
-          if(e2&&e2.avgCost!=null&&!l.price){ l.price=String(e2.avgCost); recalc(); drawLines(); return; }
-        }
+        if(isFuel(l.cat)) normalizeFuelLine(l);
         showStock();
+        drawLines();
+        recalc();
       });
       var std=el("td"); std.appendChild(ss); tr.appendChild(std);
       showStock();
@@ -15808,8 +15887,37 @@ function vrfView(){
         l.unit=ui.value;
       });
       ut.appendChild(ui); tr.appendChild(ut);
-      tr.appendChild(nfield("price","0.00"));
+      var stockApi=stockFifo();
+      var priceMode=stockApi?stockApi.priceInputMode(l,{work:l.work||d.work,veh:d.veh}):"enter";
+      var autoPrice=priceMode==="auto";
+      var priceTd=el("td","num");
+      var priceIn=el("input");
+      priceIn.value=(l.price==null?"":l.price);
+      priceIn.placeholder=autoPrice?"auto":"0.00";
+      priceIn.inputMode="decimal";
+      priceIn.setAttribute("data-line-price", String(idx));
+      priceIn.setAttribute("data-stock-price", autoPrice?"auto":priceMode);
+      if(autoPrice){
+        priceIn.readOnly=true;
+        priceIn.title="Filled from FIFO. You do not type this price.";
+      }
+      priceIn.addEventListener("input",function(){
+        if(priceIn.readOnly) return;
+        l.price=priceIn.value;
+        recalc();
+      });
+      priceTd.appendChild(priceIn);
+      var priceHint=el("div","hint");
+      priceHint.setAttribute("data-stock-mode", String(idx));
+      priceHint.textContent=autoPrice?"FIFO":(priceMode==="required"?"enter price":"");
+      priceTd.appendChild(priceHint);
+      var pesoWarn=el("div","hint");
+      pesoWarn.setAttribute("data-peso-warn", String(idx));
+      pesoWarn.style.color="var(--warn)";
+      priceTd.appendChild(pesoWarn);
+      tr.appendChild(priceTd);
       var tt=el("td","num mono"); tt.style.paddingRight="9px";
+      tt.setAttribute("data-line-total", String(idx));
       tt.textContent=lineTotal(l)?peso(lineTotal(l)):"—"; tr.appendChild(tt);
       tr.appendChild(nfield("liters",""));
       var xt=el("td");
@@ -15827,7 +15935,7 @@ function vrfView(){
   var addb=el("button","btn sm","+ Add line");
   addb.addEventListener("click",function(){ d.lines.push(blankLine()); drawLines(); });
   lh.appendChild(addb);
-  var note=el("span","note","Supplier is per line — pick the station or supplier for a Fuel Purchase. FUEL RESERVE is only a drum dispense, not a purchase.");
+  var note=el("span","note","A FUEL RESERVE dispense is litres only — the price is blocked and filled from FIFO. A delivery into the drums needs a price per litre. A station fill keeps its own price. Fuel stays in liters.");
   lh.appendChild(note);
   lc.appendChild(lh);
   var lb=el("div","bd flush"); var sc=el("div","scroll"); sc.appendChild(lt); lb.appendChild(sc);
@@ -15839,6 +15947,7 @@ function vrfView(){
   var pv=el("button","btn","Preview");
   pv.addEventListener("click",function(){
     d.odo=oIn.value;
+    applyDraftStockPrices(d);
     var rows=d.lines.filter(function(l){ return l.cat; }).map(function(l){
       var q=parseFloat(l.qty)||0, pz=parseFloat(l.price)||0;
       return {date:d.date,veh:d.veh,cat:l.cat,item:l.item,supplier:l.supplier,
@@ -16017,6 +16126,9 @@ async function sendForApproval(d,btn,opts){
   if(S._sendingVrf) return;
   if(!d.veh){ toast("Pick a unit first."); return; }
   if(!d.work){ toast("Pick the type of job — the approver decides on that."); return; }
+  applyDraftStockPrices(d);
+  var priceMsg=draftPriceMessage(d);
+  if(priceMsg){ toast(priceMsg); return; }
   var rows=d.lines.filter(function(l){ return l.cat&&(moneyNum(l.qty)||moneyNum(l.price)); });
   normalizeFuelLines(rows);
   if(!rows.length){ toast("Add at least one line so there is a figure to approve."); return; }
@@ -16259,15 +16371,14 @@ function fuelView(){
   g.appendChild(stats([
     ["On hand", nnum(f.onHand,0)+" L", nnum(f.onHand/CONTAINER_L,0)+" containers", true,
       f.onHand<CRITICAL_L?"var(--crit)":f.onHand<REORDER_L?"var(--warn)":"var(--good)"],
-    ["Received to date", nnum(f.purchasedL,0)+" L", S.purchases.length+" deliveries", true],
-    ["Dispensed", nnum(f.consumedL,0)+" L", f.draws.length+" withdrawals", true],
+    ["Received to date", nnum(f.purchasedL,0)+" L", f.lots.length+" deliveries", true],
+    ["Dispensed", nnum(f.consumedL,0)+" L", f.draws.length+" draws", true],
     ["Reorder at", REORDER_L+" L", "critical below "+CRITICAL_L+" L", true]
   ]));
   var trunc=el("div","banner info");
-  trunc.innerHTML="<b>Stock is derived, not counted.</b> On hand = "+nnum(f.purchasedL,0)+
-    " L received minus "+nnum(f.consumedL,0)+" L on the "+f.draws.length+
-    " withdrawals loaded here. If the yard has dispensed more than that, record the missing "+
-    "withdrawals and this figure corrects itself.";
+  trunc.innerHTML="<b>Stock follows the VRF ledger.</b> On hand = "+nnum(f.purchasedL,0)+
+    " L delivered into the drums minus "+nnum(f.consumedL,0)+" L drawn as FUEL RESERVE. "+
+    "A station fill is not a drum delivery. Older purchases and withdrawals count only when that VRF is not already on the ledger.";
   g.appendChild(trunc);
   if(f.shortfall>0.01){
     var bn=el("div","banner crit");
@@ -16324,10 +16435,28 @@ function fuelView(){
   var form2=el("div","f3"); form2.style.marginTop="10px";
   var cn=el("input"); cn.type="number"; cn.min="1"; cn.step="1"; cn.value="1"; cn.className="mono";
   var lt=el("input"); lt.readOnly=true; lt.className="mono"; lt.value=CONTAINER_L+".00 L";
-  cn.addEventListener("input",function(){ lt.value=((parseFloat(cn.value)||0)*CONTAINER_L).toFixed(2)+" L"; });
+  var dPrice=el("input"); dPrice.readOnly=true; dPrice.className="mono"; dPrice.setAttribute("data-stock-price","auto");
+  var dTot=el("input"); dTot.readOnly=true; dTot.className="mono";
+  function paintDispensePrice(){
+    var L=(parseFloat(cn.value)||0)*CONTAINER_L;
+    lt.value=L.toFixed(2)+" L";
+    var api=stockFifo();
+    var q=api?api.quoteFromRemaining(f.lots, L):{cost:0};
+    var b=api?api.blended(q.cost, L):{price:0,total:0};
+    dPrice.value=b.price?("₱ "+Number(b.price).toFixed(2)):"—";
+    dTot.value=b.total?peso(b.total):"—";
+    dPrice.dataset.rate=String(b.price||0);
+    dTot.dataset.total=String(b.total||0);
+  }
+  cn.addEventListener("input",paintDispensePrice);
+  paintDispensePrice();
   var op=el("input"); op.placeholder="operator / driver";
   form2.appendChild(fld("Containers",cn)); form2.appendChild(fld("Litres",lt)); form2.appendChild(fld("Released to",op));
   fb.appendChild(form2);
+  var formPrice=el("div","f3"); formPrice.style.marginTop="10px";
+  formPrice.appendChild(fld("FIFO price / litre", dPrice, "Filled from the oldest litres. You do not type a price on a dispense."));
+  formPrice.appendChild(fld("Line total", dTot));
+  fb.appendChild(formPrice);
   var sub;
   var dodo=el("input"); dodo.className="mono"; dodo.inputMode="numeric";
   var dodoW=fld("Meter reading now",dodo);
@@ -16384,6 +16513,9 @@ function fuelView(){
     var L=(parseFloat(cn.value)||0)*CONTAINER_L;
     if(L<=0){ toast("Containers must be at least 1."); return; }
     if(L>f.onHand){ toast("Only "+nnum(f.onHand,0)+" L on hand — record a delivery first."); return; }
+    paintDispensePrice();
+    var fifoRate=parseFloat(dPrice.dataset.rate)||0;
+    var fifoTotal=parseFloat(dTot.dataset.total)||0;
     sub.disabled=true; sub.textContent="Recording…";
     var no;
     var rsvNo=rsel.value;
@@ -16391,14 +16523,14 @@ function fuelView(){
     var v=vehicle(vs.getCode());
     try{
       var issued=await issueLedgerConfirmed(mk,[{month:mk,date:dt.value,vrf:"",veh:vs.getCode(),name:v?v.desc:"",
-        cat:"Fuel — Diesel",sub:"Fuel",grp:"Fuel",work:"FUEL-RES",item:"Fuel Reserve dispense",qty:L,price:null,total:null,
+        cat:"Fuel — Diesel",sub:"Fuel",grp:"Fuel",work:"FUEL-RES",item:"Fuel Reserve dispense",qty:L,unit:"liters",price:fifoRate||null,total:fifoTotal||null,
         supplier:"FUEL RESERVE",project:ps.getCode(),liters:L,
         odo:parseFloat(String(dodo.value).replace(/,/g,""))||null,
         override:null,reserve:rsvNo,vstatus:"Open",bypass:false,
         notes:"Reserve dispense"}], op.value);
       no=issued.vrf;
       await appendRows("withdrawals",[{date:dt.value,vrf:String(no),vehicle:vs.getCode(),project:ps.getCode(),
-        fuel:"Diesel",cont:parseFloat(cn.value)||0,liters:L,cost:null,rate:null,
+        fuel:"Diesel",cont:parseFloat(cn.value)||0,liters:L,cost:fifoTotal||null,rate:fifoRate||null,
         operator:op.value,override:null,reserve:rsvNo,bypass:false}]);
     }catch(err){
       sub.disabled=false; sub.textContent="Record dispense";
@@ -16453,6 +16585,8 @@ function fuelView(){
   var b2=el("div","f3"); b2.style.marginTop="var(--space-3)";
   var blt=el("input"); blt.readOnly=true; blt.className="mono"; blt.value="0.00 L";
   var bpl=el("input"); bpl.type="number"; bpl.min="0"; bpl.step="0.01"; bpl.className="mono";
+  bpl.setAttribute("data-stock-price","required");
+  bpl.setAttribute("aria-label","Price per litre");
   var btot=el("input"); btot.readOnly=true; btot.className="mono"; btot.value="—";
   function brecalc(){
     var L=(parseFloat(bcn.value)||0)*CONTAINER_L;
