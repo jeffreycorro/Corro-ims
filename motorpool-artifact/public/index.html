@@ -445,7 +445,7 @@ var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
    This label is inside the page function. The shim reads window.BUILD when it
    sends a save. Without that copy every save goes out with an empty build and
    the server answers "Reload the page". */
-var BUILD = "2026-11-05 a";
+var BUILD = "2026-11-05 b";
 try { window.BUILD = BUILD; } catch (e) {}
 var DAY = 86400000, MO = 30.44;
 
@@ -7429,6 +7429,9 @@ function reserveIssueLedger(){
   });
   allLines().forEach(function(r){
     if(!r||!isFuel(r.cat)||r.veh==="AV") return;
+    /* A sheet backfill is already on the FUEL RESERVE sheet. Counting the
+       ledger line would add those litres as unassigned. */
+    if(r.backfill===true) return;
     var ended=spendEndStatus(r.vstatus);
     if(ended==="Cancelled"||ended==="Duplicate"||ended==="Not bought") return;
     var sup=String(r.supplier||"").toUpperCase();
