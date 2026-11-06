@@ -931,6 +931,11 @@ const S = {
     hrStaff:"Maria Trina Cassandra A. Moran",
     president:"Jeffrey James M. Corro", presidentTitle:"CEO / President",
     workdaysPerPeriod:13, otPolicy:1.0, explainDays:5, lookbackMonths:12,
+    /* Temporary, reversible (Jeffrey, 2026-11-06). No end date.
+       true: payroll uses recorded Daily Manpower OT hours without an
+       Approved OT request and attached form. OT request rows are not
+       rewritten. Set false under Settings to restore the 2026-10-01 gate. */
+    otFormGateWaived:true,
     ded:{sss:325,phic:131.25,hdmf:100},
     leaveDays:{SIL:5,VL:0,SL:0,EL:0,BEREV:0},
     caLiquidateDays:15,
@@ -2151,7 +2156,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-11-05";
+const BUILD = "2026-11-06a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -10569,11 +10574,27 @@ function otSameHours(a, b){
   if(empty(a) || empty(b)) return false;
   return Number(a)===Number(b);
 }
-/* Hours are always stored. Pay waits for an approved form. There is no
-   finalized-run flag, so that wait applies only when the period ends on or
-   after 2026-10-01. Earlier periods still pay every saved hour. */
+/* Hours are always stored. Pay waits for an approved form unless the
+   temporary waiver below is on. There is no finalized-run flag, so that
+   wait applies only when the period ends on or after 2026-10-01.
+   Earlier periods still pay every saved hour. */
 function otHoursAllowed(empId, date, site, prev, typed){
   return typed;
+}
+/* Temporary, reversible (Jeffrey, 2026-11-06). No end date.
+   Missing key stays off so older test fixtures keep the 2026-10-01 gate.
+   The app default is otFormGateWaived:true, and a saved settings document
+   that omits the key does not clear that default (settings are merged).
+   Turn it off in Settings to withhold OT pay until an Approved request
+   with a form covers the date. This does not change any OT request. */
+function otFormGateWaived(){
+  const st=(typeof S!=="undefined" && S && S.settings)||{};
+  if(!Object.prototype.hasOwnProperty.call(st,"otFormGateWaived")) return false;
+  const v=st.otFormGateWaived;
+  return v===true || v===1 || v==="1"
+    || String(v).toLowerCase()==="true"
+    || String(v).toLowerCase()==="on"
+    || String(v).toLowerCase()==="yes";
 }
 function otPendingApplies(periodEnd){
   const end=String(periodEnd||"").slice(0,10);
@@ -10582,6 +10603,8 @@ function otPendingApplies(periodEnd){
 function otPaidHours(empId, date, site, ot, periodEnd){
   const h=Number(ot)||0;
   if(!(h>0)) return 0;
+  /* Waiver pays the recorded hours. It does not mark a request Approved. */
+  if(typeof otFormGateWaived==="function" && otFormGateWaived()) return h;
   if(typeof otPendingApplies!=="function" || !otPendingApplies(periodEnd)) return h;
   if(typeof otCovered==="function" && otCovered(empId, date, site)) return h;
   return 0;
@@ -10593,20 +10616,27 @@ function otPendingText(hours){
 }
 function otEntryBox(empId, date, site, value, sty, attr){
   const covered=otCovered(empId, date, site);
+  const waived=typeof otFormGateWaived==="function" && otFormGateWaived();
   const shown=value!=null && String(value).trim()!=="" ? value : "";
   const pending=shown!=="" && Number(shown)>0 && !covered;
   const approved=covered ? otApprovedHours(empId, date, site) : null;
   const title=covered
     ? ("Approved OT request on file"+(approved!=null?" · approved for "+approved+" h":""))
     : (pending
-        ? "Pending OT form — saved, and not paid until an approved request with a form covers this date"
+        ? (waived
+            ? "Pending OT form — saved and included in OT pay while the form gate is waived. The request is not marked Approved."
+            : "Pending OT form — saved, and not paid until an approved request with a form covers this date")
         : "No OT request on file for this date/site. Hours can still be typed; they stay pending until a form is approved.");
   let h='<input '+attr+' type="number" step="0.5" min="0" value="'+esc(shown)+'" placeholder="0" '
     +'title="'+esc(title)+'" style="'+sty+';text-align:right">';
   if(pending) h+='<div style="margin-top:3px"><span class="pill warn">Pending OT form</span></div>';
   if(!covered){
     h+='<div class="lbl" style="text-transform:none;letter-spacing:0;font-weight:500;white-space:normal;line-height:1.35;margin-top:3px">'
-      + (pending ? "Not paid until an approved form is on file." : "No OT request on file for this date/site")
+      + (pending
+          ? (waived
+              ? "Included in OT pay while the form gate is waived. Not paid until an approved form is on file once that switch is off."
+              : "Not paid until an approved form is on file.")
+          : "No OT request on file for this date/site")
       + '<div style="margin-top:3px"><button type="button" class="btn sm" data-otfile="'+esc(empId)+'" data-otdate="'+esc(date)+'" data-otsite="'+esc(site)+'">File one</button></div></div>';
   }
   return h;
@@ -10813,9 +10843,13 @@ function otTrack(opts){
       if(!(ot>0)) return;
       const e=S.employees&&S.employees[empId];
       const covered=otCovered(empId, d, site);
+      /* Pending hours stay pending (no form). The waiver only moves them
+         into pay. Request status is not touched. */
+      const waived=typeof otFormGateWaived==="function" && otFormGateWaived();
       const approvedH=covered?ot:0, pendingH=covered?0:ot;
+      const payableH=(covered||waived)?ot:0;
       const hourly=otHourlyOf(e)*policy;
-      const approvedPay=approvedH*hourly, pendingPay=pendingH*hourly;
+      const approvedPay=payableH*hourly, pendingPay=(covered||waived)?0:pendingH*hourly;
       const b=bucket(d);
       b.hours+=ot; b.approvedHours+=approvedH; b.pendingHours+=pendingH;
       b.pay+=approvedPay; b.pendingPay+=pendingPay;
@@ -10982,7 +11016,10 @@ function otBySitePrint(bucket, dates){
   const sites=(bucket&&bucket.bySite)||[];
   if(!sites.length) return "";
   let h='<h3 style="font-size:12px;margin:14px 0 4px">By site</h3>'
-    + '<p style="font-size:10px;margin:0 0 6px">A plain number is approved. Pending is logged and not paid until an approved form covers that person or that site on that date. '
+    + '<p style="font-size:10px;margin:0 0 6px">A plain number is approved. Pending is logged'
+    + ((typeof otFormGateWaived==="function" && otFormGateWaived())
+        ? ' and included in OT pay while the form gate is waived. '
+        : ' and not paid until an approved form covers that person or that site on that date. ')
     + 'A person at two sites is listed under each. Site subtotals add up to the week and are not added again to the employee list above.</p>'
     + '<table class="pf-t reg"><tr><td class="hd">Employee</td><td class="hd">ID</td>'
     + dates.map(d=>'<td class="hd">'+esc(otDayLabel(d))+'</td>').join("")
@@ -11078,7 +11115,10 @@ function viewOtRequests(){
     + '<div class="note" style="margin-bottom:12px">File the signed overtime request here. '
     + 'Every form attached to a request stays on that request. A later file is added to the list. '
     + 'New OT request asks for the site, the employees on OT at that site, and the duration. Whole site selects everyone there. '
-    + 'OT hours can be typed with no request on file. They show <b>Pending OT form</b> and are not paid until <b>Approved</b> with a form attached covers that person or that site on that date. '
+    + 'OT hours can be typed with no request on file. '
+    + ((typeof otFormGateWaived==="function" && otFormGateWaived())
+        ? 'While <b>otFormGateWaived</b> is on, those hours are included in OT pay even when they show <b>Pending OT form</b>. The request is not marked Approved. Turn the switch off under Settings to withhold pay until <b>Approved</b> with a form attached. '
+        : 'They show <b>Pending OT form</b> and are not paid until <b>Approved</b> with a form attached covers that person or that site on that date. ')
     + 'By week, those hours are also listed under each site, with a column for each day. '
     + 'The next time payroll opens, those hours count. No retyping.</div>';
   h+='<div class="card" style="margin-bottom:14px"><div class="card-h"><h3>Requests</h3>'
@@ -11134,13 +11174,16 @@ function viewOtRequests(){
     h+='<h3 style="margin:12px 0 6px">'+esc(b.label)+'</h3>'
       + '<div class="strip">'
       + tile(num(b.approvedHours,1),"Approved OT",num(b.pay,2)+" OT pay","acc")
-      + tile(num(b.pendingHours,1),"Pending OT",b.pendingHours?"not paid until a form is approved":"none waiting", b.pendingHours?"warn":"ok")
+      + tile(num(b.pendingHours,1),"Pending OT",b.pendingHours?((typeof otFormGateWaived==="function" && otFormGateWaived())?"form not on file — included in OT pay while the gate is waived":"not paid until a form is approved"):"none waiting", b.pendingHours?"warn":"ok")
       + tile(String(b.requests),"OT requests","overlapping this "+(mode==="month"?"month":mode==="week"?"week":"range"),"")
       + '</div>';
     h+='<h3 style="margin:14px 0 6px">By site</h3>'
       + '<div class="note" style="margin-bottom:8px">'
       + 'Each person is listed under the site on that day&rsquo;s Daily Manpower row. '
-      + 'A plain number is approved. <span class="pill warn">pending</span> is logged and is not paid until an approved OT request with a signed form covers that person or that site on that date. '
+      + 'A plain number is approved. <span class="pill warn">pending</span> is logged'
+      + ((typeof otFormGateWaived==="function" && otFormGateWaived())
+          ? ' and is included in OT pay while the form gate is waived. The request is not marked Approved. '
+          : ' and is not paid until an approved OT request with a signed form covers that person or that site on that date. ')
       + 'Someone who worked at more than one site is listed under each site, with only that site&rsquo;s hours. '
       + 'The site subtotals add up to this '+(mode==="month"?"month":mode==="week"?"week":"range")+'. '
       + 'The employee table below already includes every site once, so do not add the two together.</div>'
@@ -11620,9 +11663,11 @@ function viewDaily(){
        + '<td><select data-dms="'+esc(e.id)+'" style="'+sty+'">'
        + DAY_STATUS.map(x=>'<option'+(dayStatusOf(r)===x?" selected":"")+'>'+x+'</option>').join("")+'</select></td>'
        + '<td><input data-dmin="'+esc(e.id)+'" value="'+esc(r.in||"")+'" placeholder="8:00 AM" title="Required for Present/Late" style="'+sty
-       +   ((r.s==="Present/Late" && !String(r.in||"").trim())?';border-color:var(--crit)':'')+'"></td>'
+       +   ((r.s==="Present/Late" && !String(r.in||"").trim())?';border-color:var(--crit)':'')+'"'
+       +   (typeof dailyInOutInputAttr==="function"?dailyInOutInputAttr(typeof hrActor==="function"?hrActor():null):"")+'></td>'
        + '<td><input data-dmout="'+esc(e.id)+'" value="'+esc(r.out||"")+'" placeholder="5:00 PM" title="Required for Undertime" style="'+sty
-       +   ((r.s==="Undertime" && !String(r.out||"").trim())?';border-color:var(--crit)':'')+'"></td>'
+       +   ((r.s==="Undertime" && !String(r.out||"").trim())?';border-color:var(--crit)':'')+'"'
+       +   (typeof dailyInOutInputAttr==="function"?dailyInOutInputAttr(typeof hrActor==="function"?hrActor():null):"")+'></td>'
        + '<td>'+otEntryBox(e.id, rec.date, dailySiteOf(rec,e), r.ot, sty, 'data-dmot="'+esc(e.id)+'"')+'</td>'
        + '<td><input data-dmday="'+esc(e.id)+'" type="number" step="0.5" min="0" max="1" value="'+esc(r.day!=null?r.day:"")+'" placeholder="'+dayCredit(r)+'" style="'+sty+';text-align:right"></td>'
        + '<td'+(covered && holEligible(rec.date,r,e.id)?' style="background:var(--warn-soft)"':'')+'>'
@@ -11687,8 +11732,11 @@ function dailyCollect(){
       else if(spec){ const xp=document.querySelector('[data-dmexpick="'+id+'"]');
         ex = xp ? (Number(xp.value)?1:0) : (prevRow.ex!=null?prevRow.ex:""); }
     }
+    const clock=typeof applyDailyInOutGuard==="function"
+      ? applyDailyInOutGuard(prevRow, {in:g("data-dmin"), out:g("data-dmout")}, typeof hrActor==="function"?hrActor():null)
+      : {in:g("data-dmin"), out:g("data-dmout")};
     rec.rows[id]={ s:sel.value||"Present", r:reason, site,
-      in:g("data-dmin"), out:g("data-dmout"),
+      in:clock.in, out:clock.out,
       ot:(function(){
         const typed=parseOtHours(g("data-dmot"));
         if(typeof otHoursAllowed!=="function") return typed;
@@ -16237,6 +16285,10 @@ function viewSettings(){
   h+='<div class="card"><div class="card-h"><h3>Thresholds and policy</h3></div><div class="card-b"><div class="grid3">'
    + '<div class="f"><label>Standard workdays per period</label><input data-set="workdaysPerPeriod" type="number" step="0.5" value="'+st.workdaysPerPeriod+'"></div>'
    + '<div class="f"><label>Overtime multiplier</label><input data-set="otPolicy" type="number" step="0.05" value="'+st.otPolicy+'"><span class="hint">Your April run used 1.0×</span></div>'
+   + '<div class="f"><label>OT form pay gate</label><select data-set-flag="otFormGateWaived">'
+   + '<option value="1"'+((typeof otFormGateWaived==="function" && otFormGateWaived())?" selected":"")+'>Waived — pay recorded daily OT without an approved form</option>'
+   + '<option value="0"'+((typeof otFormGateWaived==="function" && otFormGateWaived())?"":" selected")+'>On — withhold OT pay until an approved form is on file</option>'
+   + '</select><span class="hint">Temporary, no end date (Jeffrey, 2026-11-06). Does not approve OT requests. Turn this off to restore the 1 Oct 2026 gate.</span></div>'
    + '<div class="f"><label>Days to answer an NTE</label><input data-set="explainDays" type="number" value="'+st.explainDays+'"></div>'
    + '<div class="f"><label>Discipline lookback (months)</label><input data-set="lookbackMonths" type="number" value="'+st.lookbackMonths+'"></div>'
    + '<div class="f"><label>Warn before probation ends (days)</label><input data-set="probationWarnDays" type="number" value="'+st.probationWarnDays+'"></div>'
@@ -16246,7 +16298,8 @@ function viewSettings(){
    + '<div class="f"><label>Holiday premium</label><input value="30% of a day\'s rate" disabled>'
    + '<span class="hint">'+holidayList().length+' date'+(holidayList().length===1?'':'s')+' on the calendar'
    + ' <button class="btn sm" id="set-holcal">Open the holiday calendar</button></span></div>'
-   + '</div></div></div>';
+   + '</div><div class="note">OT form pay gate starts <b>waived</b>. Recorded Daily Manpower OT is included in OT pay without an Approved request and attached form. Existing OT requests and their approval history stay as they are. There is no end date. Choose <b>On</b> above to put the 1 Oct 2026 gate back. '
+   + 'Daily Manpower time in and time out stay editable for admin and HR sign-ins. Maria Trina Cassandra A. Moran (201 file e1316, <span class="mono">moranmariatrinacassandra@gmail.com</span>) can edit those two fields when that email signs in, without an admin role. She has no portal Auth user yet. <span class="mono">hrcorcondev@gmail.com</span> is the applications mailbox, not that login. A change to time in or time out is written on that day’s change history.</div></div></div>';
 
   h+='<div class="card"><div class="card-h"><h3>HR-201 FILES in Google Drive</h3>'
    + '<div class="sp">'+(S.mcpReady?'<span class="pill ok">Drive connected</span>':'<span class="pill warn">Drive not reachable in this view</span>')+'</div></div>'
@@ -22249,7 +22302,7 @@ function payDaysFor(empId, dates){
     const lateMin=blocked || typeof lateMinutesOf!=="function" ? 0
       : ((typeof dayCountsLate==="function" && !dayCountsLate(r)) ? 0 : lateMinutesOf(r.in||""));
     const site=(e && typeof dailySiteOf==="function") ? dailySiteOf(rec, e) : (r.site||(e&&e.project)||"");
-    const covered=!blocked && holidayPremiumApplies(d, empId, r, site);
+    const covered=!blocked && typeof holidayPremiumApplies==="function" && holidayPremiumApplies(d, empId, r, site);
     out.push({ date:d, s:r.s||"", reason:r.r||"", site:r.site||site||"",
                in:r.in||"", out:r.out||"",
                day, ot, lateMin,
@@ -22291,7 +22344,8 @@ function payLine(e, kind, dates, saved, per){
        run is opened. A saved line may still hold days or ot from before
        they were typed — those stored numbers are not used. Paid OT drops
        hours that are still waiting on an approved form, for periods ending
-       on or after 2026-10-01. */
+       on or after 2026-10-01, unless Settings otFormGateWaived is on.
+       That waiver pays the recorded hours and does not approve a request. */
     days:  auto.days,
     ot:    (function(){
       if(typeof otPaidHours!=="function") return auto.ot;
@@ -23914,6 +23968,76 @@ function nowStamp(){
 }
 function whoEdits(){ return S.settings.editedBy || S.settings.hrStaff || "HR"; }
 
+/* Daily Manpower time in / time out.
+   Admin and HR sessions already edit every attendance field. That stays.
+   Maria Trina Cassandra A. Moran (employee e1316) has no Supabase Auth user
+   as of 2026-11-06. Her 201 file stores moranmariatrinacassandra@gmail.com.
+   hrcorcondev@gmail.com is the applications mailbox, not a portal login, and
+   is not on this list. A uid can be added on the row, or under
+   Settings.dailyInOutEditors as {email} or {uid}, once an Auth user exists.
+   This does not grant admin and does not open any other field.
+   Time in and time out edits already land in the day's log[] through
+   dailyDiff (fields "in" and "out"). No separate history screen. */
+function normActorId(v){ return String(v||"").trim().toLowerCase(); }
+function hrActor(){
+  try{
+    const w=typeof window!=="undefined" ? window : null;
+    const s=w && (w.__hrSession || w.hrSession);
+    if(s && typeof s==="object") return s;
+  }catch(e){}
+  return null;
+}
+function dailyInOutEditorList(){
+  const base=[
+    { email:"moranmariatrinacassandra@gmail.com", uid:"", name:"Maria Trina Cassandra A. Moran", empId:"e1316" }
+  ];
+  const extra=(S&&S.settings&&S.settings.dailyInOutEditors)||[];
+  return base.concat(Array.isArray(extra)?extra:[]);
+}
+function actorMatchesInOutEditor(actor, row){
+  if(!actor || !row) return false;
+  const email=normActorId(actor.email);
+  const uid=normActorId(actor.sub||actor.uid||actor.id);
+  if(row.email && email && normActorId(row.email)===email) return true;
+  if(row.uid && uid && normActorId(row.uid)===uid) return true;
+  return false;
+}
+/* Strict check used by tests and by the field lock.
+   Admin, HR role, or department HR: allowed (existing access).
+   Cassie email or uid on the allowlist: allowed, even if the role is staff.
+   Anyone else with an identity: denied for in/out only. */
+function canEditDailyInOut(actor){
+  if(!actor || typeof actor!=="object") return false;
+  const role=normActorId(actor.role);
+  const dept=normActorId(actor.department);
+  if(role==="admin" || role==="hr" || dept==="hr") return true;
+  return dailyInOutEditorList().some(row=>actorMatchesInOutEditor(actor, row));
+}
+/* Do not invent a lock when nobody is signed in, or for the shared password
+   gate (no per-person account). Those screens already edit time in/out. */
+function dailyInOutLocked(actor){
+  if(!actor || typeof actor!=="object") return false;
+  const method=normActorId(actor.method);
+  const sub=String(actor.sub||actor.uid||actor.id||"").trim();
+  if(method==="password" || normActorId(sub)==="gate") return false;
+  const role=String(actor.role||"").trim();
+  const email=String(actor.email||"").trim();
+  if(!role && !email && !sub) return false;
+  return !canEditDailyInOut(actor);
+}
+function applyDailyInOutGuard(prevRow, nextRow, actor){
+  const next=Object.assign({}, nextRow||{});
+  if(!dailyInOutLocked(actor)) return next;
+  const prev=prevRow||{};
+  next.in=prev.in!=null ? prev.in : "";
+  next.out=prev.out!=null ? prev.out : "";
+  return next;
+}
+function dailyInOutInputAttr(actor){
+  if(!dailyInOutLocked(actor)) return "";
+  return ' readonly tabindex="-1" title="Time in and time out are limited to admin, HR, and Cassie\'s account"';
+}
+
 const DAILY_FIELD = {s:"status", r:"reason", site:"area", in:"time in", out:"time out",
                      ot:"overtime hours", day:"day credit", hol:"holiday premium",
                      rk:"reason type", ex:"excused"};
@@ -24818,8 +24942,10 @@ function payPersonDays(empId){
       : "On time. Morning late starts after 8:15, counted from 8:00 at ₱1 per minute.";
     return '<tr data-pdrow="'+esc(d)+'">'+day
       + '<td><select data-pd="s" style="'+sty+'">'+DAY_STATUS.map(x=>'<option'+(r.s===x?" selected":"")+'>'+x+'</option>').join("")+'</select></td>'
-      + '<td><input data-pd="in" value="'+esc(r.in||"")+'" placeholder="8:00 AM" title="'+esc(lateTip)+'" style="'+sty+'"></td>'
-      + '<td><input data-pd="out" value="'+esc(r.out||"")+'" placeholder="5:00 PM" style="'+sty+'"></td>'
+      + '<td><input data-pd="in" value="'+esc(r.in||"")+'" placeholder="8:00 AM" title="'+esc(lateTip)+'" style="'+sty+'"'
+      + (typeof dailyInOutInputAttr==="function"?dailyInOutInputAttr(typeof hrActor==="function"?hrActor():null):"")+'></td>'
+      + '<td><input data-pd="out" value="'+esc(r.out||"")+'" placeholder="5:00 PM" style="'+sty+'"'
+      + (typeof dailyInOutInputAttr==="function"?dailyInOutInputAttr(typeof hrActor==="function"?hrActor():null):"")+'></td>'
       + '<td class="num mono" data-latemin="1" title="'+esc(lateTip)+'">'+(lateMin?lateMin+" min":"—")+'</td>'
       + '<td>'+otEntryBox(empId, d, (r.site||""), r.ot, sty, 'data-pd="ot"')+'</td>'
       + '<td>'+(elig ? holSelect("data-pd", "hol", holCode(r)) : '<span class="lbl">—</span>')+'</td>'
@@ -24867,7 +24993,10 @@ function payPersonDays(empId){
       const typedOt=g("ot")==="" ? null : (parseFloat(g("ot"))||0);
       const prevRec=typeof dailyGet==="function" ? dailyGet(d) : null;
       const prevRow=prevRec && prevRec.rows ? prevRec.rows[empId] : null;
-      const next={ s:g("s"), in:g("in")||"", out:g("out")||"", r:g("r")||"",
+      const clock=typeof applyDailyInOutGuard==="function"
+        ? applyDailyInOutGuard(prevRow, {in:g("in")||"", out:g("out")||""}, typeof hrActor==="function"?hrActor():null)
+        : {in:g("in")||"", out:g("out")||""};
+      const next={ s:g("s"), in:clock.in, out:clock.out, r:g("r")||"",
         ot: typeof otHoursAllowed==="function"
           ? otHoursAllowed(empId, d, (prevRow&&prevRow.site)||"", prevRow?prevRow.ot:null, typedOt)
           : typedOt };
@@ -26725,6 +26854,12 @@ function wire(){
     const k=e.target.dataset.set;
     S.settings[k] = e.target.type==="number" ? (parseFloat(e.target.value)||0) : e.target.value;
     await putSettings(); if(k==="docPrefix") render();
+  });
+  on("[data-set-flag]","change",async e=>{
+    const k=e.target.dataset.setFlag;
+    S.settings[k]=e.target.value==="1" || e.target.value==="true";
+    await putSettings();
+    render();
   });
   on("[data-ded]","change",async e=>{ S.settings.ded[e.target.dataset.ded]=parseFloat(e.target.value)||0; await putSettings(); });
   on("[data-leave]","change",async e=>{
