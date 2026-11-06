@@ -10,17 +10,18 @@
  * links an existing one by email, mobile, or name and position.
  * Someone already on the pipeline can still be scheduled from the list.
  * The schedule opens on today's interviews (Asia/Manila). Another date,
- * All dates, or Unscheduled is one click.
+ * All dates, or Unscheduled is one click. Each row shows the mobile
+ * already stored on the applicant, so HR can call from the list.
  * Open roles, re-applicants, and per-position metrics read the same
  * applicant and role records. A manpower request is stored on the role.
  */
 (function (root) {
   "use strict";
 
-  if (root.hrRecruit && root.hrRecruit.version === "1.10.0") return;
+  if (root.hrRecruit && root.hrRecruit.version === "1.11.0") return;
 
   var api = {
-    version: "1.10.0",
+    version: "1.11.0",
     attached: false,
     openAppId: "",
     roleFilter: "",
@@ -2293,7 +2294,9 @@
       g.rows.forEach(function (a) {
         seen[a.id] = true;
         var iv = normalizeInitialInterview(a.initialInterview);
-        var suffix = iv ? " · " + formatWhen(iv.at) : "";
+        var contact = applicantContact(a);
+        var suffix = contact ? " · " + contact : "";
+        if (iv) suffix += " · " + formatWhen(iv.at);
         html +=
           '<option value="' +
           esc(a.id) +
@@ -2309,11 +2312,13 @@
     if (selectedId && !seen[selectedId]) {
       var cur = findApplicant(selectedId);
       if (cur) {
+        var curContact = applicantContact(cur);
         html +=
           '<option value="' +
           esc(cur.id) +
           '" selected>' +
           esc(cur.name || "(no name)") +
+          (curContact ? " · " + esc(curContact) : "") +
           "</option>";
       }
     }
@@ -2669,6 +2674,53 @@
     return interviewDayControlsHtml("hr-iv-day", currentInterviewDay(), "data-hr-iv-pick");
   }
 
+  /* The number HR already keeps on the applicant. mobile is the field the
+     editor and ingest write. phone is only a fallback for an older row. */
+  function applicantContact(a) {
+    var mobile = String((a && a.mobile) || "").trim();
+    if (mobile) return mobile;
+    return String((a && a.phone) || "").trim();
+  }
+
+  function contactTelHref(raw) {
+    var trimmed = String(raw || "").trim();
+    if (!trimmed) return "";
+    var digits = trimmed.replace(/\D/g, "");
+    if (digits.length < 7) return "";
+    return "tel:" + (trimmed.charAt(0) === "+" ? "+" : "") + digits;
+  }
+
+  function contactInlineHtml(a, emptyLabel) {
+    var raw = applicantContact(a);
+    if (!raw) {
+      return (
+        '<span style="color:var(--ink3);font-size:13px" title="No contact number on this applicant">' +
+        esc(emptyLabel || "No number") +
+        "</span>"
+      );
+    }
+    var style =
+      "display:inline-block;font-family:var(--f-mono);font-size:16px;font-weight:600;line-height:1.3;padding:8px 2px;white-space:nowrap;color:var(--accent-ink)";
+    if (!contactTelHref(raw)) {
+      return '<span style="' + style + '">' + esc(raw) + "</span>";
+    }
+    return (
+      '<a href="' +
+      esc(contactTelHref(raw)) +
+      '" style="' +
+      style +
+      ';text-decoration:underline;text-underline-offset:3px" aria-label="Call ' +
+      esc((a && a.name) || "applicant") +
+      '">' +
+      esc(raw) +
+      "</a>"
+    );
+  }
+
+  function contactCellHtml(a) {
+    return '<td class="hr-iv-contact">' + contactInlineHtml(a, "No number") + "</td>";
+  }
+
   function interviewTableHtml(groups, mode) {
     if (!groups.length) {
       if (mode === "none") {
@@ -2691,7 +2743,7 @@
         '</h2><span class="rule"></span><span class="pill acc">' +
         g.rows.length +
         "</span></div>" +
-        '<div class="card"><div class="tw"><table><thead><tr><th>Applicant</th><th>' +
+        '<div class="card"><div class="tw"><table><thead><tr><th>Applicant</th><th>Contact</th><th>' +
         (mode === "none" ? "Stage" : "Scheduled") +
         "</th>" +
         (mode === "none" ? "" : "<th>Interviewer</th><th>Status</th><th>Stage</th>") +
@@ -2704,7 +2756,9 @@
             '<tr data-hr-iv-day=""><td class="nm">' +
             esc(a.name || "(no name)") +
             reapplicantBadgeHtml(a) +
-            "</td><td>" +
+            "</td>" +
+            contactCellHtml(a) +
+            "<td>" +
             esc(stageText(a.stage)) +
             '</td><td><button class="btn sm" type="button" data-open-app="' +
             esc(a.id) +
@@ -2720,7 +2774,9 @@
           (iv.notes
             ? '<div style="font-size:11px;color:var(--ink3);font-weight:400">' + esc(iv.notes) + "</div>"
             : "") +
-          '</td><td class="mono">' +
+          "</td>" +
+          contactCellHtml(a) +
+          '<td class="mono">' +
           esc(formatWhen(iv.at)) +
           "</td><td>" +
           esc(iv.interviewer || "—") +
@@ -3034,6 +3090,8 @@
         esc(a.name || "") +
         " · " +
         esc(displayRoleTitle(a) || "Unlinked") +
+        " · " +
+        contactInlineHtml(a, "No number on file") +
         ". Philippines time. Saving moves an early stage to Interview.</div><div class=\"grid3\">" +
         scheduleFieldsHtml(iv, MODAL_FIELDS) +
         "</div></div>",
