@@ -1029,6 +1029,72 @@ describe("hr-recruit initial interviews", () => {
     assert.equal(hr.applicantMatchesPipeline(w.S.applicants.a5, "", "", roles), true);
     assert.match(hr.pipelineScheduleCardHtml(), /Limit the pipeline to this view/);
   });
+
+  it("shows the stored contact on the schedule list, the pipeline day list, and the schedule dialog", async () => {
+    const w = fakeWindow(copyPeople());
+    w.S.applicants.a1.mobile = "0917 123 4567";
+    w.S.applicants.a1.phone = "0999 000 0000";
+    w.S.applicants.a3.phone = "+63 918 000 1111";
+    w.S.applicants.a4.mobile = "ask later";
+    const hr = loadRecruit(w);
+    await hr.commitInitialInterview("a1", { at: "2026-11-04T09:00", interviewer: "Cassie", status: "Scheduled" });
+    await hr.commitInitialInterview("a3", { at: "2026-11-04T11:00", status: "Scheduled" });
+    await hr.commitInitialInterview("a4", { at: "2026-11-04T15:00", status: "Scheduled" });
+
+    const rowFor = (html, name) => {
+      const parts = String(html || "").split("<tr");
+      return parts.find((part) => part.indexOf(name) >= 0) || "";
+    };
+
+    hr.setInterviewDay("all");
+    const list = hr.initialInterviewsHtml().split('id="hr-iv-day-list"')[1].split("Schedule an initial interview")[0];
+    assert.match(list, /<th>Contact<\/th>/);
+    const monte = rowFor(list, "Monte, Domingo Jr.");
+    assert.match(monte, /href="tel:09171234567"/);
+    assert.match(monte, />0917 123 4567</);
+    assert.match(monte, /aria-label="Call Monte, Domingo Jr\."/);
+    assert.doesNotMatch(monte, /0999 000 0000/);
+    const ana = rowFor(list, "Santos, Ana");
+    assert.match(ana, /href="tel:\+639180001111"/);
+    assert.match(ana, /\+63 918 000 1111/);
+    const paolo = rowFor(list, "Reyes, Paolo");
+    assert.match(paolo, />ask later</);
+    assert.doesNotMatch(paolo, /href="tel:/);
+
+    hr.setInterviewDay("none");
+    const none = hr.initialInterviewsHtml().split('id="hr-iv-day-list"')[1].split("Schedule an initial interview")[0];
+    const luisa = rowFor(none, "Barrios, Luisa");
+    assert.match(luisa, /No number/);
+    assert.match(luisa, /title="No contact number on this applicant"/);
+    assert.doesNotMatch(luisa, /href="tel:/);
+
+    hr.setPipelineScheduleDay("all");
+    const pipe = hr.pipelineScheduleCardHtml();
+    const pipeList = pipe.slice(pipe.indexOf('id="hr-pipe-iv-list"'));
+    assert.match(pipeList, /<th>Contact<\/th>/);
+    assert.match(rowFor(pipeList, "Monte, Domingo Jr."), /href="tel:09171234567"/);
+    assert.match(rowFor(pipeList, "Reyes, Paolo"), />ask later</);
+
+    const options = hr.applicantOptionsHtml(Object.values(w.S.applicants), "", w.S.roles, "");
+    assert.match(options, /Monte, Domingo Jr\. · 0917 123 4567/);
+    assert.match(options, /Santos, Ana · \+63 918 000 1111/);
+
+    w.S.applicants.a1.mobile = '0917 123 4567"><b>';
+    hr.setInterviewDay("all");
+    const escaped = rowFor(hr.initialInterviewsHtml(), "Monte, Domingo Jr.");
+    assert.match(escaped, /href="tel:09171234567"/);
+    assert.match(escaped, /0917 123 4567&quot;&gt;&lt;b&gt;/);
+    assert.doesNotMatch(escaped, /<b>/);
+
+    w.openModal = (opts) => {
+      w.lastModal = opts;
+    };
+    w.S.applicants.a1.mobile = "0917 123 4567";
+    hr.openScheduleModal("a1");
+    assert.match(w.lastModal.body, /href="tel:09171234567"/);
+    hr.openScheduleModal("a2");
+    assert.match(w.lastModal.body, /No number on file/);
+  });
 });
 
 describe("hr-recruit open roles, re-applicants, and metrics", () => {
