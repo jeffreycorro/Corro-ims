@@ -503,6 +503,12 @@
       photoMeta: function (owner) {
         return dbCall("photoMeta", { owner: String(owner || "") });
       },
+      photoData: function (ids, fit) {
+        return dbCall("photoData", {
+          ids: Array.isArray(ids) ? ids : [],
+          fit: fit === "print" ? "print" : "thumb",
+        });
+      },
       financeLiq: function (vrf, refs) {
         return dbCall("financeLiq", { vrf: String(vrf || ""), refs: Array.isArray(refs) ? refs : [] });
       },

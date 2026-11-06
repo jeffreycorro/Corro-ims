@@ -13,6 +13,7 @@ const {
   listCollection,
   listIds,
   listPhotoMeta,
+  listPhotoData,
   putReserveRecord,
   recordsAvailable,
   saveLedgerVrf,
@@ -209,6 +210,15 @@ exports.handler = async (event) => {
       if (!owner) return json(400, { error: "owner is required" });
       const docs = await listPhotoMeta(owner);
       return json(200, { owner, docs, ...tz });
+    }
+
+    if (op === "photoData") {
+      /* One VRF's pictures in one read. fit=thumb for the open sheet,
+         fit=print for the form. The original stays on the row for a tap. */
+      const ids = Array.isArray(body.ids) ? body.ids : [];
+      const fit = body.fit === "print" ? "print" : "thumb";
+      const docs = await listPhotoData(ids, fit);
+      return json(200, { docs, fit, ...tz });
     }
 
     if (op === "financeLiq") {

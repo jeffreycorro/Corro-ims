@@ -4,6 +4,8 @@ const { ledgerMonthFromParts } = require("../../public/vrf-report");
 const { normalizeLedgerRows, normalizeReserve } = require("./project-name");
 const saveGuard = require("../../public/vrf-save-guard");
 const { guardRecordWrite: guardLiquidationWrite } = require("./liquidation-guard");
+const { assertPhotoBatch, photoDataQuery } = require("../../public/photo-batch");
+const { fitPhotoPayload } = require("./photo-fit");
 
 function supabaseUrl() {
   return (
@@ -282,8 +284,15 @@ async function docFromRecords(collection, id) {
   return null;
 }
 
+/* Photo reads are primary-key lookups on motorpool_docs. They are not rows
+   in motorpool_records, so a picture get must not probe that table first.
+   The probe used to run once per attachment, in front of the blob. */
+function readsRecordStore(collection) {
+  return collection !== "photos";
+}
+
 async function getDoc(collection, id) {
-  if (await recordsPrimary()) {
+  if (readsRecordStore(collection) && (await recordsPrimary())) {
     const made = await docFromRecords(collection, id);
     if (made) return made;
   }
@@ -957,6 +966,23 @@ function photoMetaRow(row) {
   return out.id ? out : null;
 }
 
+async function listPhotoData(ids, fit) {
+  const name = fit === "print" ? "print" : "thumb";
+  const clean = assertPhotoBatch(ids, name);
+  if (!clean.length) return [];
+  const rows = await rest({
+    method: "GET",
+    path: "/rest/v1/motorpool_docs",
+    query: photoDataQuery(clean),
+  });
+  return (Array.isArray(rows) ? rows : [])
+    .map((row) => {
+      const raw = row && row.data != null ? String(row.data) : "";
+      return { id: row && row.id, data: raw ? fitPhotoPayload(raw, name) : "" };
+    })
+    .filter((row) => row.id);
+}
+
 async function listPhotoMeta(owner) {
   const select = photoMetaSelect();
   if (select.split(",").indexOf("data") !== -1) {
@@ -1173,6 +1199,7 @@ module.exports = {
   listCollection,
   listIds,
   listPhotoMeta,
+  listPhotoData,
   photoIdPrefix,
   photoIdRangeQuery,
   photoIdUpper,
@@ -1187,6 +1214,7 @@ module.exports = {
   saveLedgerVrf,
   recordsAvailable,
   recordsPrimary,
+  readsRecordStore,
   rest,
   serviceRole,
   setDoc,
