@@ -140,7 +140,7 @@ describe("pictures load small, later, and full size only on tap", () => {
     const meta = sliceFn(html, "async function listPhotoMeta(owner)", "async function listPhotoMetaMany(");
     assert.match(meta, /S\.db\.photoMeta/);
     assert.doesNotMatch(meta, /listPhotos\(/);
-    assert.match(meta, /return meta/);
+    assert.match(meta, /return applyStoredThumbs\(meta\)/);
   });
 });
 
@@ -148,6 +148,7 @@ describe("print opens before picture bytes and keeps every attachment", () => {
   it("loads names first, then each picture on its own, and will not print early", () => {
     const print = sliceFn(html, "function pullPrintPhoto(x, page, onDone)", "function lightbox(src)");
     assert.match(print, /listPhotoMetaMany\(photoOwnersForOpenVrf\(entry\)\)/);
+    assert.match(print, /loadPhotoDocs\(files, "print"\)/);
     assert.match(print, /loadPhotoDoc\(x\.id,\{direct:true\}\)/);
     assert.match(print, /Waiting for pictures/);
     assert.match(print, /Print — /);

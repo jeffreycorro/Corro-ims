@@ -1,4 +1,4 @@
-<!doctype html><html><head><script src="/claude-shim.js"></script><link rel="manifest" href="/manifest.json"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/favicon.svg"><link rel="stylesheet" href="/pwa.css"><script src="/pwa.js"></script><script src="/vrf-report.js"></script><script src="/fuel-audit.js"></script><script src="/stock-fifo.js"></script><script src="/voucher-no.js"></script><script src="/vrf-save-guard.js"></script><script src="/vrf-cancel.js"></script><script src="/vrf-liquidation.js"></script><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1"><title>Corcondev Motorpool</title>
+<!doctype html><html><head><script src="/claude-shim.js"></script><link rel="manifest" href="/manifest.json"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/favicon.svg"><link rel="stylesheet" href="/pwa.css"><script src="/pwa.js"></script><script src="/vrf-report.js"></script><script src="/fuel-audit.js"></script><script src="/stock-fifo.js"></script><script src="/voucher-no.js"></script><script src="/vrf-save-guard.js"></script><script src="/vrf-cancel.js"></script><script src="/vrf-liquidation.js"></script><script src="/photo-batch.js"></script><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1"><title>Corcondev Motorpool</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600&family=Archivo+Narrow:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
@@ -5477,14 +5477,17 @@ async function listPhotosMany(owners){
   }
   return mergePhotoLists(lists);
 }
-/* Gallery thumbnails, two at a time, so Approvals does not download every
-   picture at once. Print fetches the open VRF directly and does not use
-   this queue. A hung get must release its slot. */
+/* Approvals still loads two thumbnails at a time, and only once a cell is
+   on screen. Opening a VRF and printing it do not use that queue: they ask
+   for the whole form in a few photoData batches (small thumbs, or a
+   print-sized JPEG). A hung get must release its slot. */
 var PHOTO_FETCH_LIMIT=2;
 var PHOTO_GET_MS=20000;
 var PHOTO_THUMB_PX=160;
 var photoDocCache={};
 var photoDocFlight={};
+var photoThumbCache={};
+var photoThumbFlight={};
 var photoJobActive=0;
 var photoJobWait=[];
 var PHOTO_META_KEYS=["id","vrf","idx","caption","kind","linkKind","url","w","h","bytes","mime","by","at","link","thumb","role","fuelRole"];
@@ -5503,19 +5506,52 @@ function rememberPhotoDoc(x){
 function localPhotoItems(owner){
   return ((lsGet("photos/"+owner,null)||{}).items)||[];
 }
+function thumbCacheGet(id){
+  id=String(id||"");
+  if(!id) return "";
+  if(photoThumbCache[id]) return photoThumbCache[id];
+  var map=lsGet("photoThumbs",{})||{};
+  var t=map[id]?String(map[id]):"";
+  if(t) photoThumbCache[id]=t;
+  return t;
+}
+function thumbCachePut(id, thumb){
+  id=String(id||"");
+  thumb=String(thumb||"");
+  if(!id||!thumb||!/^data:image\//i.test(thumb)) return;
+  photoThumbCache[id]=thumb;
+  if(thumb.length>30000) return;
+  var map=lsGet("photoThumbs",{})||{};
+  if(map[id]) delete map[id];
+  map[id]=thumb;
+  var keys=Object.keys(map);
+  while(keys.length>100){
+    delete map[keys[0]];
+    keys.shift();
+  }
+  lsSet("photoThumbs", map);
+}
+function applyStoredThumbs(list){
+  (list||[]).forEach(function(x){
+    if(!x||x.thumb||x.kind==="link") return;
+    var t=thumbCacheGet(x.id);
+    if(t) x.thumb=t;
+  });
+  return list||[];
+}
 /* Names and sizes only. A failed lookup stays on this device's names.
    It must not fall back to listPhotos — that downloads every image. */
 async function listPhotoMeta(owner){
   var loc=localPhotoItems(owner);
   loc.forEach(rememberPhotoDoc);
   var meta=loc.map(photoMetaOf).filter(Boolean);
-  if(!S.db||typeof S.db.photoMeta!=="function") return meta;
+  if(!S.db||typeof S.db.photoMeta!=="function") return applyStoredThumbs(meta);
   try{
     var row=await S.db.photoMeta(String(owner));
     var remote=(row&&row.docs||[]).map(photoMetaOf).filter(Boolean);
-    return mergePhotoLists([remote, meta]);
+    return applyStoredThumbs(mergePhotoLists([remote, meta]));
   }catch(e){
-    return meta;
+    return applyStoredThumbs(meta);
   }
 }
 async function listPhotoMetaMany(owners){
@@ -5587,6 +5623,113 @@ function loadPhotoDoc(id, opts){
   photoDocFlight[id]=p;
   return p;
 }
+function fetchPhotoBatch(ids, fit){
+  if(!S.db||typeof S.db.photoData!=="function") return Promise.reject(new Error("no photoData"));
+  return S.db.photoData(ids, fit).then(function(row){
+    ((row&&row.docs)||[]).forEach(function(d){
+      if(!d||!d.id||!d.data) return;
+      if(fit==="thumb") thumbCachePut(d.id, d.data);
+      else {
+        var prev=photoDocCache[d.id]||{id:d.id};
+        prev.id=d.id;
+        prev.data=d.data;
+        photoDocCache[d.id]=prev;
+      }
+    });
+  });
+}
+function startPhotoChunk(chunk, fit){
+  var idList=chunk.map(function(it){ return it.id; });
+  var p=fetchPhotoBatch(idList, fit);
+  if(fit==="thumb"){
+    idList.forEach(function(id){
+      var joined=p.then(function(){
+        return {id:id, thumb:photoThumbCache[id]||thumbCacheGet(id)||""};
+      }).then(function(row){
+        if(photoThumbFlight[id]===joined) delete photoThumbFlight[id];
+        return row;
+      },function(err){
+        if(photoThumbFlight[id]===joined) delete photoThumbFlight[id];
+        return Promise.reject(err);
+      });
+      photoThumbFlight[id]=joined;
+    });
+  }
+  return p.catch(function(){});
+}
+/* ids or {id, bytes} records. Thumbs register a flight so the cells painted
+   in the same turn wait on the batch instead of each downloading the original. */
+function loadPhotoDocs(items, fit){
+  fit=fit==="print"?"print":"thumb";
+  var pending=[], seen={};
+  (items||[]).forEach(function(x){
+    var id=String((x&&x.id)||x||"");
+    if(!id||seen[id]) return;
+    seen[id]=1;
+    if(fit==="thumb"){
+      if((x&&x.thumb)||thumbCacheGet(id)||photoThumbFlight[id]) return;
+    }else if(photoDocCache[id]&&photoDocCache[id].data) return;
+    var bytes=Number(x&&x.bytes);
+    pending.push({id:id, bytes:isFinite(bytes)&&bytes>0?bytes:0});
+  });
+  if(!pending.length||!window.PhotoBatch||!S.db||typeof S.db.photoData!=="function") return Promise.resolve();
+  var chunks=PhotoBatch.planPhotoBatches(pending, PhotoBatch.limitsFor(fit));
+  var next=0, active=0, left=chunks.length;
+  if(!left) return Promise.resolve();
+  return new Promise(function(resolve){
+    function done(){
+      active--;
+      left--;
+      if(!left) resolve();
+      else pump();
+    }
+    function pump(){
+      while(active<2&&next<chunks.length){
+        active++;
+        startPhotoChunk(chunks[next++], fit).then(done, done);
+      }
+    }
+    pump();
+  });
+}
+function loadPhotoForThumb(id){
+  id=String(id||"");
+  if(!id) return Promise.resolve(null);
+  var cached=thumbCacheGet(id);
+  if(cached) return Promise.resolve({id:id, thumb:cached});
+  if(photoDocCache[id]&&photoDocCache[id].data&&/^data:image\//i.test(String(photoDocCache[id].data))){
+    return downscaleDataUrl(photoDocCache[id].data, PHOTO_THUMB_PX).then(function(thumb){
+      if(thumb) thumbCachePut(id, thumb);
+      return {id:id, thumb:thumb||"", data:photoDocCache[id].data};
+    });
+  }
+  if(photoThumbFlight[id]){
+    return photoThumbFlight[id].then(function(row){
+      if(row&&row.thumb) return row;
+      return loadPhotoDoc(id);
+    },function(){ return loadPhotoDoc(id); });
+  }
+  if(!(S.db&&typeof S.db.photoData==="function")) return loadPhotoDoc(id);
+  var run=function(){
+    var again=thumbCacheGet(id);
+    if(again) return {id:id, thumb:again};
+    return fetchPhotoBatch([id], "thumb").then(function(){
+      var made=thumbCacheGet(id);
+      if(made) return {id:id, thumb:made};
+      return loadPhotoDoc(id);
+    }).catch(function(){ return loadPhotoDoc(id); });
+  };
+  var started=runPhotoJob(run);
+  var p=started.then(function(row){
+    if(photoThumbFlight[id]===p) delete photoThumbFlight[id];
+    return row;
+  },function(err){
+    if(photoThumbFlight[id]===p) delete photoThumbFlight[id];
+    return Promise.reject(err);
+  });
+  photoThumbFlight[id]=p;
+  return p;
+}
 function whenVisible(node, fn){
   if(!node||typeof IntersectionObserver!=="function") return;
   var io=new IntersectionObserver(function(entries){
@@ -5651,29 +5794,33 @@ function paintPhotoFailure(ph, retry){
   box.appendChild(b);
   ph.appendChild(box);
 }
+function placeThumbImg(ph, x, src){
+  if(!ph||!ph.isConnected||!src) return ph;
+  var im=document.createElement("img");
+  im.setAttribute("loading","lazy");
+  im.setAttribute("decoding","async");
+  im.alt=(x&&x.caption)||"photo";
+  im.src=src;
+  if(ph.parentNode) ph.replaceWith(im);
+  return im;
+}
 function paintLazyThumb(ph, x){
   var preset=thumbSrcFor(x);
-  if(preset){
-    var known=document.createElement("img");
-    known.setAttribute("loading","lazy");
-    known.setAttribute("decoding","async");
-    known.alt=x.caption||"photo";
-    known.src=preset;
-    if(ph.parentNode) ph.replaceWith(known);
-    return Promise.resolve(known);
-  }
+  if(preset) return Promise.resolve(placeThumbImg(ph, x, preset));
   if(isVideoMeta(x)){
     ph.textContent="Video — tap to play";
     return Promise.resolve(ph);
   }
   ph.textContent="Photo";
-  return loadPhotoDoc(x.id).then(function(doc){
+  return loadPhotoForThumb(x&&x.id).then(function(doc){
     if(!ph.isConnected) return ph;
+    var ready=(doc&&doc.thumb)||thumbSrcFor(x)||"";
+    if(ready) return placeThumbImg(ph, x, ready);
     if(!doc||!doc.data){
       paintPhotoFailure(ph, function(){ paintLazyThumb(ph, x); });
       return ph;
     }
-    if(isVideoAttachment(doc)||isVideoMeta(x)){
+    if(isVideoAttachment(doc)){
       ph.textContent="Video — tap to play";
       return ph;
     }
@@ -5683,13 +5830,9 @@ function paintLazyThumb(ph, x){
         paintPhotoFailure(ph, function(){ paintLazyThumb(ph, x); });
         return ph;
       }
-      var im=document.createElement("img");
-      im.setAttribute("loading","lazy");
-      im.setAttribute("decoding","async");
-      im.alt=x.caption||"photo";
-      im.src=thumb;
-      if(ph.parentNode) ph.replaceWith(im);
-      return im;
+      thumbCachePut(x.id, thumb);
+      if(x) x.thumb=thumb;
+      return placeThumbImg(ph, x, thumb);
     });
   }).catch(function(){
     if(ph.isConnected) paintPhotoFailure(ph, function(){ paintLazyThumb(ph, x); });
@@ -5776,6 +5919,12 @@ function fillLazyGallery(pgal, owners, opts){
       nb.innerHTML=opts.emptyHtml||"<b>No pictures on this request.</b>";
       pgal.appendChild(nb);
       return;
+    }
+    if(opts.eager){
+      var needThumb=files.filter(function(x){
+        return x&&x.id&&!thumbSrcFor(x)&&!isVideoMeta(x);
+      });
+      if(needThumb.length) loadPhotoDocs(needThumb, "thumb");
     }
     files.forEach(function(x){ pgal.appendChild(mountLazyCell(x, opts)); });
     if(docs.length){
@@ -6046,8 +6195,17 @@ async function addPhoto(vrf,rec){
   var existing=await listPhotoMeta(vrf);
   if(existing.length>=PHOTO_PER_VRF) throw new Error("This record already has "+PHOTO_PER_VRF+" attachments.");
   var idx=existing.reduce(function(a,x){ return Math.max(a,x.idx||0); },0)+1;
+  var thumb="";
+  if((rec.kind||"photo")==="photo" && /^data:image\//i.test(String(rec.data||""))){
+    try{ thumb=await downscaleDataUrl(rec.data, PHOTO_THUMB_PX); }catch(e){ thumb=""; }
+  }
+  if(thumb&&thumb.length>30000) thumb="";
   var body={vrf:String(vrf),idx:idx,caption:rec.caption||"",by:rec.by||"",at:iso(),
     data:rec.data,w:rec.w,h:rec.h,bytes:rec.bytes,link:rec.link||"",kind:rec.kind||"photo"};
+  if(thumb){
+    body.thumb=thumb;
+    thumbCachePut(photoKey(vrf, idx), thumb);
+  }
   var roles=photoRoleFields(rec);
   if(roles){ body.role=roles.role; body.fuelRole=roles.fuelRole; }
   if(rec.mime) body.mime=rec.mime;
@@ -13864,9 +14022,12 @@ async function openVrfPrintSheet(entry,photos,preview,edition,model){
   syncBar();
 
   function loadAll(){
-    return Promise.all(printPhotoFiles(live).map(function(x){
-      return pullPrintPhoto(x, pageBox.node, syncBar);
-    })).then(function(){
+    var files=printPhotoFiles(live);
+    return loadPhotoDocs(files, "print").then(function(){
+      return Promise.all(files.map(function(x){
+        return pullPrintPhoto(x, pageBox.node, syncBar);
+      }));
+    }).then(function(){
       /* The same picture can sit on the VRF number and the reserve.
          Once the bytes are here, keep one copy — the same rule as the ledger. */
       var groups=splitVrfAttachments(live);
