@@ -102,7 +102,7 @@ function box(w, id, value) {
 
 describe("Cassie concerns 2026-10-27a", () => {
   it("is build 2026-10-27a and keeps the interview on the applicant record", () => {
-    assert.match(html, /const BUILD = "2026-11-05"/);
+    assert.match(html, /const BUILD = "2026-11-06a"/);
     assert.match(html, /data-rmode="initial">Initial interviews/);
     assert.match(html, /HR adds the applicant on that screen/);
     assert.match(readme, /build 2026-10-27a/);

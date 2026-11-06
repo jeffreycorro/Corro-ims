@@ -3,8 +3,8 @@
  * Extends the in-page engine (payLine / payTotals). Does not replace it.
  *
  * Weekly: Thursday–Wednesday. Semi-monthly: cut off on the 12th and the 27th.
- * OT pay is 100% of daily/8 and only for an approved OT request with a form
- * (that gate stays in otPaidHours). Late is ₱1 per minute after the 8:15 / 1:15
+ * OT pay is 100% of daily/8. The approved-form gate stays in otPaidHours
+ * and is skipped while settings.otFormGateWaived is on. Late is ₱1 per minute after the 8:15 / 1:15
  * grace, counted from 8:00 or 1:00. Undertime over an hour on a full day is
  * the hourly rate times the nearest hour. Net is ROUNDUP to the peso.
  */

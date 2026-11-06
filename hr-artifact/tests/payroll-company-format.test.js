@@ -303,7 +303,7 @@ describe("company payroll format", () => {
 
   it("is wired into the portal without replacing the in-page engine", () => {
     assert.match(html, /<script src="\/hr-payroll-sheet\.js"><\/script>/);
-    assert.match(html, /const BUILD = "2026-11-05"/);
+    assert.match(html, /const BUILD = "2026-11-06a"/);
     assert.match(html, /24HH0142 Labangon Chapel \(Package B\)/);
     assert.match(html, /data-ef="employeeId"/);
     assert.match(html, /fld\("Pay type","payType"/);

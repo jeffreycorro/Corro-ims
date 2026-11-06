@@ -129,6 +129,22 @@
     shadow.appendChild(style);
   }
 
+  function publishSession(status) {
+    try {
+      if (!status || !status.authenticated) {
+        window.__hrSession = null;
+        return;
+      }
+      window.__hrSession = {
+        sub: status.sub || null,
+        email: status.email || null,
+        role: status.role || null,
+        department: status.department || null,
+        method: status.method || null,
+      };
+    } catch (e) {}
+  }
+
   function showSessionChrome() {
     try {
       var existing = document.getElementById("hr-shim-session-host");
@@ -153,6 +169,7 @@
           .catch(function () {})
           .then(function () {
             authReady = null;
+            publishSession(null);
             try {
               sessionStorage.removeItem("hr-shim-holder");
             } catch (e) {}
@@ -223,6 +240,7 @@
           api("auth", payload)
             .then(function (out) {
               if (!out.authenticated) throw new Error("Sign-in failed");
+              publishSession(out);
               host.remove();
               showSessionChrome();
               resolve(out);
@@ -243,6 +261,7 @@
     authReady = authStatus()
       .then(function (status) {
         if (status && status.authenticated) {
+          publishSession(status);
           showSessionChrome();
           return status;
         }
@@ -251,6 +270,7 @@
           return api("auth", { action: "login", access_token: token })
             .then(function (out) {
               if (!out.authenticated) throw new Error("Sign-in failed");
+              publishSession(out);
               showSessionChrome();
               return out;
             })
