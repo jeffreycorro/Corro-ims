@@ -1,4 +1,4 @@
-<!doctype html><html><head><script src="/claude-shim.js"></script><link rel="manifest" href="/manifest.json"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/favicon.svg"><link rel="stylesheet" href="/pwa.css"><script src="/pwa.js"></script><script src="/vrf-report.js"></script><script src="/fuel-audit.js"></script><script src="/stock-fifo.js"></script><script src="/voucher-no.js"></script><script src="/vrf-save-guard.js"></script><script src="/vrf-cancel.js"></script><script src="/vrf-liquidation.js"></script><script src="/photo-batch.js"></script><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1"><title>Corcondev Motorpool</title>
+<!doctype html><html><head><script src="/claude-shim.js"></script><link rel="manifest" href="/manifest.json"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/favicon.svg"><link rel="stylesheet" href="/pwa.css"><script src="/pwa.js"></script><script src="/vrf-report.js"></script><script src="/fuel-audit.js"></script><script src="/stock-fifo.js"></script><script src="/voucher-no.js"></script><script src="/vrf-save-guard.js"></script><script src="/vrf-cancel.js"></script><script src="/vrf-liquidation.js"></script><script src="/photo-batch.js"></script><script src="/approvers.js"></script><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1"><title>Corcondev Motorpool</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600&family=Archivo+Narrow:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
@@ -4661,6 +4661,21 @@ function paintLiquidationNotices(host, entry){
     host.appendChild(okb);
   }
 }
+/* The page calls this from Approve and from variance approval. approvers.js
+   has to be loaded first. A missing checker must refuse the click — it must
+   not approve, and it must not throw, or the button looks dead. */
+function namedApprover(raw){
+  try{
+    if(typeof MotorpoolApprovers==="undefined"||!MotorpoolApprovers||typeof MotorpoolApprovers.resolveApprover!=="function"){
+      return {ok:false, code:"approver_check_unavailable",
+        error:"Approver check did not load. Reload the page. Nothing was approved."};
+    }
+    return MotorpoolApprovers.resolveApprover(raw);
+  }catch(e){
+    return {ok:false, code:"approver_check_unavailable",
+      error:"Approver check did not load. Reload the page. Nothing was approved."};
+  }
+}
 function appendVarianceApproval(host, reserve, canApprove){
   if(!reserve||!liqApi()) return;
   var live=vrfByNo(reserve.vrfNo);
@@ -4691,8 +4706,9 @@ function appendVarianceApproval(host, reserve, canApprove){
   row.appendChild(fld("Approved by", name));
   row.appendChild(fld("Note", note));
   var go=el("button","btn pri","Approve this variance");
+  go.type="button";
   go.addEventListener("click", async function(){
-    var who=MotorpoolApprovers.resolveApprover(name.value);
+    var who=namedApprover(name.value);
     if(!who.ok){ toast(who.error); return; }
     liqApi().applyVarianceApproval(reserve, who.name, isoAt(), note.value.trim(), liqApi().formatVariancePct(v.pct));
     try{ await saveReserves(reserve.no); }
@@ -11561,9 +11577,11 @@ function openReserve(no,asApprover){
     var ar=el("div","f3");
     function f6(l,n,h){ var x=el("div","field"); x.appendChild(el("label",null,l)); x.appendChild(n);
       if(h) x.appendChild(el("div","hint",h)); return x; }
-    var ab2=el("input"); ab2.type="number"; ab2.step="100"; ab2.value=r.budget;
+    var ab2=el("input"); ab2.type="number"; ab2.step="100"; ab2.value=moneyNum(r.budget)>0?String(moneyNum(r.budget)):"";
     var an=el("input"); an.placeholder="note";
-    var aw=el("input"); aw.placeholder="approver";
+    var aw=el("input"); aw.type="text"; aw.placeholder="Jeffrey James M. Corro or Carmel";
+    var signedApprover=namedApprover(signedInName());
+    if(signedApprover.ok) aw.value=signedApprover.name;
     ar.appendChild(f6("Approved budget",ab2,"Asked for "+peso(r.budget)+". Change it to approve a different figure."));
     ar.appendChild(f6("Note",an)); ar.appendChild(f6("Approved by",aw));
     acb.appendChild(ar);
@@ -11576,32 +11594,43 @@ function openReserve(no,asApprover){
     }
     var arow=el("div","row"); arow.style.marginTop="var(--space-3)";
     var okb=el("button","btn pri","Approve");
+    okb.type="button";
+    okb.setAttribute("data-approve-decision","1");
     var nob=el("button","btn","Reject");
+    nob.type="button";
     var amsg=el("div","hint"); amsg.style.marginTop="var(--space-2)";
+    amsg.setAttribute("data-approve-reason","1");
     /* A required field should announce itself rather than punish the click.
-       The buttons stay visibly disabled with the reason beside them. */
+       Approve stays disabled until the name is Jeffrey or Carmel and the
+       budget is above zero. Reject still only needs a name and a note. */
     function syncDecision(){
-      var hasName=!!aw.value.trim(), hasNote=!!an.value.trim();
+      var raw=aw.value.trim(), hasNote=!!an.value.trim();
       var amt=parseFloat(ab2.value);
-      okb.disabled = !ready.ok || !hasName || !(amt>0);
-      nob.disabled = !hasName || !hasNote;
-      var need=[];
-      if(!hasName) need.push("your name in “Approved by”");
-      if(!(amt>0)) need.push("an approved budget");
-      if(need.length){
-        amsg.textContent="To approve, fill in "+need.join(" and ")+
-          ". A rejection also needs a reason in “Note”.";
+      var approver=raw?namedApprover(raw):{ok:false,error:""};
+      okb.disabled = !ready.ok || !approver.ok || !(amt>0);
+      nob.disabled = !raw || !hasNote;
+      if(!ready.ok){
+        amsg.textContent="This request cannot be approved yet.";
         amsg.style.color="var(--danger)";
-      }else if(nob.disabled){
-        amsg.textContent="Ready to approve. To reject instead, add a reason in “Note”.";
+        return;
+      }
+      if(!approver.ok || !(amt>0)){
+        var parts=[];
+        if(!raw) parts.push("Put your name in “Approved by”. Approval must be Jeffrey James M. Corro or Carmel.");
+        else if(!approver.ok) parts.push(approver.error);
+        if(!(amt>0)) parts.push("Put an approved budget above zero.");
+        if(!hasNote) parts.push("A rejection also needs a reason in “Note”.");
+        amsg.textContent=parts.join(" ");
+        amsg.style.color="var(--danger)";
+      }else if(!hasNote){
+        amsg.textContent="Ready to approve as "+approver.name+". To reject instead, add a reason in “Note”.";
         amsg.style.color="";
       }else{ amsg.textContent=""; amsg.style.color=""; }
     }
     [aw,an,ab2].forEach(function(x){ x.addEventListener("input",syncDecision); });
     okb.addEventListener("click",async function(){
-      if(S._approvingRsv) return;
-      if(!aw.value.trim()){ toast("The approval has to carry a name."); return; }
-      var approver=MotorpoolApprovers.resolveApprover(aw.value);
+      if(okb.disabled||S._approvingRsv) return;
+      var approver=namedApprover(aw.value);
       if(!approver.ok){ toast(approver.error); return; }
       var amt=parseFloat(ab2.value);
       if(!(amt>0)){ toast("Put an approved budget on it."); return; }
