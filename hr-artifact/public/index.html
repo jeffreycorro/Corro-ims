@@ -462,6 +462,7 @@ button.pill.drill:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
 </div>
 <div id="modal-root"></div>
 <script src="/hr-payroll-sheet.js"></script>
+<script src="/hr-project-pay.js"></script>
 <script>
 "use strict";
 
@@ -2156,7 +2157,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-11-09a";
+const BUILD = "2026-11-09b";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -11515,6 +11516,7 @@ function viewDaily(){
    + '<button class="btn pri" id="dm-save">Save</button>'
    + '<span class="lbl" id="dm-savestate" style="text-transform:none;letter-spacing:0"></span>'
    + '<button class="btn" id="dm-add">Add someone</button>'
+   + '<button class="btn" id="dm-assign" title="Set the area for several people across a date range. The 201 project is not changed.">Assign area</button>'
    + '<button class="btn" id="dm-apply" title="Copy today\'s areas onto the 201 records">Make areas permanent</button>'
    + '<button class="btn" data-goto="salaries">Edit positions</button>'
    + '<button class="btn" id="dm-archive">The filed scans</button>'
@@ -11747,8 +11749,11 @@ function viewDaily(){
        +   '<span data-dmex="'+esc(e.id)+'">'+reasonPill(r)+'</span>'
        + '</div></td>'
        + '<td><select data-dmsite="'+esc(e.id)+'" style="'+sty+'">'
-       + dailySites().map(x=>'<option'+(dailySiteOf(rec,e)===x?" selected":"")+'>'+esc(x)+'</option>').join("")
-       + '<option value="__new">+ new area…</option></select></td>'
+       + (typeof dailyProjectSelectHtml==="function"
+          ? dailyProjectSelectHtml(dailySiteOf(rec,e))
+          : dailySites().map(x=>'<option'+(dailySiteOf(rec,e)===x?" selected":"")+'>'+esc(x)+'</option>').join("")
+            + '<option value="__new">+ new area…</option>')
+       + '</select></td>'
        + '<td><button class="btn sm danger" data-dmdrop="'+esc(e.id)+'" title="Take off this report">×</button></td></tr>';
     });
     h+='</tbody></table></div></div>';
@@ -16417,6 +16422,8 @@ function viewSettings(){
        + '</tbody></table></div></div>'
      : '<div class="card-b"><div class="note" style="border-left-color:var(--ok)">Every project name in use is on this list.</div></div>')
    + '</div>';
+
+  if(typeof payAliasSettingsHtml==="function") h+=payAliasSettingsHtml(st);
 
   h+='<div class="card"><div class="card-h"><h3>Statutory deduction reference</h3></div><div class="card-b stack"><div class="grid3">'
    + '<div class="f"><label>SSS (per period)</label><input data-ded="sss" type="number" step="0.01" value="'+st.ded.sss+'"></div>'
@@ -23486,6 +23493,13 @@ function viewPayrollRun(){
      + '<div class="lbl" style="margin-top:4px;text-transform:none;letter-spacing:0">One person’s days: the Days button on their row.</div></div>';
   }
   h+=payAttendanceCard(kind, per, worked);
+  if(typeof payRunFlowHtml==="function" && typeof payOpenAuditFlags==="function"){
+    const auditReport=typeof payAuditRun==="function" ? payAuditRun({
+      from:per.from, to:per.to, periodEnd:per.to,
+      reviews:(saved&&saved.auditReviews)||{}
+    }) : null;
+    h+=payRunFlowHtml(saved, payOpenAuditFlags(saved, worked, {from:per.from, to:per.to, report:auditReport}));
+  }
   h+=payAuditHtml(kind, per);
 
   h+='<div class="strip">'
@@ -23503,7 +23517,9 @@ function viewPayrollRun(){
    + '<button class="btn" id="pay-xlsx"><svg><use href="#i-dl"/></svg> Excel</button>'
    + '<button class="btn" id="pay-slips">Payslips for everyone</button>'
    + '<button class="btn" id="pay-save">Save this run</button>'
-   + '<button class="btn" id="pay-finalize">Finalize</button>'
+   + '<button class="btn" id="pay-submit">Submit for approval</button>'
+   + '<button class="btn" id="pay-finalize">Approve</button>'
+   + '<button class="btn" id="pay-return">Return to draft</button>'
    + '<button class="btn" id="pay-recompute" title="Read days and overtime again from Daily Manpower, and put refused contributions back to 0 unless you have typed a figure">Recompute from attendance</button>'
    + (saved?'<span class="pill ok">saved '+esc(saved.savedOn||"")+'</span>':'<span class="lbl">not saved yet</span>')
    + '<div class="f" style="margin-left:auto;width:210px"><input id="pay-q" placeholder="Find someone in this run" autocomplete="off"></div>'
@@ -23518,6 +23534,14 @@ function viewPayrollRun(){
    + '<span class="lbl">'+(siteWant ? esc(siteWant)+" only" : (grouped ? "each site shows people, days, OT, gross, deductions, and net" : "one list, every site"))+'</span>'
    + '</div>';
   h+=payBySiteHtml(paySiteGroups(worked), T);
+  if(typeof payProjectSummaryCard==="function"){
+    h+=payProjectSummaryCard(worked, kind, saved, {
+      settings:S.settings||{},
+      projects:typeof projectList==="function"?projectList():[],
+      num:num,
+      lateForRow:(typeof hrPaySheet!=="undefined" && hrPaySheet && typeof hrPaySheet.lateForRow==="function") ? hrPaySheet.lateForRow : null
+    });
+  }
 
   if(typeof hrPaySheet!=="undefined" && hrPaySheet && typeof hrPaySheet.screenHTML==="function"){
     const release=payRelease(kind, per);
@@ -25393,6 +25417,12 @@ function payPersonDays(empId){
     if(sel) sel.addEventListener("change", paint);
   });
   $("#pd-save").onclick=async()=>{
+    const savedRun=payRunGet(payCur().kind, per.from, per.to);
+    const dayLocked=dates.some(d=>typeof payDateLockedByPayroll==="function" && payDateLockedByPayroll(d, S.payruns));
+    if((typeof payRunAllowsEdit==="function" && savedRun && !payRunAllowsEdit(savedRun)) || dayLocked){
+      toast("This payroll is not a draft, so these days stay as they are on this screen.","err");
+      return;
+    }
     const bad=[], edits=[];
     $$("[data-pdrow]").forEach(tr=>{
       const d=tr.dataset.pdrow, g=k=>{ const el=tr.querySelector('[data-pd="'+k+'"]'); return el ? el.value : null; };
@@ -26274,10 +26304,18 @@ function wire(){
 
   /* an edited figure is kept against this run, never written back onto the
      attendance record — the manpower report stays what the timekeeper filed */
+  const payEditBlocked=()=>{
+    const existing=payRunGet(S.ui.payKind||"weekly", payCur().per.from, payCur().per.to);
+    if(typeof payRunAllowsEdit!=="function" || !existing || payRunAllowsEdit(existing)) return false;
+    toast(payRunLocked(existing) ? "This run is approved. Payroll edits stay locked." : "This run is submitted. Return it to draft before editing.","err");
+    render();
+    return true;
+  };
   const payEdit=async(commit)=>{
     const kind=S.ui.payKind||"weekly";
     const per=payCur().per;
     const key=payRunKey(kind,per.from,per.to);
+    if(payEditBlocked()) return;
     const run=clone(payRunGet(kind,per.from,per.to) || {id:key, kind, from:per.from, to:per.to, lines:{}, savedOn:""});
     run.lines=run.lines||{};
     $$("[data-payf]").forEach(el=>{
@@ -26406,6 +26444,31 @@ function wire(){
     const semi=b.kind==="semi";
     saveFile(slugNo((semi?"ADMIN":"WEEKLY")+"-PAYROLL-"+b.per.from)+".xlsx", bytes);
   };
+  const payActorNow=()=>typeof hrActor==="function"?hrActor():null;
+  const payUnlockedNow=()=>typeof hrApprover!=="undefined" && hrApprover && typeof hrApprover.isApproverUnlocked==="function" && hrApprover.isApproverUnlocked();
+  const payProjectNow=(lines)=>{
+    if(typeof payProjectSummary!=="function") return null;
+    return payProjectSummary(lines, {
+      confirmed: typeof payAliasConfirmedMap==="function" ? payAliasConfirmedMap(S.settings||{}) : {},
+      extraProjects: typeof projectList==="function" ? projectList().map(p=>p&&p.name).filter(Boolean) : [],
+      otPolicy: Number((S.settings&&S.settings.otPolicy)||1)||1,
+      lateForRow: (typeof hrPaySheet!=="undefined" && hrPaySheet && typeof hrPaySheet.lateForRow==="function") ? hrPaySheet.lateForRow : null
+    });
+  };
+  const paySubBtn=$("#pay-submit",v); if(paySubBtn) paySubBtn.onclick=async()=>{
+    const b=payBuild();
+    if(!b.lines.length){ toast("Nobody has a day recorded in this period.","err"); return; }
+    const key=payRunKey(b.kind, b.per.from, b.per.to);
+    const savedRun=payRunGet(b.kind, b.per.from, b.per.to);
+    const run=clone(savedRun || {id:key, kind:b.kind, from:b.per.from, to:b.per.to, lines:{}});
+    const result=payTransition(run, "submit", { actor:payActorNow(), approverUnlocked:payUnlockedNow(), now:nowStamp(), who:whoEdits() });
+    if(!result.ok){ toast(result.error,"err"); return; }
+    S.payruns=S.payruns||{};
+    S.payruns[key]=result.run;
+    await put("payruns", key, result.run);
+    toast("Submitted for approval.","ok");
+    render();
+  };
   const payFinBtn=$("#pay-finalize",v); if(payFinBtn) payFinBtn.onclick=async()=>{
     const b=payBuild();
     if(!b.lines.length){ toast("Nobody has a day recorded in this period.","err"); return; }
@@ -26413,18 +26476,65 @@ function wire(){
     const ack=(savedRun&&savedRun.exceptionsAck)||{};
     const open=(typeof hrPaySheet!=="undefined" && hrPaySheet) ? hrPaySheet.openExceptions(b.lines, ack) : [];
     if(open.length){
-      toast(open.length+" exception"+(open.length===1?"":"s")+" still open. Acknowledge them before finalize.","err");
+      toast(open.length+" exception"+(open.length===1?"":"s")+" still open. Acknowledge them before approval.","err");
       return;
     }
     const key=payRunKey(b.kind, b.per.from, b.per.to);
     const run=clone(savedRun || {id:key, kind:b.kind, from:b.per.from, to:b.per.to, lines:{}});
-    run.finalizedOn=TODAY;
+    const summary=payProjectNow(b.lines);
+    const result=payTransition(run, "approve", {
+      actor:payActorNow(), approverUnlocked:payUnlockedNow(), now:nowStamp(), who:whoEdits(),
+      snapshot: summary ? { totals: summary.totals, sites: summary.sites } : null
+    });
+    if(!result.ok){ toast(result.error,"err"); return; }
     S.payruns=S.payruns||{};
-    S.payruns[key]=run;
-    await put("payruns", key, run);
-    toast("Run finalized.","ok");
+    S.payruns[key]=result.run;
+    await put("payruns", key, result.run);
+    toast("Run approved.","ok");
     render();
   };
+  const payRetBtn=$("#pay-return",v); if(payRetBtn) payRetBtn.onclick=async()=>{
+    const noted=await askText("Return this payroll", [{k:"note", label:"Note", placeholder:"What has to change"}], {yes:"Return to draft", note:"The run goes back to draft. The note stays on the status history."});
+    if(!noted || !noted.note) return;
+    const b=payBuild();
+    const key=payRunKey(b.kind, b.per.from, b.per.to);
+    const savedRun=payRunGet(b.kind, b.per.from, b.per.to);
+    const run=clone(savedRun || {id:key, kind:b.kind, from:b.per.from, to:b.per.to, lines:{}});
+    const result=payTransition(run, "return", {
+      actor:payActorNow(), approverUnlocked:payUnlockedNow(), now:nowStamp(), who:whoEdits(), note:noted.note
+    });
+    if(!result.ok){ toast(result.error,"err"); return; }
+    S.payruns=S.payruns||{};
+    S.payruns[key]=result.run;
+    await put("payruns", key, result.run);
+    toast("Returned to draft.","ok");
+    render();
+  };
+  const payProjCsv=$("#pay-proj-csv",v); if(payProjCsv) payProjCsv.onclick=()=>{
+    const b=payBuild();
+    const summary=payProjectNow(b.lines);
+    if(!summary || typeof payProjectSummaryCsv!=="function"){ toast("The project summary is not loaded.","err"); return; }
+    const semi=b.kind==="semi";
+    saveFile(slugNo((semi?"ADMIN":"WEEKLY")+"-PROJECT-"+b.per.from)+".csv", toCSV(payProjectSummaryCsv(summary)));
+  };
+  const payProjXlsx=$("#pay-proj-xlsx",v); if(payProjXlsx) payProjXlsx.onclick=()=>{
+    if(typeof hrPaySheet==="undefined" || !hrPaySheet || typeof hrPaySheet.toXlsx!=="function" || typeof payProjectSummaryBook!=="function"){
+      toast("The project workbook is not loaded.","err"); return;
+    }
+    const b=payBuild();
+    const summary=payProjectNow(b.lines);
+    const bytes=hrPaySheet.toXlsx(payProjectSummaryBook(summary));
+    const semi=b.kind==="semi";
+    saveFile(slugNo((semi?"ADMIN":"WEEKLY")+"-PROJECT-"+b.per.from)+".xlsx", bytes);
+  };
+  (function(){
+    const cur=payCur();
+    const saved=payRunGet(cur.kind, cur.per.from, cur.per.to);
+    if(typeof payRunAllowsEdit==="function" && saved && !payRunAllowsEdit(saved)){
+      $$("[data-payf]", v).forEach(el=>{ el.readOnly=true; });
+      ["pay-save","pay-recompute"].forEach(id=>{ const el=$("#"+id, v); if(el) el.disabled=true; });
+    }
+  })();
   const payAckBtn=$("#pay-ack",v); if(payAckBtn) payAckBtn.onclick=async()=>{
     const b=payBuild();
     const key=payRunKey(b.kind, b.per.from, b.per.to);
@@ -26753,11 +26863,33 @@ function wire(){
         placeholder:"e.g. Tawason", hint:"To have it in every dropdown, add it as a project in Settings instead"}]);
       if(!r){ render(); return; }
       const rec=dailyCollect();
-      rec.rows[key]=Object.assign({s:"Present",r:""},rec.rows[key]||{},{site:r.name});
-      await dailySave(rec); render(); return;
+      rec.rows[key]=Object.assign({s:"Present",r:""},rec.rows[key]||{},{site:r.name, siteBy:whoEdits(), siteAt:nowStamp()});
+      await dailySave(rec, "area set to "+r.name); render(); return;
     }
-    await dailySave(dailyCollect()); render();
+    const rec=dailyCollect();
+    const key=sel.dataset.dmsite;
+    if(rec.rows[key]){ rec.rows[key].siteBy=whoEdits(); rec.rows[key].siteAt=nowStamp(); }
+    await dailySave(rec, "area set to "+((rec.rows[key]||{}).site||"")); render();
   });
+  const dmAssign=$("#dm-assign",v); if(dmAssign) dmAssign.onclick=()=>{
+    if(typeof openDailyBulkAssign!=="function") return;
+    openDailyBulkAssign({
+      people: typeof atWork==="function"?atWork():empList(),
+      projects: typeof projectList==="function"?projectList():[],
+      date: S.ui.dailyDate||TODAY,
+      flipName: flipName,
+      openModal: openModal,
+      closeModal: closeModal,
+      toast: toast,
+      render: render,
+      doc: document,
+      payDates: payDates,
+      dailyGet: dailyGet,
+      dailySave: dailySave,
+      whoEdits: whoEdits,
+      nowStamp: nowStamp
+    });
+  };
   /* drag a name onto another area */
   on("[data-drag]","dragstart",e=>{
     e.currentTarget.style.opacity=".45";
@@ -26770,7 +26902,7 @@ function wire(){
     e.preventDefault(); e.currentTarget.style.outline="";
     const id=e.dataTransfer.getData("text/plain"); if(!id) return;
     const site=e.currentTarget.dataset.drop, rec=dailyCollect();
-    rec.rows[id]=Object.assign({s:"Present",r:""}, rec.rows[id]||{}, {site});
+    rec.rows[id]=Object.assign({s:"Present",r:""}, rec.rows[id]||{}, {site, siteBy:whoEdits(), siteAt:nowStamp()});
     await dailySave(rec, "moved to another area");
     toast(flipName((S.employees[id]||{}).name||"")+" → "+site);
     render();
@@ -27271,6 +27403,14 @@ function wire(){
     S.settings[k]=e.target.value==="1" || e.target.value==="true";
     await putSettings();
     render();
+  });
+  on("[data-alias-on]","change",async e=>{
+    const key=e.target.dataset.aliasOn;
+    S.settings.projectAliasOn=Object.assign({}, S.settings.projectAliasOn||{});
+    if(e.target.checked) S.settings.projectAliasOn[key]=true;
+    else delete S.settings.projectAliasOn[key];
+    await putSettings();
+    toast(e.target.checked ? "That alias is used on the project summary. Stored rows were not rewritten." : "That alias is Unassigned on the summary until it is confirmed again.","ok");
   });
   on("[data-ded]","change",async e=>{ S.settings.ded[e.target.dataset.ded]=parseFloat(e.target.value)||0; await putSettings(); });
   on("[data-leave]","change",async e=>{
