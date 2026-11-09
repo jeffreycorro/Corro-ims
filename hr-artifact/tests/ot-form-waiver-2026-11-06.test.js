@@ -93,16 +93,16 @@ const OTHER = {
   sub: "d36c801f-9f59-4cca-84f6-36774e0b579e",
 };
 
-describe("2026-11-06a OT form gate waiver and Cassie time in/out", () => {
-  it("is build 2026-11-06a and documents a reversible waiver with no end date", () => {
-    assert.match(html, /const BUILD = "2026-11-06a"/);
+describe("2026-11-09a OT form gate waiver and Cassie time in/out", () => {
+  it("is build 2026-11-09a and documents a reversible waiver with no end date", () => {
+    assert.match(html, /const BUILD = "2026-11-09a"/);
     assert.match(html, /otFormGateWaived:true/);
     assert.match(html, /function otFormGateWaived\(/);
     assert.match(html, /data-set-flag="otFormGateWaived"/);
     assert.match(html, /No end date/);
     assert.match(html, /moranmariatrinacassandra@gmail.com/);
     assert.match(html, /does not grant admin/i);
-    assert.match(readme, /build 2026-11-06a/);
+    assert.match(readme, /build 2026-11-09a/);
     assert.match(readme, /otFormGateWaived/);
     assert.match(readme, /moranmariatrinacassandra@gmail.com/);
     assert.match(readme, /no end date/i);

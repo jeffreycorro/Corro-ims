@@ -2156,7 +2156,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-11-06a";
+const BUILD = "2026-11-09a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -10505,6 +10505,64 @@ function otHoursFromClock(from, to){
   if(mins<0) mins+=24*60;
   return Math.round((mins/60)*100)/100;
 }
+/* "HH:MM" for a minute count. Used so clock OT calls otHoursFromClock. */
+function clockLabel(mins){
+  const m=((Number(mins)%1440)+1440)%1440;
+  const h=Math.floor(m/60), mi=m%60;
+  return String(h).padStart(2,"0")+":"+String(mi).padStart(2,"0");
+}
+/* Schedule end for one employee-day. A 201 scheduleEnd or schedOut wins.
+   Otherwise Monday–Friday end at 5:00 PM (the end undertime already uses)
+   and Saturday ends at 12:00 noon (adjusted schedule, 5 Jan 2026).
+   Sunday has no regular end, so the clock does not invent OT. */
+function scheduleEndFor(emp, date){
+  const own=emp && (emp.scheduleEnd||emp.schedOut||"");
+  if(String(own).trim() && typeof clockMinutes==="function" && clockMinutes(own)!=null)
+    return clockLabel(clockMinutes(own));
+  const day=String(date||"").slice(0,10);
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(day)) return "17:00";
+  const dow=new Date(day+"T00:00:00").getDay();
+  if(dow===0) return "";
+  if(dow===6) return "12:00";
+  return "17:00";
+}
+/* Unpaid meal is 12:00–13:00. Only the part that sits inside the overtime
+   window comes off. A tail that starts at 5:00 PM does not contain it. */
+function clockOtBreakMinutes(startMin, endMin){
+  if(!(endMin>startMin)) return 0;
+  let n=0;
+  for(let day=0; day<=1; day++){
+    const a=12*60+day*1440, b=13*60+day*1440;
+    const s=Math.max(startMin, a), e=Math.min(endMin, b);
+    if(e>s) n+=e-s;
+  }
+  return n;
+}
+/* Half an hour. A shorter tail past schedule end is not overtime. */
+function clockOtMinHours(){ return 0.5; }
+/* Hours past schedule end, on the start date.
+   otHoursFromClock supplies the span: overnight (time out earlier than
+   time in, such as 18:00–03:00) stays on this date, and the span is
+   rounded to a hundredth of an hour. The meal break above is then taken
+   off, and a result under clockOtMinHours() is 0.
+   Returns 0 when time out is missing or is not past the schedule end. */
+function clockOtHours(timeIn, timeOut, scheduleEnd){
+  if(typeof clockMinutes!=="function" || typeof otHoursFromClock!=="function") return 0;
+  const end=clockMinutes(scheduleEnd);
+  const inn=clockMinutes(timeIn);
+  const out=clockMinutes(timeOut);
+  if(end==null || out==null) return 0;
+  const overnight=inn!=null && out<=inn;
+  if(!overnight && out<=end) return 0;
+  let fromMin=end;
+  if(inn!=null && inn>end) fromMin=inn;
+  const span=otHoursFromClock(clockLabel(fromMin), clockLabel(out));
+  if(span==null || !(span>0)) return 0;
+  const endAbs=(overnight || out<=fromMin) ? out+1440 : out;
+  const hours=Math.round((span - clockOtBreakMinutes(fromMin, endAbs)/60)*100)/100;
+  if(!(hours>=clockOtMinHours())) return 0;
+  return hours;
+}
 /* Where this person is on that date: the Daily Manpower area when the day
    has a row, otherwise the last area before the next morning, otherwise the
    project on the 201 file. */
@@ -10616,30 +10674,32 @@ function otPendingText(hours){
 }
 function otEntryBox(empId, date, site, value, sty, attr){
   const covered=otCovered(empId, date, site);
-  const waived=typeof otFormGateWaived==="function" && otFormGateWaived();
   const shown=value!=null && String(value).trim()!=="" ? value : "";
-  const pending=shown!=="" && Number(shown)>0 && !covered;
-  const approved=covered ? otApprovedHours(empId, date, site) : null;
   const title=covered
-    ? ("Approved OT request on file"+(approved!=null?" · approved for "+approved+" h":""))
-    : (pending
-        ? (waived
-            ? "Pending OT form — saved and included in OT pay while the form gate is waived. The request is not marked Approved."
-            : "Pending OT form — saved, and not paid until an approved request with a form covers this date")
-        : "No OT request on file for this date/site. Hours can still be typed; they stay pending until a form is approved.");
+    ? "OT request on file. This box stays editable. A number above 0 is what payroll pays."
+    : "No OT request for this day. The box stays editable. A number above 0 is what payroll pays. Blank or 0 uses the time out.";
   let h='<input '+attr+' type="number" step="0.5" min="0" value="'+esc(shown)+'" placeholder="0" '
     +'title="'+esc(title)+'" style="'+sty+';text-align:right">';
-  if(pending) h+='<div style="margin-top:3px"><span class="pill warn">Pending OT form</span></div>';
   if(!covered){
-    h+='<div class="lbl" style="text-transform:none;letter-spacing:0;font-weight:500;white-space:normal;line-height:1.35;margin-top:3px">'
-      + (pending
-          ? (waived
-              ? "Included in OT pay while the form gate is waived. Not paid until an approved form is on file once that switch is off."
-              : "Not paid until an approved form is on file.")
-          : "No OT request on file for this date/site")
+    h+='<div style="margin-top:3px"><span class="pill warn">No OT request</span></div>'
+      + '<div class="lbl" style="text-transform:none;letter-spacing:0;font-weight:500;white-space:normal;line-height:1.35;margin-top:3px">'
+      + 'No OT request on file for this date/site. A missing, pending, or rejected request does not lock time or OT. '
       + '<div style="margin-top:3px"><button type="button" class="btn sm" data-otfile="'+esc(empId)+'" data-otdate="'+esc(date)+'" data-otsite="'+esc(site)+'">File one</button></div></div>';
   }
   return h;
+}
+/* Badge only. It does not lock the OT box or the time boxes. */
+function otClockFlagHtml(empId, date, row){
+  if(typeof payrollOtParts!=="function") return "";
+  const parts=payrollOtParts({date:date}, empId, row||{});
+  if(parts.source==="manual" && Math.abs((Number(parts.manual)||0)-(Number(parts.clock)||0))>0.009){
+    const tip="Typed "+parts.manual+" h. Clock "+parts.clock+" h past "+(parts.scheduleEnd||"the schedule end")+". Payroll pays the typed number.";
+    return '<div style="margin-top:3px"><span class="pill warn" title="'+esc(tip)+'">Differs from clock '+esc(String(parts.clock))+' h</span></div>';
+  }
+  if(!(Number(parts.manual)>0) && Number(parts.clock)>0){
+    return '<div style="margin-top:3px"><span class="pill ok" title="No OT hours typed above 0. Payroll uses the time out.">Clock OT '+esc(String(parts.clock))+' h</span></div>';
+  }
+  return "";
 }
 function otEachDate(from, to){
   const out=[];
@@ -11118,7 +11178,7 @@ function viewOtRequests(){
     + 'OT hours can be typed with no request on file. '
     + ((typeof otFormGateWaived==="function" && otFormGateWaived())
         ? 'While <b>otFormGateWaived</b> is on, those hours are included in OT pay even when they show <b>Pending OT form</b>. The request is not marked Approved. Turn the switch off under Settings to withhold pay until <b>Approved</b> with a form attached. '
-        : 'They show <b>Pending OT form</b> and are not paid until <b>Approved</b> with a form attached covers that person or that site on that date. ')
+        : 'They show <b>Pending OT form</b>. Not paid until an approved form is on file. ')
     + 'By week, those hours are also listed under each site, with a column for each day. '
     + 'The next time payroll opens, those hours count. No retyping.</div>';
   h+='<div class="card" style="margin-bottom:14px"><div class="card-h"><h3>Requests</h3>'
@@ -11504,7 +11564,8 @@ function viewDaily(){
   }
 
   h+='<div class="note" style="margin:14px 0"><b>OT hours save on their own</b> a moment after you type them — a slow page does not mean the number was lost. '
-   + 'The OT box stays open with or without a request. Hours with no <b>approved OT request</b> and signed form show <b>Pending OT form</b> and are not paid until one covers this person or this site on this date. '
+   + 'Time in, time out, and the OT box stay open whether an OT request is missing, pending, or rejected. Nothing here locks those boxes. '
+   + 'Payroll pays a number above 0 typed in <b>OT hrs</b>. A blank or 0 uses the time out past the schedule end. A badge is only a flag. '
    + '<button class="btn sm" type="button" data-goto="otreq">OT requests</button> '
    + 'Everyone starts as <b>Present</b> — mark <b>Has not yet arrived</b> for anyone still on the way, then change the other exceptions. '
    + 'then Save. <b>Drag a name</b> onto another area, or use the Area column, when someone works somewhere '
@@ -11668,7 +11729,8 @@ function viewDaily(){
        + '<td><input data-dmout="'+esc(e.id)+'" value="'+esc(r.out||"")+'" placeholder="5:00 PM" title="Required for Undertime" style="'+sty
        +   ((r.s==="Undertime" && !String(r.out||"").trim())?';border-color:var(--crit)':'')+'"'
        +   (typeof dailyInOutInputAttr==="function"?dailyInOutInputAttr(typeof hrActor==="function"?hrActor():null):"")+'></td>'
-       + '<td>'+otEntryBox(e.id, rec.date, dailySiteOf(rec,e), r.ot, sty, 'data-dmot="'+esc(e.id)+'"')+'</td>'
+       + '<td>'+otEntryBox(e.id, rec.date, dailySiteOf(rec,e), r.ot, sty, 'data-dmot="'+esc(e.id)+'"')
+       + (typeof otClockFlagHtml==="function"?otClockFlagHtml(e.id, rec.date, r):"")+'</td>'
        + '<td><input data-dmday="'+esc(e.id)+'" type="number" step="0.5" min="0" max="1" value="'+esc(r.day!=null?r.day:"")+'" placeholder="'+dayCredit(r)+'" style="'+sty+';text-align:right"></td>'
        + '<td'+(covered && holEligible(rec.date,r,e.id)?' style="background:var(--warn-soft)"':'')+'>'
        + ((covered && (holEligible(rec.date,r,e.id) || holCode(r)))
@@ -22107,10 +22169,42 @@ function dailyRowForEmp(rec, empId){
   });
   return hit;
 }
-/* A number already on the cell wins, including a real zero. A blank cell
-   still pays the hours PR #69 wrote into change history when nothing later
-   cleared them. */
+/* What payroll reads off one Daily Manpower row.
+   A typed OT above 0 wins, and an OT request never supplies the number.
+   A blank or 0 falls through to the clock (time out past schedule end).
+   A blank cell with no clock hours still pays a figure that only survives
+   in change history. An explicit 0 does not. */
+function payrollOtParts(rec, empId, row){
+  const date=String((rec&&rec.date)||"").slice(0,10);
+  const raw=row && row.ot!=null && String(row.ot).trim()!=="" ? row.ot
+    : row && row.otHours!=null && String(row.otHours).trim()!=="" ? row.otHours
+    : row && row.overtime!=null && String(row.overtime).trim()!=="" ? row.overtime
+    : null;
+  let manual=null;
+  if(raw!=null){
+    const n=Number(raw);
+    if(Number.isFinite(n) && n>0) manual=n;
+  }
+  const emp=(typeof S!=="undefined" && S.employees && S.employees[empId]) || null;
+  const scheduleEnd=typeof scheduleEndFor==="function" ? scheduleEndFor(emp, date) : "17:00";
+  const clock=typeof clockOtHours==="function" ? (Number(clockOtHours(row&&row.in, row&&row.out, scheduleEnd))||0) : 0;
+  let hours=0, source="none";
+  if(manual!=null){ hours=manual; source="manual"; }
+  else if(clock>0){ hours=clock; source="clock"; }
+  else if(raw==null && typeof recoverableDailyOt==="function" && rec){
+    const no=emp && typeof normNo==="function" ? normNo(emp.empNo) : "";
+    const hits=recoverableDailyOt(rec)||[];
+    const hit=hits.find(h=>h && (h.id===empId || (no && typeof normNo==="function" && normNo(h.id)===no)));
+    if(hit && Number(hit.ot)>0){ hours=Number(hit.ot); source="history"; }
+  }
+  return {hours:hours, source:source, clock:clock, manual:manual==null?0:manual,
+    scheduleEnd:scheduleEnd, cellSet:raw!=null};
+}
+/* A number already on the cell wins when it is above 0. Otherwise the clock.
+   A blank cell still pays the hours PR #69 wrote into change history when
+   the clock has nothing. payrollOtParts is the reader when it is loaded. */
 function payrollOtHours(rec, empId, row){
+  if(typeof payrollOtParts==="function") return Number(payrollOtParts(rec, empId, row).hours)||0;
   const raw=row && row.ot!=null && String(row.ot).trim()!=="" ? row.ot
     : row && row.otHours!=null && String(row.otHours).trim()!=="" ? row.otHours
     : row && row.overtime!=null && String(row.overtime).trim()!=="" ? row.overtime
@@ -22990,6 +23084,315 @@ function payRunKey(kind,from,to){
 }
 function payRunGet(kind,from,to){ return (S.payruns||{})[payRunKey(kind,from,to)] || null; }
 
+/* Recompute drops stored days and OT so the next open reads Daily Manpower
+   again. A *Touched override (late, cash advance, contributions) stays.
+   Review notes stay. This does not finalize the run. */
+function payRecomputeFields(run){
+  if(!run || !run.lines) return run;
+  Object.keys(run.lines).forEach(id=>{
+    const line=run.lines[id]; if(!line) return;
+    delete line.days; delete line.ot; delete line.hol; delete line.holFactor;
+    const e=S.employees&&S.employees[id];
+    if(e && typeof govDeductionRefused==="function" && govDeductionRefused(e) && !line.statTouched){
+      delete line.sss; delete line.phic; delete line.hdmf;
+    }
+    if(!line.caTouched) delete line.ca;
+    if(!line.lateTouched) delete line.late;
+  });
+  return run;
+}
+
+/* ---- payroll review checks -------------------------------------------
+   Review only. A check never changes hours, pay, OT requests, or finalize.
+   To add one: push an object here with id, description, severity
+   ('info' or 'review'), and run(ctx) returning
+   [{empId, empNo, name, date, details}]. The item key is
+   checkId|empId|date. Reviewed notes live on the payrun as auditReviews
+   and are not cleared by recompute. See docs/payroll-audit-checks.md.
+   Planned and not built: blank in/out on Present days; late after 8:15
+   charged at ₱1 per minute from 8:00; government contributions for anyone
+   under 3 months or with KASABUTAN on file; a cash advance with no matching
+   CAF; a recurring deduction whose balance is already zero. */
+function payAuditItemKey(checkId, empId, date){
+  return String(checkId||"")+"|"+String(empId||"")+"|"+String(date||"").slice(0,10);
+}
+function payAuditInWindow(date, ctx){
+  const d=String(date||"").slice(0,10);
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(d)) return false;
+  ctx=ctx||{};
+  if(ctx.from && d<String(ctx.from).slice(0,10)) return false;
+  if(ctx.to && d>String(ctx.to).slice(0,10)) return false;
+  return true;
+}
+function payAuditDayOf(rec, key){
+  if(typeof otManilaDay==="function") return otManilaDay(rec, key);
+  const d=String(rec&&rec.date||"").slice(0,10);
+  if(/^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
+  const m=String((rec&&rec.id)||key||"").match(/^d(\d{4})(\d{2})(\d{2})$/);
+  return m ? m[1]+"-"+m[2]+"-"+m[3] : "";
+}
+function payAuditDays(ctx){
+  const map={};
+  Object.keys((S&&S.daily)||{}).forEach(key=>{
+    const rec=S.daily[key];
+    if(!rec || typeof rec!=="object") return;
+    const d=payAuditDayOf(rec, key);
+    if(!payAuditInWindow(d, ctx)) return;
+    map[d]=rec;
+  });
+  return map;
+}
+function payAuditEmpId(rowKey, row){
+  if(S.employees && S.employees[rowKey]) return rowKey;
+  if(typeof summaryPersonId==="function"){
+    const id=summaryPersonId(rowKey, row);
+    if(id) return id;
+  }
+  return rowKey;
+}
+function payAuditSite(empId, date, row){
+  if(row && String(row.site||"").trim()) return String(row.site).trim();
+  const e=S.employees && S.employees[empId];
+  return (e && e.project) || "";
+}
+function otRequestStatusOpen(req){
+  const s=String((req&&req.status)||"Filed").trim().toLowerCase();
+  return s!=="rejected" && s!=="cancelled" && s!=="canceled";
+}
+/* Filed or approved (anything that is not rejected or cancelled).
+   Overnight From/To times stay on the request's start date: coverage is
+   the request's calendar dates, not the morning after time-out. */
+function otRequestHitsEmp(req, empId, date, site){
+  if(!req || !otRequestStatusOpen(req)) return false;
+  const d=String(date||"").slice(0,10);
+  const from=String(req.from||"").slice(0,10);
+  const to=String(req.to||from).slice(0,10);
+  if(!from || !d || d<from || d>to) return false;
+  const ids=req.empIds||[];
+  if(ids.indexOf(empId)>=0) return true;
+  if(req.wholeSite){
+    const want=typeof otSiteKey==="function" ? otSiteKey(req.site) : String(req.site||"").trim().toLowerCase();
+    const got=typeof otSiteKey==="function" ? otSiteKey(site) : String(site||"").trim().toLowerCase();
+    return !!want && want===got;
+  }
+  return false;
+}
+function payAuditRequestsFor(empId, date, site){
+  const hits=[];
+  Object.keys((S&&S.otreqs)||{}).forEach(id=>{
+    const r=S.otreqs[id];
+    if(otRequestHitsEmp(r, empId, date, site)) hits.push(r);
+  });
+  return hits;
+}
+function payAuditRequestEmps(req){
+  const ids=[];
+  (req&&req.empIds||[]).forEach(id=>{ if(id && ids.indexOf(id)<0) ids.push(id); });
+  if(req && req.wholeSite && !ids.length){
+    const want=typeof otSiteKey==="function" ? otSiteKey(req.site) : String(req.site||"").trim().toLowerCase();
+    Object.keys((S&&S.employees)||{}).forEach(id=>{
+      const e=S.employees[id];
+      if(!e) return;
+      const got=typeof otSiteKey==="function" ? otSiteKey(e.project||"") : String(e.project||"").trim().toLowerCase();
+      if(want && got===want) ids.push(id);
+    });
+  }
+  return ids;
+}
+function payAuditPerson(empId, row){
+  const e=(S.employees&&S.employees[empId])||{};
+  return {
+    empId: empId,
+    empNo: e.empNo||(row&&row.empNo)||"",
+    name: e.name||(row&&(row.name||row.empName))||empId
+  };
+}
+function payAuditOtPaidNoRequest(ctx){
+  const out=[];
+  const days=payAuditDays(ctx);
+  Object.keys(days).sort().forEach(date=>{
+    const rec=days[date];
+    const seen={};
+    Object.keys(rec.rows||{}).forEach(key=>{
+      const row=rec.rows[key];
+      if(!row || typeof row!=="object") return;
+      const empId=payAuditEmpId(key, row);
+      if(!empId || seen[empId]) return;
+      seen[empId]=1;
+      const site=payAuditSite(empId, date, row);
+      const parts=typeof payrollOtParts==="function"
+        ? payrollOtParts(Object.assign({date:date}, rec), empId, row)
+        : {hours: Number(row.ot)||0, source:"", clock:0, manual:Number(row.ot)||0};
+      const paid=typeof otPaidHours==="function"
+        ? otPaidHours(empId, date, site, parts.hours, ctx&&ctx.periodEnd)
+        : (Number(parts.hours)||0);
+      if(!(paid>0)) return;
+      if(payAuditRequestsFor(empId, date, site).length) return;
+      const who=payAuditPerson(empId, row);
+      out.push(Object.assign(who, {
+        date: date,
+        details: "Paid "+paid+" h ("+(parts.source||"daily")
+          +"). Clock "+(Number(parts.clock)||0)+" h. No OT request for this day."
+      }));
+    });
+  });
+  return out;
+}
+function payAuditOtRequestNoDaily(ctx){
+  const out=[];
+  const seen={};
+  Object.keys((S&&S.otreqs)||{}).forEach(id=>{
+    const req=S.otreqs[id];
+    if(!req || !otRequestStatusOpen(req)) return;
+    const from=String(req.from||"").slice(0,10);
+    const to=String(req.to||from).slice(0,10);
+    const dates=typeof otEachDate==="function" ? otEachDate(from, to) : (from?[from]:[]);
+    dates.forEach(date=>{
+      if(!payAuditInWindow(date, ctx)) return;
+      payAuditRequestEmps(req).forEach(empId=>{
+        const k=empId+"|"+date;
+        if(seen[k]) return;
+        const rec=(payAuditDays(ctx)||{})[date]||null;
+        let row=null;
+        if(rec && rec.rows){
+          if(rec.rows[empId]) row=rec.rows[empId];
+          else {
+            Object.keys(rec.rows).forEach(key=>{
+              if(row) return;
+              if(payAuditEmpId(key, rec.rows[key])===empId) row=rec.rows[key];
+            });
+          }
+        }
+        const site=payAuditSite(empId, date, row);
+        if(!otRequestHitsEmp(req, empId, date, site) && (req.empIds||[]).indexOf(empId)<0) return;
+        const parts=typeof payrollOtParts==="function"
+          ? payrollOtParts(rec?Object.assign({date:date}, rec):{date:date}, empId, row||{})
+          : {hours: Number(row&&row.ot)||0, clock:0, manual:Number(row&&row.ot)||0, scheduleEnd:""};
+        if(Number(parts.hours)>0) return;
+        seen[k]=1;
+        const who=payAuditPerson(empId, row);
+        const overnight=String(req.timeFrom||"") && String(req.timeTo||"") && String(req.timeTo)<String(req.timeFrom);
+        const why=!row ? "no Daily Manpower row"
+          : !String((row&&row.out)||"").trim() ? "no time out"
+          : "time out is not past schedule end"+(parts.scheduleEnd?" ("+parts.scheduleEnd+")":"");
+        out.push(Object.assign(who, {
+          date: date,
+          details: "Request filed, OT not shown in time records. "
+            + (req.status||"Filed")+" · request "+(req.hoursEach!=null?req.hoursEach:"")+" h"
+            + (req.timeFrom||req.timeTo?" "+(req.timeFrom||"")+"–"+(req.timeTo||""):"")
+            + (overnight?" (overnight, counted on the start date)":"")
+            + ". "+why+"."
+        }));
+      });
+    });
+  });
+  return out;
+}
+function payAuditOtManualDiffers(ctx){
+  const out=[];
+  const days=payAuditDays(ctx);
+  Object.keys(days).sort().forEach(date=>{
+    const rec=days[date];
+    const seen={};
+    Object.keys(rec.rows||{}).forEach(key=>{
+      const row=rec.rows[key];
+      if(!row || typeof row!=="object") return;
+      const empId=payAuditEmpId(key, row);
+      if(!empId || seen[empId]) return;
+      seen[empId]=1;
+      const parts=typeof payrollOtParts==="function"
+        ? payrollOtParts(Object.assign({date:date}, rec), empId, row)
+        : null;
+      if(!parts || parts.source!=="manual") return;
+      if(!(Number(parts.manual)>0)) return;
+      if(Math.abs(Number(parts.manual)-Number(parts.clock))<=0.009) return;
+      const who=payAuditPerson(empId, row);
+      out.push(Object.assign(who, {
+        date: date,
+        details: "Daily OT "+parts.manual+" h, clock "+parts.clock+" h"
+          + (parts.scheduleEnd?" past "+parts.scheduleEnd:"")
+          + (row.in||row.out?" ("+(row.in||"—")+"–"+(row.out||"—")+")":" (no time out)")
+          + ". Payroll pays the typed number."
+      }));
+    });
+  });
+  return out;
+}
+function payAuditChecks(){
+  return [
+    { id:"ot_paid_no_request", severity:"review",
+      description:"Overtime is paid for this day, from a typed Daily Manpower OT number or from the time out, and no OT request covers this person.",
+      run: payAuditOtPaidNoRequest },
+    { id:"ot_request_no_daily", severity:"review",
+      description:"Request filed, OT not shown in time records",
+      run: payAuditOtRequestNoDaily },
+    { id:"ot_manual_differs_clock", severity:"info",
+      description:"The OT hours typed on Daily Manpower are not the hours past schedule end on the time out.",
+      run: payAuditOtManualDiffers }
+  ];
+}
+function payAuditRun(ctx){
+  ctx=ctx||{};
+  return payAuditChecks().map(c=>{
+    const rows=(c.run(ctx)||[]).map(r=>{
+      const key=payAuditItemKey(c.id, r.empId, r.date);
+      const rev=(ctx.reviews||{})[key]||null;
+      return Object.assign({}, r, {key:key, review:rev});
+    });
+    return {id:c.id, description:c.description, severity:c.severity, count:rows.length, rows:rows};
+  });
+}
+function payAuditSaveReview(run, key, note, who, when){
+  if(!run || !key) return run;
+  run.auditReviews=run.auditReviews||{};
+  run.auditReviews[key]={ reviewed:true, note:String(note||""), by:String(who||""), at:String(when||"") };
+  return run;
+}
+function payAuditHtml(kind, per){
+  const saved=typeof payRunGet==="function" ? payRunGet(kind, per.from, per.to) : null;
+  const report=payAuditRun({
+    from: per.from, to: per.to, periodEnd: per.to,
+    reviews: (saved&&saved.auditReviews)||{}
+  });
+  const open=report.reduce((n,c)=>n+c.rows.filter(r=>!(r.review&&r.review.reviewed)).length, 0);
+  let h='<div class="card" id="pay-audit-reviews" style="margin:14px 0"><div class="card-h"><h3>Payroll review</h3>'
+    + '<span class="lbl">'+open+' to review · does not change pay</span></div><div class="card-b">';
+  h+='<div class="note" style="margin-bottom:10px">These checks only list rows for HR to look at. '
+    + 'Marking one Reviewed stores a note on this pay run. It does not change hours, deductions, OT requests, or finalize. '
+    + 'A new check is another entry in the registry — see the payroll review notes.</div>';
+  report.forEach(c=>{
+    const waiting=c.rows.filter(r=>!(r.review&&r.review.reviewed)).length;
+    h+='<details'+(waiting?' open':'')+' style="margin:8px 0"><summary><b>'+esc(c.description)+'</b> '
+      + '<span class="pill '+(c.severity==="review"?"warn":"mut")+'">'+esc(c.severity)+'</span> '
+      + '<span class="mono">'+c.count+'</span></summary>';
+    if(!c.rows.length){
+      h+='<div class="lbl" style="margin:6px 0">None in this period.</div></details>';
+      return;
+    }
+    h+='<div class="tw" style="margin-top:8px"><table><thead><tr><th>Employee</th><th>Date</th><th>Details</th><th>Reviewed</th></tr></thead><tbody>';
+    c.rows.forEach(r=>{
+      const rev=r.review&&r.review.reviewed;
+      h+='<tr><td><b>'+esc(r.name||r.empId)+'</b>'
+        + (r.empNo?'<div class="mono lbl">'+esc(r.empNo)+'</div>':"")+'</td>'
+        + '<td class="mono">'+esc(r.date||"")+'</td>'
+        + '<td>'+esc(r.details||"")+'</td><td style="min-width:180px">';
+      if(rev){
+        h+='<span class="pill ok">Reviewed</span>'
+          + '<div class="lbl" style="text-transform:none;letter-spacing:0;margin-top:4px">'
+          + esc(r.review.by||"")+(r.review.at?" · "+esc(String(r.review.at).slice(0,16).replace("T"," ")):"")
+          + (r.review.note?"<br>"+esc(r.review.note):"")+'</div>';
+      }else{
+        h+='<input data-payaudit-note="'+esc(r.key)+'" placeholder="Note" style="width:100%;margin-bottom:4px;padding:3px 6px">'
+          + '<button type="button" class="btn sm" data-payaudit-ok="'+esc(r.key)+'">Reviewed</button>';
+      }
+      h+='</td></tr>';
+    });
+    h+='</tbody></table></div></details>';
+  });
+  h+='</div></div>';
+  return h;
+}
+
 function viewPayrollRun(){
   /* A week nobody has filed yet opens as a page of zeros and reads as a broken
      payroll. If the standard window has no reports and the period was not
@@ -23033,7 +23436,8 @@ function viewPayrollRun(){
    + '<div class="note" style="margin-bottom:12px">'+esc(payKind(kind).note)
    + ' <b>Days, overtime and the holiday premium are read off the daily manpower reports and cannot be typed here</b> — '
    + 'if one of them is wrong, the day itself is wrong, so fix it on the Daily Manpower screen and come back. '
-   + 'OT hours can be typed with no request. They show <b>OT pending</b> and are left out of OT pay, gross, and net until an <b>approved OT request</b> with the signed form covers that day. They then count on the next open, with no retyping. '
+   + 'OT pay uses the Daily Manpower OT number when it is above 0. A blank or 0 uses the time out past schedule end. An OT request does not set the hours and does not lock the time or OT boxes. '
+   + 'While the OT form pay gate is waived, those hours are paid without an approved form. '
    + 'A run is not locked when it is printed, so this wait applies to periods ending on or after October 1, 2026. Earlier periods still pay every saved hour. '
    + '<button class="btn sm" type="button" data-goto="otreq">OT requests</button> '
    + 'Allowance, loans and contributions are typed here and kept with the run. '
@@ -23082,6 +23486,7 @@ function viewPayrollRun(){
      + '<div class="lbl" style="margin-top:4px;text-transform:none;letter-spacing:0">One person’s days: the Days button on their row.</div></div>';
   }
   h+=payAttendanceCard(kind, per, worked);
+  h+=payAuditHtml(kind, per);
 
   h+='<div class="strip">'
    + tile(worked.length,"On this run",idle?idle+" more with nothing recorded":"everybody has time on","acc")
@@ -24947,7 +25352,8 @@ function payPersonDays(empId){
       + '<td><input data-pd="out" value="'+esc(r.out||"")+'" placeholder="5:00 PM" style="'+sty+'"'
       + (typeof dailyInOutInputAttr==="function"?dailyInOutInputAttr(typeof hrActor==="function"?hrActor():null):"")+'></td>'
       + '<td class="num mono" data-latemin="1" title="'+esc(lateTip)+'">'+(lateMin?lateMin+" min":"—")+'</td>'
-      + '<td>'+otEntryBox(empId, d, (r.site||""), r.ot, sty, 'data-pd="ot"')+'</td>'
+      + '<td>'+otEntryBox(empId, d, (r.site||""), r.ot, sty, 'data-pd="ot"')
+      + (typeof otClockFlagHtml==="function"?otClockFlagHtml(empId, d, r):"")+'</td>'
       + '<td>'+(elig ? holSelect("data-pd", "hol", holCode(r)) : '<span class="lbl">—</span>')+'</td>'
       + '<td><input data-pd="r" value="'+esc(r.r||"")+'" style="'+sty+'"></td></tr>';
   }).join("");
@@ -25911,21 +26317,26 @@ function wire(){
     const kind=S.ui.payKind||"weekly";
     const per=payCur().per;
     const run=payRunGet(kind, per.from, per.to);
-    if(run && run.lines){
-      Object.keys(run.lines).forEach(id=>{
-        const line=run.lines[id]; if(!line) return;
-        delete line.days; delete line.ot; delete line.hol; delete line.holFactor;
-        const e=S.employees&&S.employees[id];
-        if(e && govDeductionRefused(e) && !line.statTouched){
-          delete line.sss; delete line.phic; delete line.hdmf;
-        }
-        if(!line.caTouched) delete line.ca;
-        if(!line.lateTouched) delete line.late;
-      });
-    }
+    if(run) payRecomputeFields(run);
     toast("Days and overtime recomputed from Daily Manpower. Late is included when it was not typed over.","ok");
     render();
   };
+  on("[data-payaudit-ok]","click", async e=>{
+    const key=e.currentTarget.getAttribute("data-payaudit-ok")||"";
+    if(!key) return;
+    const noteEl=document.querySelector('[data-payaudit-note="'+key.replace(/"/g,"")+'"]');
+    const note=noteEl ? noteEl.value : "";
+    const kind=S.ui.payKind||"weekly";
+    const per=payCur().per;
+    const id=payRunKey(kind, per.from, per.to);
+    const run=clone(payRunGet(kind, per.from, per.to) || {id:id, kind:kind, from:per.from, to:per.to, lines:{}});
+    payAuditSaveReview(run, key, note, typeof whoEdits==="function"?whoEdits():"HR", new Date().toISOString());
+    S.payruns=S.payruns||{};
+    S.payruns[id]=run;
+    await put("payruns", id, run);
+    toast("Marked reviewed. Pay was not changed.","ok");
+    render();
+  });
 
   const payBuild=()=>{
     const kind=S.ui.payKind||"weekly";
