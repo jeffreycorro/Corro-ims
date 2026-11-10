@@ -10,18 +10,20 @@
  * links an existing one by email, mobile, or name and position.
  * Someone already on the pipeline can still be scheduled from the list.
  * The schedule opens on today's interviews (Asia/Manila). Another date,
- * All dates, or Unscheduled is one click. Each row shows the mobile
- * already stored on the applicant, so HR can call from the list.
+ * All dates, or Unscheduled is one click. Changing that date redraws the
+ * list; Open, the applicant name, interview details, and attached files
+ * stay clickable because the listener is on the document. Each row shows
+ * the mobile already stored on the applicant, so HR can call from the list.
  * Open roles, re-applicants, and per-position metrics read the same
  * applicant and role records. A manpower request is stored on the role.
  */
 (function (root) {
   "use strict";
 
-  if (root.hrRecruit && root.hrRecruit.version === "1.11.0") return;
+  if (root.hrRecruit && root.hrRecruit.version === "1.12.0") return;
 
   var api = {
-    version: "1.11.0",
+    version: "1.12.0",
     attached: false,
     openAppId: "",
     roleFilter: "",
@@ -31,6 +33,7 @@
     pipelineInterviewLimit: false,
     draftStaffNotes: [],
     draftExamScores: [],
+    fileShelf: {},
   };
 
   var STAFF_NOTE_KINDS = [
@@ -1220,13 +1223,16 @@
         : "Hire still creates the employee 201. Attach Drive links here for reference.") +
       "</div>";
     if (a.resumeLink) {
-      h +=
-        '<div class="row"><a class="btn sm pri" href="' +
-        esc(a.resumeLink) +
-        '" target="_blank" rel="noopener noreferrer">Open CV / documents</a>' +
-        '<span class="lbl mono">' +
-        esc(a.resumeLink) +
-        "</span></div>";
+      var resumeKind = fileUrlKind(a.resumeLink);
+      h += '<div class="row">' + fileLinkHtml(a.resumeLink, "Open CV / documents");
+      if (resumeKind === "http") {
+        h += '<span class="lbl mono">' + esc(durableFileUrl(a.resumeLink)) + "</span>";
+      } else if (resumeKind === "data") {
+        h += '<span class="lbl">Attached file. Open it with the button. It stays off the page.</span>';
+      } else if (resumeKind === "text") {
+        h += '<span class="lbl">Saved as text, not a link: ' + esc(a.resumeLink) + "</span>";
+      }
+      h += "</div>";
     }
     h += examScoresSummaryHtml(a);
     h +=
@@ -1248,13 +1254,7 @@
           '<span style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">' +
           links
             .map(function (x) {
-              return (
-                '<a class="pill acc" href="' +
-                esc(x.url) +
-                '" target="_blank" rel="noopener noreferrer">' +
-                esc(x.title || "Open") +
-                "</a>"
-              );
+              return fileLinkHtml(x.url, x.title || "Open");
             })
             .join("") +
           "</span>";
@@ -1284,7 +1284,7 @@
         '<input type="url" data-appdoc-link="' +
         esc(doc.k) +
         '" placeholder="paste Drive link" value="' +
-        esc(v.link || "") +
+        esc(fileUrlKind(v.link) === "data" || fileUrlKind(v.link) === "blob" ? "" : v.link || "") +
         '"></div>';
     });
     h += "</div>";
@@ -1299,9 +1299,9 @@
           esc(x.title) +
           "</b><span class=\"lbl\">" +
           esc(x.note || "") +
-          '</span></span><a class="btn sm" href="' +
-          esc(x.url) +
-          '" target="_blank" rel="noopener noreferrer">Open</a></div>';
+          "</span></span>" +
+          fileLinkHtml(x.url, "Open") +
+          "</div>";
       });
       h += "</div>";
     }
@@ -1644,7 +1644,9 @@
           injectStaffNotesPanel();
           injectSchedulePanel();
           injectReapplicantEditorNote();
+          injectApplicantFiles();
         }
+        if (opts && isRecommendationModal(opts)) injectApplicantFiles();
       } catch (e) {}
       return out;
     };
@@ -2721,6 +2723,315 @@
     return '<td class="hr-iv-contact">' + contactInlineHtml(a, "No number") + "</td>";
   }
 
+  /* A Drive link, a Gmail attachment link, a data URL, or plain text such as
+     "biodata". Only the first two can be opened. A data URL is opened from
+     memory so the page does not paste the file into the button. */
+  function fileUrlKind(url) {
+    var s = String(url == null ? "" : url).trim();
+    if (!s) return "empty";
+    if (/^blob:/i.test(s)) return "blob";
+    if (/^data:/i.test(s)) return "data";
+    if (/^https?:\/\//i.test(s)) return "http";
+    return "text";
+  }
+
+  function durableFileUrl(url) {
+    var s = String(url == null ? "" : url).trim();
+    if (!s || fileUrlKind(s) === "blob") return "";
+    if (typeof root.durableDriveUrl === "function") {
+      var via = root.durableDriveUrl(s);
+      if (via) return via;
+    }
+    if (fileUrlKind(s) !== "http") return s;
+    var file = /drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/.exec(s);
+    if (file) return "https://drive.google.com/file/d/" + file[1] + "/view";
+    var folder = /drive\.google\.com\/(?:drive\/)?folders\/([a-zA-Z0-9_-]+)/.exec(s);
+    if (folder) return "https://drive.google.com/drive/folders/" + folder[1];
+    var id = /[?&]id=([a-zA-Z0-9_-]{10,})/.exec(s);
+    if (id && /drive\.google\.com|docs\.google\.com/.test(s))
+      return "https://drive.google.com/file/d/" + id[1] + "/view";
+    return s;
+  }
+
+  function fileLabel(slot, title) {
+    var t = String(title == null ? "" : title).trim();
+    if (/application\s*form/i.test(t) || slot === "datasheet") return "Application form";
+    if (slot === "resume" || /^(resume|biodata|cv)$/i.test(t) || /\b(resume|biodata)\b/i.test(t)) return "Resume";
+    if (/^cv\b/i.test(t)) return "Resume";
+    return t || "File";
+  }
+
+  function collectApplicantFiles(a) {
+    var out = [];
+    var seen = Object.create(null);
+    function push(url, title, slot) {
+      url = String(url == null ? "" : url).trim();
+      if (!url || seen[url]) return;
+      seen[url] = true;
+      out.push({ url: url, title: fileLabel(slot, title), slot: slot || "" });
+    }
+    if (!a) return out;
+    push(a.resumeLink, "Resume", "resume");
+    var docs = a.docs || {};
+    Object.keys(docs).forEach(function (k) {
+      var v = docs[k] || {};
+      var title = v.title || k;
+      push(v.link, title, k);
+      (v.links || []).forEach(function (x) {
+        if (typeof x === "string") push(x, title, k);
+        else if (x) push(x.url || x.link, x.title || title, k);
+      });
+    });
+    (a.linkedDocs || []).forEach(function (x) {
+      if (!x) return;
+      if (typeof x === "string") push(x, "Attachment", "linked");
+      else push(x.url || x.link, x.title || "Attachment", "linked");
+    });
+    return out;
+  }
+
+  function shelfFile(url) {
+    var id = "hf" + Math.random().toString(36).slice(2, 10);
+    api.fileShelf[id] = String(url == null ? "" : url);
+    return id;
+  }
+
+  function openDataUrl(url) {
+    var s = String(url || "");
+    var comma = s.indexOf(",");
+    if (comma < 5) {
+      toast("That file could not be opened.", "err");
+      return false;
+    }
+    var meta = s.slice(5, comma);
+    var body = s.slice(comma + 1);
+    var mime = String(meta.split(";")[0] || "application/octet-stream").trim() || "application/octet-stream";
+    var bytes;
+    try {
+      if (/;base64/i.test(meta)) {
+        var bin = root.atob(body.replace(/\s/g, ""));
+        bytes = new Uint8Array(bin.length);
+        var i;
+        for (i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i) & 255;
+      } else {
+        var text = decodeURIComponent(body);
+        bytes = new Uint8Array(text.length);
+        for (i = 0; i < text.length; i += 1) bytes[i] = text.charCodeAt(i) & 255;
+      }
+    } catch (e) {
+      toast("That file could not be opened.", "err");
+      return false;
+    }
+    try {
+      var blob = new root.Blob([bytes], { type: mime });
+      var href = root.URL.createObjectURL(blob);
+      if (typeof root.open === "function") root.open(href, "_blank", "noopener,noreferrer");
+      return true;
+    } catch (err) {
+      toast("That file could not be opened.", "err");
+      return false;
+    }
+  }
+
+  function openApplicantFileUrl(url) {
+    var kind = fileUrlKind(url);
+    if (kind === "empty" || kind === "blob") {
+      toast("No file is attached.", "err");
+      return false;
+    }
+    if (kind === "text") {
+      toast("This is not a file link. Paste the Drive link for the resume or application form.", "err");
+      return false;
+    }
+    if (kind === "data") return openDataUrl(url);
+    var href = durableFileUrl(url);
+    if (typeof root.open === "function") root.open(href, "_blank", "noopener,noreferrer");
+    return true;
+  }
+
+  function fileLinkHtml(url, label) {
+    var kind = fileUrlKind(url);
+    var text = esc(label || "Open");
+    if (kind === "http") {
+      return (
+        '<a class="btn sm" href="' +
+        esc(durableFileUrl(url)) +
+        '" target="_blank" rel="noopener noreferrer">' +
+        text +
+        "</a>"
+      );
+    }
+    if (kind === "empty" || kind === "blob") return "";
+    return '<button type="button" class="btn sm" data-hr-file="' + esc(shelfFile(url)) + '">' + text + "</button>";
+  }
+
+  function filesOfKind(files, label) {
+    return (files || []).filter(function (f) {
+      return f.title === label;
+    });
+  }
+
+  function applicantFilesHtml(a) {
+    var files = collectApplicantFiles(a);
+    var resume = filesOfKind(files, "Resume");
+    var form = filesOfKind(files, "Application form");
+    var other = files.filter(function (f) {
+      return f.title !== "Resume" && f.title !== "Application form";
+    });
+    function line(label, list, empty) {
+      var h = '<div class="row" style="align-items:center;gap:8px;margin-top:6px"><b style="min-width:128px">' + esc(label) + "</b>";
+      if (!list.length) return h + '<span class="lbl">' + esc(empty) + "</span></div>";
+      h += list
+        .map(function (f) {
+          return fileLinkHtml(f.url, "Open");
+        })
+        .join(" ");
+      return h + "</div>";
+    }
+    var details = interviewDetailsButton(a);
+    return (
+      '<div id="hr-recruit-files" class="note" style="margin-bottom:10px"><b>Applicant files</b>' +
+      line("Resume", resume, "No resume is attached.") +
+      line("Application form", form, "No application form is attached.") +
+      (other.length
+        ? '<div class="row" style="align-items:center;gap:8px;margin-top:6px"><b style="min-width:128px">Other files</b>' +
+          other
+            .map(function (f) {
+              return fileLinkHtml(f.url, f.title);
+            })
+            .join(" ") +
+          "</div>"
+        : "") +
+      (details
+        ? '<div class="row" style="align-items:center;gap:8px;margin-top:6px">' + details + "</div>"
+        : "") +
+      "</div>"
+    );
+  }
+
+  function interviewDetailsButton(a) {
+    var list = (a && a.interviews) || [];
+    var i;
+    for (i = 0; i < list.length; i += 1) {
+      var answers = (list[i] && list[i].answers) || [];
+      if (answers.length) {
+        return (
+          '<button type="button" class="btn sm" data-hr-iv-details="' +
+          i +
+          '" data-hr-iv-app="' +
+          esc(a.id) +
+          '">Interview details</button>'
+        );
+      }
+    }
+    return "";
+  }
+
+  function rowFileButtons(a) {
+    var files = collectApplicantFiles(a).filter(function (f) {
+      return f.title === "Resume" || f.title === "Application form";
+    });
+    if (!files.length) return "";
+    return (
+      files
+        .map(function (f) {
+          return fileLinkHtml(f.url, f.title);
+        })
+        .join(" ") + " "
+    );
+  }
+
+  function applicantNameButton(a) {
+    return (
+      '<button type="button" data-open-app="' +
+      esc(a.id) +
+      '" style="background:none;border:0;padding:0;margin:0;font:inherit;color:inherit;cursor:pointer;text-align:left;font-weight:inherit">' +
+      esc((a && a.name) || "(no name)") +
+      "</button>"
+    );
+  }
+
+  function openCellHtml(a) {
+    return (
+      interviewDetailsButton(a) +
+      (interviewDetailsButton(a) ? " " : "") +
+      rowFileButtons(a) +
+      '<button class="btn sm" type="button" data-open-app="' +
+      esc(a.id) +
+      '">Open</button>'
+    );
+  }
+
+  function closestAttr(node, stop, attr) {
+    while (node && node !== stop) {
+      if (node.getAttribute && node.getAttribute(attr) != null) return node;
+      node = node.parentNode;
+    }
+    return null;
+  }
+
+  function onProfileClick(ev) {
+    var stop = ev && ev.currentTarget;
+    var fileBtn = closestAttr(ev && ev.target, stop, "data-hr-file");
+    if (fileBtn) {
+      if (ev.preventDefault) ev.preventDefault();
+      if (ev.stopPropagation) ev.stopPropagation();
+      openApplicantFileUrl(api.fileShelf[fileBtn.getAttribute("data-hr-file")]);
+      return;
+    }
+    var details = closestAttr(ev && ev.target, stop, "data-hr-iv-details");
+    if (details) {
+      if (ev.preventDefault) ev.preventDefault();
+      if (ev.stopPropagation) ev.stopPropagation();
+      var appId = details.getAttribute("data-hr-iv-app") || api.openAppId;
+      var idx = parseInt(details.getAttribute("data-hr-iv-details"), 10);
+      var person = findApplicant(appId);
+      var iv = person && person.interviews && person.interviews[idx];
+      if (!iv) {
+        toast("No interview details are saved on this applicant.", "err");
+        return;
+      }
+      if (typeof root.interviewRunner === "function") root.interviewRunner(appId, iv.guideId, idx);
+      else toast("Interview details are not available in this view.", "err");
+      return;
+    }
+    var openBtn = closestAttr(ev && ev.target, stop, "data-open-app");
+    if (!openBtn) return;
+    var id = String(openBtn.getAttribute("data-open-app") || "");
+    if (!id) return;
+    if (ev.preventDefault) ev.preventDefault();
+    if (ev.stopPropagation) ev.stopPropagation();
+    api.openAppId = id;
+    if (typeof root.appEditor === "function") root.appEditor(id);
+    else toast("The applicant profile is not available in this view.", "err");
+  }
+
+  function bindProfileOpens(doc) {
+    doc = doc || (typeof document !== "undefined" ? document : null);
+    if (!doc || doc.__hrProfileOpens || !doc.addEventListener) return;
+    doc.__hrProfileOpens = true;
+    doc.addEventListener("click", onProfileClick, true);
+  }
+
+  function injectApplicantFiles() {
+    if (typeof document === "undefined" || !document.getElementById || !document.querySelector) return null;
+    if (document.getElementById("hr-recruit-files")) return document.getElementById("hr-recruit-files");
+    var body = document.querySelector(".modal-b");
+    if (!body || !body.insertBefore) return null;
+    var a = applicantFromEditor();
+    if (!a) return null;
+    var holder = document.createElement("div");
+    holder.innerHTML = applicantFilesHtml(a);
+    var node = holder.firstChild;
+    if (!node) return null;
+    body.insertBefore(node, body.firstChild || null);
+    return document.getElementById("hr-recruit-files");
+  }
+
+  function isRecommendationModal(opts) {
+    return /^Recommendation for final interview/.test(String((opts && opts.title) || ""));
+  }
+
   function interviewTableHtml(groups, mode) {
     if (!groups.length) {
       if (mode === "none") {
@@ -2754,22 +3065,22 @@
         if (mode === "none" || !iv) {
           h +=
             '<tr data-hr-iv-day=""><td class="nm">' +
-            esc(a.name || "(no name)") +
+            applicantNameButton(a) +
             reapplicantBadgeHtml(a) +
             "</td>" +
             contactCellHtml(a) +
             "<td>" +
             esc(stageText(a.stage)) +
-            '</td><td><button class="btn sm" type="button" data-open-app="' +
-            esc(a.id) +
-            '">Open</button></td></tr>';
+            "</td><td>" +
+            openCellHtml(a) +
+            "</td></tr>";
           return;
         }
         h +=
           '<tr data-hr-iv-day="' +
           esc(day) +
           '"><td class="nm">' +
-          esc(a.name || "(no name)") +
+          applicantNameButton(a) +
           reapplicantBadgeHtml(a) +
           (iv.notes
             ? '<div style="font-size:11px;color:var(--ink3);font-weight:400">' + esc(iv.notes) + "</div>"
@@ -2792,9 +3103,9 @@
           statusOptions(iv.status) +
           "</select></td><td>" +
           esc(stageText(a.stage)) +
-          '</td><td><button class="btn sm" type="button" data-open-app="' +
-          esc(a.id) +
-          '">Open</button></td></tr>';
+          "</td><td>" +
+          openCellHtml(a) +
+          "</td></tr>";
       });
       h += "</tbody></table></div></div>";
     });
@@ -4835,6 +5146,7 @@
       wrapOpenModal();
       wrapAppEditor();
       wrapPut();
+      bindProfileOpens();
       bindInitialInterviewEvents();
       injectButton();
       injectConsolidateButton();
@@ -4904,6 +5216,15 @@
   api.openPasteDoor = openPasteDoor;
   api.openConsolidateDoor = openConsolidateDoor;
   api.openApplicationFile = openApplicationFile;
+  api.fileUrlKind = fileUrlKind;
+  api.durableFileUrl = durableFileUrl;
+  api.collectApplicantFiles = collectApplicantFiles;
+  api.applicantFilesHtml = applicantFilesHtml;
+  api.openApplicantFileUrl = openApplicantFileUrl;
+  api.fileLinkHtml = fileLinkHtml;
+  api.bindProfileOpens = bindProfileOpens;
+  api.onProfileClick = onProfileClick;
+  api.injectApplicantFiles = injectApplicantFiles;
   api.decorateApplicantFoot = decorateApplicantFoot;
   api.applicationFileHtml = applicationFileHtml;
   api.duplicateGroups = duplicateGroups;
