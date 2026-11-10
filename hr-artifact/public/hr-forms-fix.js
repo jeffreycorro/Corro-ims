@@ -7,6 +7,7 @@
  *    (logged-in / payrollBy / hrHead / empty picker).
  * 2. Leave + CA project pickers — same live names attendance/manpower uses
  *    (master list + employee.project + daily sites + advances), newest first.
+ *    Distinct spellings stay distinct. ADMINS and Admins 2 are both kept.
  * 3. Project-based employment contract — company paper template
  *    (PROJECT-BASED WITH A DEFINITE PERIOD OF EMPLOYMENT), Generate checkbox,
  *    ISO 9001:2015 mark + controlled footer on paperDoc letterhead.
@@ -173,9 +174,10 @@
   }
 
   function addProject(out, seen, name, recency) {
-    name = str(name).trim();
-    if (!name || /^admins?$/i.test(name)) return;
-    var k = name.toLowerCase();
+    name = str(name).replace(/[\u00A0\u2007\u202F]/g, " ").trim();
+    if (!name) return;
+    /* Exact spelling. "Admins 2" is not "ADMINS", and an unticked alias does not merge them. */
+    var k = name;
     recency = str(recency);
     if (!seen.has(k)) {
       out.push({ name: name, recency: recency });
@@ -184,7 +186,7 @@
     }
     var i;
     for (i = 0; i < out.length; i += 1) {
-      if (out[i].name.toLowerCase() === k && recency && recency > (out[i].recency || "")) {
+      if (out[i].name === k && recency && recency > (out[i].recency || "")) {
         out[i].recency = recency;
       }
     }
@@ -415,29 +417,57 @@
     return true;
   }
 
+  function assignmentSiteNames(host, extras) {
+    var S = storeOf(host);
+    if (typeof host.paySiteChoices === "function") {
+      var projects = [];
+      var daily = [];
+      var emps = [];
+      var extra = (extras || []).slice();
+      values(S && S.projects).forEach(function (p) { if (p) projects.push(p); });
+      values(S && S.employees).forEach(function (e) {
+        if (!e) return;
+        if (e.project) emps.push(e.project);
+        if (e.site) emps.push(e.site);
+      });
+      values(S && S.daily).forEach(function (r) {
+        values(r && r.rows).forEach(function (row) {
+          if (row && row.site) daily.push(row.site);
+        });
+      });
+      values(S && S.advances).forEach(function (a) { if (a && a.project) extra.push(a.project); });
+      values(S && S.leaves).forEach(function (l) { if (l && l.project) extra.push(l.project); });
+      var confirmed = {};
+      if (typeof host.payAliasConfirmedMap === "function") {
+        try { confirmed = host.payAliasConfirmedMap(S && S.settings) || {}; } catch (e) { confirmed = {}; }
+      }
+      return host.paySiteChoices({
+        projects: projects,
+        dailySites: daily,
+        employeeSites: emps,
+        extra: extra,
+        confirmed: confirmed
+      });
+    }
+    return liveProjectNames(S, extras);
+  }
+
   function wrapProjOpts(host) {
     var orig = host.projOpts;
     if (typeof orig !== "function" || orig._hrFormsFix) return false;
     host.projOpts = function (sel) {
       var extras = [];
-      try {
-        extras = orig.apply(this, arguments)
-          ? []
-          : [];
-      } catch (e) {
-        extras = [];
-      }
       if (typeof orig === "function") {
         try {
           var raw = orig.call(this, sel);
           var matches = String(raw || "").match(/>([^<]+)</g) || [];
           matches.forEach(function (m) {
-            var n = m.slice(1, -1).replace(/&amp;/g, "&");
+            var n = m.slice(1, -1).replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"');
             if (n && n !== "— none —") extras.push(n);
           });
         } catch (e2) {}
       }
-      return projOptsHtml(sel, liveProjectNames(storeOf(host), extras));
+      return projOptsHtml(sel, assignmentSiteNames(host, extras));
     };
     host.projOpts._hrFormsFix = true;
     return true;
@@ -453,7 +483,7 @@
       } catch (e) {
         extras = [];
       }
-      return liveProjectNames(storeOf(host), extras);
+      return assignmentSiteNames(host, extras);
     };
     host.projectNames._hrFormsFix = true;
     return true;
@@ -469,8 +499,12 @@
       } catch (e) {
         fromOrig = [];
       }
+      /* The page list is already the full exact union. Do not drop ADMINS or fold Admins 2 into it. */
+      if (typeof host.paySiteChoices === "function") return fromOrig.slice();
       var live = liveProjectNames(storeOf(host), fromOrig);
-      if (fromOrig.indexOf("ADMINS") >= 0 && live.indexOf("ADMINS") < 0) live.push("ADMINS");
+      live.sort(function (a, b) {
+        return String(a).localeCompare(String(b), "en", { numeric: true, sensitivity: "variant" });
+      });
       return live;
     };
     host.dailySites._hrFormsFix = true;
@@ -535,8 +569,7 @@
   function refreshProjectSelects(host) {
     var doc = host.document;
     if (!doc || !doc.querySelectorAll) return;
-    var S = storeOf(host);
-    var names = liveProjectNames(S);
+    var names = assignmentSiteNames(host);
     ["c-proj", "l-proj"].forEach(function (id) {
       var el = doc.getElementById(id);
       if (!el || el.tagName !== "SELECT") return;

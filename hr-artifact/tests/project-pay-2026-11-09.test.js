@@ -58,7 +58,7 @@ function lineTwoSites() {
 
 describe("2026-11-09a project assignment and payroll summary", () => {
   it("is build 2026-11-09a and keeps the project summary on the payroll run", () => {
-    assert.match(html, /const BUILD = "2026-11-09b"/);
+    assert.match(html, /const BUILD = "2026-11-10a"/);
     const flowAt = html.indexOf("payRunFlowHtml(saved");
     const auditAt = html.indexOf("h+=payAuditHtml");
     const projAt = html.indexOf("payProjectSummaryCard");
@@ -147,7 +147,7 @@ describe("2026-11-09a project assignment and payroll summary", () => {
     assert.match(csv[csv.length - 1][1], /man-days/);
   });
 
-  it("shows a blank site and an unconfirmed alias as Unassigned, and a confirmed alias without rewriting the row", () => {
+  it("keeps an unticked alias as its own site, and a confirmed alias without rewriting the row", () => {
     const ctx = load();
     const line = {
       empId: "e9", days: 3, ot: 0, otPay: 0, basic: 1500, holPay: 0, gross: 1500,
@@ -159,13 +159,16 @@ describe("2026-11-09a project assignment and payroll summary", () => {
         { date: "2026-11-04", site: "", day: 1, ot: 0 }
       ]
     };
+    const before = JSON.stringify(line);
     const open = ctx.payProjectSummary([line], {});
-    assert.equal(open.sites.map((s) => s.site).join("|"), "ADMINS|Unassigned");
+    assert.equal(open.sites.map((s) => s.site).join("|"), "ADMINS|Admins 2|Unassigned");
     assert.equal(open.sites.find((s) => s.site === "ADMINS").days, 1);
-    assert.equal(open.sites.find((s) => s.site === "Unassigned").days, 2);
-    assert.equal(line.rows[1].site, "Admins 2");
+    assert.equal(open.sites.find((s) => s.site === "Admins 2").days, 1);
+    assert.equal(open.sites.find((s) => s.site === "Unassigned").days, 1);
+    assert.equal(JSON.stringify(line), before);
     const confirmed = ctx.payProjectSummary([line], { confirmed: { "admins 2": true } });
     assert.equal(confirmed.sites.find((s) => s.site === "ADMINS").days, 2);
+    assert.equal(confirmed.sites.find((s) => s.site === "Admins 2"), undefined);
     assert.equal(confirmed.sites.find((s) => s.site === "Unassigned").days, 1);
     assert.equal(line.rows[1].site, "Admins 2");
   });
@@ -181,10 +184,17 @@ describe("2026-11-09a project assignment and payroll summary", () => {
     assert.equal(next.rows.e1.ot, 2);
     assert.equal(next.rows.e1.siteBy, "Cassie");
     assert.equal(next.rows.e1.siteAt, "2026-11-09 09:00");
-    const htmlOpts = ctx.dailyProjectSelectHtml("Tagba-o");
+    const htmlOpts = ctx.dailyProjectSelectHtml("Tagba-o", {
+      dailySites: ["Admins 2", "Tawason Yard 2"],
+      employeeSites: ["Admins 2"]
+    });
     assert.match(htmlOpts, /<option selected>Tagba-o<\/option>/);
-    assert.doesNotMatch(htmlOpts, /Admins 2/);
-    assert.doesNotMatch(htmlOpts, /__new/);
+    assert.match(htmlOpts, /<option>Admins 2<\/option>/);
+    assert.match(htmlOpts, /<option>Tawason Yard 2<\/option>/);
+    assert.match(htmlOpts, /<option value="__new">\+ new area…<\/option>/);
+    assert.equal(ctx.payResolveSite("Admins 2", {}), "Admins 2");
+    assert.equal(ctx.payResolveSite("Tawason Yard 2", {}), "Tawason Yard 2");
+    assert.equal(ctx.payResolveSite("", {}), "Unassigned");
   });
 
   it("bulk-assigns a date range onto existing rows only", () => {

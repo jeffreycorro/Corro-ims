@@ -94,8 +94,8 @@ const OTHER = {
 };
 
 describe("2026-11-09a OT form gate waiver and Cassie time in/out", () => {
-  it("is build 2026-11-09b and documents a reversible waiver with no end date", () => {
-    assert.match(html, /const BUILD = "2026-11-09b"/);
+  it("is build 2026-11-10a and documents a reversible waiver with no end date", () => {
+    assert.match(html, /const BUILD = "2026-11-10a"/);
     assert.match(html, /otFormGateWaived:true/);
     assert.match(html, /function otFormGateWaived\(/);
     assert.match(html, /data-set-flag="otFormGateWaived"/);

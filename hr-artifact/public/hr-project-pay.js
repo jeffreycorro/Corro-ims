@@ -2,10 +2,11 @@
  * Project assignment on Daily Manpower and the per-project payroll summary.
  * Loaded before the in-page engine. Does not rewrite stored site strings.
  *
- * Canonical names are the dropdown. Suspected aliases stay off until
- * Settings → project aliases is ticked. Ticking a pair does not rewrite
- * daily rows or the 201 project. A blank site, or a name that is not
- * canonical and not a confirmed alias, is Unassigned.
+ * The area dropdown is every configured project, every site already written
+ * on a daily report, and the 201 project (or site) — same spelling, sorted.
+ * A suspected alias stays its own name until Settings → project aliases is
+ * ticked. Ticking a pair does not rewrite daily rows or the 201 project.
+ * A blank site is Unassigned. Any other name stays as it was written.
  *
  * Pay runs: no status field means draft. Reading a run does not write one.
  * The live draft weekly|2026-10-29 is left as it was stored.
@@ -58,7 +59,7 @@ var PAY_PROJECT_ALIASES = [
   { alias: "25HH0023 Tagbao 3", to: "Tagba-o", note: "Settings seed. An earlier Tagbao package." }
 ];
 
-var PAY_PROJECT_RULE = "Basic pay, overtime pay, holiday premium, and late or undertime follow the site on that day’s Daily Manpower row. Cash advance, uniform, loans, and government deductions (SSS, PhilHealth, Pag-IBIG) are split across the sites that person worked, in proportion to man-days. If they have no paid day, the split follows overtime hours. A blank site, or a name that is not on the project list and not a confirmed alias, is Unassigned. Confirming an alias does not rewrite stored rows or the 201 project. Net is each person’s rounded net, split by the same weights, so the project totals match the payroll totals.";
+var PAY_PROJECT_RULE = "Basic pay, overtime pay, holiday premium, and late or undertime follow the site on that day’s Daily Manpower row. Cash advance, uniform, loans, and government deductions (SSS, PhilHealth, Pag-IBIG) are split across the sites that person worked, in proportion to man-days. If they have no paid day, the split follows overtime hours. A blank site is Unassigned. Any other name stays as it was written, unless that alias is ticked in Settings. Ticking an alias groups the summary only and does not rewrite stored rows or the 201 project. Net is each person’s rounded net, split by the same weights, so the project totals match the payroll totals.";
 
 var PAY_PERIOD_DEDS = ["ca", "uniform", "sss", "phic", "hdmf", "sssLoan", "hdmfLoan"];
 
@@ -105,42 +106,154 @@ function payAliasConfirmedMap(settings) {
   return out;
 }
 
-function payResolveSite(raw, opts) {
+function paySiteText(raw) {
+  return String(raw == null ? "" : raw)
+    .replace(/[\u00A0\u2007\u202F]/g, " ")
+    .replace(/^\s+|\s+$/g, "");
+}
+
+/* A ticked alias is the only rename. Case and spacing stay as stored when the box is off. */
+function payAliasTarget(name, opts) {
   opts = opts || {};
-  var list = opts.canonical || PAY_CANONICAL_PROJECTS;
-  var text = String(raw == null ? "" : raw).replace(/[\u00A0\u2007\u202F]/g, " ").trim();
-  if (!text) return "Unassigned";
-  var key = payCanonKey(text);
-  var i;
-  for (i = 0; i < list.length; i++) {
-    if (payCanonKey(list[i]) === key) return list[i];
-  }
-  var aliases = opts.aliases || PAY_PROJECT_ALIASES;
   var confirmed = opts.confirmed || {};
+  var aliases = opts.aliases || PAY_PROJECT_ALIASES;
+  var key = payCanonKey(name);
+  var on = confirmed === true || !!confirmed[key];
+  if (!on) return "";
+  var i;
   for (i = 0; i < aliases.length; i++) {
     var a = aliases[i];
     if (!a || payCanonKey(a.alias) !== key) continue;
     if (payCanonKey(a.alias) === payCanonKey(a.to)) continue;
-    if (confirmed === true || confirmed[key] || confirmed[payCanonKey(a.alias)]) return a.to;
+    var to = paySiteText(a.to);
+    if (to) return to;
   }
-  return "Unassigned";
+  return "";
 }
 
-function dailyProjectSelectHtml(current) {
-  var extra = [];
-  if (typeof projectList === "function") {
-    projectList().forEach(function (p) {
-      if (p && p.status !== "Closed" && p.name) extra.push(p.name);
-    });
+/* Configured projects, daily-report sites, and 201 project/site values.
+   Exact spelling is kept. A confirmed alias is listed once, under its target. */
+function paySiteChoices(opts) {
+  opts = opts || {};
+  var seen = {};
+  var out = [];
+  function add(raw) {
+    var name = paySiteText(raw);
+    if (!name) return;
+    var target = payAliasTarget(name, opts);
+    if (target) name = target;
+    if (seen[name]) return;
+    seen[name] = 1;
+    out.push(name);
   }
-  var names = payCanonicalProjects(extra);
-  var cur = String(current == null ? "" : current);
+  var canon = opts.canonical == null ? PAY_CANONICAL_PROJECTS : opts.canonical;
+  (canon || []).forEach(add);
+  (opts.projects || []).forEach(function (p) {
+    if (p && typeof p === "object") add(p.name);
+    else add(p);
+  });
+  (opts.dailySites || []).forEach(add);
+  (opts.employeeSites || []).forEach(add);
+  (opts.extra || []).forEach(add);
+  out.sort(function (a, b) {
+    return String(a).localeCompare(String(b), "en", { numeric: true, sensitivity: "variant" });
+  });
+  return out;
+}
+
+function payPageSettings() {
+  try {
+    if (typeof S !== "undefined" && S && S.settings) return S.settings;
+  } catch (e) {}
+  return {};
+}
+
+function payGatherProjects() {
+  try {
+    if (typeof projectList === "function") return projectList();
+  } catch (e) {}
+  var out = [];
+  try {
+    if (typeof S !== "undefined" && S && S.projects) {
+      Object.keys(S.projects).forEach(function (k) { out.push(S.projects[k]); });
+    }
+  } catch (e2) {}
+  return out;
+}
+
+function payGatherDailySites() {
+  var out = [];
+  try {
+    if (typeof S === "undefined" || !S || !S.daily) return out;
+    Object.keys(S.daily).forEach(function (k) {
+      var rec = S.daily[k];
+      var rows = rec && rec.rows;
+      if (!rows) return;
+      Object.keys(rows).forEach(function (id) {
+        if (rows[id] && rows[id].site) out.push(rows[id].site);
+      });
+    });
+  } catch (e) {}
+  return out;
+}
+
+function payGatherEmployeeSites() {
+  var out = [];
+  try {
+    if (typeof S === "undefined" || !S || !S.employees) return out;
+    Object.keys(S.employees).forEach(function (id) {
+      var e = S.employees[id];
+      if (!e) return;
+      if (e.project) out.push(e.project);
+      if (e.site) out.push(e.site);
+    });
+  } catch (e) {}
+  return out;
+}
+
+function payChoiceOpts(opts) {
+  opts = opts || {};
+  var confirmed = opts.confirmed;
+  if (confirmed == null) confirmed = payAliasConfirmedMap(opts.settings || payPageSettings());
+  return {
+    projects: opts.projects != null ? opts.projects : payGatherProjects(),
+    dailySites: opts.dailySites != null ? opts.dailySites : payGatherDailySites(),
+    employeeSites: opts.employeeSites != null ? opts.employeeSites : payGatherEmployeeSites(),
+    extra: opts.extra || [],
+    canonical: opts.canonical,
+    confirmed: confirmed,
+    aliases: opts.aliases
+  };
+}
+
+function payResolveSite(raw, opts) {
+  opts = opts || {};
+  var text = paySiteText(raw);
+  if (!text) return "Unassigned";
+  var target = payAliasTarget(text, opts);
+  if (target) return target;
+  return text;
+}
+
+function dailyProjectSelectHtml(current, opts) {
+  opts = opts || {};
+  var names = opts.names;
+  if (!names) {
+    var explicit = opts.projects || opts.dailySites || opts.employeeSites || opts.extra
+      || opts.confirmed != null || opts.canonical != null || opts.settings;
+    if (!explicit && typeof dailySites === "function") {
+      try { names = dailySites(); } catch (e) { names = null; }
+    }
+  }
+  if (!names) names = paySiteChoices(payChoiceOpts(opts));
+  var cur = paySiteText(current);
   var html = names.map(function (n) {
     return "<option" + (n === cur ? " selected" : "") + ">" + payHtmlEsc(n) + "</option>";
   }).join("");
   if (cur && !names.some(function (n) { return n === cur; })) {
-    html = '<option selected value="' + payHtmlEsc(cur) + '">' + payHtmlEsc(cur) + " (not on the project list)</option>" + html;
+    html = '<option selected value="' + payHtmlEsc(cur) + '">' + payHtmlEsc(cur) + "</option>" + html;
   }
+  html += '<option value="__new">+ new area…</option>';
   return html;
 }
 
@@ -652,7 +765,8 @@ function payAliasSettingsHtml(settings) {
   var h = '<div class="card" id="pay-alias-card"><div class="card-h"><h3>Project aliases</h3>'
     + '<span class="lbl">summary only — stored rows stay as written</span></div><div class="card-b">';
   h += '<div class="note">These are suspected spellings of the same project. Nothing is merged until the box is ticked, and ticking it does not rewrite Daily Manpower or the 201 project. '
-    + "Unticked names, and a blank site, show as <b>Unassigned</b> on the payroll summary. The area dropdown uses the project list.</div>";
+    + "An unticked name stays as it was written. A blank site shows as <b>Unassigned</b> on the payroll summary. "
+    + "The area dropdown lists every configured project, every site already used on a daily report, and every 201 area.</div>";
   h += '<div class="tw"><table><thead><tr><th>Name in use</th><th>Treat as</th><th>Why it is listed</th><th>Use in the summary</th></tr></thead><tbody>';
   PAY_PROJECT_ALIASES.forEach(function (a) {
     if (payCanonKey(a.alias) === payCanonKey(a.to)) return;
@@ -735,12 +849,21 @@ function payProjectSummaryCard(lines, kind, run, deps) {
 function openDailyBulkAssign(deps) {
   deps = deps || {};
   var people = deps.people || [];
-  var extra = [];
-  (deps.projects || []).forEach(function (p) {
-    if (p && p.status !== "Closed" && p.name) extra.push(p.name);
-    else if (typeof p === "string") extra.push(p);
-  });
-  var names = payCanonicalProjects(extra);
+  var names = deps.sites;
+  if (!names && typeof dailySites === "function") {
+    try { names = dailySites(); } catch (e) { names = null; }
+  }
+  if (!names || !names.length) {
+    names = paySiteChoices(payChoiceOpts({
+      projects: deps.projects,
+      dailySites: deps.dailySites,
+      employeeSites: deps.employeeSites,
+      extra: deps.extra,
+      confirmed: deps.confirmed,
+      settings: deps.settings,
+      canonical: deps.canonical
+    }));
+  }
   var day = deps.date || "";
   var body = '<div class="stack"><div class="note">Sets the area on Daily Manpower for the people and dates you pick. '
     + "The 201 project is not changed. A day with no report, or a person who is not on that day, is skipped. "
