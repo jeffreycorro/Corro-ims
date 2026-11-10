@@ -2157,7 +2157,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-11-09b";
+const BUILD = "2026-11-10a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -9606,13 +9606,41 @@ function dailyBlank(d){
    row can put them somewhere else without rewriting their file. HR can also
    add somebody who is not on the standing list, or drop somebody who is. */
 let DAILY_SITES_CACHE=null;
+/* Attendance, Daily Manpower, People & Pay, OT, and holiday pickers share this
+   list: configured projects, every site on a daily report, and the 201 area.
+   Spelling is kept. A ticked project alias is the only merge. */
 function dailySites(){
   if(DAILY_SITES_CACHE) return DAILY_SITES_CACHE;
+  if(typeof paySiteChoices==="function"){
+    const projects=typeof projectList==="function"?projectList():[];
+    const daily=[];
+    Object.values(S.daily||{}).forEach(r=>{
+      Object.values((r&&r.rows)||{}).forEach(x=>{ if(x&&x.site) daily.push(x.site); });
+    });
+    const emps=[];
+    Object.values(S.employees||{}).forEach(e=>{
+      if(!e) return;
+      if(e.project) emps.push(e.project);
+      if(e.site) emps.push(e.site);
+    });
+    const extra=[];
+    Object.values(S.advances||{}).forEach(a=>{ if(a&&a.project) extra.push(a.project); });
+    Object.values(S.leaves||{}).forEach(l=>{ if(l&&l.project) extra.push(l.project); });
+    Object.values(S.incidents||{}).forEach(i=>{ if(i&&i.project) extra.push(i.project); });
+    DAILY_SITES_CACHE=paySiteChoices({
+      projects:projects,
+      dailySites:daily,
+      employeeSites:emps,
+      extra:extra,
+      confirmed:typeof payAliasConfirmedMap==="function"?payAliasConfirmedMap(S.settings||{}):{}
+    });
+    return DAILY_SITES_CACHE;
+  }
   const set=new Set(projectList().map(p=>p.name));
-  atWork().forEach(e=>{ if(e.project) set.add(e.project); });
-  Object.values(S.daily).forEach(r=>Object.values(r.rows||{}).forEach(x=>{ if(x.site) set.add(x.site); }));
+  Object.values(S.employees||{}).forEach(e=>{ if(e&&e.project) set.add(e.project); if(e&&e.site) set.add(e.site); });
+  Object.values(S.daily||{}).forEach(r=>Object.values((r&&r.rows)||{}).forEach(x=>{ if(x&&x.site) set.add(x.site); }));
   set.add("ADMINS");
-  DAILY_SITES_CACHE=[...set].sort((a,b)=>a==="ADMINS"?1:b==="ADMINS"?-1:a.localeCompare(b));
+  DAILY_SITES_CACHE=[...set].filter(Boolean).sort((a,b)=>String(a).localeCompare(String(b),"en",{numeric:true,sensitivity:"variant"}));
   return DAILY_SITES_CACHE;
 }
 function dailyPeople(rec){
@@ -27410,7 +27438,8 @@ function wire(){
     if(e.target.checked) S.settings.projectAliasOn[key]=true;
     else delete S.settings.projectAliasOn[key];
     await putSettings();
-    toast(e.target.checked ? "That alias is used on the project summary. Stored rows were not rewritten." : "That alias is Unassigned on the summary until it is confirmed again.","ok");
+    DAILY_SITES_CACHE=null;
+    toast(e.target.checked ? "That alias is used on the project summary. Stored rows were not rewritten." : "That name stays as written until the alias is ticked again. Stored rows were not rewritten.","ok");
   });
   on("[data-ded]","change",async e=>{ S.settings.ded[e.target.dataset.ded]=parseFloat(e.target.value)||0; await putSettings(); });
   on("[data-leave]","change",async e=>{

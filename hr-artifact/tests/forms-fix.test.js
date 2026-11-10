@@ -129,6 +129,32 @@ describe("live project pickers", () => {
     assert.ok(names.includes("24HH0103 Buhisan FMR"));
     assert.equal(names[0], "26HH0099 Newest Site");
   });
+
+  it("keeps ADMINS, Admins, and Admins 2 as separate names", () => {
+    const S = {
+      projects: { p1: { id: "p1", name: "ADMINS" } },
+      employees: {
+        e1: { id: "e1", project: "Admins 2", dateHired: "2026-11-01" },
+        e2: { id: "e2", project: "Admins", dateHired: "2026-10-01" },
+      },
+      daily: {
+        d1: {
+          id: "d1",
+          date: "2026-11-09",
+          rows: { e1: { site: "Admins 2" }, e3: { site: "Tawason Yard 2" } },
+        },
+      },
+      advances: {},
+      leaves: {},
+    };
+    const names = fix.liveProjectNames(S);
+    assert.ok(names.includes("ADMINS"));
+    assert.ok(names.includes("Admins"));
+    assert.ok(names.includes("Admins 2"));
+    assert.ok(names.includes("Tawason Yard 2"));
+    assert.equal(names.filter((n) => n === "Admins 2").length, 1);
+    assert.equal(names.filter((n) => n === "ADMINS").length, 1);
+  });
 });
 
 describe("project-based contract + ISO letterhead", () => {
