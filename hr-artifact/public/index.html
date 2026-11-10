@@ -2157,7 +2157,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-11-10a";
+const BUILD = "2026-11-10b";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -18350,9 +18350,19 @@ const VERDICTS=["Recommend","Recommend with reservations","Do not recommend","Ke
 const vSev = v => /^recommend$/i.test(v)?"ok" : /reserv/i.test(v)?"warn" : /do not/i.test(v)?"crit":"mut";
 function interviewRunner(appId, guideId, existingIdx){
   const a=S.applicants[appId]; if(!a) return;
-  const g=S.exams[guideId];
-  if(!g||!(g.items||[]).length){ toast("That role has no interview script yet. Write one on the role definition.","err"); return; }
   const prior = existingIdx!=null ? (a.interviews||[])[existingIdx] : null;
+  /* A saved interview still opens when the script is no longer on the exam
+     list. The questions already typed on the applicant are enough to show. */
+  let g=S.exams[guideId];
+  if(!g||!(g.items||[]).length){
+    const saved=(prior&&prior.answers)||[];
+    if(!saved.length){
+      toast("That role has no interview script yet. Write one on the role definition.","err");
+      return;
+    }
+    g={ id:guideId||prior.guideId||"", title:(prior.type||"Interview")+" — saved answers",
+      items:saved.map(x=>({q:x.q||"", c:x.c||"General"})) };
+  }
   const iv = prior ? JSON.parse(JSON.stringify(prior)) : {
     type:"Role Interview", interviewer:S.settings.hrHead||"", date:TODAY, roleId:a.roleId||"", guideId:g.id,
     answers:(g.items||[]).map(it=>({q:it.q, c:it.c||"General", a:"", r:""})), overall:"3", notes:"" };
@@ -18667,7 +18677,7 @@ async function appEditor(id){
         + '<div class="grid3">'
         + '<div class="f"><label>Mobile</label><input id="a-mob" value="'+esc(a.mobile)+'"></div>'
         + '<div class="f"><label>Email</label><input id="a-email" type="email" value="'+esc(a.email)+'"></div>'
-        + '<div class="f"><label>CV / documents (Drive link)</label><input id="a-cv" type="url" value="'+esc(a.resumeLink)+'"></div>'
+        + '<div class="f"><label>CV / documents (Drive link)</label><input id="a-cv" type="'+(isHeavyDataUrl(a.resumeLink)?"text":"url")+'" value="'+esc(isHeavyDataUrl(a.resumeLink)?"":(a.resumeLink||""))+'"'+(isHeavyDataUrl(a.resumeLink)?' data-cv-kept="1" placeholder="A file is already attached. Paste a Drive link only to replace it."':'')+'></div>'
         + '</div>'
         + mailboxFilesNote(a)
 
@@ -18739,7 +18749,11 @@ async function appEditor(id){
       a.name=$("#a-name").value.trim(); a.roleId=$("#a-role").value; a.stage=canonicalApplicantStage($("#a-stage").value);
       const ro=S.roles[a.roleId]; if(ro){ a.position=ro.title; a.dept=ro.dept; }
       a.appliedOn=$("#a-date").value; a.source=$("#a-src").value; a.expected=$("#a-exp").value;
-      a.mobile=$("#a-mob").value; a.email=$("#a-email").value; a.resumeLink=$("#a-cv").value;
+      a.mobile=$("#a-mob").value; a.email=$("#a-email").value;
+      /* A large inline file is not written into the box. Leaving the box
+         blank must not wipe the file that is already on the applicant. */
+      var cvEl=$("#a-cv"), cvNext=cvEl?String(cvEl.value||"").trim():"";
+      if(!(cvEl && cvEl.getAttribute("data-cv-kept")==="1" && !cvNext)) a.resumeLink=cvNext;
       a.hrVerdict=$("#a-hrv").value; a.hrRating=$("#a-hrr").value; a.hrBy=$("#a-hrby").value;
       const hn=$("#a-hrnotes").value;
       if(hn!==a.hrNotes || (a.hrVerdict && !a.hrOn)) a.hrOn=TODAY;
