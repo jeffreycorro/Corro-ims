@@ -14,6 +14,11 @@
   directory = "netlify/functions"
   node_bundler = "esbuild"
 
+# A thumbnail is a fitted JPEG, but the original still has to be read once.
+# 10s was cutting off a large receipt and the gallery then showed nothing.
+[functions.photo]
+  timeout = 26
+
 # Skip PR / branch preview deploys from this config when Netlify honors ignore.
 # Also turn Deploy Previews off in the Netlify UI (required):
 # Project configuration → Build & deploy → Continuous Deployment →
