@@ -61,7 +61,7 @@ const HEAVY = "data:application/pdf;base64," + "A".repeat(3000);
 
 describe("2026-10-07a OT forms stay on the request", () => {
   it("is build 2026-10-07a and the shared store accepts otreqs", () => {
-    assert.match(html, /const BUILD = "2026-11-10b"/);
+    assert.match(html, /const BUILD = "2026-11-12a"/);
     assert.ok(ALLOWED_COLLECTIONS.includes("otreqs"));
     assert.ok(ALLOWED_COLLECTIONS.includes("payruns"));
     assert.match(html, /Every form attached to a request stays/);
@@ -151,7 +151,7 @@ describe("2026-10-07a OT forms stay on the request", () => {
       },
     };
     assert.equal(ctx.otCovered("e1", "2026-10-06", "Danlag"), true);
-    assert.equal(ctx.otPaidHours("e1", "2026-10-06", "Danlag", 3, "2026-10-07"), 3);
+    assert.equal(ctx.otPaidHours("e1", "2026-10-06", "Danlag", 3, "2026-10-07"), 0);
     ctx.S.otreqs.ot1 = Object.assign({}, ctx.S.otreqs.ot1, { status: "Filed" });
     assert.equal(ctx.otCovered("e1", "2026-10-06", "Danlag"), false);
     assert.equal(ctx.otPaidHours("e1", "2026-10-06", "Danlag", 3, "2026-10-07"), 0);

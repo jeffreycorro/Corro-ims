@@ -28,6 +28,8 @@ const ALLOWED_COLLECTIONS = Object.freeze([
   "periods",
   "payruns",
   "otreqs",
+  "otplans",
+  "otreps",
   "discipline",
   "meta",
 ]);

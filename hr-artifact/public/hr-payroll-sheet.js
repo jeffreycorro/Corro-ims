@@ -390,24 +390,6 @@
     });
   }
 
-  function coversOt(ctx, empId, date, site) {
-    if (!ctx || typeof ctx.covers !== "function") return null;
-    var reqs = ctx.otreqs || {};
-    var hit = null;
-    Object.keys(reqs).forEach(function (id) {
-      var r = reqs[id];
-      if (!r) return;
-      if (ctx.covers(r, empId, date, site)) hit = r;
-    });
-    return hit;
-  }
-
-  function formUrlOf(ctx, req) {
-    if (!req) return "";
-    if (typeof ctx.formUrl === "function") return ctx.formUrl(req) || "";
-    return req.formUrl || "";
-  }
-
   function knownSite(ctx, name) {
     var site = String(name || "").trim();
     if (!site) return true;
@@ -552,18 +534,20 @@
       var ot = Number(row.ot) || 0;
       var logged = Number(row.otLogged != null ? row.otLogged : row.otRaw != null ? row.otRaw : ot) || ot;
       if (logged > 0 || ot > 0) {
-        var req = coversOt(ctx, L.empId, date, row.site || "");
-        var url = formUrlOf(ctx, req);
-        var paid = ot > 0 && !!req;
+        var rep = null;
+        if (ctx && typeof ctx.reportFor === "function") {
+          try { rep = ctx.reportFor(L.empId, date, row.site || ""); } catch (eRep) { rep = null; }
+        }
+        var confirmed = !!(rep && rep.confirmed);
         pushSrc(src, {
           run: runId, empId: L.empId, name: L.name, date: date, item: "OT",
-          qty: paid ? ot : logged, amount: paid ? ot * hourly : 0,
-          source_collection: req ? "otreqs" : "daily",
-          source_id: req ? (req.id || "") : dailyId(date),
-          form_url: url,
-          exception: paid ? "" : "OT with no form"
+          qty: ot > 0 ? ot : logged, amount: ot > 0 ? ot * hourly : 0,
+          source_collection: confirmed ? "otreps" : "daily",
+          source_id: confirmed && rep.id ? rep.id : dailyId(date),
+          form_url: (rep && rep.proofUrl) || "",
+          exception: ot > 0 && !confirmed ? "OT with no Morning Report" : ""
         });
-        if (!paid) ex("ot-no-form", "OT on " + date + " has no approved request with a form.", date);
+        if (ot > 0 && !confirmed) ex("ot-no-report", "OT on " + date + " has no Morning Report confirming the hours. Payroll still pays Daily Manpower OT.", date);
       }
       if (row.site && !knownSite(ctx, row.site)) {
         ex("unknown-site", "Site “" + row.site + "” is not on the project list.", date);

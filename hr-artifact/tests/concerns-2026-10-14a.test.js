@@ -147,7 +147,7 @@ const LINES = [
 
 describe("2026-10-14a payroll by site, deduction total, and OT duration", () => {
   it("is build 2026-10-14a and keeps the site filter, group control, and pipeline stages", () => {
-    assert.match(html, /const BUILD = "2026-11-10b"/);
+    assert.match(html, /const BUILD = "2026-11-12a"/);
     const view = extractFunction(html, "viewPayrollRun");
     assert.match(view, /id="pay-site"/);
     assert.match(view, /id="pay-group"/);
@@ -255,24 +255,18 @@ describe("2026-10-14a payroll by site, deduction total, and OT duration", () => 
   });
 
   it("lists active people at the site and stores hours or a from–to duration", () => {
-    const editor = extractFunction(html, "openOtEditor");
-    assert.match(editor, /id="ot-esite"/);
-    assert.match(editor, /id="ot-whole"/);
-    assert.match(editor, /Whole site on those dates/);
-    assert.match(editor, /Employees on OT/);
-    assert.match(editor, /id="ot-hours"/);
-    assert.match(editor, /id="ot-t1"/);
-    assert.match(editor, /id="ot-t2"/);
-    assert.match(editor, /OT duration/);
-    assert.match(editor, /otSiteRoster/);
-    assert.match(editor, /hoursEach: hoursNum/);
-    assert.match(editor, /timeFrom: timeFrom/);
-    assert.match(editor, /timeTo: timeTo/);
-    assert.match(editor, /empIds: Array\.from\(picked\)/);
-    assert.match(editor, /wholeSite: !\(pre&&pre\.empId\)/);
-    assert.ok(editor.indexOf("Employees on OT") < editor.indexOf('id="ot-hours"'));
-    assert.doesNotMatch(editor, /wrap\.style\.display/);
-    assert.match(html, /Not paid until an approved form is on file/);
+    const editor = extractFunction(html, "openOtPlanEditor");
+    assert.match(editor, /id="otp-site"/);
+    assert.match(editor, /id="otp-date"/);
+    assert.match(editor, /data-otp-hours/);
+    assert.match(editor, /data-otp-from/);
+    assert.match(editor, /data-otp-to/);
+    assert.match(editor, /Add employee/);
+    assert.match(editor, /No OT for the whole plan/);
+    assert.match(editor, /otFormSites\(\)/);
+    assert.match(extractFunction(html, "openOtEditor"), /New OT requests are retired/);
+    assert.doesNotMatch(extractFunction(html, "openOtEditor"), /id="ot-esite"/);
+    assert.match(html, /Morning Report that confirms the hours|A missing Morning Report does not block/);
 
     const ctx = loadOt();
     assert.equal(ctx.otHoursFromClock("17:00", "19:30"), 2.5);
@@ -313,7 +307,7 @@ describe("2026-10-14a payroll by site, deduction total, and OT duration", () => 
     };
     assert.equal(ctx.otCovered("e9", "2026-10-14", "Danlag"), true);
     assert.equal(ctx.otCovered("e9", "2026-10-14", "Banawa"), false);
-    assert.equal(ctx.otPaidHours("e9", "2026-10-14", "Danlag", 3, "2026-10-14"), 3);
+    assert.equal(ctx.otPaidHours("e9", "2026-10-14", "Danlag", 3, "2026-10-14"), 0);
     assert.equal(ctx.otApprovedHours("e9", "2026-10-14", "Danlag"), 2);
     ctx.S.otreqs.ot1 = Object.assign({}, ctx.S.otreqs.ot1, { wholeSite: false, empIds: ["e1"] });
     assert.equal(ctx.otCovered("e1", "2026-10-14", "Danlag"), true);

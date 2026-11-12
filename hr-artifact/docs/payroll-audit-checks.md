@@ -11,15 +11,26 @@ In `public/index.html`, add one object to the array returned by `payAuditChecks`
 - `id` — stable short name, used in the item key.
 - `description` — one sentence HR can read.
 - `severity` — `info` or `review`.
-- `run(ctx)` — returns `{ empId, empNo, name, date, details }` rows. `ctx.from` and `ctx.to` are the period. Read `S.daily`, `S.otreqs`, and `S.employees`. Do not write them, and do not write the pay run except through Reviewed.
+- `run(ctx)` — returns `{ empId, empNo, name, date, details }` rows. `ctx.from` and `ctx.to` are the period. Read `S.daily`, `S.otplans`, `S.otreps`, and `S.employees`. Do not read `S.otreqs` for pay or for these checks. Do not write the stores, and do not write the pay run except through Reviewed.
 
 Wire-up, the on-screen list, and the Reviewed note already call `payAuditRun`. A new check does not need a new screen.
 
 ## Checks in this build
 
-1. `ot_paid_no_request` (review) — overtime is paid for the day, from a typed Daily Manpower OT number or from the time out, and no open OT request covers that person. Rejected and cancelled requests do not count as a cover.
-2. `ot_request_no_daily` (review) — description: “Request filed, OT not shown in time records.” A filed or approved request (not rejected or cancelled) and the day’s payable OT is 0. Payable OT is the typed number when it is above 0, otherwise the clock. An overnight request (for example 18:00–03:00) is that start date only.
-3. `ot_manual_differs_clock` (info) — the typed Daily Manpower OT number is above 0 and is not the clock figure. Payroll still pays the typed number.
+Old OT requests are not read. `ot_paid_no_request` and `ot_request_no_daily` are not in the registry. The Afternoon Plan and Morning Report checks below replace them. A check still does not change hours, deductions, or finalize.
+
+1. `ot_manual_differs_clock` (info) — the typed Daily Manpower OT number is above 0 and is not the clock figure. Payroll still pays the typed number.
+2. `ot_dm_differs_report` (review) — Daily Manpower OT is not the hours confirmed on the Morning Report. Payroll pays the Daily Manpower number.
+3. `ot_plan_no_report` (review) — an Afternoon Plan names a person who has no Morning Report. This is “Report missing.” A Morning Report that records No OT is not missing.
+4. `ot_report_no_plan` (review) — a Morning Report was filed with no Afternoon Plan.
+5. `ot_hours_after_no_ot` (review) — Daily Manpower OT is above 0 for a person the Morning Report marked No OT.
+6. `ot_dm_no_plan_or_report` (review) — Daily Manpower OT is above 0 and that person has no Afternoon Plan and no Morning Report.
+7. `ot_employee_not_roster` (review) — a name on a plan or report is not on the roster.
+8. `ot_rest_day_premium` (review) — Sunday or holiday overtime, and the day’s premium is still As is. The check does not grant the premium.
+9. `ot_plan_cancelled` (info) — “Plan cancelled (reason).” The Morning Report recorded No OT with Weather, Materials/Equipment, or Other. This is separate from Report missing.
+10. `ot_not_in_plan` (review) — a Morning Report linked to a plan includes someone who was not on that plan. Pay is not blocked.
+
+Planned hours never count as reported OT. Only Morning Report rows that are not No OT do. The payroll approval screen shows a warning, and does not block approval, when a day in the period has plan or report overtime and Daily Manpower OT for that day is zero.
 
 ## Clock overtime
 
@@ -31,7 +42,7 @@ Payroll hours for a day:
 - The unpaid meal is 12:00–13:00 and is removed only when that hour sits inside the overtime window.
 - Under 0.5 hour is not overtime.
 
-An OT request is not an input to the hours. `otFormGateWaived` still decides whether those hours are paid when the gate is turned off. The default remains waived.
+An old OT request is not an input to the hours. `otFormGateWaived` still decides whether those hours are paid when the gate is turned off. When the gate is on, a Morning Report that confirms the hours is what unlocks pay. The default remains waived, so Daily Manpower OT is paid and the new checks only flag.
 
 ## Planned, not built
 

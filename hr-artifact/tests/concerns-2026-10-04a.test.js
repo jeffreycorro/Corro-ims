@@ -140,13 +140,13 @@ function people() {
 
 describe("2026-10-04a reopen a saved day and show its OT total", () => {
   it("is build 2026-10-05a and shows OT total hrs on the day, the reports list, and the print", () => {
-    assert.match(html, /const BUILD = "2026-11-10b"/);
+    assert.match(html, /const BUILD = "2026-11-12a"/);
     assert.match(html, /OT total hrs","pending hours included"/);
     assert.match(html, />OT total hrs<\/th>/);
     assert.match(extractFunction(html, "printDaily"), /OT total hrs/);
     assert.match(extractFunction(html, "dailyOtTotal"), /dailyOtHoursOf/);
     assert.doesNotMatch(extractFunction(html, "dailyOtTotal"), /otPaidHours|otCovered/);
-    assert.match(html, /Pending OT form/);
+    assert.match(html, /Pending Morning Report/);
     assert.match(extractFunction(html, "payLine"), /otPaidHours/);
     const open = extractFunction(html, "openDailyDate");
     assert.ok(open.indexOf("captureDailyForm()") < open.indexOf("S.ui.dailyDate=next"));

@@ -154,7 +154,7 @@ function sumHours(list, field) {
 
 describe("2026-10-07b overtime by site", () => {
   it("is build 2026-10-08a and keeps the employee summary on OT Requests", () => {
-    assert.match(html, /const BUILD = "2026-11-10b"/);
+    assert.match(html, /const BUILD = "2026-11-12a"/);
     assert.match(html, /function viewOtRequests\(/);
     assert.match(html, /All employees/);
     assert.match(html, /<th>Employee<\/th><th>ID<\/th><th class="num">Approved h<\/th>/);
@@ -190,46 +190,46 @@ describe("2026-10-07b overtime by site", () => {
     const e3t = person(tagbao, "e3");
     const e3w = person(tawason, "e3");
 
-    assert.equal(e1d.approvedHours, 4);
-    assert.equal(e1d.pendingHours, 5);
+    assert.equal(e1d.approvedHours, 0);
+    assert.equal(e1d.pendingHours, 9);
     assert.equal(e1d.hours, 9);
     assert.equal(e1d.days["2026-10-01"].pendingHours, 4);
     assert.equal(e1d.days["2026-10-01"].approvedHours, 0);
-    assert.equal(e1d.days["2026-10-02"].approvedHours, 4);
-    assert.equal(e1d.days["2026-10-02"].pendingHours, 0);
+    assert.equal(e1d.days["2026-10-02"].approvedHours, 0);
+    assert.equal(e1d.days["2026-10-02"].pendingHours, 4);
     assert.equal(e1d.days["2026-10-03"], undefined);
     assert.equal(e1d.days["2026-10-06"].pendingHours, 1);
-    assert.equal(e1d.pay, 4 * (520 / 8));
+    assert.equal(e1d.pay, 0);
 
     assert.equal(e2d.hours, 4);
-    assert.equal(e2d.approvedHours, 2);
-    assert.equal(e2d.pendingHours, 2);
+    assert.equal(e2d.approvedHours, 0);
+    assert.equal(e2d.pendingHours, 4);
     assert.equal(e2d.days["2026-10-03"].pendingHours, 2);
 
     assert.equal(e1t.hours, 5.5);
-    assert.equal(e1t.approvedHours, 2.5);
-    assert.equal(e1t.pendingHours, 3);
-    assert.equal(e1t.days["2026-10-04"].approvedHours, 2.5);
+    assert.equal(e1t.approvedHours, 0);
+    assert.equal(e1t.pendingHours, 5.5);
+    assert.equal(e1t.days["2026-10-04"].approvedHours, 0);
     assert.equal(e3t.hours, 3);
-    assert.equal(e3t.pendingHours, 0);
-    assert.equal(e3t.approvedHours, 3);
+    assert.equal(e3t.pendingHours, 3);
+    assert.equal(e3t.approvedHours, 0);
     assert.equal(e3w.hours, 1.5);
     assert.equal(e3w.approvedHours, 0);
     assert.equal(e3w.pendingHours, 1.5);
 
     assert.equal(danlag.hours, 13);
-    assert.equal(danlag.approvedHours, 6);
-    assert.equal(danlag.pendingHours, 7);
+    assert.equal(danlag.approvedHours, 0);
+    assert.equal(danlag.pendingHours, 13);
     assert.equal(tagbao.hours, 8.5);
-    assert.equal(tagbao.approvedHours, 5.5);
-    assert.equal(tagbao.pendingHours, 3);
+    assert.equal(tagbao.approvedHours, 0);
+    assert.equal(tagbao.pendingHours, 8.5);
     assert.equal(tawason.hours, 1.5);
     assert.equal(tawason.pendingHours, 1.5);
 
     const all = ctx.otBySiteSum(b.bySite);
     assert.equal(all.hours, 23);
-    assert.equal(all.approvedHours, 11.5);
-    assert.equal(all.pendingHours, 11.5);
+    assert.equal(all.approvedHours, 0);
+    assert.equal(all.pendingHours, 23);
     assert.equal(all.hours, b.hours);
     assert.equal(all.approvedHours, b.approvedHours);
     assert.equal(all.pendingHours, b.pendingHours);
@@ -241,8 +241,8 @@ describe("2026-10-07b overtime by site", () => {
     const e1Parts = b.bySite.flatMap((s) => s.employees.filter((e) => e.id === "e1"));
     assert.equal(e1Parts.length, 2);
     assert.equal(sumHours(e1Parts), e1.hours);
-    assert.equal(e1.approvedHours, 6.5);
-    assert.equal(e1.pendingHours, 8);
+    assert.equal(e1.approvedHours, 0);
+    assert.equal(e1.pendingHours, 14.5);
     assert.equal(e1.days, 5);
 
     b.bySite.forEach((sg) => {
@@ -288,7 +288,7 @@ describe("2026-10-07b overtime by site", () => {
     const danlag = siteOf(b, "Danlag");
     assert.equal(b.bySite.filter((s) => ctx.otSiteKey(s.site) === "danlag").length, 1);
     assert.equal(person(danlag, "e2").hours, 5.5);
-    assert.equal(person(danlag, "e2").pendingHours, 3.5);
+    assert.equal(person(danlag, "e2").pendingHours, 5.5);
     assert.equal(danlag.hours, 14.5);
     assert.equal(ctx.otBySiteSum(b.bySite).hours, b.hours);
   });
@@ -311,21 +311,21 @@ describe("2026-10-07b overtime by site", () => {
     assert.match(tds[2], /4\.0/);
     assert.match(tds[2], /pending/);
     assert.match(tds[3], /4\.0/);
-    assert.doesNotMatch(tds[3], /pending/);
+    assert.match(tds[3], /pending/);
     assert.match(tds[4], /—/);
     assert.match(tds[7], /1\.0/);
     assert.match(tds[7], /pending/);
     assert.match(tds[8], /—/);
-    assert.equal(tds[9], "4.0");
-    assert.equal(tds[10], "5.0");
+    assert.equal(tds[9], "0.0");
+    assert.equal(tds[10], "9.0");
     assert.match(tds[11], /9\.0/);
-    assert.match(tds[13], /Pending OT form/);
+    assert.match(tds[13], /Pending Morning Report/);
     const tagRow = table.match(/data-ot-emp="e3" data-ot-at="Tagba-o"[\s\S]*?<\/tr>/)[0];
-    assert.match(tagRow, /pill ok">approved/);
-    assert.doesNotMatch(tagRow, /Pending OT form/);
+    assert.match(tagRow, /Pending Morning Report/);
+    assert.doesNotMatch(tagRow, /pill ok">approved/);
     const all = table.match(/data-ot-allsites="1"[\s\S]*?<\/tr>/)[0];
     assert.match(all, /23\.0/);
-    assert.match(all, /11\.5/);
+    assert.match(all, /0\.0/);
     const sub = table.match(/data-ot-subtotal="Tawason"[\s\S]*?<\/tr>/)[0];
     assert.match(sub, /1\.5/);
 
@@ -346,10 +346,10 @@ describe("2026-10-07b overtime by site", () => {
     assert.equal(day[12], "0.0");
     assert.equal(day[13], "4.0");
     const fri = csv.find((r) => r[1] === "Site day" && r[2] === "Kiamco, Jophil P." && r[11] === "2026-10-02");
-    assert.equal(fri[12], "4.0");
-    assert.equal(fri[13], "0.0");
-    assert.ok(csv.some((r) => r[1] === "Site employee" && r[3] === "1278" && r[10] === "Tagba-o" && r[4] === "2.5"));
-    assert.ok(csv.some((r) => r[1] === "Site subtotal" && r[2] === "Danlag" && r[4] === "6.0" && r[6] === "7.0"));
+    assert.equal(fri[12], "0.0");
+    assert.equal(fri[13], "4.0");
+    assert.ok(csv.some((r) => r[1] === "Site employee" && r[3] === "1278" && r[10] === "Tagba-o" && r[4] === "0.0"));
+    assert.ok(csv.some((r) => r[1] === "Site subtotal" && r[2] === "Danlag" && r[4] === "0.0" && r[6] === "13.0"));
 
     const month = ctx.otTrack({ from: "2026-10-01", to: "2026-10-31", mode: "month" });
     const monthDays = ctx.otBySiteDates(month.buckets[0], month);

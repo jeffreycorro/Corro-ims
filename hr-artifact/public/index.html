@@ -463,6 +463,7 @@ button.pill.drill:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
 <div id="modal-root"></div>
 <script src="/hr-payroll-sheet.js"></script>
 <script src="/hr-project-pay.js"></script>
+<script src="/hr-ot-forms.js"></script>
 <script>
 "use strict";
 
@@ -914,7 +915,9 @@ const S = {
   memos:{}, resources:{}, onboarding:{}, series:{}, docreg:{}, applicants:{}, exams:{}, roles:{},
   advances:{}, leaves:{}, projects:{}, incidents:{}, genfiles:{}, decisions:{}, daily:{},
   payruns:{},                       // a saved payroll run, keyed kind|from
-  otreqs:{},                        // overtime requests: who may have OT, and the signed form
+  otreqs:{},                        // old overtime requests, kept for history only
+  otplans:{},                       // afternoon overtime plans
+  otreps:{},                        // morning overtime reports
   discipline:{},                    // implemented actions: reprimand, suspension, termination
   filed:{},                         // forms issued on paper before the portal, read back off Drive
   compliance:{},                    // statutory filings recorded, keyed obligation|period
@@ -1094,7 +1097,7 @@ const clone = typeof structuredClone==="function"
 const COLLS = ["employees","nte","writeups","tasks","templates","periods",
                "memos","resources","onboarding","series","docreg","applicants","exams","roles",
                "advances","leaves","projects","incidents","genfiles","decisions","daily",
-               "payruns","otreqs","discipline","reminders","filed","compliance","forms"];
+               "payruns","otreqs","otplans","otreps","discipline","reminders","filed","compliance","forms"];
 
 /* lsSave stringifies every collection, so calling it once per write turned a
    300-record seed into 300 full serialisations of a growing megabyte. */
@@ -2157,7 +2160,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-11-10b";
+const BUILD = "2026-11-12a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -4281,7 +4284,9 @@ const VIEWS = [
   {k:"discipline", n:"Disciplinary Actions", i:"i-gavel", g:"Discipline"},
   {k:"incidents",n:"Incident Reports",i:"i-warn",   g:"Discipline"},
   {k:"daily",    n:"Daily Manpower",   i:"i-check",  g:"Payroll"},
-  {k:"otreq",    n:"OT Requests",     i:"i-clock",  g:"Payroll"},
+  {k:"otplan",   n:"Afternoon OT Plan", i:"i-clock", g:"Payroll"},
+  {k:"otrep",    n:"Morning OT Report", i:"i-clock", g:"Payroll"},
+  {k:"otreq",    n:"Old OT requests (history)", i:"i-clock", g:"Payroll"},
   {k:"attendance",n:"Attendance",     i:"i-clock",  g:"Payroll"},
   {k:"salaries", n:"People & Pay",     i:"i-peso",   g:"Payroll"},
   {k:"payrun",   n:"Payroll Maker",   i:"i-peso",   g:"Payroll"},
@@ -10629,6 +10634,7 @@ function otDurationText(r){
   if(hasH) s=(s?s+" · ":"")+num(Number(r.hoursEach),1)+" h";
   return s||"—";
 }
+/* History matcher for an old OT request. Pay and payroll review do not call this. */
 function otRequestCovers(req, empId, date, site){
   if(!req || req.status!=="Approved" || !otFormUrl(req)) return false;
   const d=String(date||"").slice(0,10);
@@ -10690,10 +10696,10 @@ function otPendingApplies(periodEnd){
 function otPaidHours(empId, date, site, ot, periodEnd){
   const h=Number(ot)||0;
   if(!(h>0)) return 0;
-  /* Waiver pays the recorded hours. It does not mark a request Approved. */
+  /* Waiver pays the recorded Daily Manpower hours. It does not read old OT requests. */
   if(typeof otFormGateWaived==="function" && otFormGateWaived()) return h;
   if(typeof otPendingApplies!=="function" || !otPendingApplies(periodEnd)) return h;
-  if(typeof otCovered==="function" && otCovered(empId, date, site)) return h;
+  if(typeof hrOtReportConfirms==="function" && hrOtReportConfirms(empId, date, site)) return h;
   return 0;
 }
 function otPendingText(hours){
@@ -10702,19 +10708,11 @@ function otPendingText(hours){
   return "OT pending: "+num(n,1)+" h";
 }
 function otEntryBox(empId, date, site, value, sty, attr){
-  const covered=otCovered(empId, date, site);
   const shown=value!=null && String(value).trim()!=="" ? value : "";
-  const title=covered
-    ? "OT request on file. This box stays editable. A number above 0 is what payroll pays."
-    : "No OT request for this day. The box stays editable. A number above 0 is what payroll pays. Blank or 0 uses the time out.";
+  const title="Daily Manpower OT. A number above 0 is what payroll pays. Blank or 0 uses the time out. Old OT requests are not used.";
   let h='<input '+attr+' type="number" step="0.5" min="0" value="'+esc(shown)+'" placeholder="0" '
     +'title="'+esc(title)+'" style="'+sty+';text-align:right">';
-  if(!covered){
-    h+='<div style="margin-top:3px"><span class="pill warn">No OT request</span></div>'
-      + '<div class="lbl" style="text-transform:none;letter-spacing:0;font-weight:500;white-space:normal;line-height:1.35;margin-top:3px">'
-      + 'No OT request on file for this date/site. A missing, pending, or rejected request does not lock time or OT. '
-      + '<div style="margin-top:3px"><button type="button" class="btn sm" data-otfile="'+esc(empId)+'" data-otdate="'+esc(date)+'" data-otsite="'+esc(site)+'">File one</button></div></div>';
-  }
+  h+='<div style="margin-top:3px"><button type="button" class="btn sm" data-otfile="'+esc(empId)+'" data-otdate="'+esc(date)+'" data-otsite="'+esc(site)+'">File the plan</button></div>';
   return h;
 }
 /* Badge only. It does not lock the OT box or the time boxes. */
@@ -10865,10 +10863,9 @@ function otEmptyNote(opts){
     + (buttons?'<div class="row" style="margin-top:8px">'+buttons+'</div>':"")
     + '</div>';
 }
-/* Hours actually on Daily Manpower, plus how many OT requests overlap the
-   window. Week buckets start Thursday, the same week payroll uses.
-   An OT request is not required. Hours with no approved signed form are
-   pending. */
+/* Hours actually on Daily Manpower. Confirmed hours are a Morning Report
+   that was not marked No OT. Old OT requests are counted for this history
+   screen only and do not confirm hours or pay. Week buckets start Thursday. */
 function otTrack(opts){
   opts=opts||{};
   const from=String(opts.from||"").slice(0,10);
@@ -10931,7 +10928,7 @@ function otTrack(opts){
       const ot=otLoggedHours(rec, empId, row);
       if(!(ot>0)) return;
       const e=S.employees&&S.employees[empId];
-      const covered=otCovered(empId, d, site);
+      const covered=typeof hrOtReportConfirms==="function" && hrOtReportConfirms(empId, d, site);
       /* Pending hours stay pending (no form). The waiver only moves them
          into pay. Request status is not touched. */
       const waived=typeof otFormGateWaived==="function" && otFormGateWaived();
@@ -11042,7 +11039,7 @@ function otDayText(day){
 }
 function otFormChip(pendingHours){
   const n=Number(pendingHours)||0;
-  if(n>0) return '<span class="pill warn">Pending OT form</span> '+esc(num(n,1))+" h";
+  if(n>0) return '<span class="pill warn">Pending Morning Report</span> '+esc(num(n,1))+" h";
   return '<span class="pill ok">approved</span>';
 }
 function otBySiteSum(list){
@@ -11108,7 +11105,7 @@ function otBySitePrint(bucket, dates){
     + '<p style="font-size:10px;margin:0 0 6px">A plain number is approved. Pending is logged'
     + ((typeof otFormGateWaived==="function" && otFormGateWaived())
         ? ' and included in OT pay while the form gate is waived. '
-        : ' and not paid until an approved form covers that person or that site on that date. ')
+        : ' and not paid until a Morning Report confirms that person on that date. ')
     + 'A person at two sites is listed under each. Site subtotals add up to the week and are not added again to the employee list above.</p>'
     + '<table class="pf-t reg"><tr><td class="hd">Employee</td><td class="hd">ID</td>'
     + dates.map(d=>'<td class="hd">'+esc(otDayLabel(d))+'</td>').join("")
@@ -11118,7 +11115,7 @@ function otBySitePrint(bucket, dates){
     dates.forEach(d=>{ row+='<td class="n">'+esc(otDayText((rec.days||{})[d]))+'</td>'; });
     row+='<td class="n">'+esc(num(rec.approvedHours,1))+'</td><td class="n">'+esc(num(rec.pendingHours,1))+'</td>'
       + '<td class="n"><b>'+esc(num(rec.hours,1))+'</b></td><td class="n">'+esc(num(rec.pay,2))+'</td>'
-      + '<td>'+(Number(rec.pendingHours)>0?"Pending OT form "+esc(num(rec.pendingHours,1))+" h":"approved")+'</td>';
+      + '<td>'+(Number(rec.pendingHours)>0?"Pending Morning Report "+esc(num(rec.pendingHours,1))+" h":"approved")+'</td>';
     return row;
   }
   sites.forEach(sg=>{
@@ -11183,6 +11180,474 @@ function openOtFormFile(reqId, index){
   }
   window.open(f.url, "_blank", "noopener");
 }
+function otFormPeople(){
+  if(typeof hrOtActiveRoster==="function") return hrOtActiveRoster();
+  return typeof empSorted==="function" ? empSorted() : [];
+}
+function otFormEmpOptions(sel){
+  const people=otFormPeople().slice();
+  const have={};
+  people.forEach(e=>{ if(e&&e.id) have[e.id]=1; });
+  if(sel && !have[sel] && S.employees && S.employees[sel]) people.push(S.employees[sel]);
+  return '<option value=""></option>'+people.map(e=>
+    '<option value="'+esc(e.id)+'"'+(sel===e.id?" selected":"")+'>'
+    + esc((e.empNo?e.empNo+" · ":"")+(typeof flipName==="function"?flipName(e.name):e.name))
+    + '</option>').join("");
+}
+function otFormSites(){
+  const base=typeof dailySites==="function" ? dailySites() : [];
+  return typeof hrOtSiteList==="function" ? hrOtSiteList(base) : base;
+}
+function otPlanReportState(plan){
+  const date=String(plan&&plan.otDate||"").slice(0,10);
+  const rows=(plan&&plan.rows||[]).filter(r=>r&&r.empId);
+  if(!rows.length) return "Empty";
+  let missing=0, cancel=0, filed=0;
+  rows.forEach(r=>{
+    const hits=typeof hrOtReportRowsFor==="function" ? hrOtReportRowsFor(r.empId, date) : [];
+    if(!hits.length){ missing++; return; }
+    filed++;
+    if(hits.every(h=>typeof hrOtRowIsNoOt==="function" && hrOtRowIsNoOt(h.report, h.row))) cancel++;
+  });
+  if(missing && !filed) return "Report missing";
+  if(missing) return "Report missing";
+  if(cancel===rows.length) return "Plan cancelled";
+  return "Report filed";
+}
+function viewOtPlans(){
+  S.otplans=S.otplans||{};
+  const plans=typeof hrOtPlans==="function" ? hrOtPlans().slice() : Object.values(S.otplans);
+  plans.sort((a,b)=>String(b.otDate||"").localeCompare(String(a.otDate||""))||String(b.id||"").localeCompare(String(a.id||"")));
+  setCrumb("Afternoon OT Plan", "Payroll · file the same day, before overtime starts");
+  let h='<div class="row" style="margin-bottom:12px">'
+    + '<button class="btn pri" id="otp-new" type="button">New afternoon plan</button>'
+    + '<button class="btn" type="button" data-goto="otrep">Morning OT Report</button>'
+    + '</div>'
+    + '<div class="note" style="margin-bottom:12px">File this the afternoon overtime starts, before the work begins. '
+    + 'The site list is every live area (configured projects, sites already used on a daily report, and the 201 area), including Banawa. '
+    + 'Each person is one row from the roster, with employee number, task, reason, and expected hours or a time range. '
+    + 'The department head and HR sign. HR can mark one person, or the whole plan, No OT. '
+    + 'Edits are kept as amendments. Planned hours are not overtime by themselves. '
+    + 'Only hours a Morning Report confirms are reported OT. Payroll still pays the Daily Manpower OT number.</div>';
+  h+='<div class="card"><div class="card-h"><h3>Plans</h3><span class="lbl">'+plans.length+' on file</span></div><div class="card-b">';
+  if(!plans.length){
+    h+='<div class="empty">No afternoon plan yet.</div>';
+  }else{
+    h+='<div class="tw"><table><thead><tr><th>OT date</th><th>Site</th><th>Department head</th><th>People</th><th>Expected h</th><th>Sign-off</th><th>Morning report</th><th></th></tr></thead><tbody>';
+    plans.forEach(p=>{
+      const names=(p.rows||[]).map(r=>{
+        const e=S.employees&&S.employees[r.empId];
+        return e ? (typeof flipName==="function"?flipName(e.name):e.name) : (r.name||r.empId||"");
+      }).filter(Boolean);
+      let hours=0;
+      (p.rows||[]).forEach(r=>{ if(r && !r.noOt && !p.noOt && typeof hrOtHoursOf==="function") hours+=hrOtHoursOf(r); });
+      const st=otPlanReportState(p);
+      const pill=st==="Report filed"?"ok":st==="Plan cancelled"?"mut":"warn";
+      const signs=((p.deptSign&&p.deptSign.signed)?"Dept head":"Dept head open")+" · "+((p.hrSign&&p.hrSign.signed)?"HR":"HR open");
+      h+='<tr><td class="mono">'+esc(p.otDate||"")+'</td><td>'+esc(p.site||"—")+'</td><td>'+esc(p.deptHead||"—")+'</td>'
+        + '<td>'+esc(names.join(", ")||"—")+'</td><td class="num">'+esc(String(Math.round(hours*100)/100))+'</td>'
+        + '<td>'+esc(signs)+'</td><td><span class="pill '+pill+'">'+esc(st)+'</span></td>'
+        + '<td style="white-space:nowrap"><button class="btn sm" type="button" data-otpedit="'+esc(p.id)+'">Edit</button> '
+        + '<button class="btn sm" type="button" data-otpreport="'+esc(p.id)+'">Morning report</button> '
+        + '<button class="btn sm danger" type="button" data-otpdel="'+esc(p.id)+'">Delete</button></td></tr>';
+    });
+    h+='</tbody></table></div>';
+  }
+  h+='</div></div>';
+  return h;
+}
+function openOtPlanEditor(pre){
+  S.otplans=S.otplans||{};
+  const existing=pre&&pre.id&&S.otplans[pre.id] ? clone(S.otplans[pre.id]) : null;
+  const draft=(!existing && S.ui && S.ui.otPlanDraft) ? S.ui.otPlanDraft : null;
+  if(S.ui) S.ui.otPlanDraft=null;
+  const rec=existing||{
+    id:uid("otp"),
+    otDate:(draft&&draft.otDate)||((S.ui&&S.ui.dailyDate)||TODAY),
+    site:(draft&&draft.site)||"",
+    department:"",
+    deptHead:"",
+    rows:(draft&&draft.empId)?[{empId:draft.empId, task:"", reason:"", expectedHours:"", timeFrom:"", timeTo:"", noOt:false}]:[],
+    noOt:false,
+    deptSign:{signed:false, name:"", at:"", by:""},
+    hrSign:{signed:false, name:((S.settings&&(S.settings.hrStaff||S.settings.hrHead))||""), at:"", by:""},
+    amendments:[]
+  };
+  let rows=(rec.rows||[]).map(r=>Object.assign({task:"", reason:"", expectedHours:"", timeFrom:"", timeTo:"", noOt:false}, r));
+  function readRows(){
+    rows=$$("#otp-rows tr[data-i]").map(tr=>{
+      const g=sel=>{ const el=tr.querySelector(sel); return el ? el.value : ""; };
+      const empId=g("[data-otp-emp]");
+      const e=S.employees&&S.employees[empId];
+      return {
+        empId:empId, empNo:e?(e.empNo||""):"", name:e?(e.name||""):"",
+        task:g("[data-otp-task]"), reason:g("[data-otp-reason]"),
+        expectedHours:g("[data-otp-hours]"), timeFrom:g("[data-otp-from]"), timeTo:g("[data-otp-to]"),
+        noOt:!!(tr.querySelector("[data-otp-noot]")&&tr.querySelector("[data-otp-noot]").checked)
+      };
+    });
+  }
+  function paint(){
+    const box=$("#otp-rows"); if(!box) return;
+    if(!rows.length){ box.innerHTML='<tr><td colspan="8"><span class="lbl">No one added yet.</span></td></tr>'; return; }
+    box.innerHTML=rows.map((r,i)=>'<tr data-i="'+i+'">'
+      + '<td>'+('<select data-otp-emp style="min-width:180px">'+otFormEmpOptions(r.empId)+'</select>')+'</td>'
+      + '<td><input data-otp-task value="'+esc(r.task||"")+'" placeholder="Task" style="width:120px"></td>'
+      + '<td><input data-otp-reason value="'+esc(r.reason||"")+'" placeholder="Reason" style="width:140px"></td>'
+      + '<td><input data-otp-hours type="number" step="0.5" min="0" value="'+esc(r.expectedHours!=null?r.expectedHours:"")+'" style="width:70px"></td>'
+      + '<td><input data-otp-from type="time" value="'+esc(r.timeFrom||"")+'"></td>'
+      + '<td><input data-otp-to type="time" value="'+esc(r.timeTo||"")+'"></td>'
+      + '<td><label><input type="checkbox" data-otp-noot'+(r.noOt?" checked":"")+'> No OT</label></td>'
+      + '<td><button type="button" class="btn sm danger" data-otp-rm="'+i+'">Remove</button></td>'
+      + '</tr>').join("");
+  }
+  const am=(rec.amendments||[]).slice().reverse().map(a=>esc((a.at||"").slice(0,16).replace("T"," "))+" · "+esc(a.by||"")+" · "+esc(a.what||"")).join("<br>");
+  openModal({ title: existing?"Edit afternoon OT plan":"New afternoon OT plan", wide:true,
+    body:'<div class="stack">'
+      + '<div class="row">'
+      + '<div class="f" style="width:160px"><label>OT date</label><input id="otp-date" type="date" value="'+esc(rec.otDate||"")+'"></div>'
+      + '<div class="f" style="width:220px"><label>Site</label><select id="otp-site"><option value=""></option>'
+      + otFormSites().map(s=>'<option'+(rec.site===s?" selected":"")+'>'+esc(s)+'</option>').join("")
+      + '</select></div>'
+      + '<div class="f" style="width:180px"><label>Department</label><input id="otp-dept" value="'+esc(rec.department||"")+'"></div>'
+      + '<div class="f" style="width:200px"><label>Department head</label><input id="otp-head" value="'+esc(rec.deptHead||"")+'"></div>'
+      + '</div>'
+      + '<label><input type="checkbox" id="otp-noot"'+(rec.noOt?" checked":"")+'> No OT for the whole plan</label>'
+      + '<div class="tw"><table><thead><tr><th>Employee</th><th>Task</th><th>Reason</th><th>Expected h</th><th>From</th><th>To</th><th>No OT</th><th></th></tr></thead><tbody id="otp-rows"></tbody></table></div>'
+      + '<button class="btn sm" type="button" id="otp-add">Add employee</button>'
+      + '<div class="row">'
+      + '<label><input type="checkbox" id="otp-dsign"'+((rec.deptSign&&rec.deptSign.signed)?" checked":"")+'> Department head signed</label>'
+      + '<input id="otp-dsign-name" value="'+esc((rec.deptSign&&rec.deptSign.name)||rec.deptHead||"")+'" placeholder="Name">'
+      + '<label><input type="checkbox" id="otp-hrsign"'+((rec.hrSign&&rec.hrSign.signed)?" checked":"")+'> HR signed</label>'
+      + '<input id="otp-hrsign-name" value="'+esc((rec.hrSign&&rec.hrSign.name)||(S.settings&&(S.settings.hrStaff||S.settings.hrHead))||"")+'" placeholder="HR name">'
+      + '</div>'
+      + (am?'<div class="note"><b>Amendments</b><br>'+am+'</div>':"")
+      + '<div class="note" id="otp-err" style="border-left-color:var(--crit)" hidden></div>'
+      + '</div>',
+    foot:'<button class="btn" type="button" id="otp-cancel">Cancel</button><button class="btn pri" type="button" id="otp-save">Save plan</button>' });
+  paint();
+  $("#otp-add").onclick=()=>{ readRows(); rows.push({empId:"", task:"", reason:"", expectedHours:"", timeFrom:"", timeTo:"", noOt:false}); paint(); };
+  $("#otp-rows").onclick=e=>{
+    const btn=e.target.closest&&e.target.closest("[data-otp-rm]");
+    if(!btn) return;
+    readRows(); rows.splice(Number(btn.getAttribute("data-otp-rm")),1); paint();
+  };
+  $("#otp-cancel").onclick=closeModal;
+  $("#otp-save").onclick=async()=>{
+    readRows();
+    const whole=!!$("#otp-noot").checked;
+    const next={
+      id:rec.id,
+      otDate:$("#otp-date").value,
+      site:$("#otp-site").value||"",
+      department:String($("#otp-dept").value||"").trim(),
+      deptHead:String($("#otp-head").value||"").trim(),
+      rows:rows.map(r=>Object.assign({}, r, {noOt: whole ? true : !!r.noOt})),
+      noOt:whole,
+      deptSign:(function(){
+        const on=!!$("#otp-dsign").checked, name=String($("#otp-dsign-name").value||"").trim();
+        const prev=rec.deptSign||{};
+        if(!on) return {signed:false, name:name, at:"", by:""};
+        if(prev.signed) return {signed:true, name:name||prev.name||"", at:prev.at||"", by:prev.by||""};
+        return {signed:true, name:name, at:new Date().toISOString(), by:typeof whoEdits==="function"?whoEdits():"HR"};
+      })(),
+      hrSign:(function(){
+        const on=!!$("#otp-hrsign").checked, name=String($("#otp-hrsign-name").value||"").trim();
+        const prev=rec.hrSign||{};
+        if(!on) return {signed:false, name:name, at:"", by:""};
+        if(prev.signed) return {signed:true, name:name||prev.name||"", at:prev.at||"", by:prev.by||""};
+        return {signed:true, name:name, at:new Date().toISOString(), by:typeof whoEdits==="function"?whoEdits():"HR"};
+      })(),
+      amendments:rec.amendments||[],
+      filedOn:rec.filedOn||TODAY,
+      filedBy:rec.filedBy||(typeof whoEdits==="function"?whoEdits():"HR")
+    };
+    const res=typeof hrOtValidatePlan==="function" ? hrOtValidatePlan(next) : {ok:true, errors:[]};
+    const err=$("#otp-err");
+    if(!res.ok){ err.hidden=false; err.textContent=res.errors.join(" "); return; }
+    const saved=existing ? hrOtWithAmendment(next, existing, typeof whoEdits==="function"?whoEdits():"HR", new Date().toISOString()) : next;
+    S.otplans[saved.id]=saved;
+    await put("otplans", saved.id, saved);
+    closeModal();
+    toast("Afternoon OT plan saved.","ok");
+    render();
+  };
+}
+function viewOtReports(){
+  S.otreps=S.otreps||{};
+  const reps=typeof hrOtReports==="function" ? hrOtReports().slice() : Object.values(S.otreps);
+  reps.sort((a,b)=>String(b.otDate||"").localeCompare(String(a.otDate||""))||String(b.reportDate||"").localeCompare(String(a.reportDate||"")));
+  setCrumb("Morning OT Report", "Payroll · file the morning after overtime");
+  let h='<div class="row" style="margin-bottom:12px">'
+    + '<button class="btn pri" id="otr-new" type="button">New morning report</button>'
+    + '<button class="btn" type="button" data-goto="otplan">Afternoon OT Plan</button>'
+    + '</div>'
+    + '<div class="note" style="margin-bottom:12px">File this the next morning. Link the Afternoon Plan, or mark the report <b>no plan</b>. '
+    + 'The OT date and the report date are stored separately. One row per employee: actual hours or a time range, what happened, and a photo or other proof. '
+    + 'Mark one person or the whole plan No OT only with a reason: Weather, Materials/Equipment, or Other (Other needs a note). '
+    + 'Someone who was not on the plan can be added only with a reason on that row. '
+    + 'Confirmed hours are the reported OT. A plan’s hours do not count on their own. Payroll still pays Daily Manpower OT.</div>';
+  h+='<div class="card"><div class="card-h"><h3>Reports</h3><span class="lbl">'+reps.length+' on file</span></div><div class="card-b">';
+  if(!reps.length) h+='<div class="empty">No morning report yet.</div>';
+  else{
+    h+='<div class="tw"><table><thead><tr><th>OT date</th><th>Report date</th><th>Plan</th><th>People</th><th>Confirmed h</th><th>No OT</th><th></th></tr></thead><tbody>';
+    reps.forEach(rep=>{
+      const names=(rep.rows||[]).map(r=>{
+        const e=S.employees&&S.employees[r.empId];
+        return e ? (typeof flipName==="function"?flipName(e.name):e.name) : (r.name||r.empId||"");
+      }).filter(Boolean);
+      let hours=0, cancelled=0;
+      (rep.rows||[]).forEach(r=>{
+        if(!r) return;
+        if(typeof hrOtRowIsNoOt==="function" && hrOtRowIsNoOt(rep, r)) cancelled++;
+        else if(typeof hrOtRowConfirmedHours==="function") hours+=hrOtRowConfirmedHours(rep, r);
+      });
+      const plan=rep.noPlan||!rep.planId ? "No plan" : ("Linked");
+      h+='<tr><td class="mono">'+esc(rep.otDate||"")+'</td><td class="mono">'+esc(rep.reportDate||"")+'</td>'
+        + '<td>'+(rep.noPlan||!rep.planId?'<span class="pill warn">No plan</span>':esc(plan))+'</td>'
+        + '<td>'+esc(names.join(", ")||"—")+'</td><td class="num">'+esc(String(Math.round(hours*100)/100))+'</td>'
+        + '<td>'+(cancelled?esc(String(cancelled)+" No OT"):"—")+'</td>'
+        + '<td style="white-space:nowrap"><button class="btn sm" type="button" data-otredit="'+esc(rep.id)+'">Edit</button> '
+        + '<button class="btn sm danger" type="button" data-otrdel="'+esc(rep.id)+'">Delete</button></td></tr>';
+    });
+    h+='</tbody></table></div>';
+  }
+  h+='</div></div>';
+  return h;
+}
+function openOtReportEditor(pre){
+  S.otreps=S.otreps||{};
+  S.otplans=S.otplans||{};
+  const existing=pre&&pre.id&&S.otreps[pre.id] ? clone(S.otreps[pre.id]) : null;
+  const draft=(!existing && pre && pre.planId) ? pre : ((!existing && S.ui && S.ui.otRepDraft) ? S.ui.otRepDraft : null);
+  if(S.ui) S.ui.otRepDraft=null;
+  const seeded=draft&&draft.planId&&S.otplans[draft.planId] ? S.otplans[draft.planId] : null;
+  const rec=existing||{
+    id:uid("otr"),
+    planId:(draft&&draft.planId)||"",
+    noPlan:!(draft&&draft.planId),
+    otDate:(draft&&draft.otDate)||(seeded&&seeded.otDate)||(typeof addDays==="function"?addDays(TODAY,-1):TODAY),
+    reportDate:TODAY,
+    site:(seeded&&seeded.site)||"",
+    deptHead:(seeded&&seeded.deptHead)||"",
+    department:(seeded&&seeded.department)||"",
+    rows:seeded ? (seeded.rows||[]).map(r=>({
+      empId:r.empId, empNo:r.empNo||"", name:r.name||"",
+      hours:r.expectedHours||"", timeFrom:r.timeFrom||"", timeTo:r.timeTo||"",
+      description:r.task ? (r.task+(r.reason?" — "+r.reason:"")) : "",
+      noOt:!!(seeded.noOt||r.noOt), noOtReason:"", noOtNote:"", notInPlanReason:"", proof:[]
+    })) : [],
+    noOt:false, noOtReason:"", noOtNote:"",
+    proofs:[],
+    deptSign:{signed:false, name:(seeded&&seeded.deptHead)||"", at:"", by:""},
+    hrSign:{signed:false, name:(S.settings&&(S.settings.hrStaff||S.settings.hrHead))||"", at:"", by:""},
+    amendments:[]
+  };
+  let rows=(rec.rows||[]).map(r=>Object.assign({hours:"", timeFrom:"", timeTo:"", description:"", noOt:false, noOtReason:"", noOtNote:"", notInPlanReason:"", proof:[]}, r));
+  const reasons=typeof HR_OT_CANCEL_REASONS!=="undefined" ? HR_OT_CANCEL_REASONS : ["Weather","Materials/Equipment","Other"];
+  function reasonSelect(sel, attr){
+    return '<select '+attr+'><option value=""></option>'+reasons.map(x=>'<option'+(sel===x?" selected":"")+'>'+esc(x)+'</option>').join("")+'</select>';
+  }
+  function readRows(){
+    rows=$$("#otr-rows tr[data-i]").map(tr=>{
+      const g=sel=>{ const el=tr.querySelector(sel); return el?el.value:""; };
+      const i=Number(tr.getAttribute("data-i"));
+      const prev=rows[i]||{};
+      const empId=g("[data-otr-emp]");
+      const e=S.employees&&S.employees[empId];
+      return {
+        empId:empId, empNo:e?(e.empNo||""):(prev.empNo||""), name:e?(e.name||""):(prev.name||""),
+        description:g("[data-otr-desc]"), hours:g("[data-otr-hours]"),
+        timeFrom:g("[data-otr-from]"), timeTo:g("[data-otr-to]"),
+        noOt:!!(tr.querySelector("[data-otr-noot]")&&tr.querySelector("[data-otr-noot]").checked),
+        noOtReason:g("[data-otr-why]"), noOtNote:g("[data-otr-note]"),
+        notInPlanReason:g("[data-otr-extra]"),
+        proof:prev.proof||[]
+      };
+    });
+  }
+  function planIdNow(){ const el=$("#otr-plan"); return el?el.value:""; }
+  function noPlanNow(){ const el=$("#otr-noplan"); return !!(el&&el.checked); }
+  function paint(){
+    const box=$("#otr-rows"); if(!box) return;
+    const probe={planId:planIdNow(), noPlan:noPlanNow()};
+    if(!rows.length){ box.innerHTML='<tr><td colspan="9"><span class="lbl">No one added yet.</span></td></tr>'; return; }
+    box.innerHTML=rows.map((r,i)=>{
+      const extra=typeof hrOtPersonNotOnPlan==="function" && r.empId && hrOtPersonNotOnPlan(probe, r.empId);
+      return '<tr data-i="'+i+'">'
+        + '<td><select data-otr-emp style="min-width:160px">'+otFormEmpOptions(r.empId)+'</select>'
+        + (extra?'<div class="lbl" style="color:var(--crit)">Not on the plan</div>':"")+'</td>'
+        + '<td><input data-otr-desc value="'+esc(r.description||"")+'" placeholder="What happened" style="width:140px"></td>'
+        + '<td><input data-otr-hours type="number" step="0.5" min="0" value="'+esc(r.hours!=null?r.hours:"")+'" style="width:64px"></td>'
+        + '<td><input data-otr-from type="time" value="'+esc(r.timeFrom||"")+'"></td>'
+        + '<td><input data-otr-to type="time" value="'+esc(r.timeTo||"")+'"></td>'
+        + '<td><label><input type="checkbox" data-otr-noot'+(r.noOt?" checked":"")+'> No OT</label></td>'
+        + '<td>'+reasonSelect(r.noOtReason,"data-otr-why")+'<input data-otr-note value="'+esc(r.noOtNote||"")+'" placeholder="Note if Other" style="width:110px;margin-top:4px"></td>'
+        + '<td><input data-otr-extra value="'+esc(r.notInPlanReason||"")+'" placeholder="Required if not on the plan" style="width:150px"></td>'
+        + '<td><button type="button" class="btn sm danger" data-otr-rm="'+i+'">Remove</button>'
+        + '<input data-otr-file type="file" accept="image/*,.pdf" style="width:140px"></td></tr>';
+    }).join("");
+  }
+  function planChoices(){
+    const date=($("#otr-otdate")||{}).value||rec.otDate||"";
+    const list=typeof hrOtPlansForDate==="function" ? hrOtPlansForDate(date) : [];
+    const sel=$("#otr-plan"); if(!sel) return;
+    const cur=sel.value||rec.planId||"";
+    sel.innerHTML='<option value=""></option>'+list.map(p=>'<option value="'+esc(p.id)+'"'+(cur===p.id?" selected":"")+'>'
+      + esc((p.site||"Plan")+" · "+(p.deptHead||"")+" · "+((p.rows||[]).length)+" people")+'</option>').join("");
+  }
+  const am=(rec.amendments||[]).slice().reverse().map(a=>esc(String(a.at||"").slice(0,16).replace("T"," "))+" · "+esc(a.by||"")+" · "+esc(a.what||"")).join("<br>");
+  openModal({ title: existing?"Edit morning OT report":"New morning OT report", wide:true,
+    body:'<div class="stack">'
+      + '<div class="row">'
+      + '<div class="f" style="width:160px"><label>OT date</label><input id="otr-otdate" type="date" value="'+esc(rec.otDate||"")+'"></div>'
+      + '<div class="f" style="width:160px"><label>Report date</label><input id="otr-rptdate" type="date" value="'+esc(rec.reportDate||"")+'"></div>'
+      + '<div class="f" style="width:260px"><label>Afternoon plan</label><select id="otr-plan"></select></div>'
+      + '</div>'
+      + '<label><input type="checkbox" id="otr-noplan"'+(rec.noPlan?" checked":"")+'> No plan for this overtime</label>'
+      + '<label><input type="checkbox" id="otr-noot"'+(rec.noOt?" checked":"")+'> No OT for the whole plan</label>'
+      + '<div class="row"><div class="f" style="width:220px"><label>Reason for whole plan</label>'+reasonSelect(rec.noOtReason,'id="otr-why"')+'</div>'
+      + '<div class="f" style="width:260px"><label>Note (required for Other)</label><input id="otr-note" value="'+esc(rec.noOtNote||"")+'"></div></div>'
+      + '<div class="tw"><table><thead><tr><th>Employee</th><th>What happened</th><th>Hours</th><th>From</th><th>To</th><th>No OT</th><th>Reason</th><th>Not on the plan</th><th></th></tr></thead><tbody id="otr-rows"></tbody></table></div>'
+      + '<button class="btn sm" type="button" id="otr-add">Add employee</button>'
+      + '<div class="f"><label>Photo / proof for the report</label>'
+      + '<input id="otr-file" type="file" accept="image/*,.pdf,.jpg,.jpeg,.png,.webp">'
+      + '<input id="otr-link" type="url" placeholder="or paste a Google Drive link">'
+      + ((rec.proofs||[]).length?'<div class="lbl">On file: '+esc((rec.proofs||[]).map(f=>f.title||"proof").join(", "))+'</div>':"")
+      + '</div>'
+      + '<div class="row">'
+      + '<label><input type="checkbox" id="otr-dsign"'+((rec.deptSign&&rec.deptSign.signed)?" checked":"")+'> Department head signed</label>'
+      + '<input id="otr-dsign-name" value="'+esc((rec.deptSign&&rec.deptSign.name)||rec.deptHead||"")+'" placeholder="Name">'
+      + '<label><input type="checkbox" id="otr-hrsign"'+((rec.hrSign&&rec.hrSign.signed)?" checked":"")+'> HR signed</label>'
+      + '<input id="otr-hrsign-name" value="'+esc((rec.hrSign&&rec.hrSign.name)||"")+'" placeholder="HR name">'
+      + '</div>'
+      + (am?'<div class="note"><b>Amendments</b><br>'+am+'</div>':"")
+      + '<div class="note" id="otr-err" style="border-left-color:var(--crit)" hidden></div>'
+      + '</div>',
+    foot:'<button class="btn" type="button" id="otr-cancel">Cancel</button><button class="btn pri" type="button" id="otr-save">Save report</button>' });
+  planChoices();
+  if(rec.planId){ const sel=$("#otr-plan"); if(sel) sel.value=rec.planId; }
+  paint();
+  $("#otr-otdate").onchange=()=>{ planChoices(); paint(); };
+  $("#otr-plan").onchange=()=>{
+    const id=$("#otr-plan").value;
+    if(id){ $("#otr-noplan").checked=false; }
+    const plan=id&&S.otplans[id];
+    if(plan && !rows.length){
+      rows=(plan.rows||[]).map(r=>({
+        empId:r.empId, empNo:r.empNo||"", name:r.name||"",
+        hours:r.expectedHours||"", timeFrom:r.timeFrom||"", timeTo:r.timeTo||"",
+        description:r.task?(r.task+(r.reason?" — "+r.reason:"")):"",
+        noOt:!!(plan.noOt||r.noOt), noOtReason:"", noOtNote:"", notInPlanReason:"", proof:[]
+      }));
+    }
+    paint();
+  };
+  $("#otr-noplan").onchange=()=>{ if($("#otr-noplan").checked) $("#otr-plan").value=""; paint(); };
+  $("#otr-add").onclick=()=>{ readRows(); rows.push({empId:"", description:"", hours:"", timeFrom:"", timeTo:"", noOt:false, noOtReason:"", noOtNote:"", notInPlanReason:"", proof:[]}); paint(); };
+  $("#otr-rows").onclick=e=>{
+    const btn=e.target.closest&&e.target.closest("[data-otr-rm]");
+    if(!btn) return;
+    readRows(); rows.splice(Number(btn.getAttribute("data-otr-rm")),1); paint();
+  };
+  $("#otr-cancel").onclick=closeModal;
+  $("#otr-save").onclick=async()=>{
+    readRows();
+    const err=$("#otr-err");
+    const fail=m=>{ err.hidden=false; err.textContent=m; };
+    let proofs=(rec.proofs||[]).slice();
+    const link=String(($("#otr-link")||{}).value||"").trim();
+    if(link){
+      const durable=typeof durableDriveUrl==="function" ? durableDriveUrl(link) : link;
+      if(!durable || (typeof isEphemeralUrl==="function" && isEphemeralUrl(durable))){ fail("That link will not last. Paste the Google Drive file link."); return; }
+      proofs=hrOtAddProof(proofs, {url:durable, title:"Drive link", on:TODAY});
+    }
+    const topFile=$("#otr-file") && $("#otr-file").files && $("#otr-file").files[0];
+    try{
+      if(topFile){
+        const stored=await storeOtFile(topFile);
+        if(stored&&stored.url) proofs=hrOtAddProof(proofs, {url:stored.url, title:stored.title||topFile.name, on:TODAY});
+      }
+      const fileInputs=$$("#otr-rows [data-otr-file]");
+      for(let i=0;i<fileInputs.length;i++){
+        const f=fileInputs[i].files&&fileInputs[i].files[0];
+        if(!f || !rows[i]) continue;
+        const stored=await storeOtFile(f);
+        if(stored&&stored.url) rows[i].proof=hrOtAddProof(rows[i].proof, {url:stored.url, title:stored.title||f.name, on:TODAY});
+      }
+    }catch(ex){ fail(ex&&ex.message?ex.message:"The proof could not be stored."); return; }
+    const whole=!!$("#otr-noot").checked;
+    const next={
+      id:rec.id,
+      planId:noPlanNow()?"":planIdNow(),
+      noPlan:!!noPlanNow(),
+      otDate:$("#otr-otdate").value,
+      reportDate:$("#otr-rptdate").value,
+      site:rec.site||"",
+      deptHead:rec.deptHead||"",
+      department:rec.department||"",
+      rows:rows,
+      noOt:whole,
+      noOtReason:($("#otr-why")||{}).value||"",
+      noOtNote:String(($("#otr-note")||{}).value||"").trim(),
+      proofs:proofs,
+      deptSign:(function(){
+        const on=!!$("#otr-dsign").checked, name=String($("#otr-dsign-name").value||"").trim(), prev=rec.deptSign||{};
+        if(!on) return {signed:false, name:name, at:"", by:""};
+        if(prev.signed) return {signed:true, name:name||prev.name||"", at:prev.at||"", by:prev.by||""};
+        return {signed:true, name:name, at:new Date().toISOString(), by:typeof whoEdits==="function"?whoEdits():"HR"};
+      })(),
+      hrSign:(function(){
+        const on=!!$("#otr-hrsign").checked, name=String($("#otr-hrsign-name").value||"").trim(), prev=rec.hrSign||{};
+        if(!on) return {signed:false, name:name, at:"", by:""};
+        if(prev.signed) return {signed:true, name:name||prev.name||"", at:prev.at||"", by:prev.by||""};
+        return {signed:true, name:name, at:new Date().toISOString(), by:typeof whoEdits==="function"?whoEdits():"HR"};
+      })(),
+      amendments:rec.amendments||[],
+      filedOn:rec.filedOn||TODAY,
+      filedBy:rec.filedBy||(typeof whoEdits==="function"?whoEdits():"HR")
+    };
+    if(next.planId && S.otplans[next.planId]){
+      next.site=S.otplans[next.planId].site||next.site;
+      next.deptHead=S.otplans[next.planId].deptHead||next.deptHead;
+      next.department=S.otplans[next.planId].department||next.department;
+    }
+    const res=typeof hrOtValidateReport==="function" ? hrOtValidateReport(next) : {ok:true, errors:[], report:next};
+    if(!res.ok){ fail(res.errors.join(" ")); return; }
+    const prepared=res.report||next;
+    prepared.proofs=proofs;
+    prepared.deptSign=next.deptSign;
+    prepared.hrSign=next.hrSign;
+    prepared.amendments=next.amendments;
+    prepared.filedOn=next.filedOn;
+    prepared.filedBy=next.filedBy;
+    const saved=existing ? hrOtWithAmendment(prepared, existing, typeof whoEdits==="function"?whoEdits():"HR", new Date().toISOString()) : prepared;
+    S.otreps[saved.id]=saved;
+    await put("otreps", saved.id, saved);
+    closeModal();
+    toast("Morning OT report saved.","ok");
+    render();
+  };
+}
+function openOtHistory(id){
+  const r=S.otreqs&&S.otreqs[id];
+  if(!r) return;
+  const names=(r.empIds||[]).map(empId=>{
+    const e=S.employees&&S.employees[empId];
+    return e ? ((e.empNo?e.empNo+" · ":"")+(typeof flipName==="function"?flipName(e.name):e.name)) : empId;
+  });
+  openModal({ title:"Old OT request (history)", wide:true,
+    body:'<div class="stack"><div class="note">Old OT requests (history). This record stays readable. It is not used for pay or for payroll review. File an Afternoon OT Plan and a Morning OT Report.</div>'
+      + '<div><b>Dates</b> '+esc(r.from||"")+(r.to&&r.to!==r.from?" → "+esc(r.to):"")+'</div>'
+      + '<div><b>Site</b> '+esc(r.site||"—")+'</div>'
+      + '<div><b>Status</b> '+esc(r.status||"Filed")+'</div>'
+      + '<div><b>Who</b> '+esc(r.wholeSite?"Whole site. ":"")+esc(names.join(", ")||"—")+'</div>'
+      + '<div><b>Duration</b> '+esc(typeof otDurationText==="function"?otDurationText(r):"")+'</div>'
+      + '<div><b>Reason</b> '+esc(r.reason||"—")+'</div>'
+      + '<div><b>Form</b> '+(typeof otFormsCell==="function"?otFormsCell(r):"")+'</div></div>',
+    foot:'<button class="btn pri" type="button" id="ot-hist-close">Close</button>' });
+  $("#ot-hist-close").onclick=closeModal;
+}
 function viewOtRequests(){
   const ui=S.ui||{};
   const week=weekStart(ui.otFrom||TODAY);
@@ -11195,25 +11660,26 @@ function viewOtRequests(){
   const sites=typeof dailySites==="function" ? dailySites() : [];
   const people=typeof empSorted==="function" ? empSorted() : [];
   const reqs=Object.values(S.otreqs||{}).slice().sort((a,b)=>String(b.from||"").localeCompare(String(a.from||""))||String(b.id||"").localeCompare(String(a.id||"")));
-  setCrumb("OT Requests", "Payroll · signed forms, then the hours");
+  setCrumb("Old OT requests (history)", "Payroll · readable only, not used for pay");
   let h='<div class="row" style="margin-bottom:12px">'
-    + '<button class="btn pri" id="ot-new">New OT request</button>'
+    + '<button class="btn" type="button" data-goto="otplan">Afternoon OT Plan</button>'
+    + '<button class="btn" type="button" data-goto="otrep">Morning OT Report</button>'
     + '<button class="btn" id="ot-print">Print the report</button>'
     + '<button class="btn" id="ot-csv"><svg><use href="#i-dl"/></svg> CSV</button>'
     + '</div>'
-    + '<div class="note" style="margin-bottom:12px">File the signed overtime request here. '
-    + 'Every form attached to a request stays on that request. A later file is added to the list. '
-    + 'New OT request asks for the site, the employees on OT at that site, and the duration. Whole site selects everyone there. '
-    + 'OT hours can be typed with no request on file. '
+    + '<div class="note" style="margin-bottom:12px"><b>Old OT requests (history).</b> '
+    + 'Every form attached to a request stays on that request. '
+    + 'These records stay readable. They are not used for pay or payroll review, and new ones are not filed here. '
+    + 'File an Afternoon OT Plan before overtime starts and a Morning OT Report the next morning. '
+    + 'Hours below are Daily Manpower hours. They count as confirmed only when a Morning Report says so. '
     + ((typeof otFormGateWaived==="function" && otFormGateWaived())
-        ? 'While <b>otFormGateWaived</b> is on, those hours are included in OT pay even when they show <b>Pending OT form</b>. The request is not marked Approved. Turn the switch off under Settings to withhold pay until <b>Approved</b> with a form attached. '
-        : 'They show <b>Pending OT form</b>. Not paid until an approved form is on file. ')
-    + 'By week, those hours are also listed under each site, with a column for each day. '
-    + 'The next time payroll opens, those hours count. No retyping.</div>';
+        ? 'While <b>otFormGateWaived</b> is on, Daily Manpower OT is included in OT pay. A missing Morning Report does not block that pay. '
+        : 'While the OT form pay gate is on, OT pay waits for a Morning Report that confirms the hours. ')
+    + 'By week, those hours are also listed under each site, with a column for each day.</div>'
   h+='<div class="card" style="margin-bottom:14px"><div class="card-h"><h3>Requests</h3>'
     + '<span class="lbl">'+reqs.length+' on file</span></div><div class="card-b">';
   if(!reqs.length){
-    h+='<div class="empty">No OT request yet. New OT request files one for a date, a site, and the people it covers.</div>';
+    h+='<div class="empty">No old OT request on file.</div>';
   }else{
     h+='<div class="tw"><table><thead><tr><th>Dates</th><th>Site</th><th>Who</th><th>OT duration</th><th>Status</th><th>Form</th><th>Reason</th><th></th></tr></thead><tbody>';
     reqs.forEach(r=>{
@@ -11232,8 +11698,7 @@ function viewOtRequests(){
         + '<td><span class="pill '+pill+'">'+esc(r.status||"Filed")+'</span></td>'
         + '<td>'+otFormsCell(r)+'</td>'
         + '<td>'+esc(r.reason||"")+'</td>'
-        + '<td style="white-space:nowrap"><button class="btn sm" data-otedit="'+esc(r.id)+'">Edit</button> '
-        + '<button class="btn sm danger" data-otdel="'+esc(r.id)+'">Delete</button></td></tr>';
+        + '<td style="white-space:nowrap"><button class="btn sm" type="button" data-othist="'+esc(r.id)+'">View</button></td></tr>';
     });
     h+='</tbody></table></div>';
   }
@@ -11283,7 +11748,7 @@ function viewOtRequests(){
     (b.employees||[]).forEach(e=>{
       h+='<tr><td><b>'+esc(flipName(e.name)||e.name)+'</b></td><td class="mono">'+esc(e.empNo||"—")+'</td>'
         + '<td class="num">'+num(e.approvedHours,1)+'</td><td class="num">'+num(e.pendingHours,1)+'</td><td class="num">'+num(e.pay,2)+'</td><td class="num">'+e.days+'</td>'
-        + '<td>'+(e.pendingHours>0?'<span class="pill warn">Pending OT form</span> '+esc(num(e.pendingHours,1))+" h":'<span class="pill ok">approved</span>')+'</td></tr>';
+        + '<td>'+(e.pendingHours>0?'<span class="pill warn">Pending Morning Report</span> '+esc(num(e.pendingHours,1))+" h":'<span class="pill ok">approved</span>')+'</td></tr>';
     });
     h+='</tbody></table></div>';
     h+='<div class="tw" style="margin-top:8px"><table><thead><tr><th>Site</th><th class="num">Approved h</th><th class="num">Pending h</th><th class="num">OT pay</th><th class="num">Days</th><th>Form</th></tr></thead><tbody>';
@@ -11291,200 +11756,16 @@ function viewOtRequests(){
     (b.sites||[]).forEach(s=>{
       h+='<tr><td><b>'+esc(s.site)+'</b></td><td class="num">'+num(s.approvedHours,1)+'</td><td class="num">'+num(s.pendingHours,1)+'</td><td class="num">'+num(s.pay,2)+'</td>'
         + '<td class="num">'+s.days+'</td>'
-        + '<td>'+(s.pendingHours>0?'<span class="pill warn">Pending OT form</span>':'<span class="pill ok">approved</span>')+'</td></tr>';
+        + '<td>'+(s.pendingHours>0?'<span class="pill warn">Pending Morning Report</span>':'<span class="pill ok">approved</span>')+'</td></tr>';
     });
     h+='</tbody></table></div>';
   });
   h+='</div></div>';
   return h;
 }
-function openOtEditor(pre){
-  const existing=pre && pre.id && S.otreqs && S.otreqs[pre.id] ? S.otreqs[pre.id] : null;
-  const rec=existing ? clone(existing) : {
-    id: uid("ot"),
-    from: (pre&&pre.date)||((S.ui&&S.ui.dailyDate)||TODAY),
-    to: (pre&&pre.date)||((S.ui&&S.ui.dailyDate)||TODAY),
-    site: (pre&&pre.site)||"",
-    wholeSite: !(pre&&pre.empId),
-    empIds: (pre&&pre.empId)?[pre.empId]:[],
-    hoursEach: "",
-    timeFrom: "",
-    timeTo: "",
-    reason: "",
-    status: "Filed",
-    formUrl: "",
-    formTitle: ""
-  };
-  const picked=new Set(rec.empIds||[]);
-  const sites=typeof dailySites==="function" ? dailySites() : [];
-  function rosterNow(){
-    const site=($("#ot-esite")||{}).value||rec.site||"";
-    const day=($("#ot-d1")||{}).value||rec.from||"";
-    return typeof otSiteRoster==="function" ? otSiteRoster(site, day) : [];
-  }
-  function peopleHtml(){
-    const site=($("#ot-esite")||{}).value||rec.site||"";
-    const q=String(($("#ot-q")||{}).value||"").trim().toLowerCase();
-    if(!site) return '<div class="lbl">Choose the site. The list is the active people at that site.</div>';
-    const roster=rosterNow();
-    const extra=(site===rec.site ? (rec.empIds||[]) : []).map(id=>S.employees&&S.employees[id]).filter(e=>e && !roster.some(x=>x.id===e.id));
-    let rows=roster.concat(extra);
-    if(q) rows=rows.filter(e=>((e.name||"")+" "+(e.empNo||"")+" "+(e.project||"")).toLowerCase().indexOf(q)>=0);
-    if(!rows.length) return '<div class="lbl">No active employee is assigned to '+esc(site)+' on this date.</div>';
-    return rows.map(e=>'<label style="display:flex;gap:8px;align-items:center;padding:3px 0">'
-      + '<input type="checkbox" data-otemp="'+esc(e.id)+'"'+(picked.has(e.id)?" checked":"")+'>'
-      + '<span>'+esc((e.empNo?e.empNo+" · ":"")+flipName(e.name))
-      + (e.position?' <span class="lbl">'+esc(e.position)+'</span>':"")+'</span></label>').join("");
-  }
-  openModal({ title: existing ? "Edit OT request" : "New OT request", wide:true,
-    body:'<div class="stack">'
-      + '<div class="row">'
-      + '<div class="f" style="width:160px"><label>From</label><input id="ot-d1" type="date" value="'+esc(rec.from||"")+'"></div>'
-      + '<div class="f" style="width:160px"><label>To</label><input id="ot-d2" type="date" value="'+esc(rec.to||rec.from||"")+'"></div>'
-      + '<div class="f" style="width:220px"><label>Site</label><select id="ot-esite"><option value=""></option>'
-      + sites.map(s=>'<option'+(rec.site===s?" selected":"")+'>'+esc(s)+'</option>').join("")
-      + '</select></div>'
-      + '<div class="f" style="width:140px"><label>Status</label><select id="ot-status">'
-      + ["Filed","Approved","Rejected"].map(s=>'<option'+(rec.status===s?" selected":"")+'>'+s+'</option>').join("")
-      + '</select></div></div>'
-      + '<label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="ot-whole"'+(rec.wholeSite?" checked":"")+'> Whole site on those dates</label>'
-      + '<span class="hint">Whole site ticks everyone at the site. Untick a name to keep only the people who are on OT.</span>'
-      + '<div id="ot-people-wrap"><div class="f"><label>Employees on OT</label><input id="ot-q" placeholder="Find a name or number at this site"></div>'
-      + '<div id="ot-people" style="max-height:180px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px"></div></div>'
-      + '<div class="f"><label>OT duration</label>'
-      + '<div class="row">'
-      + '<div class="f" style="width:180px"><label>Hours per person per day</label>'
-      + '<input id="ot-hours" type="number" step="0.5" min="0" value="'+esc(rec.hoursEach!=null && rec.hoursEach!==""?rec.hoursEach:"")+'" placeholder="e.g. 2"></div>'
-      + '<div class="f" style="width:140px"><label>From</label><input id="ot-t1" type="time" value="'+esc(rec.timeFrom||"")+'"></div>'
-      + '<div class="f" style="width:140px"><label>To</label><input id="ot-t2" type="time" value="'+esc(rec.timeTo||"")+'"></div>'
-      + '</div>'
-      + '<span class="hint">Hours are the duration stored on this request. From and To fill the hours when both are set.</span></div>'
-      + '<div class="f"><label>Reason</label><input id="ot-why" value="'+esc(rec.reason||"")+'" placeholder="Why the overtime was requested"></div>'
-      + '<div class="f"><label>Signed OT request form</label>'
-      + '<input id="ot-file" type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,.heic,.doc,.docx">'
-      + '<input id="ot-link" type="url" value="" placeholder="or paste another Google Drive link">'
-      + (otFormFiles(rec).length
-          ? '<div class="lbl" style="text-transform:none;letter-spacing:0">On file: '
-            + otFormFiles(rec).map(f=>esc(f.title||"form on file")).join(", ")
-            + '</div>'
-          : "")
-      + '</div>'
-      + '<div class="note">Tick the people at this site who are on OT. Whole site selects all of them and still covers the site the way an older whole-site request does. Each file stays on this request. Choosing another one adds it. The file is stored as a link. A form already saved on the request, including an older copy kept on the request itself, still opens. A temporary browser address is not kept. Saving Daily Manpower or payroll does not remove it.</div>'
-      + '<div class="note" id="ot-err" style="border-left-color:var(--crit)" hidden></div>'
-      + '</div>',
-    foot:'<button class="btn" id="ot-cancel">Cancel</button><button class="btn pri" id="ot-save">Save request</button>' });
-  const selectSite=()=>{
-    if(!($("#ot-whole")&&$("#ot-whole").checked)) return;
-    picked.clear();
-    rosterNow().forEach(e=>picked.add(e.id));
-  };
-  const paint=()=>{
-    if($("#ot-whole")&&$("#ot-whole").checked) selectSite();
-    const box=$("#ot-people"); if(box) box.innerHTML=peopleHtml();
-  };
-  const fillHours=()=>{
-    const el=$("#ot-hours"); if(!el) return;
-    const h=otHoursFromClock(($("#ot-t1")||{}).value, ($("#ot-t2")||{}).value);
-    if(h==null) return;
-    if(el.dataset.touched==="1" && String(el.value||"").trim()!=="") return;
-    el.value=String(h);
-  };
-  paint();
-  $("#ot-whole").onchange=()=>{
-    if($("#ot-whole").checked) selectSite();
-    else picked.clear();
-    paint();
-  };
-  $("#ot-esite").onchange=()=>{
-    if($("#ot-whole")&&$("#ot-whole").checked) picked.clear();
-    else {
-      const allow=new Set(rosterNow().map(e=>e.id));
-      Array.from(picked).forEach(id=>{ if(!allow.has(id)) picked.delete(id); });
-    }
-    paint();
-  };
-  $("#ot-d1").onchange=()=>{
-    if(!($("#ot-whole")&&$("#ot-whole").checked)){
-      const allow=new Set(rosterNow().map(e=>e.id));
-      if((($("#ot-esite")||{}).value||"")===rec.site) (rec.empIds||[]).forEach(id=>allow.add(id));
-      Array.from(picked).forEach(id=>{ if(!allow.has(id)) picked.delete(id); });
-    }
-    paint();
-  };
-  $("#ot-q").oninput=paint;
-  $("#ot-t1").onchange=fillHours;
-  $("#ot-t2").onchange=fillHours;
-  $("#ot-hours").oninput=()=>{ $("#ot-hours").dataset.touched="1"; };
-  $("#ot-people").onchange=e=>{
-    const el=e.target.closest("[data-otemp]"); if(!el) return;
-    if(el.checked) picked.add(el.dataset.otemp);
-    else {
-      picked.delete(el.dataset.otemp);
-      if($("#ot-whole")) $("#ot-whole").checked=false;
-    }
-  };
-  $("#ot-cancel").onclick=closeModal;
-  $("#ot-save").onclick=async()=>{
-    const err=$("#ot-err");
-    const fail=m=>{ err.hidden=false; err.textContent=m; toast(m,"err"); };
-    const from=$("#ot-d1").value, to=$("#ot-d2").value||from;
-    if(!from){ fail("Choose the date the overtime is for."); return; }
-    if(to<from){ fail("The end date is before the start date."); return; }
-    const whole=!!$("#ot-whole").checked;
-    const site=$("#ot-esite").value||"";
-    if(!site){ fail("Choose the site this request covers."); return; }
-    if(whole) rosterNow().forEach(e=>picked.add(e.id));
-    if(!whole && !picked.size){ fail("Choose the employees on OT, or mark the whole site."); return; }
-    let status=$("#ot-status").value||"Filed";
-    if(["Filed","Approved","Rejected"].indexOf(status)<0) status="Filed";
-    const timeFrom=String(($("#ot-t1")||{}).value||"").trim();
-    const timeTo=String(($("#ot-t2")||{}).value||"").trim();
-    let hoursRaw=String($("#ot-hours").value||"").trim();
-    if(!hoursRaw && timeFrom && timeTo){
-      const computed=otHoursFromClock(timeFrom, timeTo);
-      if(computed!=null) hoursRaw=String(computed);
-    }
-    const hoursNum=hoursRaw==="" ? NaN : Number(hoursRaw);
-    if(!(hoursNum>0)){ fail("Enter the OT duration in hours, or set From and To."); return; }
-    let forms=otFormFiles(rec);
-    const link=String($("#ot-link").value||"").trim();
-    if(link){
-      const durable=typeof durableDriveUrl==="function" ? durableDriveUrl(link) : link;
-      if(!durable || (typeof isEphemeralUrl==="function" && isEphemeralUrl(durable))){
-        fail("That link will not last. Paste the Google Drive file link."); return;
-      }
-      forms=otAttachForm({forms:forms}, durable, "Drive link");
-    }
-    const fileEl=$("#ot-file");
-    const file=fileEl && fileEl.files && fileEl.files[0];
-    if(file){
-      try{
-        const stored=await storeOtFile(file);
-        if(stored && stored.url) forms=otAttachForm({forms:forms}, stored.url, stored.title||file.name);
-      }catch(ex){ fail(ex && ex.message ? ex.message : "The form could not be stored."); return; }
-    }
-    if(status==="Approved" && !forms.length){
-      fail("Attach the signed form before marking this Approved. It is saved as Filed until then.");
-      status="Filed";
-    }
-    const next={
-      id:rec.id, from:from, to:to, site:site, wholeSite:whole,
-      empIds: Array.from(picked),
-      hoursEach: hoursNum,
-      timeFrom: timeFrom,
-      timeTo: timeTo,
-      reason: String($("#ot-why").value||"").trim(),
-      status: status,
-      on: rec.on||TODAY
-    };
-    otApplyForms(next, forms);
-    S.otreqs=S.otreqs||{};
-    S.otreqs[next.id]=next;
-    await put("otreqs", next.id, next);
-    closeModal();
-    toast(status==="Approved" && forms.length ? "OT request approved. Pending hours for those dates count the next time payroll opens." : "OT request saved.","ok");
-    render();
-  };
+function openOtEditor(){
+  toast("New OT requests are retired. File an Afternoon OT Plan.","err");
+  go("otplan");
 }
 async function storeOtFile(file){
   if(!file) return null;
@@ -11594,9 +11875,10 @@ function viewDaily(){
   }
 
   h+='<div class="note" style="margin:14px 0"><b>OT hours save on their own</b> a moment after you type them — a slow page does not mean the number was lost. '
-   + 'Time in, time out, and the OT box stay open whether an OT request is missing, pending, or rejected. Nothing here locks those boxes. '
+   + 'Time in, time out, and the OT box stay open. Nothing here locks those boxes. Old OT requests are not required. '
    + 'Payroll pays a number above 0 typed in <b>OT hrs</b>. A blank or 0 uses the time out past the schedule end. A badge is only a flag. '
-   + '<button class="btn sm" type="button" data-goto="otreq">OT requests</button> '
+   + '<button class="btn sm" type="button" data-goto="otplan">Afternoon OT Plan</button> '
+   + '<button class="btn sm" type="button" data-goto="otrep">Morning OT Report</button> '
    + 'Everyone starts as <b>Present</b> — mark <b>Has not yet arrived</b> for anyone still on the way, then change the other exceptions. '
    + 'then Save. <b>Drag a name</b> onto another area, or use the Area column, when someone works somewhere '
    + 'else for the day; that changes this report only. <b>Make areas permanent</b> copies the day’s areas onto '
@@ -16381,9 +16663,9 @@ function viewSettings(){
    + '<div class="f"><label>Standard workdays per period</label><input data-set="workdaysPerPeriod" type="number" step="0.5" value="'+st.workdaysPerPeriod+'"></div>'
    + '<div class="f"><label>Overtime multiplier</label><input data-set="otPolicy" type="number" step="0.05" value="'+st.otPolicy+'"><span class="hint">Your April run used 1.0×</span></div>'
    + '<div class="f"><label>OT form pay gate</label><select data-set-flag="otFormGateWaived">'
-   + '<option value="1"'+((typeof otFormGateWaived==="function" && otFormGateWaived())?" selected":"")+'>Waived — pay recorded daily OT without an approved form</option>'
-   + '<option value="0"'+((typeof otFormGateWaived==="function" && otFormGateWaived())?"":" selected")+'>On — withhold OT pay until an approved form is on file</option>'
-   + '</select><span class="hint">Temporary, no end date (Jeffrey, 2026-11-06). Does not approve OT requests. Turn this off to restore the 1 Oct 2026 gate.</span></div>'
+   + '<option value="1"'+((typeof otFormGateWaived==="function" && otFormGateWaived())?" selected":"")+'>Waived — pay Daily Manpower OT. A Morning Report does not block pay</option>'
+   + '<option value="0"'+((typeof otFormGateWaived==="function" && otFormGateWaived())?"":" selected")+'>On — withhold OT pay until a Morning Report confirms the hours</option>'
+   + '</select><span class="hint">Temporary, no end date (Jeffrey, 2026-11-06). Old OT requests are not used. Turn this off to withhold OT pay until a Morning Report confirms the hours.</span></div>'
    + '<div class="f"><label>Days to answer an NTE</label><input data-set="explainDays" type="number" value="'+st.explainDays+'"></div>'
    + '<div class="f"><label>Discipline lookback (months)</label><input data-set="lookbackMonths" type="number" value="'+st.lookbackMonths+'"></div>'
    + '<div class="f"><label>Warn before probation ends (days)</label><input data-set="probationWarnDays" type="number" value="'+st.probationWarnDays+'"></div>'
@@ -16393,7 +16675,7 @@ function viewSettings(){
    + '<div class="f"><label>Holiday premium</label><input value="30% of a day\'s rate" disabled>'
    + '<span class="hint">'+holidayList().length+' date'+(holidayList().length===1?'':'s')+' on the calendar'
    + ' <button class="btn sm" id="set-holcal">Open the holiday calendar</button></span></div>'
-   + '</div><div class="note">OT form pay gate starts <b>waived</b>. Recorded Daily Manpower OT is included in OT pay without an Approved request and attached form. Existing OT requests and their approval history stay as they are. There is no end date. Choose <b>On</b> above to put the 1 Oct 2026 gate back. '
+   + '</div><div class="note">OT form pay gate starts <b>waived</b>. Recorded Daily Manpower OT is included in OT pay without a Morning Report. Old OT requests stay readable and are not used for pay. There is no end date. Choose <b>On</b> above to withhold OT pay until a Morning Report confirms the hours. '
    + 'Daily Manpower time in and time out stay editable for admin and HR sign-ins. Maria Trina Cassandra A. Moran (201 file e1316, <span class="mono">moranmariatrinacassandra@gmail.com</span>) can edit those two fields when that email signs in, without an admin role. She has no portal Auth user yet. <span class="mono">hrcorcondev@gmail.com</span> is the applications mailbox, not that login. A change to time in or time out is written on that day’s change history.</div></div></div>';
 
   h+='<div class="card"><div class="card-h"><h3>HR-201 FILES in Google Drive</h3>'
@@ -22524,10 +22806,7 @@ function payLine(e, kind, dates, saved, per){
     hdmf:      payStatForLine(kind, "hdmf", e, sv, per),
     rows:days, auto,
     otNoForm: (function(){
-      if(typeof otPaidHours!=="function"){
-        if(typeof otCovered!=="function") return 0;
-        return days.reduce((n,x)=>n+(Number(x.ot)>0 && !otCovered(e.id, x.date, x.site) ? Number(x.ot) : 0), 0);
-      }
+      if(typeof otPaidHours!=="function") return 0;
       const paid=days.reduce((n,x)=>n+otPaidHours(e.id, x.date, x.site, x.ot, per&&per.to), 0);
       return Math.max(0, auto.ot-paid);
     })()
@@ -22546,9 +22825,7 @@ function payLine(e, kind, dates, saved, per){
     });
     hrPaySheet.decorateLine(L, {
       emp:e, kind:kind, per:per||{}, saved:sv,
-      otreqs:(S.otreqs||{}),
-      covers:typeof otRequestCovers==="function"?otRequestCovers:null,
-      formUrl:typeof otFormUrl==="function"?otFormUrl:null,
+      reportFor:typeof hrOtPaySource==="function"?hrOtPaySource:null,
       projects:S.projects||{},
       leaveCover:typeof dailyLeaveCovering==="function"?dailyLeaveCovering:null,
       leavePays:typeof leaveRecordPays==="function"?leaveRecordPays:null,
@@ -23204,50 +23481,6 @@ function payAuditSite(empId, date, row){
   const e=S.employees && S.employees[empId];
   return (e && e.project) || "";
 }
-function otRequestStatusOpen(req){
-  const s=String((req&&req.status)||"Filed").trim().toLowerCase();
-  return s!=="rejected" && s!=="cancelled" && s!=="canceled";
-}
-/* Filed or approved (anything that is not rejected or cancelled).
-   Overnight From/To times stay on the request's start date: coverage is
-   the request's calendar dates, not the morning after time-out. */
-function otRequestHitsEmp(req, empId, date, site){
-  if(!req || !otRequestStatusOpen(req)) return false;
-  const d=String(date||"").slice(0,10);
-  const from=String(req.from||"").slice(0,10);
-  const to=String(req.to||from).slice(0,10);
-  if(!from || !d || d<from || d>to) return false;
-  const ids=req.empIds||[];
-  if(ids.indexOf(empId)>=0) return true;
-  if(req.wholeSite){
-    const want=typeof otSiteKey==="function" ? otSiteKey(req.site) : String(req.site||"").trim().toLowerCase();
-    const got=typeof otSiteKey==="function" ? otSiteKey(site) : String(site||"").trim().toLowerCase();
-    return !!want && want===got;
-  }
-  return false;
-}
-function payAuditRequestsFor(empId, date, site){
-  const hits=[];
-  Object.keys((S&&S.otreqs)||{}).forEach(id=>{
-    const r=S.otreqs[id];
-    if(otRequestHitsEmp(r, empId, date, site)) hits.push(r);
-  });
-  return hits;
-}
-function payAuditRequestEmps(req){
-  const ids=[];
-  (req&&req.empIds||[]).forEach(id=>{ if(id && ids.indexOf(id)<0) ids.push(id); });
-  if(req && req.wholeSite && !ids.length){
-    const want=typeof otSiteKey==="function" ? otSiteKey(req.site) : String(req.site||"").trim().toLowerCase();
-    Object.keys((S&&S.employees)||{}).forEach(id=>{
-      const e=S.employees[id];
-      if(!e) return;
-      const got=typeof otSiteKey==="function" ? otSiteKey(e.project||"") : String(e.project||"").trim().toLowerCase();
-      if(want && got===want) ids.push(id);
-    });
-  }
-  return ids;
-}
 function payAuditPerson(empId, row){
   const e=(S.employees&&S.employees[empId])||{};
   return {
@@ -23255,87 +23488,6 @@ function payAuditPerson(empId, row){
     empNo: e.empNo||(row&&row.empNo)||"",
     name: e.name||(row&&(row.name||row.empName))||empId
   };
-}
-function payAuditOtPaidNoRequest(ctx){
-  const out=[];
-  const days=payAuditDays(ctx);
-  Object.keys(days).sort().forEach(date=>{
-    const rec=days[date];
-    const seen={};
-    Object.keys(rec.rows||{}).forEach(key=>{
-      const row=rec.rows[key];
-      if(!row || typeof row!=="object") return;
-      const empId=payAuditEmpId(key, row);
-      if(!empId || seen[empId]) return;
-      seen[empId]=1;
-      const site=payAuditSite(empId, date, row);
-      const parts=typeof payrollOtParts==="function"
-        ? payrollOtParts(Object.assign({date:date}, rec), empId, row)
-        : {hours: Number(row.ot)||0, source:"", clock:0, manual:Number(row.ot)||0};
-      const paid=typeof otPaidHours==="function"
-        ? otPaidHours(empId, date, site, parts.hours, ctx&&ctx.periodEnd)
-        : (Number(parts.hours)||0);
-      if(!(paid>0)) return;
-      if(payAuditRequestsFor(empId, date, site).length) return;
-      const who=payAuditPerson(empId, row);
-      out.push(Object.assign(who, {
-        date: date,
-        details: "Paid "+paid+" h ("+(parts.source||"daily")
-          +"). Clock "+(Number(parts.clock)||0)+" h. No OT request for this day."
-      }));
-    });
-  });
-  return out;
-}
-function payAuditOtRequestNoDaily(ctx){
-  const out=[];
-  const seen={};
-  Object.keys((S&&S.otreqs)||{}).forEach(id=>{
-    const req=S.otreqs[id];
-    if(!req || !otRequestStatusOpen(req)) return;
-    const from=String(req.from||"").slice(0,10);
-    const to=String(req.to||from).slice(0,10);
-    const dates=typeof otEachDate==="function" ? otEachDate(from, to) : (from?[from]:[]);
-    dates.forEach(date=>{
-      if(!payAuditInWindow(date, ctx)) return;
-      payAuditRequestEmps(req).forEach(empId=>{
-        const k=empId+"|"+date;
-        if(seen[k]) return;
-        const rec=(payAuditDays(ctx)||{})[date]||null;
-        let row=null;
-        if(rec && rec.rows){
-          if(rec.rows[empId]) row=rec.rows[empId];
-          else {
-            Object.keys(rec.rows).forEach(key=>{
-              if(row) return;
-              if(payAuditEmpId(key, rec.rows[key])===empId) row=rec.rows[key];
-            });
-          }
-        }
-        const site=payAuditSite(empId, date, row);
-        if(!otRequestHitsEmp(req, empId, date, site) && (req.empIds||[]).indexOf(empId)<0) return;
-        const parts=typeof payrollOtParts==="function"
-          ? payrollOtParts(rec?Object.assign({date:date}, rec):{date:date}, empId, row||{})
-          : {hours: Number(row&&row.ot)||0, clock:0, manual:Number(row&&row.ot)||0, scheduleEnd:""};
-        if(Number(parts.hours)>0) return;
-        seen[k]=1;
-        const who=payAuditPerson(empId, row);
-        const overnight=String(req.timeFrom||"") && String(req.timeTo||"") && String(req.timeTo)<String(req.timeFrom);
-        const why=!row ? "no Daily Manpower row"
-          : !String((row&&row.out)||"").trim() ? "no time out"
-          : "time out is not past schedule end"+(parts.scheduleEnd?" ("+parts.scheduleEnd+")":"");
-        out.push(Object.assign(who, {
-          date: date,
-          details: "Request filed, OT not shown in time records. "
-            + (req.status||"Filed")+" · request "+(req.hoursEach!=null?req.hoursEach:"")+" h"
-            + (req.timeFrom||req.timeTo?" "+(req.timeFrom||"")+"–"+(req.timeTo||""):"")
-            + (overnight?" (overnight, counted on the start date)":"")
-            + ". "+why+"."
-        }));
-      });
-    });
-  });
-  return out;
 }
 function payAuditOtManualDiffers(ctx){
   const out=[];
@@ -23368,17 +23520,15 @@ function payAuditOtManualDiffers(ctx){
   return out;
 }
 function payAuditChecks(){
-  return [
-    { id:"ot_paid_no_request", severity:"review",
-      description:"Overtime is paid for this day, from a typed Daily Manpower OT number or from the time out, and no OT request covers this person.",
-      run: payAuditOtPaidNoRequest },
-    { id:"ot_request_no_daily", severity:"review",
-      description:"Request filed, OT not shown in time records",
-      run: payAuditOtRequestNoDaily },
+  const checks=[
     { id:"ot_manual_differs_clock", severity:"info",
       description:"The OT hours typed on Daily Manpower are not the hours past schedule end on the time out.",
       run: payAuditOtManualDiffers }
   ];
+  if(typeof hrOtAuditChecks==="function"){
+    hrOtAuditChecks().forEach(function(c){ checks.push(c); });
+  }
+  return checks;
 }
 function payAuditRun(ctx){
   ctx=ctx||{};
@@ -23407,7 +23557,7 @@ function payAuditHtml(kind, per){
   let h='<div class="card" id="pay-audit-reviews" style="margin:14px 0"><div class="card-h"><h3>Payroll review</h3>'
     + '<span class="lbl">'+open+' to review · does not change pay</span></div><div class="card-b">';
   h+='<div class="note" style="margin-bottom:10px">These checks only list rows for HR to look at. '
-    + 'Marking one Reviewed stores a note on this pay run. It does not change hours, deductions, OT requests, or finalize. '
+    + 'Marking one Reviewed stores a note on this pay run. It does not change hours, deductions, plans, reports, or finalize. '
     + 'A new check is another entry in the registry — see the payroll review notes.</div>';
   report.forEach(c=>{
     const waiting=c.rows.filter(r=>!(r.review&&r.review.reviewed)).length;
@@ -23485,10 +23635,11 @@ function viewPayrollRun(){
    + '<div class="note" style="margin-bottom:12px">'+esc(payKind(kind).note)
    + ' <b>Days, overtime and the holiday premium are read off the daily manpower reports and cannot be typed here</b> — '
    + 'if one of them is wrong, the day itself is wrong, so fix it on the Daily Manpower screen and come back. '
-   + 'OT pay uses the Daily Manpower OT number when it is above 0. A blank or 0 uses the time out past schedule end. An OT request does not set the hours and does not lock the time or OT boxes. '
-   + 'While the OT form pay gate is waived, those hours are paid without an approved form. '
+   + 'OT pay uses the Daily Manpower OT number when it is above 0. A blank or 0 uses the time out past schedule end. An old OT request does not set the hours and does not lock the time or OT boxes. '
+   + 'While the OT form pay gate is waived, those hours are paid without a Morning Report. '
    + 'A run is not locked when it is printed, so this wait applies to periods ending on or after October 1, 2026. Earlier periods still pay every saved hour. '
-   + '<button class="btn sm" type="button" data-goto="otreq">OT requests</button> '
+   + '<button class="btn sm" type="button" data-goto="otplan">Afternoon OT Plan</button> '
+   + '<button class="btn sm" type="button" data-goto="otrep">Morning OT Report</button> '
    + 'Allowance, loans and contributions are typed here and kept with the run. '
    + '<b>Late fills from Daily Manpower time in</b> (after 8:15, counted from 8:00 at ₱1 per minute; after 1:15, counted from 1:00 at ₱1). '
    + '<b>Cash advance fills from approved balances</b> for this period (a repayment plan uses its rate; otherwise the outstanding amount). A number you type in Late or Cash adv., including 0, stays.'
@@ -23535,6 +23686,7 @@ function viewPayrollRun(){
      + '<div class="lbl" style="margin-top:4px;text-transform:none;letter-spacing:0">One person’s days: the Days button on their row.</div></div>';
   }
   h+=payAttendanceCard(kind, per, worked);
+  if(typeof hrOtZeroDmWarningHtml==="function") h+=hrOtZeroDmWarningHtml(per.from, per.to);
   if(typeof payRunFlowHtml==="function" && typeof payOpenAuditFlags==="function"){
     const auditReport=typeof payAuditRun==="function" ? payAuditRun({
       from:per.from, to:per.to, periodEnd:per.to,
@@ -25879,6 +26031,7 @@ function render(){
     salaries:viewSalaries, insights:viewInsights, filed:viewFiled, training:viewTraining,
     compliance:viewCompliance, gaps:viewGaps, reminders:viewReminders, assistant:viewAssistant,
     payrun:viewPayrollRun, contrib:viewContrib, otreq:viewOtRequests,
+    otplan:viewOtPlans, otrep:viewOtReports,
     settings:viewSettings}[v] || viewDash;
   const viewEl=$("#view");
   if(!viewEl) return;
@@ -26075,13 +26228,13 @@ function wireDocument(){
     const otBtn=ev.target && ev.target.closest && ev.target.closest("[data-otfile]");
     if(otBtn){
       ev.preventDefault();
-      S.ui.otDraft={
-        date: otBtn.dataset.otdate||TODAY,
+      S.ui.otPlanDraft={
+        otDate: otBtn.dataset.otdate||TODAY,
         site: otBtn.dataset.otsite||"",
         empId: otBtn.dataset.otfile||""
       };
       closeModal();
-      go("otreq");
+      go("otplan");
       return;
     }
     for(const attr in DOC_ACTIONS){
@@ -26094,18 +26247,36 @@ function wireDocument(){
 function wire(){
   const v=$("#view");
   const on=(sel,ev,fn)=>$$(sel,v).forEach(el=>el.addEventListener(ev,fn));
-  if(S.ui && S.ui.view==="otreq" && S.ui.otDraft){
-    const draft=S.ui.otDraft; S.ui.otDraft=null;
-    openOtEditor(draft);
+  if(S.ui && S.ui.view==="otplan" && S.ui.otPlanDraft){
+    const draft=S.ui.otPlanDraft; S.ui.otPlanDraft=null;
+    openOtPlanEditor(draft);
   }
-  const otNew=$("#ot-new",v); if(otNew) otNew.onclick=()=>openOtEditor(null);
-  on("[data-otedit]","click",e=>openOtEditor({id:e.currentTarget.dataset.otedit}));
-  on("[data-otopen]","click",e=>openOtFormFile(e.currentTarget.dataset.otopen, e.currentTarget.dataset.otfilei));
-  on("[data-otdel]","click",async e=>{
-    const id=e.currentTarget.dataset.otdel;
-    if(!await askConfirm("Delete this OT request? Hours already typed on Daily Manpower stay.")) return;
-    await drop("otreqs", id); render();
+  if(S.ui && S.ui.view==="otrep" && S.ui.otRepDraft){
+    const draft=S.ui.otRepDraft; S.ui.otRepDraft=null;
+    openOtReportEditor(draft);
+  }
+  const otpNew=$("#otp-new",v); if(otpNew) otpNew.onclick=()=>openOtPlanEditor(null);
+  on("[data-otpedit]","click",e=>openOtPlanEditor({id:e.currentTarget.dataset.otpedit}));
+  on("[data-otpreport]","click",e=>{
+    const id=e.currentTarget.dataset.otpreport;
+    const plan=S.otplans&&S.otplans[id];
+    S.ui.otRepDraft=plan ? {planId:plan.id, otDate:plan.otDate} : {planId:id};
+    go("otrep");
   });
+  on("[data-otpdel]","click",async e=>{
+    const id=e.currentTarget.dataset.otpdel;
+    if(!await askConfirm("Delete this Afternoon OT Plan? Payroll, attendance, and pay runs are not changed.")) return;
+    await drop("otplans", id); render();
+  });
+  const otrNew=$("#otr-new",v); if(otrNew) otrNew.onclick=()=>openOtReportEditor(null);
+  on("[data-otredit]","click",e=>openOtReportEditor({id:e.currentTarget.dataset.otredit}));
+  on("[data-otrdel]","click",async e=>{
+    const id=e.currentTarget.dataset.otrdel;
+    if(!await askConfirm("Delete this Morning OT Report? Payroll, attendance, and pay runs are not changed.")) return;
+    await drop("otreps", id); render();
+  });
+  on("[data-othist]","click",e=>openOtHistory(e.currentTarget.dataset.othist));
+  on("[data-otopen]","click",e=>openOtFormFile(e.currentTarget.dataset.otopen, e.currentTarget.dataset.otfilei));
   on("[data-otmode]","click",e=>{ S.ui.otMode=e.currentTarget.dataset.otmode; render(); });
   on("[data-otjump]","click",e=>{
     const start=e.currentTarget.dataset.otjump||"";
@@ -26150,10 +26321,10 @@ function wire(){
         +(b.pendingHours?' · '+esc(otPendingText(b.pendingHours)):'')+'</p>';
       body+='<table class="pf-t reg"><tr><td class="hd">Employee</td><td class="hd">Approved h</td><td class="hd">Pending h</td><td class="hd">OT pay</td><td class="hd">Form</td></tr>';
       (b.employees||[]).forEach(e=>{
-        body+='<tr><td>'+esc(flipName(e.name)||e.name)+'</td><td class="n">'+esc(num(e.approvedHours,1))+'</td><td class="n">'+esc(num(e.pendingHours,1))+'</td><td class="n">'+esc(num(e.pay,2))+'</td><td>'+(e.pendingHours?'Pending OT form':'approved')+'</td></tr>';
+        body+='<tr><td>'+esc(flipName(e.name)||e.name)+'</td><td class="n">'+esc(num(e.approvedHours,1))+'</td><td class="n">'+esc(num(e.pendingHours,1))+'</td><td class="n">'+esc(num(e.pay,2))+'</td><td>'+(e.pendingHours?'Pending Morning Report':'approved')+'</td></tr>';
       });
       (b.sites||[]).forEach(s=>{
-        body+='<tr><td><b>'+esc(s.site)+'</b></td><td class="n">'+esc(num(s.approvedHours,1))+'</td><td class="n">'+esc(num(s.pendingHours,1))+'</td><td class="n">'+esc(num(s.pay,2))+'</td><td>'+(s.pendingHours?'Pending OT form':'approved')+'</td></tr>';
+        body+='<tr><td><b>'+esc(s.site)+'</b></td><td class="n">'+esc(num(s.approvedHours,1))+'</td><td class="n">'+esc(num(s.pendingHours,1))+'</td><td class="n">'+esc(num(s.pay,2))+'</td><td>'+(s.pendingHours?'Pending Morning Report':'approved')+'</td></tr>';
       });
       body+='</table>';
       body+=otBySitePrint(b, otBySiteDates(b, report));

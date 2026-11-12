@@ -62,7 +62,7 @@ const kasabutan = { s: "on", link: "https://drive.example/kasabutan.pdf" };
 
 describe("R39 checklist ticks Decline only for a KASABUTAN", () => {
   it("is build 2026-11-05", () => {
-    assert.match(html, /const BUILD = "2026-11-10b"/);
+    assert.match(html, /const BUILD = "2026-11-12a"/);
     assert.match(readme, /build 2026-10-29a/);
     assert.match(readme, /Earlier deploy was \*\*build 2026-10-26a\*\*/);
   });
