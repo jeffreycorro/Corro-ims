@@ -77,17 +77,19 @@ const FORM = "https://drive.google.com/file/d/OTFORM1/view?usp=sharing";
 
 describe("2026-10-02a overtime requests", () => {
   it("is build 2026-10-05a and still files an OT request", () => {
-    assert.match(html, /const BUILD = "2026-11-10b"/);
-    assert.match(html, /\{k:"otreq",\s*n:"OT Requests"/);
+    assert.match(html, /const BUILD = "2026-11-12a"/);
+    assert.match(html, /\{k:"otreq",\s*n:"Old OT requests \(history\)"/);
+    assert.match(html, /Old OT requests \(history\)/);
+    assert.doesNotMatch(html, /id="ot-new"/);
     assert.match(html, /function viewOtRequests\(/);
     assert.match(html, /function otHoursAllowed\(/);
-    assert.match(html, /No OT request on file for this date\/site/);
+    assert.match(html, /not used for pay or payroll review/);
     assert.match(html, /data-otfile=/);
-    assert.match(html, /Pending OT form/);
+    assert.match(html, /Pending Morning Report/);
     assert.match(extractFunction(html, "dailyCollect"), /otHoursAllowed/);
     assert.match(extractFunction(html, "payLine"), /otNoForm/);
     assert.match(html, /otreqs/);
-    assert.match(html, /"Filed","Approved","Rejected"/);
+    assert.match(html, /New OT requests are retired/);
   });
 
   it("covers an approved request with a form, and keeps hours that have no form", () => {
@@ -233,23 +235,24 @@ describe("2026-10-02a overtime requests", () => {
     const b = report.buckets[0];
     assert.equal(b.key, "2026-10-01");
     assert.equal(b.hours, 9);
-    assert.equal(b.noFormHours, 2);
+    assert.equal(b.noFormHours, 9);
     const e1 = b.employees.find((e) => e.id === "e1");
     const e2 = b.employees.find((e) => e.id === "e2");
     assert.equal(e1.hours, 5);
-    assert.equal(e1.noFormHours, 2);
-    assert.equal(e1.pendingHours, 2);
-    assert.equal(e1.approvedHours, 3);
-    assert.equal(e1.pay, 3 * (520 / 8));
+    assert.equal(e1.noFormHours, 5);
+    assert.equal(e1.pendingHours, 5);
+    assert.equal(e1.approvedHours, 0);
+    assert.equal(e1.pay, 0);
     assert.equal(e2.hours, 4);
-    assert.equal(e2.noFormHours, 0);
-    assert.equal(e2.pay, 4 * (480 / 8));
+    assert.equal(e2.noFormHours, 4);
+    assert.equal(e2.pay, 0);
+    assert.equal(ctx.S.otreqs.ot1.status, "Approved");
     const danlag = b.sites.find((s) => s.site === "Danlag");
     const tag = b.sites.find((s) => s.site === "Tagba-o");
     assert.equal(danlag.hours, 5);
-    assert.equal(danlag.noFormHours, 2);
+    assert.equal(danlag.noFormHours, 5);
     assert.equal(tag.hours, 4);
-    assert.equal(tag.noFormHours, 0);
+    assert.equal(tag.noFormHours, 4);
     const csv = ctx.otCsv(report);
     assert.equal(csv[0][0], "Period");
     assert.ok(csv.some((row) => row[1] === "Employee" && row[2] === "Ababon, Jonathan"));

@@ -96,7 +96,7 @@ function track(ctx, extra) {
 
 describe("2026-10-08a overtime tracking reads Daily Manpower hours", () => {
   it("is build 2026-10-08a and does not write overtime or manpower records", () => {
-    assert.match(html, /const BUILD = "2026-11-10b"/);
+    assert.match(html, /const BUILD = "2026-11-12a"/);
     assert.match(html, /No overtime hours in this window\./);
     assert.match(extractFunction(html, "viewOtRequests"), /if\(!report\.buckets\.length\)/);
     assert.match(extractFunction(html, "viewOtRequests"), /otEmptyNote\(/);
@@ -177,9 +177,10 @@ describe("2026-10-08a overtime tracking reads Daily Manpower hours", () => {
 
     ctx.S.otreqs.filed.formUrl = FORM;
     b = track(ctx).buckets[0];
-    assert.equal(b.approvedHours, 5.5);
-    assert.equal(b.pendingHours, 0);
-    assert.equal(b.employees.find((e) => e.id === "e2").approvedHours, 1.5);
+    assert.equal(b.approvedHours, 0);
+    assert.equal(b.pendingHours, 5.5);
+    assert.equal(b.employees.find((e) => e.id === "e2").approvedHours, 0);
+    assert.equal(ctx.S.otreqs.filed.status, "Approved");
   });
 
   it("treats a different spelling of Danao SPLPA as the filtered site", () => {

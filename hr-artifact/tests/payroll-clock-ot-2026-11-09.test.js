@@ -55,13 +55,7 @@ const NAMES = [
   "payAuditDays",
   "payAuditEmpId",
   "payAuditSite",
-  "otRequestStatusOpen",
-  "otRequestHitsEmp",
-  "payAuditRequestsFor",
-  "payAuditRequestEmps",
   "payAuditPerson",
-  "payAuditOtPaidNoRequest",
-  "payAuditOtRequestNoDaily",
   "payAuditOtManualDiffers",
   "payAuditChecks",
   "payAuditRun",
@@ -99,7 +93,7 @@ function day(ctx, date, rows) {
 
 describe("2026-11-09a clock OT and payroll review", () => {
   it("is build 2026-11-09a and documents how to add a check", () => {
-    assert.match(html, /const BUILD = "2026-11-10b"/);
+    assert.match(html, /const BUILD = "2026-11-12a"/);
     assert.match(html, /function payAuditChecks\(/);
     assert.match(html, /function clockOtHours\(/);
     assert.match(doc, /payAuditChecks/);
@@ -142,11 +136,11 @@ describe("2026-11-09a clock OT and payroll review", () => {
     assert.equal(night.hours, 9);
     assert.equal(night.source, "clock");
     assert.equal(night.clock, 9);
+    const beforeDaily = JSON.stringify(ctx.S.daily);
     const flagged = ctx.payAuditRun({ from: "2026-11-05", to: "2026-11-11", periodEnd: "2026-11-11" });
-    const noDaily = flagged.find((c) => c.id === "ot_request_no_daily");
-    assert.equal(noDaily.rows.filter((r) => r.date === "2026-11-06").length, 0);
-    assert.equal(flagged.find((c) => c.id === "ot_paid_no_request").rows.some((r) => r.date === "2026-11-05"), true);
-    assert.equal(flagged.find((c) => c.id === "ot_paid_no_request").rows.some((r) => r.date === "2026-11-06"), false);
+    assert.equal(JSON.stringify(ctx.S.daily), beforeDaily);
+    assert.equal(flagged.some((c) => c.id === "ot_request_no_daily" || c.id === "ot_paid_no_request"), false);
+    assert.equal(ctx.S.daily.d20261105.rows.e1.ot, "");
   });
 
   it("lets a typed OT number win and flags it when it differs from the clock", () => {
@@ -178,7 +172,7 @@ describe("2026-11-09a clock OT and payroll review", () => {
     assert.equal(ctx.payrollOtParts(ctx.S.daily.d20261105, "e1", ctx.S.daily.d20261105.rows.e1).hours, 2);
   });
 
-  it("lists OT paid with no request, a request with no daily OT, and ignores rejected requests", () => {
+  it("does not flag missing OT requests, and leaves request rows and daily OT unchanged", () => {
     const ctx = load();
     ctx.S.employees.e1 = { id: "e1", name: "Santos, Ben", empNo: "1500", project: "Danlag" };
     ctx.S.employees.e2 = { id: "e2", name: "Cruz, Ana", empNo: "1501", project: "Danlag" };
@@ -223,18 +217,7 @@ describe("2026-11-09a clock OT and payroll review", () => {
       first.map((c) => [c.id, c.count]),
       again.map((c) => [c.id, c.count])
     );
-    const paid = first.find((c) => c.id === "ot_paid_no_request");
-    assert.equal(paid.severity, "review");
-    assert.equal(paid.rows.map((r) => r.empId).join(","), "e1");
-    assert.equal(paid.rows[0].date, "2026-11-05");
-    assert.match(paid.rows[0].details, /Paid 2 h/);
-
-    const missing = first.find((c) => c.id === "ot_request_no_daily");
-    assert.equal(missing.description, "Request filed, OT not shown in time records");
-    assert.equal(missing.rows.length, 1);
-    assert.equal(missing.rows[0].empId, "e2");
-    assert.equal(missing.rows[0].date, "2026-11-05");
-    assert.match(missing.rows[0].details, /overnight, counted on the start date/);
+    assert.equal(first.some((c) => c.id === "ot_paid_no_request" || c.id === "ot_request_no_daily"), false);
     assert.equal(ctx.S.otreqs.filed.status, "Filed");
     assert.equal(ctx.S.otreqs.nope.status, "Rejected");
     assert.equal(ctx.S.daily.d20261105.rows.e1.ot, "");
@@ -243,7 +226,7 @@ describe("2026-11-09a clock OT and payroll review", () => {
 
   it("keeps a Reviewed note across recompute and does not change pay fields that were touched", () => {
     const ctx = load();
-    const key = ctx.payAuditItemKey("ot_paid_no_request", "e1", "2026-11-05");
+    const key = ctx.payAuditItemKey("ot_manual_differs_clock", "e1", "2026-11-05");
     const run = {
       id: "weekly|2026-11-05",
       kind: "weekly",
@@ -281,9 +264,8 @@ describe("2026-11-09a clock OT and payroll review", () => {
       reviews: run.auditReviews,
     });
     const row = reviewed.find((c) => c.id === "ot_manual_differs_clock").rows[0];
-    assert.equal(row.review, null);
-    const paidRow = reviewed.find((c) => c.id === "ot_paid_no_request").rows[0];
-    assert.equal(paidRow.review.note, "times checked");
+    assert.equal(row.review.note, "times checked");
+    assert.equal(reviewed.some((c) => c.id === "ot_paid_no_request"), false);
     assert.equal(ctx.payrollOtHours(ctx.S.daily.d20261105, "e1", ctx.S.daily.d20261105.rows.e1), paidBefore);
     assert.equal(ctx.S.daily.d20261105.rows.e1.ot, 4);
   });

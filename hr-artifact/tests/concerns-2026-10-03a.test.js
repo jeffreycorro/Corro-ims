@@ -84,11 +84,11 @@ function loadPay() {
 
 describe("2026-10-03a pending OT and late", () => {
   it("is build 2026-10-05a and keeps the OT box editable", () => {
-    assert.match(html, /const BUILD = "2026-11-10b"/);
-    assert.match(html, /Pending OT form/);
+    assert.match(html, /const BUILD = "2026-11-12a"/);
+    assert.match(html, /Pending Morning Report/);
     assert.match(html, /OT pending: /);
     assert.match(html, /data-otfile=/);
-    assert.match(html, /File one/);
+    assert.match(html, /File the plan/);
     assert.match(html, /function otPendingApplies\(/);
     assert.match(html, /2026-10-01/);
     assert.doesNotMatch(extractFunction(html, "otEntryBox"), /disabled/);
@@ -126,9 +126,10 @@ describe("2026-10-03a pending OT and late", () => {
       },
     };
     const paid = ctx.payLine(e, "weekly", ["2026-10-02"], {}, { from: "2026-10-01", to: "2026-10-07" });
-    assert.equal(paid.ot, 2);
-    assert.equal(paid.otPending, 0);
-    assert.equal(paid.otPay, 2 * (520 / 8));
+    assert.equal(paid.ot, 0);
+    assert.equal(paid.otPending, 2);
+    assert.equal(paid.otPay, 0);
+    assert.equal(ctx.S.otreqs.ot1.status, "Approved");
     assert.equal(ctx.otHoursAllowed("e1", "2026-10-02", "Danlag", null, 4), 4);
     const noPeriod = ctx.payLine(e, "weekly", ["2026-10-02"], {}, null);
     ctx.S.otreqs = {};

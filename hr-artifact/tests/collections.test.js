@@ -69,6 +69,8 @@ describe("collections", () => {
       "periods",
       "payruns",
       "otreqs",
+      "otplans",
+      "otreps",
       "discipline",
       "meta",
     ];
