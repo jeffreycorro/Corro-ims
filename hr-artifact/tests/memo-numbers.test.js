@@ -233,7 +233,7 @@ describe("company memorandum numbers", () => {
   });
 
   it("shows the next number on New memo and leaves a filed memo number locked", () => {
-    assert.match(html, /const BUILD = "2026-11-12a"/);
+    assert.match(html, /const BUILD = "2026-11-12b"/);
     assert.match(html, /id="m-no"/);
     assert.match(html, /peekNo\("CM"\)/);
     assert.match(html, /data-suggest/);

@@ -40,7 +40,7 @@ function sorted(names) {
 
 describe("2026-11-10a site list includes Admins 2", () => {
   it("is build 2026-11-10b and the area dropdown still allows a new area", () => {
-    assert.match(html, /const BUILD = "2026-11-12a"/);
+    assert.match(html, /const BUILD = "2026-11-12b"/);
     assert.match(html, /function dailySites\(\)/);
     assert.match(html, /paySiteChoices\(/);
     assert.match(html, /dailyProjectSelectHtml\(dailySiteOf\(rec,e\)\)/);

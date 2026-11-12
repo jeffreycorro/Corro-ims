@@ -417,6 +417,19 @@ button.pill.drill:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
 .seg button:last-child{border-right:0}
 .seg button.on{background:var(--accent);color:var(--surface);font-weight:600}
 @media print{.rail,.topbar,.modal-f,.modal-h,.btn{display:none!important}.doc{max-height:none;border:0;overflow:visible}.ov{position:static;background:none;padding:0}.modal{border:0;box-shadow:none;max-height:none}}
+.pay-break-btn{appearance:none;background:transparent;border:0;border-bottom:1px dashed currentColor;color:inherit;font:inherit;font-weight:700;cursor:pointer;padding:10px 6px;min-height:44px;min-width:44px;text-align:inherit}
+.pay-break-btn:hover,.pay-break-btn:focus{background:var(--surface2);outline:2px solid var(--accent);outline-offset:2px}
+td.num .pay-break-btn{display:inline-flex;align-items:center;justify-content:flex-end;width:100%}
+.pay-break-name{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+.pay-break-name .pay-break-btn{border:1px solid var(--line2);border-radius:5px;background:var(--surface);text-align:center}
+.pay-break-live{margin:0 0 10px}
+.pay-break-live summary{min-height:44px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;cursor:pointer;padding:6px 2px}
+.pay-break-warn{background:var(--crit-soft,#fbeceb);border-left:3px solid var(--crit);padding:8px 10px;margin:8px 0;border-radius:0 5px 5px 0;color:var(--crit)}
+.pay-break-part td{color:var(--ink2);font-size:12px}
+.pay-break-diff{background:var(--warn-soft,#fbf3e4)}
+.pay-break-table .mono{white-space:nowrap}
+.pay-break-table th:last-child,.pay-break-table td:last-child{position:sticky;right:0;background:var(--surface,#fff)}
+@media (max-width:720px){.ov{padding:8px}.pay-break-table{overflow-x:auto;-webkit-overflow-scrolling:touch}}
 </style>
 
 <svg style="display:none" aria-hidden="true">
@@ -2160,7 +2173,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-11-12a";
+const BUILD = "2026-11-12b";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -23572,6 +23585,7 @@ function payAuditHtml(kind, per){
     c.rows.forEach(r=>{
       const rev=r.review&&r.review.reviewed;
       h+='<tr><td><b>'+esc(r.name||r.empId)+'</b>'
+        + (r.empId?' <button type="button" class="pay-break-btn" data-paybreak="ded" data-payemp="'+esc(r.empId)+'" aria-label="Show the deduction breakdown for '+esc(r.name||r.empId)+'">Deductions</button>':"")
         + (r.empNo?'<div class="mono lbl">'+esc(r.empNo)+'</div>':"")+'</td>'
         + '<td class="mono">'+esc(r.date||"")+'</td>'
         + '<td>'+esc(r.details||"")+'</td><td style="min-width:180px">';
@@ -23592,6 +23606,60 @@ function payAuditHtml(kind, per){
   return h;
 }
 
+/* Read-only breakdown of one payroll line. The amounts stay whatever the
+   run already shows. Opening this does not reprice, save, or finalize. */
+let PAY_BREAK_INDEX = null;
+function payBreakRemember(list){
+  const map={};
+  (list||[]).forEach(L=>{ if(L && L.empId) map[L.empId]=L; });
+  PAY_BREAK_INDEX=map;
+}
+function payBreakPack(empId){
+  if(!PAY_BREAK_INDEX && typeof payCur==="function" && typeof payRunLines==="function"){
+    const cur=payCur();
+    const saved=payRunGet(cur.kind, cur.per.from, cur.per.to);
+    payBreakRemember(payRunLines(cur.kind, cur.per, payDates(cur.per.from, cur.per.to), saved));
+  }
+  const line=PAY_BREAK_INDEX && PAY_BREAK_INDEX[empId];
+  if(!line || typeof hrPaySheet==="undefined" || !hrPaySheet || typeof hrPaySheet.payBreakdown!=="function") return null;
+  const cur=payCur();
+  const savedRun=payRunGet(cur.kind, cur.per.from, cur.per.to);
+  const saved=(savedRun && savedRun.lines && savedRun.lines[empId]) || {};
+  return hrPaySheet.payBreakdown(line, {
+    saved:saved,
+    kind:cur.kind,
+    emp:(S.employees && S.employees[empId]) || {},
+    otMultiplier:Number((S.settings && S.settings.otPolicy) || 1)
+  });
+}
+function payBreakPanels(empId, opts){
+  const pack=payBreakPack(empId);
+  if(!pack || typeof hrPaySheet.payBreakdownHtml!=="function") return "";
+  return hrPaySheet.payBreakdownHtml(pack, opts||{});
+}
+function openPayBreakdown(empId, side){
+  const html=payBreakPanels(empId, {dedOpen:side!=="earn", earnOpen:side==="earn"});
+  if(!html){ toast("That person is not on this payroll.","err"); return; }
+  const line=PAY_BREAK_INDEX && PAY_BREAK_INDEX[empId];
+  const who=line && line.name ? (typeof flipName==="function" ? flipName(line.name) : line.name) : "Payroll breakdown";
+  openModal({
+    title: who+" — breakdown",
+    wide:true,
+    body:'<div id="pay-break-dialog">'+html+'</div>',
+    foot:'<button class="btn pri" id="pay-break-close" type="button">Close</button>'
+  });
+  const box=document.querySelector("#ov .modal");
+  if(box){
+    box.setAttribute("role","dialog");
+    box.setAttribute("aria-modal","true");
+    box.setAttribute("aria-labelledby","pay-break-heading");
+  }
+  const h3=document.querySelector("#ov .modal-h h3");
+  if(h3) h3.id="pay-break-heading";
+  const close=$("#pay-break-close");
+  if(close){ close.onclick=closeModal; close.focus(); }
+}
+
 function viewPayrollRun(){
   /* A week nobody has filed yet opens as a page of zeros and reads as a broken
      payroll. If the standard window has no reports and the period was not
@@ -23608,6 +23676,7 @@ function viewPayrollRun(){
   const dates=payDates(per.from,per.to);
   const saved=payRunGet(kind,per.from,per.to);
   const lines=payRunLines(kind, per, dates, saved);
+  payBreakRemember(lines);
   const allWorked=lines.filter(payHasTime);
   const idle=lines.length-allWorked.length;
   const siteWant=String((S.ui&&S.ui.paySite)||"");
@@ -23835,9 +23904,9 @@ function viewPayrollRun(){
      + '<td class="num mono" title="'+esc(payDayHint(L,"hol")+(L.holPay?" — adds "+peso(L.holPay)+" to gross":""))+'">'
      +   (L.hol?esc(holMix(L)):'<span class="lbl">—</span>')+'</td>'
      + (kind==="semi" ? '<td>'+inp(L,"allowance",L.allowance)+'</td>' : '')
-     + '<td class="num mono"><b>'+num(L.gross,2)+'</b></td>'
+     + '<td class="num mono"><button type="button" class="pay-break-btn" data-paybreak="earn" data-payemp="'+esc(L.empId)+'" aria-label="Show the earnings breakdown for '+esc(L.name||"")+'"><b>'+num(L.gross,2)+'</b></button></td>'
      + used.map(c=>'<td>'+inp(L,c.k,L[c.k])+'</td>').join("")
-     + '<td class="num mono">'+num(L.ded,2)+'</td>'
+     + '<td class="num mono"><button type="button" class="pay-break-btn" data-paybreak="ded" data-payemp="'+esc(L.empId)+'" aria-label="Show the deduction breakdown for '+esc(L.name||"")+'">'+num(L.ded,2)+'</button></td>'
      + '<td class="num mono"><b>'+num(L.net,0)+'</b></td>'
      + '<td style="white-space:nowrap"><button class="btn sm" data-payperson="'+esc(L.empId)+'" title="Status, times, overtime and holiday for each day">Days</button> '
      + '<button class="btn sm" data-payslip="'+esc(L.empId)+'">Payslip</button></td></tr>';
@@ -25576,7 +25645,8 @@ function payPersonDays(empId){
       + '<td><input data-pd="r" value="'+esc(r.r||"")+'" style="'+sty+'"></td></tr>';
   }).join("");
   openModal({ title:flipName(e.name)+" — "+payLabel(per.from, per.to), wide:true,
-    body:'<div class="stack"><div class="note">Present/Late needs <b>Time In</b>. Undertime needs <b>Time Out</b>. '
+    body:'<div class="stack">'+payBreakPanels(empId,{dedOpen:true,earnOpen:false})
+      + '<div class="note">Present/Late needs <b>Time In</b>. Undertime needs <b>Time Out</b>. '
       + 'Late starts after <b>8:15</b>, counted from 8:00 at <b>₱1</b> per minute, or after <b>1:15</b> counted from 1:00. '
       + 'Undertime on a full day before 5:00 is ₱1 per minute up to 60, then the hourly rate times the nearest hour. An excused reason is 0. '
       + 'Holiday is per day: <b>+30%</b>, <b>+100%</b> or <b>As is</b>. Each change is written onto that day’s '
@@ -26492,6 +26562,10 @@ function wire(){
   const phn=$("#pay-holnone",v);  if(phn) phn.onclick=()=>payHolAll(0);
   const phc=$("#pay-holcal",v);   if(phc) phc.onclick=holidayEditor;
   on("[data-payperson]","click",e=>payPersonDays(e.currentTarget.dataset.payperson));
+  on("[data-paybreak]","click",e=>{
+    e.preventDefault();
+    openPayBreakdown(e.currentTarget.getAttribute("data-payemp"), e.currentTarget.getAttribute("data-paybreak")||"ded");
+  });
   const payToCon=$("#pay-tocontrib",v); if(payToCon) payToCon.onclick=()=>go("contrib");
   const payToAtt=$("#pay-toattend",v); if(payToAtt) payToAtt.onclick=()=>{
     /* land on the last day of the period being paid, not on today */
@@ -26621,7 +26695,8 @@ function wire(){
   const slipShow=(lines,b,title,file)=>{
     if(blockCompanyPrint([S.settings.payrollBy?"evaluated":"dept"])) return;
     const body = lines.length===1 ? payslipBody(lines[0],b.kind,b.per) : payslipSheet(lines,b.kind,b.per);
-    openModal({ title, wide:true, body:pfWrap(body),
+    const live=(lines||[]).map(L=>payBreakPanels(L.empId,{dedOpen:lines.length===1,earnOpen:false})).join("");
+    openModal({ title, wide:true, body:live+pfWrap(body),
       foot:'<button class="btn" id="pys-back">Back</button>'
         + '<button class="btn" id="pys-pdf"><svg><use href="#i-dl"/></svg> Save as PDF</button>'
         + '<button class="btn pri" id="pys-print">Print</button>'});

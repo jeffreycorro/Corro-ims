@@ -77,7 +77,7 @@ const FORM = "https://drive.google.com/file/d/OTFORM1/view?usp=sharing";
 
 describe("2026-10-02a overtime requests", () => {
   it("is build 2026-10-05a and still files an OT request", () => {
-    assert.match(html, /const BUILD = "2026-11-12a"/);
+    assert.match(html, /const BUILD = "2026-11-12b"/);
     assert.match(html, /\{k:"otreq",\s*n:"Old OT requests \(history\)"/);
     assert.match(html, /Old OT requests \(history\)/);
     assert.doesNotMatch(html, /id="ot-new"/);

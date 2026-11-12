@@ -703,17 +703,20 @@ function payRunFlowHtml(run, flags) {
     + '<span class="pill ' + pill + '" id="pay-status">' + payHtmlEsc(label) + "</span></div><div class=\"card-b\">";
   if (status === "draft") {
     h += '<div class="note" style="margin:0 0 8px">This is a draft. HR can still change times, overtime, the day’s site, and deductions. '
-      + "Submit sends it for approval. Approving locks those edits on this screen.</div>";
+      + "Submit sends it for approval. Approving locks those edits on this screen. "
+      + "A deduction total, or Deductions beside a name, opens the breakdown. It does not change the figures.</div>";
   } else if (status === "submitted") {
     h += '<div class="note" style="margin:0 0 8px">Submitted'
       + (run && run.submittedBy ? " by " + payHtmlEsc(run.submittedBy) : "")
       + (run && run.submittedAt ? " · " + payHtmlEsc(run.submittedAt) : "")
-      + ". An admin approves it or returns it to draft with a note.</div>";
+      + ". An admin approves it or returns it to draft with a note. "
+      + "A deduction total, or Deductions beside a name, opens the breakdown. It does not change the figures.</div>";
   } else {
     h += '<div class="note" style="margin:0 0 8px">Approved'
       + (run && run.approvedBy ? " by " + payHtmlEsc(run.approvedBy) : "")
       + (run && run.approvedAt ? " · " + payHtmlEsc(run.approvedAt) : "")
-      + ". Payroll edits and the day rows opened from this screen stay locked.</div>";
+      + ". Payroll edits and the day rows opened from this screen stay locked. "
+      + "A deduction total, or Deductions beside a name, opens the breakdown. It does not change the figures.</div>";
   }
   if (run && run.returnNote) {
     h += '<div class="note" style="border-left-color:var(--warn);margin:0 0 8px">Returned'

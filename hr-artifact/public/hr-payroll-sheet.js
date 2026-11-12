@@ -851,7 +851,7 @@
         var row = blankRow(cols);
         var hit = (L.rows || []).filter(function (r) { return isoDate(r.date) === d; })[0];
         put(row, 1, di === 0 ? idx + 1 : "", null, mark);
-        if (di === 0) put(row, 2, L.name || "");
+        if (di === 0) put(row, 2, L.name || "", null, { nameBreak: L.empId || "", payName: L.name || "" });
         put(row, 3, dayLabel(d));
         if (hit) {
           put(row, 4, hit.in || "");
@@ -881,7 +881,8 @@
           var addl = blankMoney(L.incentive || L.addl);
           put(row, totalDaysCol + 2, addl, null, payField(L.empId, "incentive"));
           put(row, totalDaysCol + 3, round2(L.gross) || 0,
-            "SUM(" + colLetter(firstSite) + pesoRow + ":" + colLetter(firstSite + pairs * 2 - 1) + pesoRow + "," + colLetter(totalDaysCol + 2) + start + ")");
+            "SUM(" + colLetter(firstSite) + pesoRow + ":" + colLetter(firstSite + pairs * 2 - 1) + pesoRow + "," + colLetter(totalDaysCol + 2) + start + ")",
+            { paybreak: "earn", empId: L.empId || "", payName: L.name || "" });
           put(row, totalDaysCol + 4, blankMoney(L.late), null, payField(L.empId, "late"));
           put(row, totalDaysCol + 5, blankMoney(L.ca), null, payField(L.empId, "ca"));
           put(row, totalDaysCol + 6, blankMoney(L.uniform), null, payField(L.empId, "uniform"));
@@ -891,7 +892,8 @@
           put(row, totalDaysCol + 10, blankMoney(L.hdmf), null, payField(L.empId, "hdmf"));
           put(row, totalDaysCol + 11, blankMoney(L.phic), null, payField(L.empId, "phic"));
           put(row, totalDaysCol + 12, round2(L.ded) || 0,
-            "SUM(" + colLetter(totalDaysCol + 4) + start + ":" + colLetter(totalDaysCol + 11) + blockEnd + ")");
+            "SUM(" + colLetter(totalDaysCol + 4) + start + ":" + colLetter(totalDaysCol + 11) + blockEnd + ")",
+            { paybreak: "ded", empId: L.empId || "", payName: L.name || "" });
           put(row, totalDaysCol + 13, Number(L.net) || 0,
             "ROUNDUP((" + colLetter(totalDaysCol + 3) + start + "-" + colLetter(totalDaysCol + 12) + start + "),0)");
           put(row, totalDaysCol + 14, "", null, { actions: L.empId || "" });
@@ -1047,7 +1049,7 @@
         put(row, 1, "", null, semiMark);
         if (di === 0) {
           put(row, 2, idx + 1);
-          put(row, 3, L.name || "");
+          put(row, 3, L.name || "", null, { nameBreak: L.empId || "", payName: L.name || "" });
           put(row, 13, Number(L.days) || 0, "SUM(J" + start + ":J" + (start + dates.length - 1) + ")");
           put(row, 14, Number(L.ot) || 0, "SUM(K" + start + ":K" + (start + dates.length - 1) + ")");
           if (L.monthlyAmount) put(row, 15, Number(L.daily) || 0, L.monthlyAmount + "/26");
@@ -1058,7 +1060,8 @@
           put(row, 19, round2(L.holPay) || 0, "R" + start + "*O" + start);
           put(row, 20, blankMoney(L.allowance), null, payField(L.empId, "allowance"));
           put(row, 21, blankMoney(L.incentive || L.addl), null, payField(L.empId, "incentive"));
-          put(row, 22, round2(L.gross) || 0, "M" + start + "*O" + start + "+Q" + start + "+S" + start + "+T" + start + "+U" + start);
+          put(row, 22, round2(L.gross) || 0, "M" + start + "*O" + start + "+Q" + start + "+S" + start + "+T" + start + "+U" + start,
+            { paybreak: "earn", empId: L.empId || "", payName: L.name || "" });
           put(row, 23, blankMoney(L.late), null, payField(L.empId, "late"));
           put(row, 24, blankMoney(L.ca), null, payField(L.empId, "ca"));
           put(row, 25, blankMoney(L.uniform), null, payField(L.empId, "uniform"));
@@ -1067,7 +1070,8 @@
           put(row, 28, blankMoney(L.sss), null, payField(L.empId, "sss"));
           put(row, 29, blankMoney(L.phic), null, payField(L.empId, "phic"));
           put(row, 30, blankMoney(L.hdmf), null, payField(L.empId, "hdmf"));
-          put(row, 31, round2(L.ded) || 0, "SUM(W" + start + ":AD" + (start + dates.length) + ")");
+          put(row, 31, round2(L.ded) || 0, "SUM(W" + start + ":AD" + (start + dates.length) + ")",
+            { paybreak: "ded", empId: L.empId || "", payName: L.name || "" });
           put(row, 32, Number(L.net) || 0, "ROUNDUP((V" + start + "-AE" + start + "),0)");
           put(row, 33, "", null, { actions: L.empId || "" });
         }
@@ -1510,7 +1514,26 @@
         }
         if (c && c.actions) {
           h += '<td style="white-space:nowrap"><button type="button" class="btn sm" data-payperson="' + esc(c.actions) + '">Days</button> '
-            + '<button type="button" class="btn sm" data-payslip="' + esc(c.actions) + '">Payslip</button></td>';
+            + '<button type="button" class="btn sm" data-payslip="' + esc(c.actions) + '">Payslip</button> '
+            + '<button type="button" class="pay-break-btn" data-paybreak="ded" data-payemp="' + esc(c.actions) + '">Deductions</button></td>';
+          return;
+        }
+        if (c && c.paybreak) {
+          var amt = c.v === "" || c.v == null ? 0 : c.v;
+          var sideName = c.paybreak === "earn" ? "earnings" : "deduction";
+          h += '<td class="num mono"><button type="button" class="pay-break-btn" data-paybreak="' + esc(c.paybreak)
+            + '" data-payemp="' + esc(c.empId || "") + '" aria-label="Show the ' + sideName + ' breakdown'
+            + (c.payName ? " for " + esc(c.payName) : "") + '">' + esc(amt) + "</button></td>";
+          return;
+        }
+        if (c && c.nameBreak) {
+          h += "<td><b>" + esc(c.v || "") + "</b>"
+            + '<div class="pay-break-name">'
+            + '<button type="button" class="pay-break-btn" data-paybreak="ded" data-payemp="' + esc(c.nameBreak)
+            + '" aria-label="Show the deduction breakdown' + (c.payName ? " for " + esc(c.payName) : "") + '">Deductions</button>'
+            + '<button type="button" class="pay-break-btn" data-paybreak="earn" data-payemp="' + esc(c.nameBreak)
+            + '" aria-label="Show the earnings breakdown' + (c.payName ? " for " + esc(c.payName) : "") + '">Earnings</button>'
+            + "</div></td>";
           return;
         }
         var text = c && c.v != null && c.v !== "" ? c.v : "";
@@ -1537,6 +1560,12 @@
         + (L.empNo ? " · ID No. " + esc(L.empNo) : "")
         + (ex.length ? ' <span class="pill warn">' + ex.length + " exception" + (ex.length === 1 ? "" : "s") + "</span>" : "")
         + "</summary>";
+      if (L.empId) {
+        h += '<div class="pay-break-name"><button type="button" class="pay-break-btn" data-paybreak="ded" data-payemp="'
+          + esc(L.empId) + '" aria-label="Show the deduction breakdown for ' + esc(L.name || "") + '">Deduction breakdown</button>'
+          + '<button type="button" class="pay-break-btn" data-paybreak="earn" data-payemp="' + esc(L.empId)
+          + '" aria-label="Show the earnings breakdown for ' + esc(L.name || "") + '">Earnings breakdown</button></div>';
+      }
       if (ex.length) {
         h += '<ul style="margin:6px 0 6px 18px">';
         ex.forEach(function (e) { h += "<li>" + esc(e.text) + "</li>"; });
@@ -1584,6 +1613,437 @@
     return h;
   }
 
+  /**
+   * Read-only explanation of a payroll line. Does not reprice the line.
+   * Counted rows are the figures already on the line. Their centavo sum is
+   * compared with the gross or deduction total the screen shows.
+   */
+  function cents(n) {
+    var x = Number(n);
+    if (!isFinite(x)) x = 0;
+    return Math.round(x * 100);
+  }
+  function fromCents(c) { return c / 100; }
+
+  function pesoText(n) {
+    var c = cents(n);
+    var neg = c < 0;
+    var s = (Math.abs(c) / 100).toFixed(2);
+    var parts = s.split(".");
+    parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    return (neg ? "-" : "") + "₱" + parts.join(".");
+  }
+
+  function flagOn(saved, line, key) {
+    return !!((saved && saved[key]) || (line && line[key]));
+  }
+
+  function payBreakdown(line, ctx) {
+    line = line || {};
+    ctx = ctx || {};
+    var saved = ctx.saved || {};
+    var kind = ctx.kind || "weekly";
+    var dedRows = [];
+    var earnRows = [];
+    var dedAside = [];
+    var earnAside = [];
+
+    function push(list, row) {
+      row.amount = fromCents(cents(row.amount));
+      if (row.computed != null && row.computed !== "") row.computed = fromCents(cents(row.computed));
+      else row.computed = null;
+      if (row.counts == null) row.counts = true;
+      row.override = !!row.override;
+      row.marker = row.override ? "Touched" : "computed";
+      if (row.caf == null) row.caf = "";
+      list.push(row);
+    }
+
+    var daysN = Number(line.days) || 0;
+    var daily = Number(line.daily) || 0;
+    var otHours = Number(line.ot) || 0;
+    var hourly = line.hourly != null ? Number(line.hourly) : (daily / 8);
+    var otX = ctx.otMultiplier != null ? Number(ctx.otMultiplier) : (line.otMultiplier != null ? Number(line.otMultiplier) : 1);
+    if (!isFinite(otX)) otX = 1;
+
+    push(earnRows, {
+      key: "basic",
+      label: "Basic pay",
+      amount: line.basic,
+      source: "Daily Manpower",
+      detail: daysN + " day" + (daysN === 1 ? "" : "s") + " × " + pesoText(daily)
+    });
+    (line.rows || []).forEach(function (r) {
+      var qty = Number(r && r.day) || 0;
+      if (!(qty > 0)) return;
+      var rate = r.daily != null ? Number(r.daily) : daily;
+      push(earnRows, {
+        key: "day:" + (r.date || ""),
+        label: "Basic day",
+        amount: fromCents(cents(qty * rate)),
+        source: "Daily Manpower",
+        detail: (r.date || "day") + " · " + qty + " day" + (r.site ? " · " + r.site : "") + " · part of basic pay, not added again",
+        counts: false,
+        parent: "basic"
+      });
+    });
+    push(earnRows, {
+      key: "ot",
+      label: "Overtime",
+      amount: line.otPay,
+      source: "Daily Manpower",
+      detail: otHours + " hr × " + pesoText(hourly) + (otX !== 1 ? " × " + otX : "")
+    });
+    (line.rows || []).forEach(function (r) {
+      var hrs = Number(r && r.ot) || 0;
+      if (!(hrs > 0)) return;
+      var rate = r.hourly != null ? Number(r.hourly) : hourly;
+      push(earnRows, {
+        key: "ot:" + (r.date || ""),
+        label: "Overtime hours",
+        amount: fromCents(cents(hrs * rate * otX)),
+        source: "Daily Manpower",
+        detail: (r.date || "day") + " · " + hrs + " hr" + (r.site ? " · " + r.site : "") + " · part of overtime, not added again",
+        counts: false,
+        parent: "ot"
+      });
+    });
+    var holBits = [];
+    if (Number(line.hol30)) holBits.push(line.hol30 + " × 30%");
+    if (Number(line.hol100)) holBits.push(line.hol100 + " × 100%");
+    push(earnRows, {
+      key: "hol",
+      label: "Holiday / rest-day premium",
+      amount: line.holPay,
+      source: "Daily Manpower",
+      detail: holBits.join(" + ") || "no premium day"
+    });
+    var allowanceTyped = saved.allowance != null && saved.allowance !== "";
+    push(earnRows, {
+      key: "allowance",
+      label: "Allowance",
+      amount: line.allowance,
+      source: allowanceTyped ? "typed on this run" : "employee allowance",
+      detail: allowanceTyped ? "kept with this run" : "from the 201 allowance"
+    });
+    push(earnRows, {
+      key: "incentive",
+      label: "Additional pay",
+      amount: line.incentive != null ? line.incentive : line.addl,
+      source: "typed on this run",
+      detail: "additional or incentive on this run"
+    });
+    var pending = Number(line.otPending || line.otNoForm) || 0;
+    if (pending > 0) {
+      earnAside.push({
+        key: "ot-pending",
+        label: "Overtime not in pay",
+        amount: 0,
+        counts: false,
+        source: "Daily Manpower",
+        detail: pending + " hr on Daily Manpower not included in overtime pay",
+        override: false,
+        marker: "computed",
+        caf: ""
+      });
+    }
+
+    function statRow(key, label) {
+      var touched = flagOn(saved, line, "statTouched");
+      push(dedRows, {
+        key: key,
+        label: label,
+        amount: line[key],
+        source: "contribution table",
+        override: touched,
+        detail: touched
+          ? "Touched override on this run. The amount is what this payroll uses."
+          : (line.govSkip ? String(line.govSkip) : (line.refusedContrib ? "refused on the 201 — contribution table" : "contribution table"))
+      });
+    }
+    statRow("sss", "SSS");
+    statRow("phic", "PhilHealth");
+    statRow("hdmf", kind === "semi" ? "HMIC" : "Pag-IBIG");
+    var taxTouched = flagOn(saved, line, "taxTouched");
+    push(dedRows, {
+      key: "tax",
+      label: "Withholding tax",
+      amount: line.tax,
+      source: taxTouched ? "manual override" : "contribution table",
+      override: taxTouched,
+      detail: (Number(line.tax) || 0) ? "withholding tax on this line" : "no withholding tax on this run"
+    });
+
+    var items = (line.caDetail && line.caDetail.items) || ctx.caItems || [];
+    if (!Array.isArray(items)) items = [];
+    var caTouch = flagOn(saved, line, "caTouched");
+    var caCents = cents(line.ca);
+    var itemCents = 0;
+    items.forEach(function (it) { itemCents += cents(it && it.amount); });
+    function cafLabel(caf) {
+      var s = String(caf || "").trim();
+      if (!s) return "CAF number not on this record";
+      return /^caf/i.test(s) ? s : ("CAF " + s);
+    }
+    function caDetailText(it) {
+      var caf = String((it && (it.no || it.caf || it.cafNo)) || "").trim();
+      var hits = Number(it && it.installment) || 0;
+      var bits = [];
+      bits.push(cafLabel(caf));
+      if (it && it.id) bits.push(String(it.id));
+      if (hits > 0) bits.push(hits + " installment" + (hits === 1 ? "" : "s") + " this period");
+      if (it && it.balanceBefore != null && it.balanceBefore !== "") bits.push("before " + pesoText(it.balanceBefore));
+      if (it && it.balanceAfter != null && it.balanceAfter !== "") bits.push("remaining " + pesoText(it.balanceAfter));
+      return bits.join(" · ");
+    }
+    function caChild(it, counts, idx) {
+      var caf = String((it && (it.no || it.caf || it.cafNo)) || "").trim();
+      push(dedRows, {
+        key: "ca:" + (it && it.id ? it.id : (caf || "row")) + ":" + idx,
+        label: "Cash advance",
+        amount: it ? it.amount : 0,
+        source: "CA record",
+        sourceId: (it && it.id) || "",
+        caf: caf,
+        balance: it ? it.balanceAfter : null,
+        balanceBefore: it ? it.balanceBefore : null,
+        override: caTouch,
+        computed: caTouch ? (it ? it.amount : 0) : null,
+        counts: counts,
+        detail: caDetailText(it) + (counts ? "" : " · schedule for this record, not added again")
+      });
+    }
+    if (items.length && itemCents === caCents) {
+      items.forEach(function (it, i) { caChild(it, true, i); });
+    } else if (items.length) {
+      var cafList = items.map(function (it) { return String((it && (it.no || it.caf || it.cafNo)) || "").trim(); }).filter(Boolean);
+      push(dedRows, {
+        key: "ca",
+        label: "Cash advance",
+        amount: line.ca,
+        source: "CA record",
+        override: caTouch,
+        computed: fromCents(itemCents),
+        caf: cafList.join(", "),
+        detail: (caTouch ? "Touched override. " : "") + "Cash advance records add up to " + pesoText(fromCents(itemCents)) + "."
+      });
+      items.forEach(function (it, i) { caChild(it, false, i); });
+    } else {
+      push(dedRows, {
+        key: "ca",
+        label: "Cash advance",
+        amount: line.ca,
+        source: caTouch ? "manual override" : "CA record",
+        override: caTouch,
+        computed: caTouch ? 0 : null,
+        detail: caTouch ? "Touched override. No cash advance record on this line." : "no cash advance this period"
+      });
+    }
+
+    function loanRow(key, label) {
+      var touched = flagOn(saved, line, key + "Touched");
+      var rec = line[key + "Recur"] || null;
+      var bag = ctx.emp && ctx.emp.recur && ctx.emp.recur[key];
+      var scheduled = null;
+      if (touched) {
+        var srcBag = rec || bag;
+        if (srcBag) {
+          var amt = Number(srcBag.amount) || 0;
+          var bal = srcBag.balanceBefore != null ? Number(srcBag.balanceBefore)
+            : (srcBag.balance == null || srcBag.balance === "" ? amt : Number(srcBag.balance));
+          scheduled = (!(bal > 0) || !(amt > 0)) ? 0 : Math.min(amt, bal);
+        }
+      }
+      var left = rec && rec.balanceAfter != null ? rec.balanceAfter
+        : (bag && bag.balance != null && bag.balance !== "" ? bag.balance : null);
+      push(dedRows, {
+        key: key,
+        label: label,
+        amount: line[key],
+        source: "recurring deduction record",
+        override: touched,
+        computed: scheduled,
+        balance: left,
+        detail: left != null && left !== "" ? ("remaining " + pesoText(left)) : "recurring loan"
+      });
+    }
+    loanRow("sssLoan", "SSS loan");
+    loanRow("hdmfLoan", "Pag-IBIG loan");
+
+    var uniTouch = flagOn(saved, line, "uniformTouched");
+    var uni = line.uniformRecur || (ctx.emp && ctx.emp.recur && ctx.emp.recur.uniform) || null;
+    var uniLeft = uni && (uni.balanceAfter != null ? uni.balanceAfter : uni.balance);
+    var uniScheduled = null;
+    if (uniTouch && uni) {
+      var uAmt = Number(uni.amount) || 0;
+      var uBal = uni.balanceBefore != null ? Number(uni.balanceBefore)
+        : (uni.balance == null || uni.balance === "" ? uAmt : Number(uni.balance));
+      uniScheduled = (!(uBal > 0) || !(uAmt > 0)) ? 0 : Math.min(uAmt, uBal);
+    }
+    push(dedRows, {
+      key: "uniform",
+      label: "Uniform",
+      amount: line.uniform,
+      source: "recurring deduction record",
+      override: uniTouch,
+      computed: uniScheduled,
+      balance: uniLeft,
+      detail: uniLeft != null && uniLeft !== "" ? ("remaining " + pesoText(uniLeft)) : "uniform or shoes"
+    });
+
+    var recur = (ctx.emp && ctx.emp.recur) || {};
+    Object.keys(recur).forEach(function (key) {
+      if (key === "uniform" || key === "sssLoan" || key === "hdmfLoan") return;
+      var bag = recur[key];
+      if (!bag || typeof bag !== "object") return;
+      var amount = Number(bag.amount) || 0;
+      if (!(amount > 0)) return;
+      dedAside.push({
+        key: "recur:" + key,
+        label: key,
+        amount: fromCents(cents(amount)),
+        counts: false,
+        source: "recurring deduction record",
+        detail: "other recurring deduction · not in this deduction total"
+          + (bag.balance != null && bag.balance !== "" ? " · balance " + pesoText(bag.balance) : ""),
+        override: false,
+        marker: "computed",
+        caf: ""
+      });
+    });
+
+    var lateTouch = flagOn(saved, line, "lateTouched");
+    var parts = Array.isArray(line.lateParts) ? line.lateParts : [];
+    var mins = line.lateMin != null && line.lateMin !== "" ? Number(line.lateMin) || 0 : 0;
+    if (!mins) parts.forEach(function (p) { mins += Number(p && p.minutes) || 0; });
+    var partCents = 0;
+    var hasParts = parts.length > 0;
+    parts.forEach(function (p) { partCents += cents(p && p.amount); });
+    push(dedRows, {
+      key: "late",
+      label: "Late / undertime",
+      amount: line.late,
+      minutes: mins,
+      source: "attendance",
+      override: lateTouch,
+      computed: hasParts ? fromCents(partCents) : (lateTouch ? null : null),
+      detail: mins + " min from attendance"
+        + (lateTouch ? " · Touched override. The amount is what this payroll uses." : "")
+    });
+    parts.forEach(function (p, i) {
+      var under = p && String(p.kind || "").indexOf("under") === 0;
+      push(dedRows, {
+        key: "late:" + (p && p.date ? p.date : i) + ":" + (p && p.kind || ""),
+        label: under ? "Undertime" : "Late",
+        amount: p ? p.amount : 0,
+        minutes: p ? p.minutes : 0,
+        source: "attendance",
+        counts: false,
+        parent: "late",
+        detail: ((p && p.date) || "day") + " · " + (Number(p && p.minutes) || 0) + " min · part of late / undertime, not added again"
+      });
+    });
+
+    (line.rows || []).forEach(function (r) {
+      if (!r || String(r.s || "") !== "Absent") return;
+      dedAside.push({
+        key: "absent:" + (r.date || ""),
+        label: "Absence",
+        amount: 0,
+        counts: false,
+        source: "attendance",
+        detail: (r.date || "day")
+          + (r.reason ? " · " + r.reason : "")
+          + " · day not credited · not a peso deduction on this total",
+        override: false,
+        marker: "computed",
+        caf: ""
+      });
+    });
+
+    function rollup(rows, aside, displayed) {
+      var sumC = 0;
+      rows.forEach(function (r) { if (r.counts !== false) sumC += cents(r.amount); });
+      var totalC = cents(displayed);
+      var diffC = totalC - sumC;
+      return {
+        total: fromCents(totalC),
+        sum: fromCents(sumC),
+        ok: diffC === 0,
+        diff: fromCents(diffC),
+        rows: rows,
+        aside: aside
+      };
+    }
+
+    return {
+      empId: line.empId || "",
+      name: line.name || "",
+      deductions: rollup(dedRows, dedAside, line.ded),
+      earnings: rollup(earnRows, earnAside, line.gross)
+    };
+  }
+
+  function breakRowHtml(r) {
+    var marker = r.override
+      ? '<span class="pill warn">Touched</span>'
+      : '<span class="pill mut">computed</span>';
+    var differ = r.computed != null && cents(r.computed) !== cents(r.amount);
+    var detail = esc(r.detail || "");
+    if (differ) detail += (detail ? "<br>" : "") + "Computed " + esc(pesoText(r.computed));
+    var item = (r.counts === false ? '<span class="lbl">↳ </span>' : "") + esc(r.label || "");
+    if (r.caf) {
+      var cafShown = /^caf/i.test(r.caf) ? r.caf : ("CAF " + r.caf);
+      item += '<div class="mono">' + esc(cafShown) + "</div>";
+    }
+    var src = esc(r.source || "");
+    if (r.sourceId) src += '<div class="mono">' + esc(r.sourceId) + "</div>";
+    var amount = r.counts === false && !cents(r.amount) ? "—" : esc(pesoText(r.amount));
+    return '<tr class="' + (r.counts === false ? "pay-break-part" : "pay-break-count") + (differ ? " pay-break-diff" : "") + '">'
+      + "<td>" + item + "</td>"
+      + "<td>" + detail + "</td>"
+      + "<td>" + src + "</td>"
+      + "<td>" + marker + (differ ? ' <span class="pill warn">check</span>' : "") + "</td>"
+      + '<td class="num mono">' + amount + "</td></tr>";
+  }
+
+  function payBreakdownHtml(pack, opts) {
+    pack = pack || {};
+    opts = opts || {};
+    var dedOpen = opts.dedOpen !== false;
+    var earnOpen = !!opts.earnOpen;
+    function section(block, id, title, open) {
+      block = block || { total: 0, sum: 0, ok: true, diff: 0, rows: [], aside: [] };
+      var h = '<details class="pay-break-live" id="pay-break-' + id + '"' + (open ? " open" : "") + ">"
+        + "<summary><b>" + esc(title) + "</b> <span class=\"mono\">" + esc(pesoText(block.total)) + "</span>"
+        + (block.ok ? "" : ' <span class="pill crit">Does not add up</span>')
+        + "</summary>";
+      if (!block.ok) {
+        h += '<div class="pay-break-warn" role="alert"><b>These lines do not add up to the total on the payroll.</b> '
+          + "The lines that count add up to " + esc(pesoText(block.sum))
+          + ". The payroll shows " + esc(pesoText(block.total))
+          + ". Difference " + esc(pesoText(block.diff)) + ".</div>";
+      }
+      h += '<p class="lbl" style="text-transform:none;letter-spacing:0;margin:6px 0">Indented lines explain the total above them. They are not added a second time. '
+        + "Touched means a manual override on this run. Computed means the payroll filled it.</p>";
+      h += '<div class="tw pay-break-table"><table><thead><tr>'
+        + "<th>Item</th><th>Detail</th><th>Source</th><th>Marker</th><th class=\"num\">Amount</th>"
+        + "</tr></thead><tbody>";
+      (block.rows || []).forEach(function (r) { h += breakRowHtml(r); });
+      (block.aside || []).forEach(function (r) { h += breakRowHtml(r); });
+      if (!(block.rows || []).length && !(block.aside || []).length) {
+        h += '<tr><td colspan="5">Nothing on this line.</td></tr>';
+      }
+      h += '</tbody><tfoot><tr><td colspan="4"><b>Lines that count</b></td><td class="num mono"><b>'
+        + esc(pesoText(block.sum)) + "</b></td></tr>"
+        + '<tr><td colspan="4"><b>Total on the payroll</b></td><td class="num mono"><b>'
+        + esc(pesoText(block.total)) + "</b></td></tr></tfoot></table></div></details>";
+      return h;
+    }
+    return section(pack.deductions, "ded", "Deductions", dedOpen)
+      + section(pack.earnings, "earn", "Earnings", earnOpen);
+  }
+
   root.hrPaySheet = {
     version: "2026-10-29a",
     WEEKLY_SITES: WEEKLY_SITES,
@@ -1607,6 +2067,8 @@
     recurTake: recurTake,
     leaveDayCredit: leaveDayCredit,
     decorateLine: decorateLine,
+    payBreakdown: payBreakdown,
+    payBreakdownHtml: payBreakdownHtml,
     openExceptions: openExceptions,
     auditRows: auditRows,
     workbook: workbook,

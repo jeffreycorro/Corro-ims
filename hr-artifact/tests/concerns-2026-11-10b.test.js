@@ -82,7 +82,7 @@ describe("applicant profile, interview details, and files", () => {
   const recruit = fs.readFileSync(path.join(__dirname, "../public/hr-recruit.js"), "utf8");
 
   it("is build 2026-11-10b", () => {
-    assert.match(html, /const BUILD = "2026-11-12a"/);
+    assert.match(html, /const BUILD = "2026-11-12b"/);
   });
 
   it("keeps Open working after the interview date list is redrawn", () => {
