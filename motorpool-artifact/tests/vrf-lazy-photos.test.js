@@ -97,7 +97,7 @@ describe("Approvals renders before any picture fetch", () => {
     assert.match(painted, /el\("button","btn","Reject"\)/);
     assert.doesNotMatch(painted, /listPhotos|mountLazyGallery|S\.db\.photoMeta|signedUrl|createSignedUrl/);
     assert.ok(body.indexOf("document.body.appendChild(m)") < body.indexOf("mountLazyGallery(pgal"));
-    assert.match(html, /var BUILD = "2026-11-05 f"/);
+    assert.match(html, /var BUILD = "2026-11-12 a"/);
   });
 
   it("opens a VRF sheet without fetching pictures, and prints only when asked", () => {
@@ -115,7 +115,7 @@ describe("Approvals renders before any picture fetch", () => {
     assert.doesNotMatch(painted, /mountLazyGallery/);
     assert.match(body, /if\(lazyGal\)/);
     assert.match(body, /mountLazyGallery\(lazyGal/);
-    assert.match(body, /eager:true/);
+    assert.doesNotMatch(body, /eager:\s*true/);
     assert.equal((body.match(/listPhotosMany/g) || []).length, 0);
   });
 });

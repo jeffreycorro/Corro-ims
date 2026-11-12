@@ -29,8 +29,8 @@ function loadHelpers() {
 describe("liquidation attachments stay off the request list", () => {
   const api = loadHelpers();
 
-  it("is build 2026-11-05 f and does not move the write floor", () => {
-    assert.match(html, /var BUILD = "2026-11-05 f"/);
+  it("is build 2026-11-12 a and does not move the write floor", () => {
+    assert.match(html, /var BUILD = "2026-11-12 a"/);
     assert.match(issue, /const MIN_WRITE_BUILD = "2026-10-06 a"/);
   });
 

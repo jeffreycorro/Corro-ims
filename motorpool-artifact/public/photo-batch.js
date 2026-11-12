@@ -119,6 +119,50 @@
     return Math.round(waves * (rtt * trips + transfer));
   }
 
+  /* Reads (shrink a chosen file, fetch a thumb) can overlap. A rejection is
+     recorded on that item so one bad file does not cancel the rest. */
+  function mapLimit(items, limit, fn) {
+    var list = Array.isArray(items) ? items : [];
+    var cap = Math.max(1, limit | 0);
+    var results = new Array(list.length);
+    var next = 0;
+    var active = 0;
+    return new Promise(function (resolve) {
+      if (!list.length) {
+        resolve(results);
+        return;
+      }
+      function pump() {
+        if (next >= list.length && active === 0) {
+          resolve(results);
+          return;
+        }
+        while (active < cap && next < list.length) {
+          (function (idx) {
+            active++;
+            Promise.resolve()
+              .then(function () {
+                return fn(list[idx], idx);
+              })
+              .then(
+                function (value) {
+                  results[idx] = { ok: true, value: value };
+                },
+                function (error) {
+                  results[idx] = { ok: false, error: error };
+                }
+              )
+              .then(function () {
+                active--;
+                pump();
+              });
+          })(next++);
+        }
+      }
+      pump();
+    });
+  }
+
   return {
     PHOTO_ID: PHOTO_ID,
     PHOTO_FIT: PHOTO_FIT,
@@ -128,5 +172,6 @@
     photoDataQuery: photoDataQuery,
     planPhotoBatches: planPhotoBatches,
     estimateAttachMs: estimateAttachMs,
+    mapLimit: mapLimit,
   };
 });

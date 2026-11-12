@@ -447,7 +447,7 @@ var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
    This label is inside the page function. The shim reads window.BUILD when it
    sends a save. Without that copy every save goes out with an empty build and
    the server answers "Reload the page". */
-var BUILD = "2026-11-05 f";
+var BUILD = "2026-11-12 a";
 try { window.BUILD = BUILD; } catch (e) {}
 var DAY = 86400000, MO = 30.44;
 
@@ -5360,21 +5360,85 @@ function prepareLocalMedia(file){
       mime:(file&&file.type)||"video/mp4"};
   });
 }
+/* Shrink or read several chosen files at once, then save them one by one
+   so the attachment numbers stay in order. */
+async function runAttachBatch(files, read, write, onStep){
+  var list=Array.prototype.slice.call(files||[]);
+  var prepared;
+  if(window.PhotoBatch&&typeof PhotoBatch.mapLimit==="function"){
+    prepared=await PhotoBatch.mapLimit(list, 3, read);
+  }else{
+    prepared=[];
+    for(var i=0;i<list.length;i++){
+      try{ prepared.push({ok:true, value:await read(list[i], i)}); }
+      catch(err){ prepared.push({ok:false, error:err}); }
+    }
+  }
+  var ok=0, failed=0, failMsg="";
+  for(var j=0;j<prepared.length;j++){
+    if(onStep) onStep(j, list.length);
+    var slot=prepared[j];
+    if(!slot||!slot.ok){
+      failed++;
+      var err=slot&&slot.error;
+      failMsg=(list[j]&&list[j].name?list[j].name+": ":"")+(err&&err.message||"could not read the file");
+      continue;
+    }
+    try{
+      await write(list[j], slot.value);
+      ok++;
+    }catch(e){
+      failed++;
+      failMsg=(list[j]&&list[j].name?list[j].name+": ":"")+(e&&e.message||"could not attach");
+    }
+  }
+  return {ok:ok, failed:failed, failMsg:failMsg};
+}
 function mediaThumb(x,alt){
   if(isVideoAttachment(x)){
     var v=document.createElement("video");
-    v.src=x.data||"";
+    var vsrc=(x&&x.data)||"";
+    if(!vsrc&&S.db&&x&&x.id) vsrc=photoFileUrl(x.id,"full");
+    v.src=vsrc;
     v.controls=true;
     v.playsInline=true;
     v.setAttribute("playsinline","");
     v.preload="metadata";
     v.setAttribute("aria-label",alt||x.caption||"video");
+    v.addEventListener("error",function(){
+      var note=el("div","hint","Video failed to load.");
+      var b=el("button","btn sm","Retry");
+      b.addEventListener("click",function(ev){
+        ev.preventDefault();
+        ev.stopPropagation();
+        v.src=vsrc+(String(vsrc).indexOf("?")>=0?"&":"?")+"r="+Date.now();
+      });
+      var box=el("div"); box.appendChild(note); box.appendChild(b);
+      v.replaceWith(box);
+    });
     return v;
   }
   var im=document.createElement("img");
-  im.src=x.data||"";
-  im.alt=alt||x.caption||"photo";
-  im.addEventListener("click",function(){ lightbox(x.data); });
+  var src=(x&&x.data)||"";
+  if(!src&&S.db&&x&&x.id) src=photoFileUrl(x.id,"thumb");
+  im.src=src;
+  im.alt=alt||(x&&x.caption)||"photo";
+  im.setAttribute("loading","lazy");
+  im.setAttribute("decoding","async");
+  im.addEventListener("error",function(){
+    var fail=el("div","hint","Picture failed");
+    var b=el("button","btn sm","Retry");
+    b.addEventListener("click",function(ev){
+      ev.preventDefault();
+      ev.stopPropagation();
+      if(!src) return;
+      im.removeAttribute("src");
+      im.src=src+(String(src).indexOf("?")>=0?"&":"?")+"r="+Date.now();
+    });
+    var box=el("div"); box.appendChild(fail); box.appendChild(b);
+    if(im.isConnected) im.replaceWith(box);
+  });
+  im.addEventListener("click",function(){ openPhotoFull(x); });
   return im;
 }
 function photoKey(vrf,n){ return "vrf-"+String(vrf).replace(/[^A-Za-z0-9_.~:@+-]/g,"_")+"__"+n; }
@@ -5483,21 +5547,21 @@ async function listPhotos(vrf){
   }
 }
 async function listPhotosMany(owners){
-  var lists=[];
-  var seen={};
-  for(var i=0;i<(owners||[]).length;i++){
-    var o=String(owners[i]||"");
-    if(!o||seen[o]) continue;
+  var seen={}, jobs=[];
+  (owners||[]).forEach(function(o){
+    o=String(o||"");
+    if(!o||seen[o]) return;
     seen[o]=1;
-    lists.push(await listPhotos(o));
-  }
-  return mergePhotoLists(lists);
+    jobs.push(listPhotos(o));
+  });
+  return mergePhotoLists(await Promise.all(jobs));
 }
-/* Approvals still loads two thumbnails at a time, and only once a cell is
-   on screen. Opening a VRF and printing it do not use that queue: they ask
-   for the whole form in a few photoData batches (small thumbs, or a
-   print-sized JPEG). A hung get must release its slot. */
+/* Approvals still loads two full documents at a time, and only once a cell
+   is on screen. A gallery thumbnail is a separate cached GET, started when
+   that cell is visible. Print still asks for fitted JPEGs in a few batches.
+   A hung get must release its slot. */
 var PHOTO_FETCH_LIMIT=2;
+var PHOTO_BATCH_LIMIT=4;
 var PHOTO_GET_MS=20000;
 var PHOTO_THUMB_PX=160;
 var photoDocCache={};
@@ -5567,7 +5631,10 @@ async function listPhotoMeta(owner){
     var remote=(row&&row.docs||[]).map(photoMetaOf).filter(Boolean);
     return applyStoredThumbs(mergePhotoLists([remote, meta]));
   }catch(e){
-    return applyStoredThumbs(meta);
+    /* A failed lookup with nothing on this device must not look like an
+       empty gallery. The caller shows the error and a retry. */
+    if(meta.length) return applyStoredThumbs(meta);
+    throw e;
   }
 }
 async function listPhotoMetaMany(owners){
@@ -5700,7 +5767,7 @@ function loadPhotoDocs(items, fit){
       else pump();
     }
     function pump(){
-      while(active<2&&next<chunks.length){
+      while(active<PHOTO_BATCH_LIMIT&&next<chunks.length){
         active++;
         startPhotoChunk(chunks[next++], fit).then(done, done);
       }
@@ -5747,7 +5814,8 @@ function loadPhotoForThumb(id){
   return p;
 }
 function whenVisible(node, fn){
-  if(!node||typeof IntersectionObserver!=="function") return;
+  if(!node||typeof fn!=="function") return;
+  if(typeof IntersectionObserver!=="function"){ fn(); return; }
   var io=new IntersectionObserver(function(entries){
     for(var i=0;i<entries.length;i++){
       if(!entries[i].isIntersecting) continue;
@@ -5769,6 +5837,46 @@ function thumbSrcFor(rec){
   var url=String(rec.url||"");
   if(url && /(?:width|height|transform|resize)=/i.test(url)) return url;
   return "";
+}
+/* A Drive or Photos link stored without image bytes. Showing it as a broken
+   picture made the file look missing. */
+function isStoredLink(x){
+  if(!x||x.kind==="link") return false;
+  var u=String(x.url||x.link||"");
+  if(!/^https?:\/\//i.test(u)) return false;
+  if(x.bytes||x.thumb) return false;
+  if(/^data:image\//i.test(String(x.data||""))) return false;
+  return true;
+}
+function photoFileUrl(id, fit){
+  id=String(id||"");
+  if(!/^vrf-[A-Za-z0-9_.~:@+-]+__\d+$/.test(id)) return "";
+  var which=fit==="full"?"full":(fit==="print"?"print":"thumb");
+  return "/.netlify/functions/photo?id="+encodeURIComponent(id)+"&fit="+which;
+}
+function financeFileUrl(vrf, attachmentId, fit){
+  vrf=String(vrf==null?"":vrf).trim();
+  attachmentId=String(attachmentId==null?"":attachmentId).trim();
+  if(!vrf||!attachmentId) return "";
+  var which=fit==="full"?"full":"thumb";
+  return "/.netlify/functions/photo?vrf="+encodeURIComponent(vrf)+
+    "&finance="+encodeURIComponent(attachmentId)+"&fit="+which;
+}
+function fetchAttachment(url){
+  var ctrl=typeof AbortController==="function"?new AbortController():null;
+  var timer=setTimeout(function(){ if(ctrl) ctrl.abort(); }, PHOTO_GET_MS);
+  return fetch(url,{credentials:"include",signal:ctrl?ctrl.signal:undefined}).then(function(res){
+    clearTimeout(timer);
+    if(!res.ok){
+      var err=new Error(res.status===404?"That attachment is not in the file store.":"The attachment did not load.");
+      err.status=res.status;
+      throw err;
+    }
+    return res.blob();
+  },function(err){
+    clearTimeout(timer);
+    throw err;
+  });
 }
 function downscaleDataUrl(dataUrl, maxPx){
   return new Promise(function(resolve){
@@ -5816,9 +5924,48 @@ function placeThumbImg(ph, x, src){
   im.setAttribute("loading","lazy");
   im.setAttribute("decoding","async");
   im.alt=(x&&x.caption)||"photo";
+  im.addEventListener("error",function(){
+    if(!im.isConnected) return;
+    var again=el("div","photo-ph");
+    im.replaceWith(again);
+    paintPhotoFailure(again, function(){ paintLazyThumb(again, x); });
+  });
   im.src=src;
   if(ph.parentNode) ph.replaceWith(im);
   return im;
+}
+/* The cell stays a placeholder until the fitted file arrives. A timeout or
+   a failed response is a retry, not an empty box. */
+function placeRemoteThumb(ph, x, url){
+  if(!ph) return Promise.resolve(ph);
+  ph.textContent="Loading picture…";
+  var im=document.createElement("img");
+  im.alt=(x&&x.caption)||"photo";
+  im.setAttribute("decoding","async");
+  im.style.cssText="position:absolute;width:1px;height:1px;opacity:0";
+  ph.appendChild(im);
+  var settled=false;
+  function fail(){
+    if(settled) return;
+    settled=true;
+    clearTimeout(timer);
+    if(!ph.isConnected) return;
+    paintPhotoFailure(ph, function(){
+      var next=url+(String(url).indexOf("r=")>=0?"":"&r="+Date.now());
+      placeRemoteThumb(ph, x, next);
+    });
+  }
+  var timer=setTimeout(fail, PHOTO_GET_MS);
+  im.addEventListener("load",function(){
+    if(settled) return;
+    settled=true;
+    clearTimeout(timer);
+    im.style.cssText="";
+    if(ph.isConnected&&ph.parentNode) ph.replaceWith(im);
+  });
+  im.addEventListener("error",fail);
+  im.src=url;
+  return Promise.resolve(ph);
 }
 function paintLazyThumb(ph, x){
   var preset=thumbSrcFor(x);
@@ -5827,8 +5974,38 @@ function paintLazyThumb(ph, x){
     ph.textContent="Video — tap to play";
     return Promise.resolve(ph);
   }
-  ph.textContent="Photo";
-  return loadPhotoForThumb(x&&x.id).then(function(doc){
+  var id=x&&x.id;
+  var cached=id?thumbCacheGet(id):"";
+  if(cached) return Promise.resolve(placeThumbImg(ph, x, cached));
+  if(id&&photoDocCache[id]&&photoDocCache[id].data){
+    ph.textContent="Loading picture…";
+    return loadPhotoForThumb(id).then(function(doc){
+      if(!ph.isConnected) return ph;
+      var ready=(doc&&doc.thumb)||"";
+      if(ready) return placeThumbImg(ph, x, ready);
+      if(!doc||!doc.data){
+        paintPhotoFailure(ph, function(){ paintLazyThumb(ph, x); });
+        return ph;
+      }
+      return downscaleDataUrl(doc.data, PHOTO_THUMB_PX).then(function(thumb){
+        if(!ph.isConnected) return ph;
+        if(!thumb){
+          paintPhotoFailure(ph, function(){ paintLazyThumb(ph, x); });
+          return ph;
+        }
+        thumbCachePut(id, thumb);
+        if(x) x.thumb=thumb;
+        return placeThumbImg(ph, x, thumb);
+      });
+    }).catch(function(){
+      if(ph.isConnected) paintPhotoFailure(ph, function(){ paintLazyThumb(ph, x); });
+      return ph;
+    });
+  }
+  var remote=S.db&&id?photoFileUrl(id,"thumb"):"";
+  if(remote) return placeRemoteThumb(ph, x, remote);
+  ph.textContent="Loading picture…";
+  return loadPhotoForThumb(id).then(function(doc){
     if(!ph.isConnected) return ph;
     var ready=(doc&&doc.thumb)||thumbSrcFor(x)||"";
     if(ready) return placeThumbImg(ph, x, ready);
@@ -5846,7 +6023,7 @@ function paintLazyThumb(ph, x){
         paintPhotoFailure(ph, function(){ paintLazyThumb(ph, x); });
         return ph;
       }
-      thumbCachePut(x.id, thumb);
+      thumbCachePut(id, thumb);
       if(x) x.thumb=thumb;
       return placeThumbImg(ph, x, thumb);
     });
@@ -5856,17 +6033,59 @@ function paintLazyThumb(ph, x){
   });
 }
 function openPhotoFull(x){
+  if(isStoredLink(x)){
+    var ext=String((x&&(x.url||x.link))||"");
+    if(ext) window.open(ext,"_blank","noopener");
+    return Promise.resolve();
+  }
+  if(isDocAttachment(x)) return openPdfAttachment(x);
+  var small=x&&/^data:image\//i.test(String(x.data||""))&&String(x.data).length<=160000;
+  if(small){
+    lightbox(x.data);
+    return Promise.resolve();
+  }
+  var fit=isVideoMeta(x)?"full":"print";
+  var remote=S.db&&x&&x.id?photoFileUrl(x.id, fit):"";
+  if(remote){
+    if(isVideoMeta(x)) lightboxVideo(remote);
+    else lightbox(remote);
+    return Promise.resolve();
+  }
   return loadPhotoDoc(x&&x.id).then(function(doc){
-    if(!doc||!doc.data){ toast("That picture is not here yet."); return; }
+    if(!doc||!doc.data){ toast("That picture did not load. Retry."); return; }
     if(isDocAttachment(x)||isDocAttachment(doc)){ openPdfAttachment(x); return; }
     if(isVideoMeta(x)||isVideoAttachment(doc)) lightboxVideo(doc.data);
     else lightbox(doc.data);
-  }).catch(function(){ toast("That picture is not here yet."); });
+  }).catch(function(){ toast("That picture did not load. Retry."); });
+}
+function openSavedBlob(blob, name){
+  var obj=URL.createObjectURL(blob);
+  var a=document.createElement("a");
+  a.href=obj;
+  a.target="_blank";
+  a.rel="noopener noreferrer";
+  if(name) a.download=name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(function(){ try{ URL.revokeObjectURL(obj); }catch(e){} }, 60000);
 }
 function openPdfAttachment(x){
+  var remote=S.db&&x&&x.id?photoFileUrl(x.id,"full"):"";
+  if(remote){
+    var name=String((x&&x.caption)||"attachment.pdf");
+    if(!/\.pdf$/i.test(name)) name+=".pdf";
+    name=name.replace(/[^\w.\- ]+/g,"_")||"attachment.pdf";
+    return fetchAttachment(remote).then(function(blob){
+      openSavedBlob(blob, name);
+    }).catch(function(){
+      toast("That PDF did not load. Retry.");
+      return Promise.reject(new Error("pdf"));
+    });
+  }
   return loadPhotoDoc(x&&x.id).then(function(doc){
     var data=(doc&&doc.data)||"";
-    if(!data){ toast("That PDF is not here yet."); return; }
+    if(!data){ toast("That PDF did not load. Retry."); return Promise.reject(new Error("pdf")); }
     var a=document.createElement("a");
     a.href=data;
     a.target="_blank";
@@ -5877,10 +6096,15 @@ function openPdfAttachment(x){
     document.body.appendChild(a);
     a.click();
     a.remove();
-  }).catch(function(){ toast("That PDF is not here yet."); });
+  }).catch(function(err){
+    if(err&&err.message==="pdf") return Promise.reject(err);
+    toast("That PDF did not load. Retry.");
+    return Promise.reject(err||new Error("pdf"));
+  });
 }
 function mountLazyCell(x, opts){
   var c=el("div","pcell");
+  if(isVideoMeta(x)) c.style.gridColumn="1 / -1";
   var ph=el("div","photo-ph");
   ph.textContent=isVideoMeta(x)?"Video — tap to play":"Photo";
   c.appendChild(ph);
@@ -5927,9 +6151,9 @@ function fillLazyGallery(pgal, owners, opts){
   listPhotoMetaMany(owners).then(function(list){
     if(!pgal.isConnected) return;
     pgal.innerHTML="";
-    var links=list.filter(function(x){ return x.kind==="link"; });
-    var docs=list.filter(function(x){ return isDocAttachment(x); });
-    var files=list.filter(function(x){ return x.kind!=="link"&&!isDocAttachment(x); });
+    var links=list.filter(function(x){ return x.kind==="link"||isStoredLink(x); });
+    var docs=list.filter(function(x){ return isDocAttachment(x)&&!isStoredLink(x); });
+    var files=list.filter(function(x){ return x.kind!=="link"&&!isDocAttachment(x)&&!isStoredLink(x); });
     if(!files.length&&!links.length&&!docs.length){
       var nb=el("div","banner warn");
       nb.innerHTML=opts.emptyHtml||"<b>No pictures on this request.</b>";
@@ -5951,7 +6175,18 @@ function fillLazyGallery(pgal, owners, opts){
         drow.style.cssText="padding:6px 0;border-bottom:1px solid var(--rule)";
         drow.appendChild(el("span","chip accent","PDF"));
         var openPdf=el("button","btn sm",x.caption||"PDF");
-        openPdf.addEventListener("click",function(){ openPdfAttachment(x); });
+        var pdfLabel=x.caption||"PDF";
+        openPdf.addEventListener("click",function(){
+          openPdf.disabled=true;
+          openPdf.textContent="Loading…";
+          Promise.resolve(openPdfAttachment(x)).then(function(){
+            openPdf.disabled=false;
+            openPdf.textContent=pdfLabel;
+          },function(){
+            openPdf.disabled=false;
+            openPdf.textContent="Failed — retry";
+          });
+        });
         drow.appendChild(openPdf);
         drow.appendChild(el("span","hint",(x.by||"—")+" · "+(x.at||"")));
         if(opts.onRemove){
@@ -5974,8 +6209,9 @@ function fillLazyGallery(pgal, owners, opts){
         row.style.cssText="padding:6px 0;border-bottom:1px solid var(--rule)";
         row.appendChild(el("span","chip accent",
           (x.linkKind==="video"?"▶ ":"")+(LINK_KINDS[x.linkKind]||"Link")));
-        var a=el("a",null,x.caption||x.url);
-        a.href=x.url; a.target="_blank"; a.rel="noopener noreferrer";
+        var href=String(x.url||x.link||"");
+        var a=el("a",null,x.caption||href);
+        a.href=href; a.target="_blank"; a.rel="noopener noreferrer";
         a.style.cssText="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
         row.appendChild(a);
         row.appendChild(el("span","hint",(x.by||"—")+" · "+(x.at||"")));
@@ -6004,8 +6240,8 @@ function fillLazyGallery(pgal, owners, opts){
   });
 }
 /* Call this only after the sheet is on the page. Names start on the next
-   turn. Approvals loads image bytes when a cell is on screen. The VRF sheet
-   passes eager so every attachment starts at once. */
+   turn. Image bytes start when that cell is on screen, unless a caller
+   still passes eager. */
 function mountLazyGallery(pgal, owners, opts){
   opts=opts||{};
   var n=photoCountMany(owners);
@@ -6019,7 +6255,6 @@ function mountLazyGallery(pgal, owners, opts){
 }
 function liquidationGalleryOpts(owner, onChange){
   return {
-    eager:true,
     emptyHtml:"<b>No liquidation attachments yet.</b> Photos and PDFs added here stay with the liquidation, separate from the original request attachments.",
     captionFallback:"liquidation attachment",
     onRemove:function(x){
@@ -6090,36 +6325,28 @@ function appendLiquidationAttachments(host, entry){
   fi.addEventListener("change",async function(){
     var files=Array.prototype.slice.call(fi.files||[]);
     if(!files.length) return;
-    var ok=0, failed=0, failMsg="";
     btn.disabled=true;
-    for(var i=0;i<files.length;i++){
-      status.textContent="Adding "+(i+1)+" of "+files.length+"…";
-      var kind=liquidationFileKind(files[i]);
-      var tooBig=liquidationFileTooLarge(files[i]);
-      if(!kind){
-        failed++;
-        failMsg="Choose a photo or a PDF. Other files can be pasted as a link below.";
-        continue;
+    var batch=await runAttachBatch(files, function(file){
+      var kind=liquidationFileKind(file);
+      var tooBig=liquidationFileTooLarge(file);
+      if(!kind) return Promise.reject(new Error("Choose a photo or a PDF. Other files can be pasted as a link below."));
+      if(tooBig) return Promise.reject(new Error(tooBig));
+      if(kind==="photo") return shrinkImage(file).then(function(sh){ return {kind:"photo", shrunk:sh}; });
+      return readFileDataURL(file).then(function(data){
+        if(!data) throw new Error("could not read the file");
+        return {kind:"doc", data:data, size:file.size||0};
+      });
+    }, function(file, med){
+      var who=by.value.trim()||signedInName();
+      var caption=cap.value.trim()||file.name;
+      if(med.kind==="photo"){
+        return addPhoto(owner,{data:med.shrunk.data,w:med.shrunk.w,h:med.shrunk.h,bytes:med.shrunk.bytes,
+          caption:caption,by:who,kind:"photo",mime:"image/jpeg",role:"liquidation"});
       }
-      if(tooBig){ failed++; failMsg=tooBig; continue; }
-      try{
-        var who=by.value.trim()||signedInName();
-        var caption=cap.value.trim()||files[i].name;
-        if(kind==="photo"){
-          var shrunk=await shrinkImage(files[i]);
-          await addPhoto(owner,{data:shrunk.data,w:shrunk.w,h:shrunk.h,bytes:shrunk.bytes,
-            caption:caption,by:who,kind:"photo",mime:"image/jpeg",role:"liquidation"});
-        }else{
-          var data=await readFileDataURL(files[i]);
-          await addPhoto(owner,{data:data,w:null,h:null,bytes:files[i].size||0,
-            caption:caption,by:who,kind:"doc",mime:"application/pdf",role:"liquidation"});
-        }
-        ok++;
-      }catch(e){
-        failed++;
-        failMsg=(e&&e.message)||"could not attach";
-      }
-    }
+      return addPhoto(owner,{data:med.data,w:null,h:null,bytes:med.size,
+        caption:caption,by:who,kind:"doc",mime:"application/pdf",role:"liquidation"});
+    }, function(i, n){ status.textContent="Adding "+(i+1)+" of "+n+"…"; });
+    var ok=batch.ok, failed=batch.failed, failMsg=batch.failMsg;
     status.textContent=failMsg||"";
     status.style.color=failed?"var(--danger)":"";
     fi.value="";
@@ -9589,9 +9816,10 @@ function prepareLiqFile(file){
   return prepareLocalMedia(file);
 }
 function liqThumb(x,alt){
-  if(x && (x.kind==="pdf" || /^data:application\/pdf/i.test(String(x.data||"")))){
-    var a=el("a","btn sm","Open PDF"); a.href=x.data; a.target="_blank"; a.rel="noopener noreferrer";
-    a.download=(alt||"receipt")+".pdf";
+  if(x && (x.kind==="pdf" || x.kind==="doc" || /^data:application\/pdf/i.test(String(x.data||"")))){
+    var a=el("button","btn sm","Open PDF");
+    a.type="button";
+    a.addEventListener("click",function(){ openPdfAttachment(x); });
     return a;
   }
   return mediaThumb(x,alt);
@@ -9615,18 +9843,12 @@ async function liqProofPanel(entry, body, reopen){
     (L.source==="liquidate-button"?" · amount taken from the Liquidate button":"")));
   bd.appendChild(el("p","hint","Proof for this VRF is the "+kind+". Every VRF is liquidated by the end of the month it was approved in."));
   var gal=el("div","pgrid"); gal.appendChild(el("div","hint","Loading…")); bd.appendChild(gal);
-  listPhotos(owner).then(function(items){
-    gal.innerHTML="";
-    var media=(items||[]).filter(function(x){ return x&&x.data; });
-    if(!media.length) gal.appendChild(el("div","hint","No "+kind+" uploaded yet."));
-    media.forEach(function(x){
-      var c=el("div","pcell"); c.appendChild(liqThumb(x,"VRF-"+no));
-      var cp=el("div","cap"); cp.appendChild(el("div",null,x.caption||kind));
-      cp.appendChild(el("div","hint",(x.by||"—")+" · "+(x.at||"")));
-      var rm=el("button","btn sm","Remove"); rm.style.marginTop="4px";
-      rm.addEventListener("click",async function(){ rm.disabled=true; await removePhoto(owner,x.id); reopen(); });
-      cp.appendChild(rm); c.appendChild(cp); gal.appendChild(c);
-    });
+  mountLazyGallery(gal, [owner], {
+    emptyHtml:"<b>No "+kind+" uploaded yet.</b>",
+    captionFallback:kind,
+    onRemove:function(x){
+      return removePhoto(owner, x.id).then(function(){ reopen(); });
+    }
   });
   function fld(l,n,h){ var x=el("div","field"); x.appendChild(el("label",null,l)); x.appendChild(n);
     if(h) x.appendChild(el("div","hint",h)); return x; }
@@ -9644,15 +9866,11 @@ async function liqProofPanel(entry, body, reopen){
     if(!files.length){ toast("Choose the "+kind+" photo or PDF."); return; }
     if(!who.value.trim()){ toast("Put your name in Liquidated by first."); return; }
     up.disabled=true; up.textContent="Uploading…";
-    var ok=0, fail="";
-    for(var i=0;i<files.length;i++){
-      try{
-        var med=await prepareLiqFile(files[i]);
-        await addPhoto(owner,{caption:cap.value.trim()||files[i].name,by:who.value.trim(),
-          data:med.data,w:med.w,h:med.h,bytes:med.bytes,kind:med.kind,mime:med.mime});
-        ok++;
-      }catch(e){ fail=(files[i].name?files[i].name+": ":"")+(e&&e.message||"could not upload"); }
-    }
+    var batch=await runAttachBatch(files, function(file){ return prepareLiqFile(file); }, function(file, med){
+      return addPhoto(owner,{caption:cap.value.trim()||file.name,by:who.value.trim(),
+        data:med.data,w:med.w,h:med.h,bytes:med.bytes,kind:med.kind,mime:med.mime});
+    });
+    var ok=batch.ok, fail=batch.failMsg;
     up.disabled=false; up.textContent="Upload proof";
     if(fail) toast(fail); else toast(ok+" file"+(ok===1?"":"s")+" uploaded.");
     if(ok) reopen();
@@ -9706,6 +9924,50 @@ async function liqProofPanel(entry, body, reopen){
       });
       (r.receipts||[]).forEach(function(x){
         finBody.appendChild(el("div",null,"Receipt "+(x.receipt_date||"")+" · "+(x.particulars||"")+" · "+peso(Number(x.amount)||0)));
+        if(!x.attachment_id) return;
+        var fileRow=el("div","row");
+        fileRow.style.cssText="gap:8px;align-items:center;margin:4px 0 8px";
+        var ph=el("div","photo-ph");
+        ph.style.cssText="width:72px;height:72px;flex:none";
+        ph.textContent="Loading…";
+        fileRow.appendChild(ph);
+        var openFile=el("a","btn sm","Open receipt file");
+        openFile.href=financeFileUrl(no, x.attachment_id, "full");
+        openFile.target="_blank";
+        openFile.rel="noopener noreferrer";
+        fileRow.appendChild(openFile);
+        finBody.appendChild(fileRow);
+        whenVisible(fileRow, function(){
+          var thumbUrl=financeFileUrl(no, x.attachment_id, "thumb");
+          fetchAttachment(thumbUrl).then(function(blob){
+            if(!ph.isConnected) return;
+            if(String(blob.type||"").indexOf("image/")!==0){
+              ph.textContent="File";
+              return;
+            }
+            var im=document.createElement("img");
+            im.alt="receipt";
+            im.style.cssText="width:72px;height:72px;object-fit:cover";
+            im.src=URL.createObjectURL(blob);
+            ph.replaceWith(im);
+          }).catch(function(){
+            if(!ph.isConnected) return;
+            paintPhotoFailure(ph, function(){
+              ph.textContent="Loading…";
+              fetchAttachment(thumbUrl+(thumbUrl.indexOf("r=")>=0?"":"&r="+Date.now())).then(function(blob){
+                if(!ph.isConnected) return;
+                if(String(blob.type||"").indexOf("image/")!==0){ ph.textContent="File"; return; }
+                var im=document.createElement("img");
+                im.alt="receipt";
+                im.style.cssText="width:72px;height:72px;object-fit:cover";
+                im.src=URL.createObjectURL(blob);
+                ph.replaceWith(im);
+              }).catch(function(){
+                if(ph.isConnected) paintPhotoFailure(ph, function(){ ph.textContent="File"; });
+              });
+            });
+          });
+        });
       });
       (r.vouchers||[]).forEach(function(v){
         finBody.appendChild(el("div",null,"Voucher "+(v.dv_no||v.id)+" · "+(v.status||"")+" · "+peso(Number(v.amount)||0)));
@@ -12246,47 +12508,13 @@ function openTask(no){
   }
 
   function paintAtt(){
-    listPhotos(owner).then(function(items){
-      gal.innerHTML=""; links.innerHTML="";
-      var pics=items.filter(function(x){ return x.kind!=="link"; });
-      var lnk=items.filter(function(x){ return x.kind==="link"; });
-      if(!pics.length&&!lnk.length)
-        gal.appendChild(el("div","hint","Nothing attached yet."));
-      pics.forEach(function(x){
-        var c=el("div","pcell");
-        if(isVideoAttachment(x)) c.style.gridColumn="1 / -1";
-        c.appendChild(mediaThumb(x,"T-"+t.no));
-        var cp=el("div","cap");
-        cp.appendChild(el("div",null,x.caption||(isVideoAttachment(x)?"video":"photo")));
-        cp.appendChild(el("div","hint",(x.by||"—")+" · "+(x.at||"")));
-        if(!done){
-          var rm=el("button","btn sm","Remove"); rm.style.marginTop="4px";
-          rm.addEventListener("click",async function(){
-            rm.disabled=true; await removePhoto(owner,x.id);
-            paintAtt(); syncClose(); });
-          cp.appendChild(rm);
-        }
-        c.appendChild(cp); gal.appendChild(c);
-      });
-      lnk.forEach(function(x){
-        var r=el("div","row");
-        r.style.cssText="padding:6px 0;border-bottom:1px solid var(--rule)";
-        r.appendChild(el("span","chip accent",
-          (x.linkKind==="video"?"▶ ":"")+(LINK_KINDS[x.linkKind]||"Link")));
-        var a=el("a",null,x.caption||x.url); a.href=x.url; a.target="_blank";
-        a.rel="noopener noreferrer";
-        a.style.cssText="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
-        r.appendChild(a);
-        r.appendChild(el("span","hint",(x.by||"—")+" · "+(x.at||"")));
-        if(!done){
-          var rm2=el("button","btn sm","Remove");
-          rm2.addEventListener("click",async function(){
-            rm2.disabled=true; await removePhoto(owner,x.id);
-            paintAtt(); syncClose(); });
-          r.appendChild(rm2);
-        }
-        links.appendChild(r);
-      });
+    links.innerHTML="";
+    mountLazyGallery(gal, [owner], {
+      emptyHtml:"<b>Nothing attached yet.</b>",
+      captionFallback:"T-"+t.no,
+      onRemove:done?null:function(x){
+        return removePhoto(owner, x.id).then(function(){ paintAtt(); syncClose(); });
+      }
     });
   }
 
@@ -12310,17 +12538,11 @@ function openTask(no){
       if(!aby.value.trim()){ amsg.textContent="Put your name to it.";
         amsg.style.color="var(--danger)"; return; }
       apb.disabled=true; apb.textContent="Attaching…";
-      var ok=0, failMsg="";
-      for(var fi=0;fi<files.length;fi++){
-        try{
-          var med=await prepareLocalMedia(files[fi]);
-          await addPhoto(owner,{caption:acap.value.trim()||files[fi].name,by:aby.value.trim(),
-            data:med.data,w:med.w,h:med.h,bytes:med.bytes,kind:med.kind,mime:med.mime});
-          ok++;
-        }catch(e){
-          failMsg=(files[fi].name?files[fi].name+": ":"")+(e&&e.message||"could not attach");
-        }
-      }
+      var batch=await runAttachBatch(files, function(file){ return prepareLocalMedia(file); }, function(file, med){
+        return addPhoto(owner,{caption:acap.value.trim()||file.name,by:aby.value.trim(),
+          data:med.data,w:med.w,h:med.h,bytes:med.bytes,kind:med.kind,mime:med.mime});
+      });
+      var ok=batch.ok, failMsg=batch.failMsg;
       apb.disabled=false; apb.textContent="Attach from this device";
       if(!ok){
         amsg.textContent=failMsg||"Could not attach.";
@@ -14127,7 +14349,26 @@ async function openVrfPrintSheet(entry,photos,preview,edition,model){
 }
 function lightbox(src){
   var b=el("div","lightbox");
-  var im=document.createElement("img"); im.src=src; im.decoding="async"; b.appendChild(im);
+  var im=document.createElement("img"); im.decoding="async"; im.alt="attachment";
+  var note=el("div");
+  note.style.cssText="color:#fff;text-align:center;max-width:360px";
+  im.addEventListener("error",function(){
+    im.remove();
+    note.textContent="";
+    note.appendChild(el("div",null,"That picture did not load."));
+    var retry=el("button","btn","Retry");
+    retry.style.marginTop="12px";
+    retry.addEventListener("click",function(ev){
+      ev.preventDefault();
+      ev.stopPropagation();
+      b.remove();
+      lightbox(src+(String(src).indexOf("?")>=0?"&":"?")+"r="+Date.now());
+    });
+    note.appendChild(retry);
+    if(!note.isConnected) b.appendChild(note);
+  });
+  im.src=src;
+  b.appendChild(im);
   b.addEventListener("click",function(){ b.remove(); });
   document.body.appendChild(b);
 }
@@ -14136,6 +14377,20 @@ function lightboxVideo(src){
   var v=document.createElement("video");
   v.src=src||""; v.controls=true; v.playsInline=true; v.autoplay=true;
   v.setAttribute("playsinline","");
+  v.addEventListener("error",function(){
+    var note=el("div",null,"That video did not load.");
+    note.style.cssText="color:#fff;text-align:center";
+    var retry=el("button","btn","Retry");
+    retry.style.marginTop="12px";
+    retry.addEventListener("click",function(ev){
+      ev.preventDefault();
+      ev.stopPropagation();
+      b.remove();
+      lightboxVideo((src||"")+(String(src||"").indexOf("?")>=0?"&":"?")+"r="+Date.now());
+    });
+    var box=el("div"); box.appendChild(note); box.appendChild(retry);
+    v.replaceWith(box);
+  });
   b.appendChild(v);
   b.addEventListener("click",function(){ b.remove(); });
   document.body.appendChild(b);
@@ -17111,20 +17366,15 @@ function openVrf(entry,tab){
     fi.addEventListener("change",async function(){
       var files=Array.prototype.slice.call(fi.files||[]);
       if(!files.length) return;
-      var ok=0, failed=0;
-      for(var i=0;i<files.length;i++){
-        status.textContent="Adding "+(i+1)+" of "+files.length+"…";
-        try{
-          var shrunk=await shrinkImage(files[i]);
-          await addPhoto(String(entry.vrf),{data:shrunk.data,w:shrunk.w,h:shrunk.h,bytes:shrunk.bytes,
-            caption:cap.value.trim()||files[i].name,by:by.value.trim()||signedInName(),
-            kind:"photo"});
-          if(entryIsFuel(entry)){
-            await rememberFuelPhotoFlags(entry, {kind:"photo", caption:cap.value.trim()||files[i].name, role:""});
-          }
-          ok++;
-        }catch(e){ failed++; }
-      }
+      var batch=await runAttachBatch(files, function(file){ return shrinkImage(file); }, async function(file, shrunk){
+        await addPhoto(String(entry.vrf),{data:shrunk.data,w:shrunk.w,h:shrunk.h,bytes:shrunk.bytes,
+          caption:cap.value.trim()||file.name,by:by.value.trim()||signedInName(),
+          kind:"photo"});
+        if(entryIsFuel(entry)){
+          await rememberFuelPhotoFlags(entry, {kind:"photo", caption:cap.value.trim()||file.name, role:""});
+        }
+      }, function(i, n){ status.textContent="Adding "+(i+1)+" of "+n+"…"; });
+      var ok=batch.ok, failed=batch.failed;
       status.textContent="";
       fi.value="";
       toast(ok+" photo"+(ok===1?"":"s")+" attached"+(failed?", "+failed+" could not be read":"")+".");
@@ -17148,7 +17398,6 @@ function openVrf(entry,tab){
   document.body.appendChild(m);
   if(lazyGal){
     mountLazyGallery(lazyGal, photoOwnersForOpenVrf(entry), {
-      eager:true,
       emptyHtml:"<b>Nothing attached to this VRF yet.</b>",
       captionFallback:"attachment",
       onTagGauge:entryIsFuel(entry)?function(x){
@@ -17167,7 +17416,6 @@ function openVrf(entry,tab){
   }
   if(lazyLiqGal){
     mountLazyGallery(lazyLiqGal, [liquidationPhotoOwner(entry)], {
-      eager:true,
       emptyHtml:"<b>No liquidation attachments yet.</b>",
       captionFallback:"liquidation attachment",
       onRemove:function(x){
@@ -18988,29 +19236,16 @@ function openJO(no){
     });
   }
   function paintJoFiles(){
-    listPhotos(joOwner(j.no)).then(function(items){
-      joGal.innerHTML="";
-      var media=(items||[]).filter(function(x){ return x&&x.kind!=="link"&&x.data; });
-      if(!media.length&&!(j.proofs||[]).length)
-        joGal.appendChild(el("div","hint","Nothing attached yet. A job order cannot be signed off without proof."));
-      media.forEach(function(x){
-        var c=el("div","pcell");
-        if(isVideoAttachment(x)) c.style.gridColumn="1 / -1";
-        c.appendChild(mediaThumb(x,"JO-"+j.no));
-        var cp=el("div","cap");
-        cp.appendChild(el("div",null,x.caption||(isVideoAttachment(x)?"video":"photo")));
-        cp.appendChild(el("div","hint",(x.by||"—")+" · "+(x.at||"")));
-        if(!closed){
-          var rmF=el("button","btn sm","Remove"); rmF.style.marginTop="4px";
-          rmF.addEventListener("click",async function(){
-            rmF.disabled=true;
-            await removePhoto(joOwner(j.no),x.id);
-            render(); openJO(j.no);
-          });
-          cp.appendChild(rmF);
-        }
-        c.appendChild(cp); joGal.appendChild(c);
-      });
+    mountLazyGallery(joGal, [joOwner(j.no)], {
+      emptyHtml:(j.proofs||[]).length
+        ? "<b>No file uploaded on this job order.</b> The links below still count as proof."
+        : "<b>Nothing attached yet.</b> A job order cannot be signed off without proof.",
+      captionFallback:"JO-"+j.no,
+      onRemove:closed?null:function(x){
+        return removePhoto(joOwner(j.no), x.id).then(function(){
+          render(); openJO(j.no);
+        });
+      }
     });
   }
   paintJoLinks(); paintJoFiles();
@@ -19030,17 +19265,11 @@ function openJO(no){
       if(!files.length){ toast("Choose a photo or video from this device."); return; }
       if(!who.value.trim()){ toast("Put your name in the checklist box first."); return; }
       fpb.disabled=true; fpb.textContent="Attaching…";
-      var ok=0, failMsg="";
-      for(var fi=0;fi<files.length;fi++){
-        try{
-          var med=await prepareLocalMedia(files[fi]);
-          await addPhoto(joOwner(j.no),{caption:fcap.value.trim()||files[fi].name,by:who.value.trim(),
-            data:med.data,w:med.w,h:med.h,bytes:med.bytes,kind:med.kind,mime:med.mime});
-          ok++;
-        }catch(e){
-          failMsg=(files[fi].name?files[fi].name+": ":"")+(e&&e.message||"could not attach");
-        }
-      }
+      var batch=await runAttachBatch(files, function(file){ return prepareLocalMedia(file); }, function(file, med){
+        return addPhoto(joOwner(j.no),{caption:fcap.value.trim()||file.name,by:who.value.trim(),
+          data:med.data,w:med.w,h:med.h,bytes:med.bytes,kind:med.kind,mime:med.mime});
+      });
+      var ok=batch.ok, failMsg=batch.failMsg;
       fpb.disabled=false; fpb.textContent="Attach from this device";
       if(!ok){ toast(failMsg||"Could not attach."); return; }
       if(failMsg) toast(failMsg);
@@ -19518,37 +19747,27 @@ function unitView(code){
   pb2.appendChild(pr3);
   var ust=el("div","hint"); pb2.appendChild(ust);
   ufi.addEventListener("change",async function(){
-    var files=Array.prototype.slice.call(ufi.files||[]); var ok=0;
-    for(var i=0;i<files.length;i++){
-      ust.textContent="Adding "+(i+1)+" of "+files.length+"…";
-      try{ var sh=await shrinkImage(files[i]);
-        await addPhoto(unitOwner(code),{data:sh.data,w:sh.w,h:sh.h,bytes:sh.bytes,
-          caption:ucap.value.trim()||files[i].name,by:uby.value.trim()}); ok++;
-      }catch(e){}
-    }
-    ust.textContent=""; ufi.value="";
-    toast(ok+" photo"+(ok===1?"":"s")+" added to "+code+".");
+    var files=Array.prototype.slice.call(ufi.files||[]);
+    var batch=await runAttachBatch(files, function(file){ return shrinkImage(file); }, function(file, sh){
+      return addPhoto(unitOwner(code),{data:sh.data,w:sh.w,h:sh.h,bytes:sh.bytes,
+        caption:ucap.value.trim()||file.name,by:uby.value.trim()});
+    }, function(i, n){ ust.textContent="Adding "+(i+1)+" of "+n+"…"; });
+    var ok=batch.ok;
+    ust.textContent=batch.failMsg||"";
+    ust.style.color=batch.failed?"var(--danger)":"";
+    ufi.value="";
+    toast(ok+" photo"+(ok===1?"":"s")+" added to "+code+(batch.failed?" ("+batch.failed+" failed)":"")+".");
     render();
   });
-  listPhotos(unitOwner(code)).then(function(list){
-    gal2.innerHTML="";
-    list=list.filter(function(x){ return x.data; });
-    if(!list.length){ gal2.appendChild(el("div","hint","No photographs of this unit yet.")); return; }
-    list.forEach(function(x){
-      var c2=el("div","pcell");
-      var im=document.createElement("img"); im.src=x.data; im.alt=x.caption||code;
-      im.addEventListener("click",function(){ lightbox(x.data); });
-      c2.appendChild(im);
-      var cp=el("div","cap");
-      cp.appendChild(el("div",null,x.caption||"photo"));
-      cp.appendChild(el("div","hint",(x.by||"—")+" · "+(x.at||"")));
-      var rm=el("button","btn sm","Remove"); rm.style.marginTop="4px";
-      rm.addEventListener("click",async function(){
-        rm.disabled=true; await removePhoto(unitOwner(code),x.id);
-        toast("Photo removed."); render();
+  mountLazyGallery(gal2, [unitOwner(code)], {
+    emptyHtml:"<b>No photographs of this unit yet.</b>",
+    captionFallback:code,
+    onRemove:function(x){
+      return removePhoto(unitOwner(code), x.id).then(function(){
+        toast("Photo removed.");
+        render();
       });
-      cp.appendChild(rm); c2.appendChild(cp); gal2.appendChild(c2);
-    });
+    }
   });
   pc2.appendChild(pb2); g.appendChild(pc2);
 
@@ -19590,11 +19809,33 @@ function unitView(code){
     {h:"File",get:function(d){
       var wrap=el("div"); wrap.style.cssText="display:flex;gap:4px;flex-wrap:wrap";
       if(d.hasScan){
+        var preview=document.createElement("img");
+        preview.alt=d.docType||"scan";
+        preview.setAttribute("loading","lazy");
+        preview.setAttribute("decoding","async");
+        preview.style.cssText="width:48px;height:48px;object-fit:cover;border-radius:4px;background:var(--grey-200)";
+        if(S.db) preview.src=photoFileUrl(d.id,"thumb");
+        preview.addEventListener("error",function(){
+          if(preview.isConnected) preview.replaceWith(el("span","hint","Preview failed"));
+        });
+        wrap.appendChild(preview);
         var vb=el("button","btn sm","View scan");
-        vb.addEventListener("click",async function(){
-          var all=await listPhotos(docOwner(code));
-          var hit=all.filter(function(x){ return x.id===d.id; })[0];
-          if(hit&&hit.data) lightbox(hit.data); else toast("The scan could not be found.");
+        vb.addEventListener("click",function(){
+          vb.disabled=true;
+          vb.textContent="Loading…";
+          var remote=S.db?photoFileUrl(d.id,"print"):"";
+          if(remote){
+            lightbox(remote);
+            vb.disabled=false;
+            vb.textContent="View scan";
+            return;
+          }
+          var loc=((lsGet("photos/"+docOwner(code),null)||{}).items)||[];
+          var hit=loc.filter(function(x){ return x.id===d.id; })[0];
+          if(hit&&hit.data) lightbox(hit.data);
+          else toast("The scan did not load. Retry.");
+          vb.disabled=false;
+          vb.textContent="View scan";
         });
         wrap.appendChild(vb);
       }
