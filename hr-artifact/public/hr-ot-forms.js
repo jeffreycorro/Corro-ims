@@ -131,6 +131,61 @@ function hrOtHoursOf(row) {
   return c > 0 ? c : 0;
 }
 
+/* Read rows for display and checks. A saved one-employee record may be a
+   single rows entry, or the older shape with empId on the document and no
+   rows array. This does not write the document back. */
+function hrOtRowsOf(doc) {
+  var rows = [];
+  if (!doc || typeof doc !== "object") return rows;
+  var raw = doc.rows;
+  if (raw && !Array.isArray(raw) && typeof raw === "object") raw = [raw];
+  if (Array.isArray(raw) && raw.length) {
+    raw.forEach(function (r) {
+      if (!r) return;
+      if (typeof r === "string") rows.push({ empId: r });
+      else rows.push(Object.assign({}, r));
+    });
+    if (rows.length) return rows;
+  }
+  if (!doc.empId) return rows;
+  rows.push({
+    empId: doc.empId,
+    empNo: doc.empNo || "",
+    name: doc.name || "",
+    task: doc.task || "",
+    reason: doc.reason || "",
+    description: doc.description || "",
+    expectedHours: doc.expectedHours,
+    hours: doc.hours,
+    timeFrom: doc.timeFrom || "",
+    timeTo: doc.timeTo || "",
+    noOt: !!doc.noOt,
+    noOtReason: doc.noOtReason || "",
+    noOtNote: doc.noOtNote || "",
+    notInPlanReason: doc.notInPlanReason || "",
+    proof: Array.isArray(doc.proof) ? doc.proof.slice() : []
+  });
+  return rows;
+}
+
+/* Add several roster ids as their own rows. Skips blanks and anyone already
+   on the form. Does not mutate the rows it was given. */
+function hrOtAppendEmployees(rows, ids, blank) {
+  var out = hrOtRowsOf({ rows: rows || [] });
+  var seen = {};
+  out.forEach(function (r) { if (r && r.empId) seen[r.empId] = 1; });
+  (ids || []).forEach(function (id) {
+    id = String(id || "").trim();
+    if (!id || seen[id]) return;
+    seen[id] = 1;
+    var row = Object.assign({}, blank || {});
+    row.empId = id;
+    if (Array.isArray(row.proof)) row.proof = [];
+    out.push(row);
+  });
+  return out;
+}
+
 function hrOtFindPlan(id, ctx) {
   if (!id) return null;
   var S = hrOtState(ctx);
@@ -143,7 +198,7 @@ function hrOtFindPlan(id, ctx) {
 
 function hrOtEmpOnPlan(plan, empId) {
   if (!plan || !empId) return false;
-  return (plan.rows || []).some(function (r) { return r && r.empId === empId; });
+  return hrOtRowsOf(plan).some(function (r) { return r && r.empId === empId; });
 }
 
 function hrOtPersonNotOnPlan(report, empId, ctx) {
@@ -173,7 +228,7 @@ function hrOtActiveRoster(ctx) {
 
 function hrOtPrepareReport(report, ctx) {
   var next = hrOtClone(report || {});
-  next.rows = (next.rows || []).map(function (r) { return Object.assign({}, r); });
+  next.rows = hrOtRowsOf(next).map(function (r) { return Object.assign({}, r); });
   if (next.noOt) {
     next.rows.forEach(function (r) {
       r.noOt = true;
@@ -199,9 +254,9 @@ function hrOtValidatePlan(plan, ctx) {
   if (!hrOtDay(plan.otDate)) errors.push("Choose the OT date.");
   if (!String(plan.site || "").trim()) errors.push("Choose the site.");
   if (!String(plan.deptHead || "").trim()) errors.push("Name the department head.");
-  if (!(plan.rows || []).length) errors.push("Add at least one employee from the roster.");
+  if (!hrOtRowsOf(plan).length) errors.push("Add at least one employee from the roster.");
   var seen = {};
-  (plan.rows || []).forEach(function (r, i) {
+  hrOtRowsOf(plan).forEach(function (r, i) {
     var n = i + 1;
     if (!r || !r.empId) { errors.push("Row " + n + " needs an employee from the roster."); return; }
     if (seen[r.empId]) errors.push("Row " + n + " repeats an employee. One row each.");
@@ -224,9 +279,9 @@ function hrOtValidateReport(report, ctx) {
     var whole = hrOtReasonOk(next.noOtReason, next.noOtNote);
     if (whole) errors.push("No OT for the whole plan: " + whole);
   }
-  if (!(next.rows || []).length) errors.push("Add at least one employee from the roster.");
+  if (!hrOtRowsOf(next).length) errors.push("Add at least one employee from the roster.");
   var seen = {};
-  (next.rows || []).forEach(function (r, i) {
+  hrOtRowsOf(next).forEach(function (r, i) {
     var n = i + 1;
     if (!r || !r.empId) { errors.push("Row " + n + " needs an employee from the roster."); return; }
     if (seen[r.empId]) errors.push("Row " + n + " repeats an employee. One row each.");
@@ -265,8 +320,8 @@ function hrOtDescribeChange(before, after) {
   ch("No OT reason", before.noOtReason, after.noOtReason);
   ch("No OT note", before.noOtNote, after.noOtNote);
   var bmap = {}, amap = {};
-  (before.rows || []).forEach(function (r) { if (r && r.empId) bmap[r.empId] = r; });
-  (after.rows || []).forEach(function (r) { if (r && r.empId) amap[r.empId] = r; });
+  hrOtRowsOf(before).forEach(function (r) { if (r && r.empId) bmap[r.empId] = r; });
+  hrOtRowsOf(after).forEach(function (r) { if (r && r.empId) amap[r.empId] = r; });
   Object.keys(amap).forEach(function (id) {
     if (!bmap[id]) bits.push("Added " + (amap[id].name || id));
   });
@@ -313,7 +368,7 @@ function hrOtReportRowsFor(empId, date, ctx) {
   var d = hrOtDay(date), out = [];
   hrOtReports(ctx).forEach(function (rep) {
     if (hrOtDay(rep.otDate) !== d) return;
-    (rep.rows || []).forEach(function (row) {
+    hrOtRowsOf(rep).forEach(function (row) {
       if (row && row.empId === empId) out.push({ report: rep, row: row });
     });
   });
@@ -324,7 +379,7 @@ function hrOtPlanRowsFor(empId, date, ctx) {
   var d = hrOtDay(date), out = [];
   hrOtPlans(ctx).forEach(function (plan) {
     if (hrOtDay(plan.otDate) !== d) return;
-    (plan.rows || []).forEach(function (row) {
+    hrOtRowsOf(plan).forEach(function (row) {
       if (row && row.empId === empId) out.push({ plan: plan, row: row });
     });
   });
@@ -438,7 +493,7 @@ function hrOtAuditDmDiffers(ctx) {
   hrOtReports(ctx).forEach(function (rep) {
     var date = hrOtDay(rep.otDate);
     if (!hrOtInWindow(date, ctx)) return;
-    (rep.rows || []).forEach(function (row) {
+    hrOtRowsOf(rep).forEach(function (row) {
       if (!row || !row.empId || hrOtRowIsNoOt(rep, row)) return;
       var reported = hrOtReportedHours(row.empId, date, ctx);
       if (!(reported > 0)) return;
@@ -456,7 +511,7 @@ function hrOtAuditPlanNoReport(ctx) {
   hrOtPlans(ctx).forEach(function (plan) {
     var date = hrOtDay(plan.otDate);
     if (!hrOtInWindow(date, ctx)) return;
-    (plan.rows || []).forEach(function (row) {
+    hrOtRowsOf(plan).forEach(function (row) {
       if (!row || !row.empId) return;
       if (hrOtReportRowsFor(row.empId, date, ctx).length) return;
       hrOtPush(out, seen, "miss", hrOtPerson(row.empId, row, ctx), date,
@@ -472,7 +527,7 @@ function hrOtAuditReportNoPlan(ctx) {
     var date = hrOtDay(rep.otDate);
     if (!hrOtInWindow(date, ctx)) return;
     if (!(rep.noPlan || !rep.planId)) return;
-    (rep.rows || []).forEach(function (row) {
+    hrOtRowsOf(rep).forEach(function (row) {
       if (!row || !row.empId) return;
       hrOtPush(out, seen, "noplan", hrOtPerson(row.empId, row, ctx), date,
         "Morning Report filed with no Afternoon Plan.");
@@ -486,7 +541,7 @@ function hrOtAuditHoursAfterNoOt(ctx) {
   hrOtReports(ctx).forEach(function (rep) {
     var date = hrOtDay(rep.otDate);
     if (!hrOtInWindow(date, ctx)) return;
-    (rep.rows || []).forEach(function (row) {
+    hrOtRowsOf(rep).forEach(function (row) {
       if (!row || !row.empId || !hrOtRowIsNoOt(rep, row)) return;
       var dm = hrOtDmHours(row.empId, date, ctx);
       if (!(dm > 0)) return;
@@ -542,12 +597,12 @@ function hrOtAuditNotRoster(ctx) {
       "Named on the " + where + " but not on the roster.");
   }
   hrOtPlans(ctx).forEach(function (plan) {
-    (plan.rows || []).forEach(function (row) {
+    hrOtRowsOf(plan).forEach(function (row) {
       if (row) consider(row.empId, row, hrOtDay(plan.otDate), "Afternoon Plan");
     });
   });
   hrOtReports(ctx).forEach(function (rep) {
-    (rep.rows || []).forEach(function (row) {
+    hrOtRowsOf(rep).forEach(function (row) {
       if (row) consider(row.empId, row, hrOtDay(rep.otDate), "Morning Report");
     });
   });
@@ -585,7 +640,7 @@ function hrOtAuditRestDay(ctx) {
     hrOtDmPeople(date, ctx).forEach(function (p) { if (p.hours > 0) people[p.empId] = p; });
     hrOtReports(ctx).forEach(function (rep) {
       if (hrOtDay(rep.otDate) !== date) return;
-      (rep.rows || []).forEach(function (row) {
+      hrOtRowsOf(rep).forEach(function (row) {
         if (!row || !row.empId) return;
         if (hrOtReportedHours(row.empId, date, ctx) > 0) people[row.empId] = people[row.empId] || { empId: row.empId, row: row, hours: 0 };
       });
@@ -619,7 +674,7 @@ function hrOtAuditCancelled(ctx) {
   hrOtReports(ctx).forEach(function (rep) {
     var date = hrOtDay(rep.otDate);
     if (!hrOtInWindow(date, ctx)) return;
-    (rep.rows || []).forEach(function (row) {
+    hrOtRowsOf(rep).forEach(function (row) {
       if (!row || !row.empId || !hrOtRowIsNoOt(rep, row)) return;
       var reason = hrOtRowReason(rep, row) || "no reason recorded";
       var note = hrOtRowNote(rep, row);
@@ -636,7 +691,7 @@ function hrOtAuditNotInPlan(ctx) {
     var date = hrOtDay(rep.otDate);
     if (!hrOtInWindow(date, ctx)) return;
     if (rep.noPlan || !rep.planId) return;
-    (rep.rows || []).forEach(function (row) {
+    hrOtRowsOf(rep).forEach(function (row) {
       if (!row || !row.empId) return;
       if (!hrOtPersonNotOnPlan(rep, row.empId, ctx)) return;
       hrOtPush(out, seen, "extra", hrOtPerson(row.empId, row, ctx), date,
@@ -692,11 +747,37 @@ function hrOtAuditRun(ctx) {
   });
 }
 
+/* Hours that count on the forms for one person: Morning Report hours when a
+   report row exists (No OT is zero), otherwise that person's plan hours. */
+function hrOtPersonFormHours(empId, date, ctx) {
+  var d = hrOtDay(date);
+  if (!empId) return 0;
+  var onReport = false, reported = 0;
+  hrOtReports(ctx).forEach(function (rep) {
+    if (hrOtDay(rep.otDate) !== d) return;
+    hrOtRowsOf(rep).forEach(function (row) {
+      if (!row || row.empId !== empId) return;
+      onReport = true;
+      reported += hrOtRowConfirmedHours(rep, row);
+    });
+  });
+  if (onReport) return Math.round(reported * 100) / 100;
+  var planned = 0;
+  hrOtPlans(ctx).forEach(function (plan) {
+    if (hrOtDay(plan.otDate) !== d || plan.noOt) return;
+    hrOtRowsOf(plan).forEach(function (row) {
+      if (!row || row.empId !== empId || row.noOt) return;
+      planned += hrOtHoursOf(row);
+    });
+  });
+  return Math.round(planned * 100) / 100;
+}
+
 function hrOtFormHoursOn(date, ctx) {
   var d = hrOtDay(date), seen = {}, n = 0;
   hrOtReports(ctx).forEach(function (rep) {
     if (hrOtDay(rep.otDate) !== d) return;
-    (rep.rows || []).forEach(function (row) {
+    hrOtRowsOf(rep).forEach(function (row) {
       if (!row || !row.empId) return;
       seen[row.empId] = 1;
       n += hrOtRowConfirmedHours(rep, row);
@@ -704,7 +785,7 @@ function hrOtFormHoursOn(date, ctx) {
   });
   hrOtPlans(ctx).forEach(function (plan) {
     if (hrOtDay(plan.otDate) !== d || plan.noOt) return;
-    (plan.rows || []).forEach(function (row) {
+    hrOtRowsOf(plan).forEach(function (row) {
       if (!row || !row.empId || row.noOt || seen[row.empId]) return;
       n += hrOtHoursOf(row);
     });
@@ -715,11 +796,34 @@ function hrOtFormHoursOn(date, ctx) {
 function hrOtZeroDmDays(from, to, ctx) {
   var out = [];
   hrOtDates(from, to).forEach(function (date) {
-    var formHours = hrOtFormHoursOn(date, ctx);
-    var dm = 0;
-    hrOtDmPeople(date, ctx).forEach(function (p) { dm += Number(p.hours) || 0; });
-    dm = Math.round(dm * 100) / 100;
-    if (formHours > 0 && !(dm > 0)) out.push({ date: date, formHours: formHours, dmOt: dm });
+    var ids = {};
+    hrOtReports(ctx).forEach(function (rep) {
+      if (hrOtDay(rep.otDate) !== date) return;
+      hrOtRowsOf(rep).forEach(function (row) { if (row && row.empId) ids[row.empId] = row; });
+    });
+    hrOtPlans(ctx).forEach(function (plan) {
+      if (hrOtDay(plan.otDate) !== date) return;
+      hrOtRowsOf(plan).forEach(function (row) {
+        if (row && row.empId && !ids[row.empId]) ids[row.empId] = row;
+      });
+    });
+    var people = [];
+    Object.keys(ids).forEach(function (empId) {
+      var formHours = hrOtPersonFormHours(empId, date, ctx);
+      var dm = hrOtDmHours(empId, date, ctx);
+      if (!(formHours > 0) || dm > 0) return;
+      var who = hrOtPerson(empId, ids[empId], ctx);
+      people.push({ empId: empId, name: who.name, empNo: who.empNo, formHours: formHours, dmOt: dm });
+    });
+    if (!people.length) return;
+    var formHours = 0;
+    people.forEach(function (p) { formHours += p.formHours; });
+    out.push({
+      date: date,
+      formHours: Math.round(formHours * 100) / 100,
+      dmOt: 0,
+      people: people
+    });
   });
   return out;
 }
@@ -734,14 +838,20 @@ function hrOtEsc(s) {
 function hrOtZeroDmWarningHtml(from, to, ctx) {
   var days = hrOtZeroDmDays(from, to, ctx);
   if (!days.length) return "";
-  var bits = days.map(function (d) {
-    return hrOtEsc(d.date) + " (" + hrOtEsc(String(d.formHours)) + " h on the forms, Daily Manpower OT 0)";
+  var bits = [];
+  days.forEach(function (d) {
+    (d.people || [{ name: "", formHours: d.formHours }]).forEach(function (p) {
+      var who = p.name || p.empId || "";
+      if (p.empNo) who = p.empNo + " " + who;
+      bits.push(hrOtEsc(d.date) + (who ? " " + hrOtEsc(who) : "")
+        + " (" + hrOtEsc(String(p.formHours)) + " h on the forms, Daily Manpower OT 0)");
+    });
   });
   return '<div class="note" id="pay-ot-zero-dm" style="border-left:4px solid var(--crit);background:#fde8e8;margin:0 0 12px;padding:10px 12px">'
     + "<b>Overtime on the forms, zero Daily Manpower OT.</b> "
     + "Payroll pays the Daily Manpower OT number. "
     + bits.join("; ")
-    + ". Approval is not blocked."
+    + ". Each person is listed on their own. Approval is not blocked."
     + "</div>";
 }
 

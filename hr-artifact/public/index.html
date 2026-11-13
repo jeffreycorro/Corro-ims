@@ -2173,7 +2173,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-11-12b";
+const BUILD = "2026-11-13a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -10392,6 +10392,45 @@ function dailyTally(rec){
   t.waiting=t.pending;   /* PR #40 name; same count as pending */
   return t;
 }
+/* Late headcount for the Daily Manpower report. Read only.
+   Uses the company time-in rule (after 8:15 from 8:00, after 1:15 from 1:00).
+   Undertime is not a late arrival. An excused reason is not counted.
+   Absent, leave, rest, and not-yet-arrived are not counted. Does not write
+   attendance, OT, or pay. */
+function dailyPersonIsLate(row){
+  if(!row) return false;
+  if(typeof dayCountsLate==="function" && !dayCountsLate(row)) return false;
+  if(typeof rowExcused==="function" && rowExcused(row)===true) return false;
+  const probe={
+    in: row.in!=null ? row.in : row.timeIn,
+    out: row.out!=null ? row.out : row.timeOut,
+    day: row.day!=null && String(row.day).trim()!=="" ? row.day : 1
+  };
+  if(typeof hrPaySheet!=="undefined" && hrPaySheet && typeof hrPaySheet.lateForRow==="function"){
+    const part=hrPaySheet.lateForRow(probe, 0);
+    return !!((part&&part.parts)||[]).some(p=>p && (p.kind==="late" || p.kind==="late-pm"));
+  }
+  if(typeof lateMinutesOf==="function") return lateMinutesOf(probe.in||"")>15;
+  return false;
+}
+function dailyLateHeadcount(rec){
+  const sites=[];
+  let total=0;
+  const seen={};
+  const groups=typeof dailyGroups==="function" ? dailyGroups(rec) : [];
+  groups.forEach(g=>{
+    let late=0;
+    (g.people||[]).forEach(e=>{
+      if(!e || !e.id || seen[e.id]) return;
+      seen[e.id]=1;
+      if(typeof beforeRehire==="function" && rec && beforeRehire(e, rec.date)) return;
+      const row=typeof dailyRow==="function" ? dailyRow(rec, e) : ((rec&&rec.rows||{})[e.id]||{});
+      if(dailyPersonIsLate(row)){ late++; total++; }
+    });
+    sites.push({site:g.site||"", late:late, head:(g.people||[]).length});
+  });
+  return {total:total, sites:sites};
+}
 
 function commitLeaverStrip(before, rec){
   const key=rec&&rec.id;
@@ -11207,13 +11246,72 @@ function otFormEmpOptions(sel){
     + esc((e.empNo?e.empNo+" · ":"")+(typeof flipName==="function"?flipName(e.name):e.name))
     + '</option>').join("");
 }
+function otFormRows(doc){
+  if(typeof hrOtRowsOf==="function") return hrOtRowsOf(doc);
+  return ((doc&&doc.rows)||[]).map(r=>Object.assign({}, r));
+}
+function otRowEmpField(prefix, i, empId, attr){
+  if(typeof empPicker==="function")
+    return empPicker(prefix+"-emp-"+i, empId||"", "Name or number", " "+attr);
+  return '<select '+attr+' style="min-width:180px">'+otFormEmpOptions(empId)+'</select>';
+}
+function otCrewSearchHtml(prefix){
+  return '<div id="'+prefix+'-crew">'
+    + '<div class="f"><label>Add employees</label>'
+    + '<input id="'+prefix+'-find" type="search" placeholder="Search name or employee number, then tick several" autocomplete="off"></div>'
+    + '<div id="'+prefix+'-hits" style="max-height:168px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:6px 8px"></div>'
+    + '<div class="row" style="margin-top:8px">'
+    + '<button class="btn sm pri" type="button" id="'+prefix+'-addsel">Add selected</button>'
+    + '<button class="btn sm" type="button" id="'+prefix+'-add">Add employee</button>'
+    + '<span class="lbl" id="'+prefix+'-crew-n"></span></div></div>';
+}
+function otCrewPaintHits(prefix, rows){
+  const box=$("#"+prefix+"-hits"); if(!box) return;
+  const q=($("#"+prefix+"-find")||{}).value||"";
+  const have={};
+  (rows||[]).forEach(r=>{ if(r&&r.empId) have[r.empId]=1; });
+  let people=[];
+  try{ people=otFormPeople().filter(e=>e&&e.id&&!have[e.id]); }catch(err){ people=[]; }
+  const hit=String(q).trim()
+    ? people.filter(e=>typeof empMatch==="function" ? empMatch(e, q) : true)
+    : people;
+  const shown=hit.slice(0, 60);
+  const nEl=$("#"+prefix+"-crew-n");
+  const onForm=(rows||[]).filter(r=>r&&r.empId).length;
+  if(nEl) nEl.textContent=onForm+" on this form"+(hit.length?" · "+hit.length+" not added":"");
+  if(!shown.length){
+    box.innerHTML='<div class="lbl">'+(String(q).trim()?"Nobody matches that search.":"Everyone on the roster is already on this form.")+'</div>';
+    return;
+  }
+  box.innerHTML=shown.map(e=>'<label style="display:flex;gap:8px;align-items:center;padding:2px 0">'
+    + '<input type="checkbox" data-otpick="'+esc(e.id)+'">'
+    + '<span>'+esc((e.empNo?e.empNo+" · ":"")+(typeof flipName==="function"?flipName(e.name):(e.name||"")))
+    + (e.position?" · "+esc(e.position):"")+'</span></label>').join("")
+    + (hit.length>shown.length?'<div class="lbl">'+(hit.length-shown.length)+' more — keep typing</div>':"");
+}
+function wireOtCrew(prefix, api){
+  const find=$("#"+prefix+"-find");
+  if(find) find.addEventListener("input", ()=>otCrewPaintHits(prefix, api.rows()));
+  const addSel=$("#"+prefix+"-addsel");
+  if(addSel) addSel.onclick=()=>{
+    api.read();
+    const ids=$$("#"+prefix+"-hits input[data-otpick]:checked").map(el=>el.getAttribute("data-otpick")).filter(Boolean);
+    if(!ids.length){ toast("Tick the employees to add.","err"); return; }
+    api.add(ids);
+    if(find) find.value="";
+    api.paint();
+  };
+  const add=$("#"+prefix+"-add");
+  if(add) add.onclick=()=>{ api.read(); api.addBlank(); api.paint(); };
+  otCrewPaintHits(prefix, api.rows());
+}
 function otFormSites(){
   const base=typeof dailySites==="function" ? dailySites() : [];
   return typeof hrOtSiteList==="function" ? hrOtSiteList(base) : base;
 }
 function otPlanReportState(plan){
   const date=String(plan&&plan.otDate||"").slice(0,10);
-  const rows=(plan&&plan.rows||[]).filter(r=>r&&r.empId);
+  const rows=otFormRows(plan).filter(r=>r&&r.empId);
   if(!rows.length) return "Empty";
   let missing=0, cancel=0, filed=0;
   rows.forEach(r=>{
@@ -11238,7 +11336,7 @@ function viewOtPlans(){
     + '</div>'
     + '<div class="note" style="margin-bottom:12px">File this the afternoon overtime starts, before the work begins. '
     + 'The site list is every live area (configured projects, sites already used on a daily report, and the 201 area), including Banawa. '
-    + 'Each person is one row from the roster, with employee number, task, reason, and expected hours or a time range. '
+    + 'Search the roster, tick several names, and Add selected. Each person is one row, with employee number, task, reason, and expected hours or a time range. Remove drops that row. A plan saved with one employee still opens as that one row. '
     + 'The department head and HR sign. HR can mark one person, or the whole plan, No OT. '
     + 'Edits are kept as amendments. Planned hours are not overtime by themselves. '
     + 'Only hours a Morning Report confirms are reported OT. Payroll still pays the Daily Manpower OT number.</div>';
@@ -11248,12 +11346,12 @@ function viewOtPlans(){
   }else{
     h+='<div class="tw"><table><thead><tr><th>OT date</th><th>Site</th><th>Department head</th><th>People</th><th>Expected h</th><th>Sign-off</th><th>Morning report</th><th></th></tr></thead><tbody>';
     plans.forEach(p=>{
-      const names=(p.rows||[]).map(r=>{
+      const names=otFormRows(p).map(r=>{
         const e=S.employees&&S.employees[r.empId];
         return e ? (typeof flipName==="function"?flipName(e.name):e.name) : (r.name||r.empId||"");
       }).filter(Boolean);
       let hours=0;
-      (p.rows||[]).forEach(r=>{ if(r && !r.noOt && !p.noOt && typeof hrOtHoursOf==="function") hours+=hrOtHoursOf(r); });
+      otFormRows(p).forEach(r=>{ if(r && !r.noOt && !p.noOt && typeof hrOtHoursOf==="function") hours+=hrOtHoursOf(r); });
       const st=otPlanReportState(p);
       const pill=st==="Report filed"?"ok":st==="Plan cancelled"?"mut":"warn";
       const signs=((p.deptSign&&p.deptSign.signed)?"Dept head":"Dept head open")+" · "+((p.hrSign&&p.hrSign.signed)?"HR":"HR open");
@@ -11286,7 +11384,8 @@ function openOtPlanEditor(pre){
     hrSign:{signed:false, name:((S.settings&&(S.settings.hrStaff||S.settings.hrHead))||""), at:"", by:""},
     amendments:[]
   };
-  let rows=(rec.rows||[]).map(r=>Object.assign({task:"", reason:"", expectedHours:"", timeFrom:"", timeTo:"", noOt:false}, r));
+  let rows=otFormRows(rec).map(r=>Object.assign({task:"", reason:"", expectedHours:"", timeFrom:"", timeTo:"", noOt:false}, r));
+  const planBlank={task:"", reason:"", expectedHours:"", timeFrom:"", timeTo:"", noOt:false};
   function readRows(){
     rows=$$("#otp-rows tr[data-i]").map(tr=>{
       const g=sel=>{ const el=tr.querySelector(sel); return el ? el.value : ""; };
@@ -11302,9 +11401,9 @@ function openOtPlanEditor(pre){
   }
   function paint(){
     const box=$("#otp-rows"); if(!box) return;
-    if(!rows.length){ box.innerHTML='<tr><td colspan="8"><span class="lbl">No one added yet.</span></td></tr>'; return; }
+    if(!rows.length){ box.innerHTML='<tr><td colspan="8"><span class="lbl">No one added yet. Search above and tick several names.</span></td></tr>'; otCrewPaintHits("otp", rows); return; }
     box.innerHTML=rows.map((r,i)=>'<tr data-i="'+i+'">'
-      + '<td>'+('<select data-otp-emp style="min-width:180px">'+otFormEmpOptions(r.empId)+'</select>')+'</td>'
+      + '<td>'+otRowEmpField("otp", i, r.empId, "data-otp-emp")+'</td>'
       + '<td><input data-otp-task value="'+esc(r.task||"")+'" placeholder="Task" style="width:120px"></td>'
       + '<td><input data-otp-reason value="'+esc(r.reason||"")+'" placeholder="Reason" style="width:140px"></td>'
       + '<td><input data-otp-hours type="number" step="0.5" min="0" value="'+esc(r.expectedHours!=null?r.expectedHours:"")+'" style="width:70px"></td>'
@@ -11313,6 +11412,7 @@ function openOtPlanEditor(pre){
       + '<td><label><input type="checkbox" data-otp-noot'+(r.noOt?" checked":"")+'> No OT</label></td>'
       + '<td><button type="button" class="btn sm danger" data-otp-rm="'+i+'">Remove</button></td>'
       + '</tr>').join("");
+    otCrewPaintHits("otp", rows);
   }
   const am=(rec.amendments||[]).slice().reverse().map(a=>esc((a.at||"").slice(0,16).replace("T"," "))+" · "+esc(a.by||"")+" · "+esc(a.what||"")).join("<br>");
   openModal({ title: existing?"Edit afternoon OT plan":"New afternoon OT plan", wide:true,
@@ -11326,8 +11426,9 @@ function openOtPlanEditor(pre){
       + '<div class="f" style="width:200px"><label>Department head</label><input id="otp-head" value="'+esc(rec.deptHead||"")+'"></div>'
       + '</div>'
       + '<label><input type="checkbox" id="otp-noot"'+(rec.noOt?" checked":"")+'> No OT for the whole plan</label>'
+      + '<div class="lbl">Add employee rows here. Search, tick several, then add them. Each row keeps its own task, reason, and hours. Remove drops that row.</div>'
+      + otCrewSearchHtml("otp")
       + '<div class="tw"><table><thead><tr><th>Employee</th><th>Task</th><th>Reason</th><th>Expected h</th><th>From</th><th>To</th><th>No OT</th><th></th></tr></thead><tbody id="otp-rows"></tbody></table></div>'
-      + '<button class="btn sm" type="button" id="otp-add">Add employee</button>'
       + '<div class="row">'
       + '<label><input type="checkbox" id="otp-dsign"'+((rec.deptSign&&rec.deptSign.signed)?" checked":"")+'> Department head signed</label>'
       + '<input id="otp-dsign-name" value="'+esc((rec.deptSign&&rec.deptSign.name)||rec.deptHead||"")+'" placeholder="Name">'
@@ -11339,7 +11440,17 @@ function openOtPlanEditor(pre){
       + '</div>',
     foot:'<button class="btn" type="button" id="otp-cancel">Cancel</button><button class="btn pri" type="button" id="otp-save">Save plan</button>' });
   paint();
-  $("#otp-add").onclick=()=>{ readRows(); rows.push({empId:"", task:"", reason:"", expectedHours:"", timeFrom:"", timeTo:"", noOt:false}); paint(); };
+  wireOtCrew("otp", {
+    rows:()=>rows,
+    read:readRows,
+    add:ids=>{
+      rows=typeof hrOtAppendEmployees==="function"
+        ? hrOtAppendEmployees(rows, ids, planBlank)
+        : rows.concat(ids.filter(id=>!rows.some(r=>r.empId===id)).map(id=>Object.assign({empId:id}, planBlank)));
+    },
+    addBlank:()=>{ rows.push(Object.assign({empId:""}, planBlank)); },
+    paint:paint
+  });
   $("#otp-rows").onclick=e=>{
     const btn=e.target.closest&&e.target.closest("[data-otp-rm]");
     if(!btn) return;
@@ -11396,7 +11507,7 @@ function viewOtReports(){
     + '<button class="btn" type="button" data-goto="otplan">Afternoon OT Plan</button>'
     + '</div>'
     + '<div class="note" style="margin-bottom:12px">File this the next morning. Link the Afternoon Plan, or mark the report <b>no plan</b>. '
-    + 'The OT date and the report date are stored separately. One row per employee: actual hours or a time range, what happened, and a photo or other proof. '
+    + 'The OT date and the report date are stored separately. Search and tick several employees, then Add selected. Each row has its own hours or a time range, what happened, and a photo or other proof. Remove drops that row. A report saved with one employee still opens as that one row. '
     + 'Mark one person or the whole plan No OT only with a reason: Weather, Materials/Equipment, or Other (Other needs a note). '
     + 'Someone who was not on the plan can be added only with a reason on that row. '
     + 'Confirmed hours are the reported OT. A plan’s hours do not count on their own. Payroll still pays Daily Manpower OT.</div>';
@@ -11405,12 +11516,12 @@ function viewOtReports(){
   else{
     h+='<div class="tw"><table><thead><tr><th>OT date</th><th>Report date</th><th>Plan</th><th>People</th><th>Confirmed h</th><th>No OT</th><th></th></tr></thead><tbody>';
     reps.forEach(rep=>{
-      const names=(rep.rows||[]).map(r=>{
+      const names=otFormRows(rep).map(r=>{
         const e=S.employees&&S.employees[r.empId];
         return e ? (typeof flipName==="function"?flipName(e.name):e.name) : (r.name||r.empId||"");
       }).filter(Boolean);
       let hours=0, cancelled=0;
-      (rep.rows||[]).forEach(r=>{
+      otFormRows(rep).forEach(r=>{
         if(!r) return;
         if(typeof hrOtRowIsNoOt==="function" && hrOtRowIsNoOt(rep, r)) cancelled++;
         else if(typeof hrOtRowConfirmedHours==="function") hours+=hrOtRowConfirmedHours(rep, r);
@@ -11444,7 +11555,7 @@ function openOtReportEditor(pre){
     site:(seeded&&seeded.site)||"",
     deptHead:(seeded&&seeded.deptHead)||"",
     department:(seeded&&seeded.department)||"",
-    rows:seeded ? (seeded.rows||[]).map(r=>({
+    rows:seeded ? otFormRows(seeded).map(r=>({
       empId:r.empId, empNo:r.empNo||"", name:r.name||"",
       hours:r.expectedHours||"", timeFrom:r.timeFrom||"", timeTo:r.timeTo||"",
       description:r.task ? (r.task+(r.reason?" — "+r.reason:"")) : "",
@@ -11456,7 +11567,8 @@ function openOtReportEditor(pre){
     hrSign:{signed:false, name:(S.settings&&(S.settings.hrStaff||S.settings.hrHead))||"", at:"", by:""},
     amendments:[]
   };
-  let rows=(rec.rows||[]).map(r=>Object.assign({hours:"", timeFrom:"", timeTo:"", description:"", noOt:false, noOtReason:"", noOtNote:"", notInPlanReason:"", proof:[]}, r));
+  let rows=otFormRows(rec).map(r=>Object.assign({hours:"", timeFrom:"", timeTo:"", description:"", noOt:false, noOtReason:"", noOtNote:"", notInPlanReason:"", proof:[]}, r));
+  const reportBlank={description:"", hours:"", timeFrom:"", timeTo:"", noOt:false, noOtReason:"", noOtNote:"", notInPlanReason:"", proof:[]};
   const reasons=typeof HR_OT_CANCEL_REASONS!=="undefined" ? HR_OT_CANCEL_REASONS : ["Weather","Materials/Equipment","Other"];
   function reasonSelect(sel, attr){
     return '<select '+attr+'><option value=""></option>'+reasons.map(x=>'<option'+(sel===x?" selected":"")+'>'+esc(x)+'</option>').join("")+'</select>';
@@ -11484,11 +11596,11 @@ function openOtReportEditor(pre){
   function paint(){
     const box=$("#otr-rows"); if(!box) return;
     const probe={planId:planIdNow(), noPlan:noPlanNow()};
-    if(!rows.length){ box.innerHTML='<tr><td colspan="9"><span class="lbl">No one added yet.</span></td></tr>'; return; }
+    if(!rows.length){ box.innerHTML='<tr><td colspan="9"><span class="lbl">No one added yet. Search above and tick several names.</span></td></tr>'; otCrewPaintHits("otr", rows); return; }
     box.innerHTML=rows.map((r,i)=>{
       const extra=typeof hrOtPersonNotOnPlan==="function" && r.empId && hrOtPersonNotOnPlan(probe, r.empId);
       return '<tr data-i="'+i+'">'
-        + '<td><select data-otr-emp style="min-width:160px">'+otFormEmpOptions(r.empId)+'</select>'
+        + '<td>'+otRowEmpField("otr", i, r.empId, "data-otr-emp")
         + (extra?'<div class="lbl" style="color:var(--crit)">Not on the plan</div>':"")+'</td>'
         + '<td><input data-otr-desc value="'+esc(r.description||"")+'" placeholder="What happened" style="width:140px"></td>'
         + '<td><input data-otr-hours type="number" step="0.5" min="0" value="'+esc(r.hours!=null?r.hours:"")+'" style="width:64px"></td>'
@@ -11500,6 +11612,7 @@ function openOtReportEditor(pre){
         + '<td><button type="button" class="btn sm danger" data-otr-rm="'+i+'">Remove</button>'
         + '<input data-otr-file type="file" accept="image/*,.pdf" style="width:140px"></td></tr>';
     }).join("");
+    otCrewPaintHits("otr", rows);
   }
   function planChoices(){
     const date=($("#otr-otdate")||{}).value||rec.otDate||"";
@@ -11507,7 +11620,7 @@ function openOtReportEditor(pre){
     const sel=$("#otr-plan"); if(!sel) return;
     const cur=sel.value||rec.planId||"";
     sel.innerHTML='<option value=""></option>'+list.map(p=>'<option value="'+esc(p.id)+'"'+(cur===p.id?" selected":"")+'>'
-      + esc((p.site||"Plan")+" · "+(p.deptHead||"")+" · "+((p.rows||[]).length)+" people")+'</option>').join("");
+      + esc((p.site||"Plan")+" · "+(p.deptHead||"")+" · "+(otFormRows(p).length)+" people")+'</option>').join("");
   }
   const am=(rec.amendments||[]).slice().reverse().map(a=>esc(String(a.at||"").slice(0,16).replace("T"," "))+" · "+esc(a.by||"")+" · "+esc(a.what||"")).join("<br>");
   openModal({ title: existing?"Edit morning OT report":"New morning OT report", wide:true,
@@ -11521,8 +11634,9 @@ function openOtReportEditor(pre){
       + '<label><input type="checkbox" id="otr-noot"'+(rec.noOt?" checked":"")+'> No OT for the whole plan</label>'
       + '<div class="row"><div class="f" style="width:220px"><label>Reason for whole plan</label>'+reasonSelect(rec.noOtReason,'id="otr-why"')+'</div>'
       + '<div class="f" style="width:260px"><label>Note (required for Other)</label><input id="otr-note" value="'+esc(rec.noOtNote||"")+'"></div></div>'
+      + '<div class="lbl">Add employee rows here. Search, tick several, then add them. Each row keeps its own hours, what happened, and reason. Remove drops that row.</div>'
+      + otCrewSearchHtml("otr")
       + '<div class="tw"><table><thead><tr><th>Employee</th><th>What happened</th><th>Hours</th><th>From</th><th>To</th><th>No OT</th><th>Reason</th><th>Not on the plan</th><th></th></tr></thead><tbody id="otr-rows"></tbody></table></div>'
-      + '<button class="btn sm" type="button" id="otr-add">Add employee</button>'
       + '<div class="f"><label>Photo / proof for the report</label>'
       + '<input id="otr-file" type="file" accept="image/*,.pdf,.jpg,.jpeg,.png,.webp">'
       + '<input id="otr-link" type="url" placeholder="or paste a Google Drive link">'
@@ -11547,7 +11661,7 @@ function openOtReportEditor(pre){
     if(id){ $("#otr-noplan").checked=false; }
     const plan=id&&S.otplans[id];
     if(plan && !rows.length){
-      rows=(plan.rows||[]).map(r=>({
+      rows=otFormRows(plan).map(r=>({
         empId:r.empId, empNo:r.empNo||"", name:r.name||"",
         hours:r.expectedHours||"", timeFrom:r.timeFrom||"", timeTo:r.timeTo||"",
         description:r.task?(r.task+(r.reason?" — "+r.reason:"")):"",
@@ -11557,12 +11671,26 @@ function openOtReportEditor(pre){
     paint();
   };
   $("#otr-noplan").onchange=()=>{ if($("#otr-noplan").checked) $("#otr-plan").value=""; paint(); };
-  $("#otr-add").onclick=()=>{ readRows(); rows.push({empId:"", description:"", hours:"", timeFrom:"", timeTo:"", noOt:false, noOtReason:"", noOtNote:"", notInPlanReason:"", proof:[]}); paint(); };
+  wireOtCrew("otr", {
+    rows:()=>rows,
+    read:readRows,
+    add:ids=>{
+      rows=typeof hrOtAppendEmployees==="function"
+        ? hrOtAppendEmployees(rows, ids, reportBlank)
+        : rows.concat(ids.filter(id=>!rows.some(r=>r.empId===id)).map(id=>Object.assign({empId:id}, reportBlank, {proof:[]})));
+    },
+    addBlank:()=>{ rows.push(Object.assign({empId:""}, reportBlank, {proof:[]})); },
+    paint:paint
+  });
   $("#otr-rows").onclick=e=>{
     const btn=e.target.closest&&e.target.closest("[data-otr-rm]");
     if(!btn) return;
     readRows(); rows.splice(Number(btn.getAttribute("data-otr-rm")),1); paint();
   };
+  $("#otr-rows").addEventListener("change", ev=>{
+    if(!(ev.target && ev.target.matches && ev.target.matches("[data-otr-emp]"))) return;
+    readRows(); paint();
+  });
   $("#otr-cancel").onclick=closeModal;
   $("#otr-save").onclick=async()=>{
     readRows();
@@ -11820,6 +11948,9 @@ function viewDaily(){
   const groups=dailyGroups(rec);
   const t=dailyTally(rec);
   const otDayTotal=typeof dailyOtTotal==="function" ? dailyOtTotal(rec) : 0;
+  const lateHead=typeof dailyLateHeadcount==="function" ? dailyLateHeadcount(rec) : {total:0, sites:[]};
+  const lateBySite={};
+  (lateHead.sites||[]).forEach(s=>{ lateBySite[s.site]=s.late||0; });
   const saved=!!dailyGet(d);
   setCrumb("Daily Manpower Report", longDate(d)+(saved?" · saved":" · not saved yet"));
 
@@ -11847,7 +11978,8 @@ function viewDaily(){
    + '</div>';
 
   h+='<div class="strip">'
-   + tile(t.present,"Present",t.late?t.late+" of them late":"nobody late","ok")
+   + tile(t.present,"Present","","ok")
+   + tile(lateHead.total,"Late","time in after 8:15 or 1:15",lateHead.total?"warn":"ok")
    + tile(t.absent,"Absent","",t.absent?"crit":"ok")
    + tile(t.leave,"On leave","filed or approved leave","acc")
    + tile(t.holiday+t.other,"Holiday or rest day","","acc")
@@ -11964,6 +12096,7 @@ function viewDaily(){
        + '<th style="width:150px"></th></tr></thead><tbody>';
       rows.forEach(r=>{
         const t2=dailyTally(r);
+        const late2=typeof dailyLateHeadcount==="function" ? dailyLateHeadcount(r).total : (t2.late||0);
         const ot2=typeof dailyOtTotal==="function" ? dailyOtTotal(r) : 0;
         h+='<tr'+(r.date===d?' style="background:var(--accent-soft)"':'')+'>'
          + '<td><b>'+esc(longDate(r.date))+'</b>'
@@ -11971,7 +12104,7 @@ function viewDaily(){
             ? ' <span class="pill acc" title="'+esc("Last edited "+(r.editedOn||"")+" by "+(r.editedBy||""))+'">edited</span>' : "")
          + '</td>'
          + '<td class="mono">'+t2.present+'</td>'
-         + '<td class="mono">'+(t2.late?'<span class="pill warn">'+t2.late+'</span>':'0')+'</td>'
+         + '<td class="mono" title="Time in after 8:15 or after 1:15">'+(late2?'<span class="pill warn">'+late2+'</span>':'0')+'</td>'
          + '<td class="mono">'+(t2.absent?'<span class="pill crit">'+t2.absent+'</span>':'0')+'</td>'
          + '<td class="mono">'+t2.leave+'</td>'
          + '<td class="mono">'+esc(typeof fmtOtHrs==="function"?fmtOtHrs(ot2):ot2)+'</td>'
@@ -12024,7 +12157,8 @@ function viewDaily(){
   groups.forEach(g=>{
     h+='<div class="card" style="margin-bottom:12px" data-drop="'+esc(g.site)+'">'
      + '<div class="card-h"><h3>'+esc(g.site)+'</h3>'
-     + '<div class="sp"><span class="lbl">'+g.people.length+'</span>'
+     + '<div class="sp"><span class="lbl">'+g.people.length
+     + ' · '+(lateBySite[g.site]||0)+' late</span>'
      + '<button class="btn sm" data-siterename="'+esc(g.site)+'">Rename</button></div></div>'
      + '<div class="tw"><table><thead><tr><th style="width:26px"></th><th style="width:40px">No.</th>'
      + '<th style="width:66px">ID NO.</th>'
@@ -12213,11 +12347,15 @@ async function dailyApplyAssignments(){
 
 function printDaily(rec){
   if(blockCompanyPrint(["cassie"])) return;
+  const lateHead=typeof dailyLateHeadcount==="function" ? dailyLateHeadcount(rec) : {total:0, sites:[]};
+  const lateBySite={};
+  (lateHead.sites||[]).forEach(s=>{ lateBySite[s.site]=s.late||0; });
   const groups=dailyGroups(rec);
   let n=0, rows="";
   groups.forEach(g=>{
     rows+='<tr><td colspan="8" style="background:#2aa0c0;color:#fff;font-weight:700;text-align:center;'
-      + 'letter-spacing:.04em;font-size:11px">'+esc(g.site)+'</td></tr>';
+      + 'letter-spacing:.04em;font-size:11px">'+esc(g.site)
+      + ' · '+(lateBySite[g.site]||0)+' late</td></tr>';
     g.people.forEach(e=>{
       n++;
       const r=dailyRow(rec,e);
@@ -12239,13 +12377,18 @@ function printDaily(rec){
     });
   });
   const otTotal=typeof fmtOtHrs==="function" ? fmtOtHrs(typeof dailyOtTotal==="function" ? dailyOtTotal(rec) : 0) : "";
+  const lateBits=(lateHead.sites||[]).filter(s=>s.late).map(s=>s.site+" "+s.late);
+  rows+='<tr><td colspan="6" style="text-align:right;font-weight:700">Late employees</td>'
+    + '<td colspan="2" style="text-align:center;font-weight:700">'+esc(String(lateHead.total))
+    + (lateBits.length?' · '+esc(lateBits.join(", ")):"")+'</td></tr>';
   rows+='<tr><td colspan="6" style="text-align:right;font-weight:700">OT total hrs</td>'
     + '<td style="text-align:center;font-weight:700">'+esc(otTotal)+'</td><td></td></tr>';
   const body = pfHead()
    + '<div style="text-align:center;font-weight:700;font-size:13px;letter-spacing:.05em;padding:7px 0 1px;color:#9c3131">'
    + 'DAILY MANPOWER REPORT</div>'
    + '<div style="text-align:center;font-weight:700;font-size:12px;padding-bottom:8px">'
-   + esc(shortDate(rec.date))+' · OT total hrs '+esc(otTotal)+'</div>'
+   + esc(shortDate(rec.date))+' · OT total hrs '+esc(otTotal)
+   + ' · Late '+esc(String(lateHead.total))+'</div>'
    + '<table class="pf-t" style="table-layout:auto"><tr>'
    + '<td style="width:34px;font-weight:700;text-align:center;background:var(--surface3)">&nbsp;</td>'
    + ['ID NO.','LAST NAME','FIRST NAME','POSITION','STATUS','OT HRS','REASON']

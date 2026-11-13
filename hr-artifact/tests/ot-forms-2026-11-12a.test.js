@@ -51,7 +51,7 @@ function person(id, name, empNo) {
 
 describe("2026-11-12a afternoon plan and morning report", () => {
   it("is build 2026-11-12a and retires new OT requests", () => {
-    assert.match(html, /const BUILD = "2026-11-12b"/);
+    assert.match(html, /const BUILD = "2026-11-13a"/);
     assert.match(html, /script src="\/hr-ot-forms\.js"/);
     assert.match(html, /\{k:"otplan",\s*n:"Afternoon OT Plan"/);
     assert.match(html, /\{k:"otrep",\s*n:"Morning OT Report"/);
