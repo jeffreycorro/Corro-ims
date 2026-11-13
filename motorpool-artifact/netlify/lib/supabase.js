@@ -448,6 +448,17 @@ function nextLedgerWrite(vrf, month, rows, existing, reserveNo) {
   };
 }
 
+function ledgerRowIsStaleHold(row) {
+  if (!row) return false;
+  if (row.held || row.src === "reserve-hold") return true;
+  const vs = String(row.vstatus || "").trim().toLowerCase();
+  return vs === "requested" || vs === "for approval" || vs === "sent for approval";
+}
+
+function ledgerIsOnlyStaleHold(rows) {
+  return Array.isArray(rows) && rows.length > 0 && rows.every(ledgerRowIsStaleHold);
+}
+
 function ledgerUnchanged(existing, next) {
   if (!existing || !next) return false;
   if (col(existing.month) !== col(next.month)) return false;
@@ -604,9 +615,9 @@ async function upsertReserveRecord(row, year) {
 async function upsertLedgerRecord(vrf, month, rows, reserveNo) {
   const existing = await readRecord("ledger:" + vrf);
   const have = existing && existing.data && Array.isArray(existing.data.rows) ? existing.data.rows : [];
-  /* Lines already stored for this VRF stay as they are. Approve must not
-     append a second copy, and it must not bump updated_at on a repeat call. */
-  if (have.length) return { wrote: false, ledgerLines: have.length };
+  /* Lines already posted stay as they are. A leftover Requested reserve-hold
+     is not posted: replace it with the Open lines this approve carries. */
+  if (have.length && !ledgerIsOnlyStaleHold(have)) return { wrote: false, ledgerLines: have.length };
   const next = nextLedgerWrite(vrf, month, rows, existing, reserveNo);
   if (ledgerUnchanged(existing, next)) return { wrote: false, ledgerLines: have.length };
   try {
@@ -1207,6 +1218,8 @@ module.exports = {
   photoMetaRow,
   photoMetaSelect,
   planCollectionWrites,
+  ledgerRowIsStaleHold,
+  ledgerIsOnlyStaleHold,
   putIssuedOnce,
   putLedgerRecord,
   putReserveRecord,

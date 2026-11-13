@@ -101,8 +101,8 @@ function apply(api, row, spec) {
 }
 
 describe("edit item and part category before approval", () => {
-  it("is build 2026-11-12 a", () => {
-    assert.match(html, /var BUILD = "2026-11-12 a"/);
+  it("is build 2026-11-13 a", () => {
+    assert.match(html, /var BUILD = "2026-11-13 a"/);
   });
 
   it("offers Edit item while a VRF is still for approval and locks it after", () => {

@@ -68,8 +68,8 @@ function hold(over) {
 }
 
 describe("edit supplier before approval", () => {
-  it("is build 2026-11-12 a", () => {
-    assert.match(html, /var BUILD = "2026-11-12 a"/);
+  it("is build 2026-11-13 a", () => {
+    assert.match(html, /var BUILD = "2026-11-13 a"/);
   });
 
   it("offers Edit supplier on a VRF that is still for approval", () => {

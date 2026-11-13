@@ -184,9 +184,9 @@ describe("parts store FIFO", () => {
 });
 
 describe("the page wires the stock rule", () => {
-  it("is build 2026-11-12 a, locks fuel to liters, and auto-prices a reserve draw", () => {
+  it("is build 2026-11-13 a, locks fuel to liters, and auto-prices a reserve draw", () => {
     assert.match(html, /<script src="\/stock-fifo\.js"><\/script>/);
-    assert.match(html, /var BUILD = "2026-11-12 a"/);
+    assert.match(html, /var BUILD = "2026-11-13 a"/);
     assert.match(html, /function fifo\(\)/);
     assert.match(html, /function applyDraftStockPrices/);
     assert.match(html, /data-stock-price/);
