@@ -16,6 +16,7 @@ const tombstones = require("../lib/employee-tombstones");
 const leaveNumbers = require("../../public/hr-leave-numbers");
 const caNumbers = require("../../public/hr-ca-numbers");
 const memoNumbers = require("../../public/hr-memo-numbers");
+const reminderNumbers = require("../../public/hr-reminder-numbers");
 
 function storeFromRows(rows) {
   return leaveNumbers.rowsToStore(rows);
@@ -58,6 +59,45 @@ async function rejectDuplicateMemoNumber(collection, id, data) {
     if (parsed) data.no = memoNumbers.formatCm(parsed.year, parsed.seq, stores);
   }
   return memoNumbers.conflictForWrite(collection, id, data, stores);
+}
+
+async function rejectDuplicateReminderNumber(collection, id, data) {
+  if (!data) return null;
+  const isRem = collection === "reminders";
+  const isRm = collection === "docreg" && reminderNumbers.isRmDoc(data);
+  if (!isRem && !isRm) return null;
+  if (isRem && !data.no && !data.paperNo && !reminderNumbers.parseWr(data.subject)) return null;
+  if (isRm && !data.no) return null;
+  const [remRows, regRows, filedRows, seriesRow] = await Promise.all([
+    listCollection("reminders"),
+    listCollection("docreg"),
+    listCollection("filed"),
+    getDoc("series", "RM"),
+  ]);
+  const stores = reminderNumbers.storeFromLists({
+    reminders: remRows,
+    docreg: regRows,
+    filed: filedRows,
+    series: seriesRow && seriesRow.data ? { RM: seriesRow.data } : {},
+  });
+  if (isRem && data.no) {
+    const parsed = reminderNumbers.parseRm(data.no);
+    if (parsed) data.no = reminderNumbers.formatRm(parsed.year, parsed.seq, stores);
+  }
+  if (isRem && data.paperNo) data.paperNo = reminderNumbers.canonicalPaper(data.paperNo);
+  return reminderNumbers.conflictForWrite(collection, id, data, stores);
+}
+
+async function retireReminderNumber(collection, id) {
+  const existing = await getDoc(collection, id);
+  const data = existing && existing.data;
+  if (!data) return;
+  const isRem = collection === "reminders";
+  const isRm = collection === "docreg" && reminderNumbers.isRmDoc(data);
+  if (!isRem && !isRm) return;
+  const seriesRow = await getDoc("series", "RM");
+  const next = reminderNumbers.retireSeries(seriesRow && seriesRow.data, data);
+  if (next) await setDoc("series", "RM", next);
 }
 
 function serverIo(holder) {
@@ -232,6 +272,10 @@ exports.handler = async (event) => {
           payload
         );
       }
+      if (collection === "series" && id === "RM") {
+        const existing = await getDoc("series", "RM");
+        payload = reminderNumbers.guardSeriesWrite(existing && existing.data, payload);
+      }
       const conflict = await rejectDuplicateLeaveNumber(collection, id, payload);
       if (conflict) {
         return json(409, {
@@ -244,6 +288,13 @@ exports.handler = async (event) => {
         return json(409, {
           error: memoConflict.message,
           code: memoNumbers.DUP_CODE,
+        });
+      }
+      const reminderConflict = await rejectDuplicateReminderNumber(collection, id, payload);
+      if (reminderConflict) {
+        return json(409, {
+          error: reminderConflict.message,
+          code: reminderNumbers.DUP_CODE,
         });
       }
       if (collection === "daily") {
@@ -276,6 +327,9 @@ exports.handler = async (event) => {
 
     if (op === "delete") {
       const { collection, id } = parsePath(body.path, body.id);
+      if (collection === "reminders" || collection === "docreg") {
+        await retireReminderNumber(collection, id);
+      }
       if (collection === "advances" || collection === "docreg") {
         const existing = await getDoc(collection, id);
         const data = existing && existing.data;
@@ -363,6 +417,13 @@ exports.handler = async (event) => {
         error:
           "That memo number was just saved on another memorandum. Change the number and save again.",
         code: memoNumbers.DUP_CODE,
+      });
+    }
+    if (pg === "23505" && constraint.indexOf("docs_reminders_rm_no_uidx") >= 0) {
+      return json(409, {
+        error:
+          "That reminder number was just saved on another written reminder. Save again to take the next number.",
+        code: reminderNumbers.DUP_CODE,
       });
     }
     const status = err.statusCode || 500;

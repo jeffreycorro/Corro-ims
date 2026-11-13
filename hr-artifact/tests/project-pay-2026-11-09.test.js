@@ -58,7 +58,7 @@ function lineTwoSites() {
 
 describe("2026-11-09a project assignment and payroll summary", () => {
   it("is build 2026-11-09a and keeps the project summary on the payroll run", () => {
-    assert.match(html, /const BUILD = "2026-11-13a"/);
+    assert.match(html, /const BUILD = "2026-11-13b"/);
     const flowAt = html.indexOf("payRunFlowHtml(saved");
     const auditAt = html.indexOf("h+=payAuditHtml");
     const projAt = html.indexOf("payProjectSummaryCard");

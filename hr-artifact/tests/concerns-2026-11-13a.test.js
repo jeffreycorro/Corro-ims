@@ -46,8 +46,8 @@ function person(id, name, empNo) {
 const WIN = { from: "2026-11-05", to: "2026-11-11" };
 
 describe("2026-11-13a several employees on one OT form, and the late count", () => {
-  it("is build 2026-11-13a and offers search, multi-select, and remove on both forms", () => {
-    assert.match(html, /const BUILD = "2026-11-13a"/);
+  it("offers search, multi-select, and remove on both forms in build 2026-11-13b", () => {
+    assert.match(html, /const BUILD = "2026-11-13b"/);
     const plan = extractFunction(html, "openOtPlanEditor");
     const report = extractFunction(html, "openOtReportEditor");
     assert.match(plan, /otCrewSearchHtml\("otp"\)/);
