@@ -1034,6 +1034,7 @@
     loadCompanion("/hr-applicant-dedupe.js", "data-hr-applicant-dedupe");
     loadCompanion("/hr-applicants-export.js", "data-hr-applicants-export");
     loadCompanion("/hr-recruit.js", "data-hr-recruit");
+    loadCompanion("/hr-reminder-numbers.js", "data-hr-reminder-numbers");
     loadCompanion("/hr-201-file.js", "data-hr-201-file");
     loadCompanion("/hr-201-checklist.js", "data-hr-201-checklist");
     loadCompanion("/hr-leave-numbers.js", "data-hr-leave-numbers");

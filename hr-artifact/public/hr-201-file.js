@@ -210,7 +210,18 @@
     return m.audience === "Individual" && sameId(m.audienceDetail, empId);
   }
 
+  function reminderShownNo(r) {
+    if (root.hrReminderNumbers && root.hrReminderNumbers.displayNo) return root.hrReminderNumbers.displayNo(r);
+    var paper = str(r && r.paperNo).trim();
+    var reg = str(r && r.no).trim();
+    if (paper && reg && paper.replace(/\s+/g, "").toUpperCase() !== reg.replace(/\s+/g, "").toUpperCase()) {
+      return paper + " · " + reg;
+    }
+    return paper || reg;
+  }
+
   function reminderTagsEmp(r, empId) {
+    if (root.hrReminderNumbers && root.hrReminderNumbers.tagsEmp) return root.hrReminderNumbers.tagsEmp(r, empId);
     if (!r || !empId) return false;
     if (sameId(r.empId, empId)) return true;
     var ids = r.empIds || [];
@@ -358,7 +369,7 @@
         date: r.date || "",
         type: "Reminder",
         typeKey: "reminder",
-        no: r.no || "",
+        no: reminderShownNo(r),
         title: r.subject || r.brief || "Written reminder",
         status: r.status || "",
         source: "reminders",
@@ -366,6 +377,32 @@
         canPrint: false,
       });
     });
+
+    if (root.hrReminderNumbers && root.hrReminderNumbers.checklistForEmp) {
+      var seenPaper = {};
+      out.forEach(function (row) {
+        if (row && row.typeKey === "reminder" && row.no) {
+          var wr = root.hrReminderNumbers.parseWr(row.no);
+          if (wr) seenPaper[wr.key] = true;
+        }
+      });
+      root.hrReminderNumbers.checklistForEmp(S, empId).forEach(function (h) {
+        if (h.paperKey && seenPaper[h.paperKey]) return;
+        push(out, {
+          date: h.on || "",
+          type: "Reminder",
+          typeKey: "reminder",
+          no: h.paperNo || "",
+          title: h.title || "Written reminder",
+          status: "Checklist",
+          source: "checklist",
+          sourceId: h.slot + ":" + (h.paperNo || h.title || ""),
+          link: h.url || "",
+          canOpen: !!h.url,
+          canPrint: false,
+        });
+      });
+    }
 
     values(S.genfiles).forEach(function (g) {
       if (!sameId(g.empId, empId)) return;
@@ -436,7 +473,17 @@
   function collectRegister(S, empId, existing) {
     var out = [];
     values(S.docreg).forEach(function (d) {
-      if (!sameId(d.empId, empId)) return;
+      if (!d) return;
+      var named = sameId(d.empId, empId);
+      if (!named && root.hrReminderNumbers && root.hrReminderNumbers.tagsEmp) named = root.hrReminderNumbers.tagsEmp(d, empId);
+      if (!named) {
+        var ids = d.empIds || [];
+        var n;
+        for (n = 0; n < ids.length; n += 1) {
+          if (sameId(ids[n], empId)) named = true;
+        }
+      }
+      if (!named) return;
       var src = REG_MODULE_SOURCE[d.module];
       if (src && alreadyHasSource(existing, src, d.refId)) return;
       if (alreadyHasNo(existing, d.no) || alreadyHasNo(out, d.no)) return;
@@ -640,6 +687,10 @@
     if (rec.source === "reminders") {
       call("remEditor", rec.sourceId);
       return true;
+    }
+    if (rec.source === "checklist") {
+      if (rec.link && root.open) root.open(rec.link, "_blank", "noopener");
+      return !!rec.link;
     }
     if (rec.source === "docreg") {
       if (typeof root.reopenDoc === "function") call("reopenDoc", rec.sourceId);

@@ -1306,6 +1306,13 @@ async function put(coll,id,obj,opts){
         window.hrMemoNumbers.advanceSuggestion(window);
       return false;
     }
+    if(e && e.code==="duplicate_reminder_number"){
+      if(hadRow) S[coll][id]=prevRow;
+      else delete S[coll][id];
+      lsSaveSoon();
+      if(!(opts && opts.quiet)) toast(e.message || "That reminder number is already in use.","err");
+      return false;
+    }
     if(!(opts && opts.quiet) && coll!=="daily"){
       if(e && e.code==="quota_exceeded") toast("Storage is full — delete old records before adding more.","err");
       else if(e && e.code!=="revoked") toast("Could not save to shared storage. Change kept on this device.","err");
@@ -2173,7 +2180,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-11-13a";
+const BUILD = "2026-11-13b";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -17553,7 +17560,88 @@ const REM_STAT = ["Draft","Issued","Acknowledged","Closed"];
 function reminderList(){
   return Object.values(S.reminders||{}).sort((a,b)=>(b.date||"").localeCompare(a.date||""));
 }
-function empReminders(id){ return reminderList().filter(r=>r.empId===id); }
+function remNumbers(){ return (typeof hrReminderNumbers!=="undefined") ? hrReminderNumbers : null; }
+function remTaggedIds(r){
+  const api=remNumbers();
+  if(api) return api.taggedEmpIds(r);
+  const ids=[];
+  if(r && r.empId) ids.push(r.empId);
+  (r && r.empIds||[]).forEach(id=>{ if(id && ids.indexOf(id)<0) ids.push(id); });
+  return ids;
+}
+function remTagsEmp(r,id){
+  const api=remNumbers();
+  if(api) return api.tagsEmp(r,id);
+  return remTaggedIds(r).indexOf(id)>=0;
+}
+/* Every saved reminder, draft or issued. The six-month count is a tile only. */
+function empReminders(id){ return reminderList().filter(r=>remTagsEmp(r,id)); }
+function remShownNo(r){
+  const api=remNumbers();
+  if(api) return api.displayNo(r);
+  const paper=String((r&&r.paperNo)||"").trim();
+  const reg=String((r&&r.no)||"").trim();
+  if(paper && reg && paper.replace(/\s+/g,"").toUpperCase()!==reg.replace(/\s+/g,"").toUpperCase())
+    return paper+" · "+reg;
+  return paper||reg;
+}
+function remStampPeople(r){
+  if(!r) return r;
+  const api=remNumbers();
+  const named=remRecipients(r).map(e=>e.id);
+  const ids=api ? api.stampPeople(r, named) : remTaggedIds(r);
+  r.empIds=ids;
+  if(!r.empId && ids.length) r.empId=ids[0];
+  return r;
+}
+function remChecklistRows(){
+  const api=remNumbers();
+  if(!api || !api.checklistReminders) return [];
+  const have={};
+  reminderList().forEach(r=>{ const k=api.paperKey(r); if(k) have[k]=true; });
+  return api.checklistReminders(S).filter(h=>!h.paperKey || !have[h.paperKey]);
+}
+async function remApplyNumber(r, issue){
+  const api=remNumbers();
+  remStampPeople(r);
+  if(!api){
+    if(issue && !r.no){
+      const entry=await allocate("RM",{ title:r.subject, empId:r.empId, empIds:(r.empIds||[]).slice(),
+        module:"reminder", refId:r.id, status:"Issued", date:r.date, tags:["reminder"], paperNo:r.paperNo||"" });
+      if(!entry) return null;
+      r.no=entry.no;
+    }
+    return r;
+  }
+  const got=api.assign(S, r, { issue: !!issue && !r.no });
+  if(!got.ok){
+    toast(got.message,"err");
+    if(r.no && api.parseRm(r.no)) r.no="";
+    return null;
+  }
+  if(got.paperNo) r.paperNo=got.paperNo;
+  if(got.no){ r.no=got.no; r.seq=got.seq; r.year=got.year; }
+  if(got.series){ S.series.RM=got.series; await put("series","RM",got.series); }
+  if(got.minted || (r.no && !regFor("reminder", r.id))){
+    const existing=regFor("reminder", r.id);
+    const entry=existing || { id:uid("d") };
+    entry.no=r.no; entry.seriesKey="RM"; entry.year=got.year||entry.year; entry.seq=got.seq||entry.seq;
+    entry.title=r.subject||entry.title||""; entry.empId=r.empId||""; entry.empIds=(r.empIds||[]).slice();
+    entry.module="reminder"; entry.refId=r.id; entry.status=entry.status&&entry.status!=="Draft"?entry.status:"Issued";
+    entry.date=r.date||entry.date||TODAY; entry.tags=entry.tags||["reminder"]; entry.paperNo=r.paperNo||"";
+    entry.issuedBy=entry.issuedBy||S.settings.hrHead||"";
+    const wrote=await put("docreg", entry.id, entry);
+    if(wrote===false && got.minted){ r.no=""; return null; }
+  } else if(r.no){
+    const existing=regFor("reminder", r.id);
+    if(existing){
+      existing.paperNo=r.paperNo||""; existing.empId=r.empId||existing.empId;
+      existing.empIds=(r.empIds||[]).slice(); existing.title=r.subject||existing.title;
+      await put("docreg", existing.id, existing);
+    }
+  }
+  return r;
+}
 function remCat(k){ return REMINDER_CATS.find(c=>c.k===k)||REMINDER_CATS[0]; }
 
 /* A reminder often belongs to a crew rather than a person — the whole site is
@@ -17574,7 +17662,12 @@ function remRecipients(r){
 function remAudienceText(r){
   if(r.audience==="Department") return "All "+(r.audienceDetail||"—")+" personnel";
   if(r.audience==="Project / site") return "All personnel assigned to "+(r.audienceDetail||"—");
-  if(r.audience==="Selected people") return (r.empIds||[]).length+" named employees";
+  const named=remTaggedIds(r);
+  if(r.audience==="Selected people" || named.length>1){
+    const names=named.map(id=>flipName((S.employees[id]||{}).name||"")).filter(Boolean);
+    if(names.length) return names.join(", ");
+    return named.length+" named employees";
+  }
   if(r.audience==="Everyone") return "All employees";
   const e=S.employees[r.empId];
   return e?flipName(e.name):"—";
@@ -17587,11 +17680,13 @@ function viewReminders(){
   const cut=addMonths(TODAY,-6);
   const recent=all.filter(r=>(r.date||"")>=cut);
   const repeat=Object.values(S.employees).filter(e=>empReminders(e.id).filter(r=>(r.date||"")>=cut).length>=2);
+  const recentIds=new Set();
+  recent.forEach(r=>remTaggedIds(r).forEach(id=>recentIds.add(id)));
   setCrumb("Written Reminders", all.length+" on record · not disciplinary");
 
   let h='<div class="strip">'
    + tile(all.filter(r=>r.status==="Draft").length,"Drafts","not yet given",all.filter(r=>r.status==="Draft").length?"warn":"ok")
-   + tile(recent.length,"Issued in six months","across "+new Set(recent.map(r=>r.empId)).size+" people","acc")
+   + tile(recent.length,"Issued in six months","across "+recentIds.size+" people","acc")
    + tile(repeat.length,"Two or more","a pattern worth looking at",repeat.length?"warn":"ok")
    + tile(all.filter(r=>r.status==="Acknowledged").length,"Acknowledged","signed and returned","ok")
    + '</div>';
@@ -17604,18 +17699,19 @@ function viewReminders(){
 
   h+='<div class="sect-h" style="margin-top:18px"><h2>Reminders</h2><span class="rule"></span>'
    + '<button class="btn sm pri" id="new-rem"><svg><use href="#i-plus"/></svg> Write a reminder</button></div>';
+  const scans=remChecklistRows();
   h+='<div class="card">';
-  if(!all.length){
+  if(!all.length && !scans.length){
     h+='<div class="empty">Nothing yet. Write one when something needs saying in writing but does not warrant '
      + 'a notice — a task not done, a duty being skipped, a deadline coming up.</div>';
   }else{
-    h+='<div class="tw"><table><thead><tr><th style="width:130px">Ref.</th><th>Employee</th>'
+    h+='<div class="tw"><table><thead><tr><th style="width:180px">Ref.</th><th>Employee</th>'
      + '<th>About</th><th style="width:170px">Subject</th><th style="width:110px">Date</th>'
      + '<th style="width:120px">Status</th><th style="width:90px"></th></tr></thead><tbody>'
      + all.map(r=>{
-        const e=S.employees[r.empId];
-        const n=empReminders(r.empId).filter(x=>(x.date||"")>=cut).length;
-        return '<tr><td class="mono">'+(r.no?'<b>'+esc(r.no)+'</b>':'<span class="lbl">draft</span>')+'</td>'
+        const n=remTaggedIds(r).reduce((m,id)=>Math.max(m, empReminders(id).filter(x=>(x.date||"")>=cut).length), 0);
+        const shown=remShownNo(r);
+        return '<tr><td class="mono">'+(shown?'<b>'+esc(shown)+'</b>':'<span class="lbl">draft</span>')+'</td>'
          + '<td class="nm">'+esc(remAudienceText(r))
          + (remIsGroup(r)
              ? ' <span class="pill mut">'+remAcked(r)+' of '+remRecipients(r).length+' signed</span>'
@@ -17625,6 +17721,17 @@ function viewReminders(){
          + '<td class="mono">'+esc(r.date||"—")+'</td>'
          + '<td>'+sevPill(r.status==="Acknowledged"||r.status==="Closed"?"ok":r.status==="Draft"?"warn":"acc",r.status||"Draft")+'</td>'
          + '<td><button class="btn sm" data-openrem="'+esc(r.id)+'">Open</button></td></tr>'; }).join("")
+     + scans.map(h=>{
+        const e=S.employees[h.empId];
+        return '<tr><td class="mono">'+(h.paperNo?'<b>'+esc(h.paperNo)+'</b>':'<span class="lbl">scan</span>')+'</td>'
+         + '<td class="nm">'+esc(e?flipName(e.name):(h.empName||"—"))
+         + ' <span class="pill mut">checklist</span></td>'
+         + '<td><span class="pill mut">On a 201 file</span></td>'
+         + '<td>'+esc(h.title||"Written reminder")+'</td>'
+         + '<td class="mono">'+esc(h.on||"—")+'</td>'
+         + '<td>'+sevPill("warn","Checklist")+'</td>'
+         + '<td>'+(h.url?'<a class="btn sm" href="'+esc(h.url)+'" target="_blank" rel="noopener noreferrer">Open</a>':"")+'</td></tr>';
+       }).join("")
      + '</tbody></table></div>';
   }
   h+='</div>';
@@ -17632,15 +17739,16 @@ function viewReminders(){
 }
 async function remEditor(id, preset){
   const r = id ? Object.assign({},S.reminders[id]) : Object.assign({
-    id:uid("rm"), no:"", empId:"", cat:"task", subject:"", brief:"", body:"",
+    id:uid("rm"), no:"", paperNo:"", empId:"", cat:"task", subject:"", brief:"", body:"",
     date:TODAY, dueBy:"", status:"Draft", by:S.settings.hrHead||"", notes:"", issuedOn:"",
     printedOn:"", signedLink:"", signedOn:"" }, preset||{});
   const sample=await getSample();
   const draw=()=>{
     const e=S.employees[r.empId];
-    const prior=r.empId?empReminders(r.empId).filter(x=>x.id!==r.id):[];
+    const priorIds=remTaggedIds(r);
+    const prior=priorIds.length?reminderList().filter(x=>x.id!==r.id && priorIds.some(id=>remTagsEmp(x,id))):[];
     const priorNTE=r.empId?empNTEs(r.empId):[];
-    openModal({ title:(r.no?"Reminder "+r.no:"Write a reminder")+(e?" — "+flipName(e.name):""), wide:true,
+    openModal({ title:(r.no||r.paperNo?"Reminder "+remShownNo(r):"Write a reminder")+(e?" — "+flipName(e.name):""), wide:true,
       body:'<div class="stack">'
         + '<div class="grid3">'
         + '<div class="f"><label>Addressed to</label><select id="rm-aud">'
@@ -17691,8 +17799,10 @@ async function remEditor(id, preset){
                 : "")
             + '</div>'
           : "")
-        + '<div class="grid2">'
+        + '<div class="grid3">'
         + '<div class="f"><label>Subject</label><input id="rm-subj" value="'+esc(r.subject)+'" placeholder="e.g. Outstanding transmittal reconciliation"></div>'
+        + '<div class="f"><label>Number already on the paper</label><input id="rm-paper" value="'+esc(r.paperNo||"")+'" placeholder="WR2026-04">'
+        + '<span class="hint">Leave blank if this reminder has no WR number yet. When it is filled in, the list, the print and the 201 file show it. The register still takes the next RM number, and that number is never reused.</span></div>'
         + '<div class="f"><label>To be done by</label><input id="rm-due" type="date" value="'+esc(r.dueBy||"")+'"><span class="hint">optional</span></div>'
         + '</div>'
         + (sample
@@ -17722,7 +17832,7 @@ async function remEditor(id, preset){
             + 'it has no number and is not on the document register — it is a piece of writing, not a document. '
             + '<b>Issue it and take the number</b> puts it on the register, after which you print it, have the '
             + 'people named on it sign the acknowledgement sheet, and upload the signed scan here.</div>'
-          : '<div class="note" style="border-left-color:var(--ok)"><b>Issued as '+esc(r.no||"(no number)")+'</b>'
+          : '<div class="note" style="border-left-color:var(--ok)"><b>Issued as '+esc(remShownNo(r)||"(no number)")+'</b>'
             + (r.issuedOn?' on '+esc(longDate(r.issuedOn)):"")
             + '. Print it, collect the signatures, then upload the signed copy below.</div>')
         + (S.reminders[r.id] && r.status!=="Draft" ? remAckPanel(r) : "")
@@ -17740,6 +17850,7 @@ async function remEditor(id, preset){
       r.audienceDetail=V("#rm-det", r.audienceDetail||"");
       r.empId=V("#rm-emp", r.empId); r.cat=$("#rm-cat").value; r.date=$("#rm-date").value;
       r.subject=$("#rm-subj").value.trim(); r.dueBy=$("#rm-due").value;
+      const paper=$("#rm-paper"); if(paper) r.paperNo=paper.value.trim();
       r.body=$("#rm-body").value; r.by=$("#rm-by").value; r.status=$("#rm-status").value;
       const b=$("#rm-brief"); if(b) r.brief=b.value;
       const hd=$("#rm-head");
@@ -17823,7 +17934,7 @@ async function remEditor(id, preset){
     if(ib) ib.onclick=async()=>{
       grab();
       if(!await remIssue(r)) return;
-      toast("Issued as "+r.no+" — print it and collect the signatures.","ok");
+      toast("Issued as "+remShownNo(r)+" — print it and collect the signatures.","ok");
       render(); draw();          /* reopen showing the number and the roster */
     };
     const pb2=$("#rm-print");
@@ -17833,13 +17944,9 @@ async function remEditor(id, preset){
       /* a draft may be half-finished; anything past draft may not be */
       if(r.status!=="Draft"){ const bad=remWhatsMissing(r); if(bad){ toast(bad,"err"); return; } }
       else if(!r.subject){ toast("Give it a subject.","err"); return; }
-      if(!r.no && r.status!=="Draft"){
-        const entry=await allocate("RM",{ title:r.subject, empId:r.empId, module:"reminder",
-          refId:r.id, status:"Issued", date:r.date, tags:["reminder"] });
-        if(entry) r.no=entry.no;
-      }
+      if(!await remApplyNumber(r, r.status!=="Draft" && !r.no)) return;
       await put("reminders",r.id,r);
-      closeModal(); render(); toast(r.no?("Saved as "+r.no):"Draft saved.","ok");
+      closeModal(); render(); toast(remShownNo(r)?("Saved as "+remShownNo(r)):"Draft saved.","ok");
     };
     const dl=$("#rm-del");
     if(dl) dl.onclick=async()=>{
@@ -17933,12 +18040,7 @@ function remWhatsMissing(r){
 async function remIssue(r){
   const bad=remWhatsMissing(r);
   if(bad){ toast(bad,"err"); return null; }
-  if(!r.no){
-    const entry=await allocate("RM",{ title:r.subject, empId:r.empId, module:"reminder",
-      refId:r.id, status:"Issued", date:r.date, tags:["reminder"] });
-    if(!entry) return null;
-    r.no=entry.no;
-  }
+  if(!await remApplyNumber(r, !r.no)) return null;
   if(r.status==="Draft") r.status="Issued";
   if(!r.issuedOn) r.issuedOn=TODAY;
   await put("reminders",r.id,r);
@@ -17948,7 +18050,8 @@ async function remIssue(r){
 function previewReminder(r){
   const byName=r.by||(S.settings.hrHead||"");
   if((!r.by || namesClose(byName, S.settings.hrHead||"")) && blockCompanyPrint(["dept"])) return;
-  const no=r.no||peekNo("RM");
+  const api=remNumbers();
+  const no=remShownNo(r) || (api ? api.nextNo(S, new Date().getFullYear()).no : peekNo("RM"));
   const draft=!r.no;
   const body=reminderPaper(r,no,draft);
   const warn=[];
@@ -17969,7 +18072,7 @@ function previewReminder(r){
   const pi=$("#rp2-issue");
   if(pi) pi.onclick=async()=>{
     if(!await remIssue(r)) return;
-    toast("Issued as "+r.no+" — print it and collect the signatures.","ok");
+    toast("Issued as "+remShownNo(r)+" — print it and collect the signatures.","ok");
     render(); previewReminder(r);
   };
   $("#rp2-print").onclick=()=>printDoc(no, body);
@@ -22196,7 +22299,9 @@ function askTools(){
           decision:n.decision||"", penalty:n.sanction||"", stage:["Notice","Answer","Decision","Closed"][nteStage(n)]||""})),
         writeUps: empWU(e.id).slice(0,30).map(w=>({date:w.date||"", offence:off(w.cat),
           action:w.action||"", incident:w.incident||""})),
-        reminders: empReminders(e.id).slice(0,30).map(r=>({no:r.no||"(draft)", subject:r.subject||"",
+        reminders: empReminders(e.id).slice(0,30).map(r=>({no:remShownNo(r)||"(draft)", registerNo:r.no||"",
+          paperNo:(typeof hrReminderNumbers!=="undefined"&&hrReminderNumbers.paperNoOf)?hrReminderNumbers.paperNoOf(r):(r.paperNo||""),
+          subject:r.subject||"",
           about:(remCat(r.cat)||{}).n||"", date:r.date||"", status:r.status||""}))};
     }
   },
