@@ -447,7 +447,7 @@ var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
    This label is inside the page function. The shim reads window.BUILD when it
    sends a save. Without that copy every save goes out with an empty build and
    the server answers "Reload the page". */
-var BUILD = "2026-11-12 a";
+var BUILD = "2026-11-13 a";
 try { window.BUILD = BUILD; } catch (e) {}
 var DAY = 86400000, MO = 30.44;
 
@@ -1694,6 +1694,9 @@ function buildIndex(){
         if(!saved&&rsvRow&&rsvRow.sourceNo) saved=vrfSourceNoText(rsvRow.sourceNo);
         return saved;
       })(),
+      reserveStatus:rsvRow?String(rsvRow.status||""):"",
+      approvedBy:(rsvRow&&rsvRow.approvedBy)||"",
+      approvedAt:(rsvRow&&rsvRow.approvedAt)||"",
       requestedBy:who};
   });
   addHeldReserveVrfs();
@@ -1755,12 +1758,37 @@ function usedVrfNumbers(exceptReserve){
 function vrfRecorded(no){
   return !!realVrfNumbers()[String(no==null?"":no).trim()];
 }
+/* A reserve-hold, or a ledger line still marked Requested, is not a posted VRF.
+   Approval must replace it. Counting it as posted is how Approve saved the
+   reserve and left the hold row behind. */
+function staleHoldLedgerRow(row){
+  if(!row) return false;
+  if(row.held||row.src==="reserve-hold") return true;
+  var vs=String(row.vstatus!=null?row.vstatus:(row.status||"")).trim();
+  return /^requested$/i.test(vs)||/^for approval$/i.test(vs)||/^sent for approval$/i.test(vs);
+}
+function ledgerRowsMatching(no){
+  no=String(no||"").trim();
+  var out=[], k, i, arr;
+  if(!no) return out;
+  for(k in S.ledger){
+    if(!S.ledger.hasOwnProperty(k)) continue;
+    arr=S.ledger[k]||[];
+    for(i=0;i<arr.length;i++){
+      if(arr[i]&&String(arr[i].vrf)===no) out.push(arr[i]);
+    }
+  }
+  return out;
+}
+function realPostedLedgerRows(no){
+  return ledgerRowsMatching(no).filter(function(row){ return !staleHoldLedgerRow(row); });
+}
 function postedVrfNumbers(){
   var used={};
   function add(n){ n=String(n==null?"":n).trim(); if(n) used[n]=1; }
-  allLines().forEach(function(r){ if(r&&r.vrf&&r.src!=="reserve-hold") add(r.vrf); });
+  allLines().forEach(function(r){ if(r&&r.vrf&&!staleHoldLedgerRow(r)) add(r.vrf); });
   (_vrfs||[]).forEach(function(v){
-    if(v&&v.vrf&&!v.held&&v.src!=="reserve-hold") add(v.vrf);
+    if(v&&v.vrf&&!v.held&&!staleHoldLedgerRow(v)) add(v.vrf);
   });
   return used;
 }
@@ -2647,19 +2675,55 @@ async function postReserveVrf(r){
 }
 /* Ledger lines and the reserve are one save. The phone sends this VRF only —
    not the rest of the month and not the rest of the year. */
+/* Open lines from a leftover reserve-hold. Drops src and sets vstatus Open. */
+function openRowsFromHold(r){
+  var no=String(r&&r.vrfNo||"").trim();
+  if(!no) return null;
+  var holds=ledgerRowsMatching(no).filter(staleHoldLedgerRow);
+  if(!holds.length) return null;
+  var entry={vrf:no, date:r.date, veh:r.veh, reserve:String(r.no), project:r.project,
+    requestedBy:r.requestedBy, notes:r.draftPurpose||r.scope||"",
+    source:r.source, sourceNo:r.sourceNo, odo:reserveMeter(r)};
+  var rows=holds.map(function(row){ return ledgerLineFromHoldRow(entry, row); });
+  var mk=(rows[0]&&rows[0].month)||monthKey(r.date)||iso().slice(0,7);
+  return {already:false, no:no, prevNo:no, month:mk, rows:rowsConfinedToVrf(rows, no)};
+}
 async function postAndSaveReserve(r){
   var prep=await prepareReservePost(r);
-  if(!prep){ await saveReserves(r.no); return null; }
+  var no=String((prep&&prep.no)||(r&&r.vrfNo)||"").trim();
+  var holds=no?ledgerRowsMatching(no).filter(staleHoldLedgerRow):[];
+  var real=no?realPostedLedgerRows(no):[];
+  /* "Already posted" used to mean any ledger row, including the Requested
+     hold. That saved the reserve as Approved and left the hold in place. */
+  if(prep&&prep.already&&holds.length&&!real.length) prep=openRowsFromHold(r);
+  if(!prep) prep=openRowsFromHold(r);
+  if(!prep){
+    var missingLines=new Error("RSV-"+(r&&r.no)+" has no lines to post. It was not marked approved.");
+    missingLines.code="no_draft_lines";
+    throw missingLines;
+  }
   if(prep.already){
-    await saveReserves(r.no);
+    if(no&&(r.vrfs||[]).indexOf(no)<0) r.vrfs=(r.vrfs||[]).concat([no]);
+    if(holds.length&&real.length){
+      var mk=real[0].month||monthKey(r.date)||iso().slice(0,7);
+      var kept=real.map(function(row){
+        var copy=Object.assign({}, row);
+        if(copy.src==="reserve-hold") delete copy.src;
+        copy.vrf=no;
+        return copy;
+      });
+      await commitVrfBundle({month:mk, vrf:no, rows:rowsConfinedToVrf(kept, no), mode:"replace", reserve:r});
+    } else {
+      await saveReserves(r.no);
+    }
     var have=[];
     Object.keys(S.ledger||{}).forEach(function(m){
       (S.ledger[m]||[]).forEach(function(row){
-        if(row && String(row.vrf)===String(prep.no) && row.src!=="reserve-hold") have.push(row);
+        if(row && String(row.vrf)===no && !staleHoldLedgerRow(row)) have.push(row);
       });
     });
     try{ await rememberSealedVrf(sealSnapshot(r, have, r.printedAt?"printed":"approved")); }catch(e){}
-    return prep.no;
+    return no;
   }
   if((r.vrfs||[]).indexOf(prep.no)<0) r.vrfs=(r.vrfs||[]).concat([prep.no]);
   await commitVrfBundle({month:prep.month, vrf:prep.no, rows:prep.rows, mode:"replace", reserve:r});
@@ -2667,18 +2731,35 @@ async function postAndSaveReserve(r){
   try{ await rememberSealedVrf(sealSnapshot(r, prep.rows, r.printedAt?"printed":"approved")); }catch(e){}
   return prep.no;
 }
+/* Jeffrey or Carmel opening one stale hold posts that VRF only. */
+function maybeHealStaleHold(entry){
+  var no=String(entry&&entry.vrf||"").trim();
+  if(!no) return;
+  S._healingHold=S._healingHold||{};
+  if(S._healingHold[no]) return;
+  var reserve=reserveForVrf(entry);
+  if(!reserveSettlesStaleHold(reserve, no)) return;
+  if(String(reserve.status||"")!=="Approved"||reserve.liquidatedAt) return;
+  var rows=ledgerRowsMatching(no);
+  if(!rows.length||!rows.every(staleHoldLedgerRow)) return;
+  var who=namedApprover(signedInName());
+  if(!who.ok) return;
+  S._healingHold[no]=1;
+  postAndSaveReserve(reserve).then(function(posted){
+    delete S._healingHold[no];
+    _vrfs=null;
+    toast("VRF "+(posted||no)+" is posted Open. The old approval hold was replaced.");
+    var sheet=document.getElementById("cfSheet");
+    if(!sheet) return;
+    var fresh=vrfByNo(no);
+    if(fresh){ sheet.remove(); openVrf(fresh); }
+  }, function(err){
+    delete S._healingHold[no];
+    toast("VRF "+no+" is approved, but the ledger hold was not replaced. "+((err&&err.message)||"Try again."));
+  });
+}
 function vrfPostedInLedger(no){
-  no=String(no||"").trim();
-  if(!no) return false;
-  var k,i;
-  for(k in S.ledger){
-    if(!S.ledger.hasOwnProperty(k)) continue;
-    var arr=S.ledger[k]||[];
-    for(i=0;i<arr.length;i++){
-      if(arr[i]&&String(arr[i].vrf)===no&&arr[i].src!=="reserve-hold") return true;
-    }
-  }
-  return false;
+  return realPostedLedgerRows(no).length>0;
 }
 function vrfRowsInLedger(entry){
   if(!entry||!entry.rows) return false;
@@ -2693,8 +2774,10 @@ function vrfRowsInLedger(entry){
 async function materializeApprovedVrf(entry){
   var no=String(entry&&entry.vrf||"").trim();
   if(!no) return entry;
-  if(vrfRowsInLedger(entry)) return entry;
-  if(vrfPostedInLedger(no)){
+  /* Hold rows sit in the ledger but are not a post. Liquidate still has to
+     write the Open lines. */
+  if(realPostedLedgerRows(no).length){
+    if(vrfRowsInLedger(entry)) return entry;
     _vrfs=null;
     var hit=vrfByNo(no)||entry;
     if(String(hit.vrf)!==no){
@@ -8086,7 +8169,16 @@ function missingPhotosChip(entry){
 function vrfPrintGate(entry){
   var api=fuelAudit();
   if(!api) return {ok:true, message:""};
-  return api.mayPrint(entry);
+  var reserve=reserveForVrf(entry);
+  var view=entry;
+  if(reserve&&entry){
+    view=Object.assign({}, entry, {
+      reserveStatus:entry.reserveStatus||reserve.status||"",
+      approvedAt:entry.approvedAt||reserve.approvedAt||"",
+      approvedBy:entry.approvedBy||reserve.approvedBy||""
+    });
+  }
+  return api.mayPrint(view);
 }
 function showPrintBlocked(message, entry){
   var ex=document.getElementById("printBlockSheet"); if(ex) ex.remove();
@@ -8662,7 +8754,7 @@ function vrfLogStatus(v){
     cw.appendChild(pc);
     return cw;
   }
-  if(v&&(v.status==="Requested"||vrfAwaitingApproval(v)))
+  if(v&&vrfAwaitingApproval(v))
     return el("span","chip warn","FOR APPROVAL");
   return vrfChip(v);
 }
@@ -8672,8 +8764,10 @@ function vrfLogStatus(v){
 function vrfPrintWatermark(entry){
   if(!entry) return "FOR APPROVAL";
   var st=String(entry.status||"").trim();
-  if(!st||st==="Requested"||/^for approval$/i.test(st)||/^sent for approval$/i.test(st))
+  if(!st||st==="Requested"||/^for approval$/i.test(st)||/^sent for approval$/i.test(st)){
+    if(entryReserveSettled(entry)) return "APPROVED";
     return "FOR APPROVAL";
+  }
   var ended=spendEndStatus(st);
   if(ended==="Not bought") return "NOT BOUGHT";
   if(ended==="Duplicate") return "DUPLICATE";
@@ -8681,8 +8775,10 @@ function vrfPrintWatermark(entry){
   if(/^rejected$/i.test(st)||/^disapproved$/i.test(st)) return "FOR APPROVAL";
   /* held means the number is not in the ledger yet. Approved Open holds print APPROVED. */
   if((entry.held||entry.src==="reserve-hold") && st!=="Open" && st!=="Closed" && st!=="Legacy" &&
-     !/^approved$/i.test(st) && !/^posted$/i.test(st))
+     !/^approved$/i.test(st) && !/^posted$/i.test(st)){
+    if(entryReserveSettled(entry)) return "APPROVED";
     return "FOR APPROVAL";
+  }
   return "APPROVED";
 }
 /* Screen preview only. The paper stamp stays FOR APPROVAL / APPROVED.
@@ -8695,14 +8791,20 @@ function vrfPreviewUnapproved(entry){
   var vrf=String(entry.vrf||"").trim();
   if(!vrf||/not yet posted/i.test(vrf)||entry.unnumbered) return true;
   if(!st||key==="requested"||key==="draft"||key==="pending"||key==="for approval"||
-     key==="sent for approval"||key==="rejected"||key==="disapproved") return true;
+     key==="sent for approval"||key==="rejected"||key==="disapproved"){
+    if(entryReserveSettled(entry)) return false;
+    return true;
+  }
   if(key==="cancelled"||key==="canceled"){
     var wasApproved=!!(entry.approvedAt||entry.approvedBy||entry.posted||entry.src==="ledger");
     if(!wasApproved&&(entry.held||entry.src==="reserve-hold")) return true;
     return false;
   }
   if((entry.held||entry.src==="reserve-hold")&&key!=="open"&&key!=="closed"&&key!=="legacy"&&
-     key!=="approved"&&key!=="posted"&&key!=="not bought"&&key!=="duplicate") return true;
+     key!=="approved"&&key!=="posted"&&key!=="not bought"&&key!=="duplicate"){
+    if(entryReserveSettled(entry)) return false;
+    return true;
+  }
   return vrfPrintWatermark(entry)==="FOR APPROVAL";
 }
 function vrfPreviewWatermark(entry){
@@ -8757,6 +8859,22 @@ function vrfMeter(entry, reserve){
 function vrfOdo(entry){
   return vrfMeter(entry, reserveForVrf(entry));
 }
+/* An approved reserve wins over a leftover Requested hold. Cancelled and
+   not-bought stay on spendEndStatus and are not upgraded here. */
+function reserveSettlesStaleHold(reserve, vrfNo){
+  if(!reserve||reserveSpendClosed(reserve)) return false;
+  var rs=String(reserve.status||"").trim();
+  if(rs!=="Approved"&&rs!=="Closed"&&rs!=="Flagged") return false;
+  var no=String(vrfNo==null?"":vrfNo).trim();
+  if(no&&!reserveOwnsVrfNo(reserve, no)) return false;
+  return true;
+}
+function entryReserveSettled(entry){
+  if(!entry) return false;
+  var rs=String(entry.reserveStatus||"").trim();
+  if(rs==="Cancelled"||rs==="Canceled"||rs==="Rejected"||rs==="Requested") return false;
+  return rs==="Approved"||rs==="Closed"||rs==="Flagged";
+}
 function canonicalVrfStatus(st, reserve, liq, vrfNo){
   var ended=spendEndStatus(st)||spendEndStatus(liq&&(liq.outcome||liq.status));
   if(ended) return {status:ended, legacy:false};
@@ -8764,8 +8882,10 @@ function canonicalVrfStatus(st, reserve, liq, vrfNo){
   var raw=String(st||"").trim();
   if(/^closed$/i.test(raw)||/^liquidated$/i.test(raw)) return {status:"Closed", legacy:false};
   if(/^rejected$/i.test(raw)||/^disapproved$/i.test(raw)) return {status:"Rejected", legacy:false};
-  if(/^requested$/i.test(raw)||/^for approval$/i.test(raw)||/^sent for approval$/i.test(raw))
+  if(/^requested$/i.test(raw)||/^for approval$/i.test(raw)||/^sent for approval$/i.test(raw)){
+    if(reserveSettlesStaleHold(reserve, vrfNo)) return {status:"Open", legacy:false};
     return {status:"Requested", legacy:false};
+  }
   if(/^open\b/i.test(raw)||/^approved$/i.test(raw)||/^posted$/i.test(raw)||/awaiting liquidation/i.test(raw))
     return {status:"Open", legacy:false};
   if((!raw||/^legacy$/i.test(raw)) && reserve && String(reserve.status||"")==="Approved" &&
@@ -8777,7 +8897,10 @@ function vrfAwaitingApproval(entry, reserve){
   if(!entry) return true;
   if(arguments.length<2) reserve=reserveForVrf(entry);
   var st=String(entry.status||"").trim();
-  if(st==="Requested"||/^for approval$/i.test(st)||/^sent for approval$/i.test(st)) return true;
+  if(st==="Requested"||/^for approval$/i.test(st)||/^sent for approval$/i.test(st)){
+    if(reserveSettlesStaleHold(reserve, entry.vrf)) return false;
+    return true;
+  }
   if(st==="Open"||st==="Closed"||st==="Rejected"||st==="Not bought"||st==="Cancelled"||
      /^approved$/i.test(st)||/^posted$/i.test(st)||/awaiting liquidation/i.test(st)||
      spendEndStatus(st)) return false;
@@ -16381,6 +16504,7 @@ function openVrfEdit(entry, after){
 }
 function confirmSheet(entry){ openVrf(entry); }
 function openVrf(entry,tab){
+  maybeHealStaleHold(entry);
   var ex=document.getElementById("cfSheet"); if(ex) ex.remove();
   tab=tab||"lines";
   var lazyGal=null;

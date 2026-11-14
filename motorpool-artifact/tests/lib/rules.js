@@ -1400,6 +1400,7 @@
     if (!entry) return "FOR APPROVAL";
     var st = String(entry.status || "").trim();
     if (!st || st === "Requested" || /^for approval$/i.test(st) || /^sent for approval$/i.test(st)) {
+      if (entryReserveSettled(entry)) return "APPROVED";
       return "FOR APPROVAL";
     }
     var ended = spendEndStatus(st);
@@ -1417,6 +1418,7 @@
       !/^approved$/i.test(st) &&
       !/^posted$/i.test(st)
     ) {
+      if (entryReserveSettled(entry)) return "APPROVED";
       return "FOR APPROVAL";
     }
     return "APPROVED";
@@ -1440,6 +1442,7 @@
       key === "rejected" ||
       key === "disapproved"
     ) {
+      if (entryReserveSettled(entry)) return false;
       return true;
     }
     if (key === "cancelled" || key === "canceled") {
@@ -1457,6 +1460,7 @@
       key !== "not bought" &&
       key !== "duplicate"
     ) {
+      if (entryReserveSettled(entry)) return false;
       return true;
     }
     return vrfPrintWatermark(entry) === "FOR APPROVAL";
@@ -1513,6 +1517,23 @@
     return reserveMeter(reserve);
   }
 
+  /** Approved / Closed / Flagged reserve wins over a Requested hold. Cancelled does not. */
+  function reserveSettlesStaleHold(reserve, vrfNo) {
+    if (!reserve || reserveSpendClosed(reserve)) return false;
+    var rs = String(reserve.status || "").trim();
+    if (rs !== "Approved" && rs !== "Closed" && rs !== "Flagged") return false;
+    var no = String(vrfNo == null ? "" : vrfNo).trim();
+    if (no && !reserveOwnsVrfNo(reserve, no)) return false;
+    return true;
+  }
+
+  function entryReserveSettled(entry) {
+    if (!entry) return false;
+    var rs = String(entry.reserveStatus || "").trim();
+    if (rs === "Cancelled" || rs === "Canceled" || rs === "Rejected" || rs === "Requested") return false;
+    return rs === "Approved" || rs === "Closed" || rs === "Flagged";
+  }
+
   function canonicalVrfStatus(st, reserve, liq, vrfNo) {
     var ended = spendEndStatus(st) || spendEndStatus(liq && (liq.outcome || liq.status));
     if (ended) return { status: ended, legacy: false };
@@ -1521,6 +1542,7 @@
     if (/^closed$/i.test(raw) || /^liquidated$/i.test(raw)) return { status: "Closed", legacy: false };
     if (/^rejected$/i.test(raw) || /^disapproved$/i.test(raw)) return { status: "Rejected", legacy: false };
     if (/^requested$/i.test(raw) || /^for approval$/i.test(raw) || /^sent for approval$/i.test(raw)) {
+      if (reserveSettlesStaleHold(reserve, vrfNo)) return { status: "Open", legacy: false };
       return { status: "Requested", legacy: false };
     }
     if (
@@ -1546,7 +1568,10 @@
   function vrfAwaitingApproval(entry, reserve) {
     if (!entry) return true;
     var st = String(entry.status || "").trim();
-    if (st === "Requested" || /^for approval$/i.test(st) || /^sent for approval$/i.test(st)) return true;
+    if (st === "Requested" || /^for approval$/i.test(st) || /^sent for approval$/i.test(st)) {
+      if (reserveSettlesStaleHold(reserve, entry.vrf)) return false;
+      return true;
+    }
     if (
       st === "Open" ||
       st === "Closed" ||
