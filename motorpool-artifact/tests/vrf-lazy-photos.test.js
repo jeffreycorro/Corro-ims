@@ -97,7 +97,7 @@ describe("Approvals renders before any picture fetch", () => {
     assert.match(painted, /el\("button","btn","Reject"\)/);
     assert.doesNotMatch(painted, /listPhotos|mountLazyGallery|S\.db\.photoMeta|signedUrl|createSignedUrl/);
     assert.ok(body.indexOf("document.body.appendChild(m)") < body.indexOf("mountLazyGallery(pgal"));
-    assert.match(html, /var BUILD = "2026-11-12 a"/);
+    assert.match(html, /var BUILD = "2026-11-14 a"/);
   });
 
   it("opens a VRF sheet without fetching pictures, and prints only when asked", () => {
@@ -137,7 +137,7 @@ describe("pictures load small, later, and full size only on tap", () => {
     assert.match(html, /PHOTO_GET_MS/);
     assert.match(html, /function lightboxVideo/);
     assert.match(html, /setTimeout\(function\(\)\{ fillLazyGallery/);
-    const meta = sliceFn(html, "async function listPhotoMeta(owner)", "async function listPhotoMetaMany(");
+    const meta = sliceFn(html, "async function listPhotoMeta(owner", "async function listPhotoMetaMany(");
     assert.match(meta, /S\.db\.photoMeta/);
     assert.doesNotMatch(meta, /listPhotos\(/);
     assert.match(meta, /return applyStoredThumbs\(meta\)/);
@@ -147,9 +147,12 @@ describe("pictures load small, later, and full size only on tap", () => {
 describe("print opens before picture bytes and keeps every attachment", () => {
   it("loads names first, then each picture on its own, and will not print early", () => {
     const print = sliceFn(html, "function pullPrintPhoto(x, page, onDone)", "function lightbox(src)");
-    assert.match(print, /listPhotoMetaMany\(photoOwnersForOpenVrf\(entry\)\)/);
-    assert.match(print, /loadPhotoDocs\(files, "print"\)/);
+    assert.match(print, /listPhotoMetaMany\(photoOwnersForOpenVrf\(entry\), \{first:true\}\)/);
+    assert.match(print, /photoFileUrl\(x\.id,"print"\)/);
     assert.match(print, /loadPhotoDoc\(x\.id,\{direct:true\}\)/);
+    assert.doesNotMatch(print, /loadPhotoDocs\(files, "print"\)/);
+    assert.match(print, /loadPictures\(\)/);
+    assert.doesNotMatch(print, /return loadPictures\(\)/);
     assert.match(print, /Waiting for pictures/);
     assert.match(print, /Print — /);
     assert.match(print, /whenImgReady/);

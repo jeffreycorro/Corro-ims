@@ -19,6 +19,12 @@
 [functions.photo]
   timeout = 26
 
+# Naming the pictures is a small query. Fitting one original still happens
+# inside the db function when a caller asks for photoData. 10s was cutting
+# that off and the page reported it as "the attachment list did not load".
+[functions.db]
+  timeout = 26
+
 # Skip PR / branch preview deploys from this config when Netlify honors ignore.
 # Also turn Deploy Previews off in the Netlify UI (required):
 # Project configuration → Build & deploy → Continuous Deployment →

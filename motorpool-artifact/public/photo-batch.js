@@ -119,6 +119,35 @@
     return Math.round(waves * (rtt * trips + transfer));
   }
 
+  /* A hung attachment list must free its slot. The page retries once. */
+  function withTimeout(promise, ms) {
+    var limitMs = ms > 0 ? ms : 8000;
+    return new Promise(function (resolve, reject) {
+      var done = false;
+      var timer = setTimeout(function () {
+        if (done) return;
+        done = true;
+        var err = new Error("timeout");
+        err.code = "timeout";
+        reject(err);
+      }, limitMs);
+      Promise.resolve(promise).then(
+        function (value) {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          resolve(value);
+        },
+        function (error) {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          reject(error);
+        }
+      );
+    });
+  }
+
   /* Reads (shrink a chosen file, fetch a thumb) can overlap. A rejection is
      recorded on that item so one bad file does not cancel the rest. */
   function mapLimit(items, limit, fn) {
@@ -172,6 +201,7 @@
     photoDataQuery: photoDataQuery,
     planPhotoBatches: planPhotoBatches,
     estimateAttachMs: estimateAttachMs,
+    withTimeout: withTimeout,
     mapLimit: mapLimit,
   };
 });

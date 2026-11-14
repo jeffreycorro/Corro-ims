@@ -29,8 +29,8 @@ function loadHelpers() {
 describe("liquidation attachments stay off the request list", () => {
   const api = loadHelpers();
 
-  it("is build 2026-11-12 a and does not move the write floor", () => {
-    assert.match(html, /var BUILD = "2026-11-12 a"/);
+  it("is build 2026-11-14 a and does not move the write floor", () => {
+    assert.match(html, /var BUILD = "2026-11-14 a"/);
     assert.match(issue, /const MIN_WRITE_BUILD = "2026-10-06 a"/);
   });
 
@@ -116,8 +116,8 @@ describe("liquidation attachment UI", () => {
     assert.doesNotMatch(gate, /liquidationPhotoOwner/);
 
     const print = sliceBetween(html, "function pullPrintPhoto(x, page, onDone)", "function lightbox(src)");
-    assert.match(print, /listPhotoMetaMany\(photoOwnersForOpenVrf\(entry\)\)/);
-    assert.match(print, /listPhotoMetaMany\(\[owner\]\)/);
+    assert.match(print, /listPhotoMetaMany\(photoOwnersForOpenVrf\(entry\), \{first:true\}\)/);
+    assert.match(print, /listPhotoMetaMany\(\[owner\], \{first:true\}\)/);
     assert.match(print, /loadPrintAttachmentList\(\)/);
   });
 });

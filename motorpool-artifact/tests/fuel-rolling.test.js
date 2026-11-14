@@ -95,8 +95,8 @@ function loadRows(ctx, rows) {
 }
 
 describe("fuel VRF 90-day consumption", () => {
-  it("is build 2026-11-12 a and keeps the sheet floors in a TODO map", () => {
-    assert.match(html, /var BUILD = "2026-11-12 a"/);
+  it("is build 2026-11-14 a and keeps the sheet floors in a TODO map", () => {
+    assert.match(html, /var BUILD = "2026-11-14 a"/);
     assert.match(html, /TODO: this page cannot read that sheet at runtime/);
     assert.match(html, /1rF-ee4RpinJ6EZCxvZ15aWKFEFDmhSNAI-zKy7DBnUg/);
     assert.match(html, /Unit Fuel Reference/);

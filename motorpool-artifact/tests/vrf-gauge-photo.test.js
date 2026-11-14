@@ -23,8 +23,8 @@ const vrf6298 = {
 };
 
 describe("gauge photo is read from the attachment, not only fuelPhotos.gauge", () => {
-  it("is build 2026-11-12 a and does not change approve-vrf", () => {
-    assert.match(html, /var BUILD = "2026-11-12 a"/);
+  it("is build 2026-11-14 a and does not change approve-vrf", () => {
+    assert.match(html, /var BUILD = "2026-11-14 a"/);
     assert.doesNotMatch(approveSrc, /encoderChecklist|fuelPhotos|odoOverride/);
   });
 
