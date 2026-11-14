@@ -93,7 +93,7 @@ function day(ctx, date, rows) {
 
 describe("2026-11-09a clock OT and payroll review", () => {
   it("is build 2026-11-09a and documents how to add a check", () => {
-    assert.match(html, /const BUILD = "2026-11-13b"/);
+    assert.match(html, /const BUILD = "2026-11-14a"/);
     assert.match(html, /function payAuditChecks\(/);
     assert.match(html, /function clockOtHours\(/);
     assert.match(doc, /payAuditChecks/);
