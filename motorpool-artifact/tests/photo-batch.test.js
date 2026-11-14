@@ -104,7 +104,8 @@ describe("open and print stop waiting on one request per picture", () => {
     assert.match(html, /<script src="\/photo-batch.js"><\/script>/);
     assert.match(html, /function loadPhotoDocs\(/);
     assert.match(html, /loadPhotoDocs\(needThumb, "thumb"\)/);
-    assert.match(html, /loadPhotoDocs\(files, "print"\)/);
+    assert.match(html, /photoFileUrl\(x\.id,"print"\)/);
+    assert.doesNotMatch(html, /loadPhotoDocs\(files, "print"\)/);
     const add = html.slice(html.indexOf("async function addPhoto(vrf,rec)"), html.indexOf("async function addPhotoToOwners"));
     assert.match(add, /downscaleDataUrl\(rec\.data, PHOTO_THUMB_PX\)/);
     assert.match(add, /body\.thumb=thumb/);

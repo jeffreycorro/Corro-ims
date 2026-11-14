@@ -18,7 +18,7 @@ const {
 } = require("./lib/rules");
 
 const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
-const BUILD = "2026-11-13 a";
+const BUILD = "2026-11-14 a";
 
 function extractFunction(src, name) {
   const needle = "function " + name + "(";
@@ -64,9 +64,9 @@ function hold(extra) {
 }
 
 describe("VRF source", () => {
-  it("is build 2026-11-13 a", () => {
-    assert.match(html, /var BUILD = "2026-11-13 a"/);
-    assert.equal(BUILD, "2026-11-13 a");
+  it("is build 2026-11-14 a", () => {
+    assert.match(html, /var BUILD = "2026-11-14 a"/);
+    assert.equal(BUILD, "2026-11-14 a");
   });
 
   it("labels LRF · LRF-0010 and stays blank when nothing was set", () => {
