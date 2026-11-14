@@ -76,12 +76,15 @@ describe("print names and pictures are separate", () => {
 });
 
 describe("print gates stay as they are", () => {
-  it("still refuses a request that is not approved", () => {
+  it("still refuses a request that is not approved, and lets an approved reserve through", () => {
     assert.equal(audit.mayPrint({ vrf: "6148", status: "Requested" }).ok, false);
     assert.equal(audit.mayPrint({ vrf: "6148", status: "Draft" }).ok, false);
     assert.equal(audit.mayPrint({ vrf: "6148", status: "Approved" }).ok, true);
     assert.equal(audit.mayPrint({ vrf: "6148", status: "Closed", held: true }).ok, true);
     assert.equal(audit.mayPrint({ vrf: "6148", status: "Open" }).ok, true);
-    assert.match(html, /return api\.mayPrint\(entry\)/);
+    assert.equal(audit.mayPrint({ vrf: "6148", status: "Requested", held: true, reserveStatus: "Approved" }).ok, true);
+    assert.equal(audit.mayPrint({ vrf: "6148", status: "Requested", held: true, reserveStatus: "Requested" }).ok, false);
+    assert.match(html, /return api\.mayPrint\(view\)/);
+    assert.match(html, /reserveStatus:entry\.reserveStatus\|\|reserve\.status/);
   });
 });

@@ -901,6 +901,73 @@ describe("new VRF save against the live store", () => {
     assert.equal(reserveCount(), 1);
   });
 
+  it("replaces a Requested reserve-hold with Open lines and sets vrfs", async () => {
+    const hold = {
+      month: "2026-10", date: "2026-10-07", vrf: "6122", veh: "SV-12",
+      cat: "Belt", item: "Belt", qty: 1, price: 1500, total: 1500,
+      reserve: "108", vstatus: "Requested", src: "reserve-hold", requestedBy: "Sophie",
+    };
+    records["ledger:6122"].data.rows = [JSON.parse(JSON.stringify(hold))];
+    records["reserve:108"].data.vrfs = [];
+    records["reserve:108"].data.status = "Requested";
+    const state = page.__api.getS();
+    state.reserves = [JSON.parse(JSON.stringify(records["reserve:108"].data))];
+    state.ledger = { "2026-10": [JSON.parse(JSON.stringify(hold))] };
+    page.__api.resetIndex();
+    const approving = page.__api.reserveBy("108");
+    approving.status = "Approved";
+    approving.approvedBy = "Jeffrey James M. Corro";
+    approving.approvedAt = "2026-11-13T12:55:37+08:00";
+    approving.approvedBudget = 1500;
+    const posted = await page.__api.postAndSaveReserve(approving);
+    assert.equal(String(posted), "6122");
+    assert.deepEqual(approving.vrfs, ["6122"]);
+    assert.ok((records["reserve:108"].data.vrfs || []).includes("6122"));
+    assert.equal(records["reserve:108"].data.status, "Approved");
+    const row = records["ledger:6122"].data.rows[0];
+    assert.equal(row.vstatus, "Open");
+    assert.equal(row.src, undefined);
+    assert.equal(row.vrf, "6122");
+  });
+
+  it("posts Open lines from a hold when the reserve has no draft lines", async () => {
+    const hold = {
+      month: "2026-10", date: "2026-10-07", vrf: "6122", veh: "SV-12",
+      cat: "Belt", item: "Belt", qty: 2, price: 100, total: 200,
+      reserve: "108", vstatus: "Requested", src: "reserve-hold",
+    };
+    records["reserve:108"].data.draftLines = [];
+    records["reserve:108"].data.vrfs = [];
+    const state = page.__api.getS();
+    state.reserves = [JSON.parse(JSON.stringify(records["reserve:108"].data))];
+    state.ledger = { "2026-10": [hold] };
+    page.__api.resetIndex();
+    const approving = page.__api.reserveBy("108");
+    approving.status = "Approved";
+    approving.approvedBy = "Carmel";
+    const posted = await page.__api.postAndSaveReserve(approving);
+    assert.equal(String(posted), "6122");
+    assert.deepEqual(approving.vrfs, ["6122"]);
+    assert.equal(records["ledger:6122"].data.rows[0].vstatus, "Open");
+    assert.equal(records["ledger:6122"].data.rows[0].src, undefined);
+    assert.equal(records["ledger:6122"].data.rows[0].qty, 2);
+  });
+
+  it("refuses to mark a reserve approved when there is nothing to post", async () => {
+    const state = page.__api.getS();
+    const approving = page.__api.reserveBy("108");
+    approving.draftLines = [];
+    approving.vrfs = [];
+    approving.status = "Approved";
+    state.ledger = { "2026-10": [] };
+    delete records["ledger:6122"];
+    page.__api.resetIndex();
+    const before = rpcLog.length;
+    await assert.rejects(() => page.__api.postAndSaveReserve(approving), /no lines to post/);
+    assert.equal(rpcLog.length, before);
+    assert.deepEqual(approving.vrfs, []);
+  });
+
   it("liquidates, cancels, and marks a duplicate without a year or month blob", async () => {
     page.__api.resetIndex();
     const open = page.__api.vrfByNo("6122");

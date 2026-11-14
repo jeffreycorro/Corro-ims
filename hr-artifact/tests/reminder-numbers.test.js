@@ -190,7 +190,7 @@ describe("written reminder numbers", () => {
     const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
     const db = fs.readFileSync(path.join(__dirname, "../netlify/functions/db.js"), "utf8");
     const file201 = fs.readFileSync(path.join(__dirname, "../public/hr-201-file.js"), "utf8");
-    assert.match(html, /const BUILD = "2026-11-13b"/);
+    assert.match(html, /const BUILD = "2026-11-14a"/);
     assert.match(shim, /hr-reminder-numbers\.js/);
     assert.match(shim, /data-hr-reminder-numbers/);
     assert.ok(shim.indexOf("hr-reminder-numbers.js") < shim.indexOf("hr-201-file.js"));

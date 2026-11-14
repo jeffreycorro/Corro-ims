@@ -505,6 +505,15 @@ function voidRecord(rec, spec) {
   return { ok: true, record: next };
 }
 
+/* A leftover Requested reserve-hold must not block print once the reserve
+   is Approved, Closed, or Flagged. Cancelled and Not bought are unchanged. */
+function approvedReserveOverridesHold(entry) {
+  if (!entry) return false;
+  var rs = String(entry.reserveStatus || "").trim();
+  if (rs === "Cancelled" || rs === "Canceled" || rs === "Rejected" || rs === "Requested") return false;
+  return rs === "Approved" || rs === "Closed" || rs === "Flagged";
+}
+
 function mayPrint(entry) {
   var message = "Not approved — cannot print";
   if (!entry) return { ok: false, message: message };
@@ -512,11 +521,13 @@ function mayPrint(entry) {
   if (!vrf || /not yet posted/i.test(vrf) || entry.unnumbered) return { ok: false, message: message };
   var st = String(entry.status || "").trim();
   var key = st.toLowerCase();
-  if (!st || key === "requested" || key === "rejected" || key === "draft" || key === "pending" || key === "for approval" || key === "sent for approval" || key === "disapproved") {
-    return { ok: false, message: message };
+  var settled = approvedReserveOverridesHold(entry);
+  if (key === "rejected" || key === "disapproved") return { ok: false, message: message };
+  if (!st || key === "requested" || key === "draft" || key === "pending" || key === "for approval" || key === "sent for approval") {
+    if (!settled) return { ok: false, message: message };
   }
   if (entry.held && key !== "open" && key !== "closed" && key !== "legacy" && key !== "approved" && key !== "not bought" && key !== "duplicate" && key !== "cancelled" && key !== "canceled") {
-    return { ok: false, message: message };
+    if (!settled) return { ok: false, message: message };
   }
   if (key === "cancelled" || key === "canceled") {
     var wasApproved = !!(entry.approvedAt || entry.approvedBy || entry.posted || entry.src === "ledger");

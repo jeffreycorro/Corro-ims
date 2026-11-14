@@ -429,7 +429,10 @@ td.num .pay-break-btn{display:inline-flex;align-items:center;justify-content:fle
 .pay-break-diff{background:var(--warn-soft,#fbf3e4)}
 .pay-break-table .mono{white-space:nowrap}
 .pay-break-table th:last-child,.pay-break-table td:last-child{position:sticky;right:0;background:var(--surface,#fff)}
+.modal.pay-break-modal{width:min(680px,100%)}
+.pay-break-pop .pay-break-table{overflow-x:auto;-webkit-overflow-scrolling:touch;max-width:100%}
 @media (max-width:720px){.ov{padding:8px}.pay-break-table{overflow-x:auto;-webkit-overflow-scrolling:touch}}
+@media print{#pay-break-dialog,.pay-break-live,.pay-break-table,.pay-break-warn,.pay-break-pop{display:none!important}}
 </style>
 
 <svg style="display:none" aria-hidden="true">
@@ -2180,7 +2183,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-11-13b";
+const BUILD = "2026-11-14a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -23892,12 +23895,12 @@ function openPayBreakdown(empId, side){
   const who=line && line.name ? (typeof flipName==="function" ? flipName(line.name) : line.name) : "Payroll breakdown";
   openModal({
     title: who+" — breakdown",
-    wide:true,
-    body:'<div id="pay-break-dialog">'+html+'</div>',
+    body:'<div id="pay-break-dialog" class="pay-break-pop">'+html+'</div>',
     foot:'<button class="btn pri" id="pay-break-close" type="button">Close</button>'
   });
   const box=document.querySelector("#ov .modal");
   if(box){
+    box.classList.add("pay-break-modal");
     box.setAttribute("role","dialog");
     box.setAttribute("aria-modal","true");
     box.setAttribute("aria-labelledby","pay-break-heading");
@@ -26943,8 +26946,7 @@ function wire(){
   const slipShow=(lines,b,title,file)=>{
     if(blockCompanyPrint([S.settings.payrollBy?"evaluated":"dept"])) return;
     const body = lines.length===1 ? payslipBody(lines[0],b.kind,b.per) : payslipSheet(lines,b.kind,b.per);
-    const live=(lines||[]).map(L=>payBreakPanels(L.empId,{dedOpen:lines.length===1,earnOpen:false})).join("");
-    openModal({ title, wide:true, body:live+pfWrap(body),
+    openModal({ title, wide:true, body:pfWrap(body),
       foot:'<button class="btn" id="pys-back">Back</button>'
         + '<button class="btn" id="pys-pdf"><svg><use href="#i-dl"/></svg> Save as PDF</button>'
         + '<button class="btn pri" id="pys-print">Print</button>'});
