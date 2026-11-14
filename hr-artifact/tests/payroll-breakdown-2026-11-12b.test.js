@@ -235,8 +235,8 @@ describe("payroll breakdown", () => {
     });
   });
 
-  it("is on the draft review, the approval screen, the payslip, and build 2026-11-12b", () => {
-    assert.match(html, /const BUILD = "2026-11-13b"/);
+  it("is on the draft review and the approval screen, and not on the payslip", () => {
+    assert.match(html, /const BUILD = "2026-11-14a"/);
     assert.match(html, /function openPayBreakdown/);
     assert.match(html, /payBreakRemember\(lines\)/);
     assert.match(html, /payBreakPanels\(empId,\{dedOpen:true,earnOpen:false\}\)/);
@@ -245,5 +245,11 @@ describe("payroll breakdown", () => {
     assert.match(flowSrc, /id="pay-approval"/);
     assert.match(flowSrc, /opens the breakdown/);
     assert.match(flowSrc, /It does not change the figures/);
+    const slipAt = html.indexOf("const slipShow=");
+    const slipEnd = html.indexOf("on(\"[data-payslip]\"", slipAt);
+    const slip = html.slice(slipAt, slipEnd);
+    assert.match(slip, /body:pfWrap\(body\)/);
+    assert.doesNotMatch(slip, /payBreak/);
+    assert.doesNotMatch(slip, /pay-break/);
   });
 });
