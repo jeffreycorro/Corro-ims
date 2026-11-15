@@ -386,8 +386,8 @@
     return "";
   }
 
-  function dbCall(op, extra) {
-    return gatedCall("db", Object.assign({ op: op, build: pageBuild() }, extra || {}));
+  function dbCall(op, extra, callOpts) {
+    return gatedCall("db", Object.assign({ op: op, build: pageBuild() }, extra || {}), callOpts || {});
   }
 
   function capabilityOn(status, name) {
@@ -500,8 +500,8 @@
         }
         return query([]);
       },
-      photoMeta: function (owner) {
-        return dbCall("photoMeta", { owner: String(owner || "") });
+      photoMeta: function (owner, callOpts) {
+        return dbCall("photoMeta", { owner: String(owner || "") }, callOpts || {});
       },
       photoData: function (ids, fit) {
         return dbCall("photoData", {

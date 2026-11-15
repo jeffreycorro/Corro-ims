@@ -447,7 +447,7 @@ var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
    This label is inside the page function. The shim reads window.BUILD when it
    sends a save. Without that copy every save goes out with an empty build and
    the server answers "Reload the page". */
-var BUILD = "2026-11-13 a";
+var BUILD = "2026-11-14 a";
 try { window.BUILD = BUILD; } catch (e) {}
 var DAY = 86400000, MO = 30.44;
 
@@ -5703,30 +5703,93 @@ function applyStoredThumbs(list){
   return list||[];
 }
 /* Names and sizes only. A failed lookup stays on this device's names.
-   It must not fall back to listPhotos — that downloads every image. */
-async function listPhotoMeta(owner){
+   It must not fall back to listPhotos — that downloads every image.
+   The log used to ask for every fuel VRF at once. Three at a time, and a
+   name we already have is not asked for again. Eight seconds, then the
+   slot is free and the caller can retry. */
+var PHOTO_META_LIMIT=3;
+var PHOTO_LIST_MS=8000;
+var photoMetaActive=0;
+var photoMetaWait=[];
+var photoMetaCache={};
+var photoMetaFlight={};
+function pumpPhotoMeta(){
+  while(photoMetaActive<PHOTO_META_LIMIT && photoMetaWait.length){
+    photoMetaActive++;
+    (function(job){
+      Promise.resolve().then(job.fn).then(function(v){
+        photoMetaActive--;
+        job.resolve(v);
+        pumpPhotoMeta();
+      },function(err){
+        photoMetaActive--;
+        job.reject(err);
+        pumpPhotoMeta();
+      });
+    })(photoMetaWait.shift());
+  }
+}
+function runPhotoMeta(fn, first){
+  return new Promise(function(resolve,reject){
+    var job={fn:fn,resolve:resolve,reject:reject};
+    if(first && photoMetaWait.length) photoMetaWait.unshift(job);
+    else photoMetaWait.push(job);
+    pumpPhotoMeta();
+  });
+}
+function callWithTimeout(promise, ms){
+  if(window.PhotoBatch && typeof PhotoBatch.withTimeout==="function") return PhotoBatch.withTimeout(promise, ms);
+  return promise;
+}
+function forgetPhotoMeta(owner){
+  owner=String(owner||"");
+  if(owner) delete photoMetaCache[owner];
+}
+function copyPhotoMeta(list){
+  return (list||[]).map(function(x){ return x?Object.assign({}, x):x; }).filter(Boolean);
+}
+async function listPhotoMeta(owner, opts){
+  owner=String(owner||"");
   var loc=localPhotoItems(owner);
   loc.forEach(rememberPhotoDoc);
   var meta=loc.map(photoMetaOf).filter(Boolean);
+  if(photoMetaCache[owner]) return applyStoredThumbs(copyPhotoMeta(photoMetaCache[owner]));
   if(!S.db||typeof S.db.photoMeta!=="function") return applyStoredThumbs(meta);
-  try{
-    var row=await S.db.photoMeta(String(owner));
-    var remote=(row&&row.docs||[]).map(photoMetaOf).filter(Boolean);
-    return applyStoredThumbs(mergePhotoLists([remote, meta]));
-  }catch(e){
-    /* A failed lookup with nothing on this device must not look like an
-       empty gallery. The caller shows the error and a retry. */
-    if(meta.length) return applyStoredThumbs(meta);
-    throw e;
-  }
+  if(photoMetaFlight[owner]) return photoMetaFlight[owner];
+  var flight=runPhotoMeta(function(){
+    if(photoMetaCache[owner]) return applyStoredThumbs(copyPhotoMeta(photoMetaCache[owner]));
+    var ctrl=typeof AbortController==="function"?new AbortController():null;
+    var call=S.db.photoMeta(owner, ctrl?{signal:ctrl.signal}:undefined);
+    return callWithTimeout(call, PHOTO_LIST_MS).then(function(row){
+      var remote=(row&&row.docs||[]).map(photoMetaOf).filter(Boolean);
+      var merged=applyStoredThumbs(mergePhotoLists([remote, meta]));
+      photoMetaCache[owner]=copyPhotoMeta(merged);
+      return copyPhotoMeta(merged);
+    }).catch(function(e){
+      if(ctrl){ try{ ctrl.abort(); }catch(e2){} }
+      /* A failed lookup with nothing on this device must not look like an
+         empty gallery. The caller shows the error and a retry. */
+      if(meta.length) return applyStoredThumbs(meta);
+      throw e;
+    });
+  }, opts&&opts.first);
+  var tracked=flight.then(function(list){
+    if(photoMetaFlight[owner]===tracked) delete photoMetaFlight[owner];
+    return list;
+  },function(err){
+    if(photoMetaFlight[owner]===tracked) delete photoMetaFlight[owner];
+    return Promise.reject(err);
+  });
+  photoMetaFlight[owner]=tracked;
+  return tracked;
 }
-async function listPhotoMetaMany(owners){
+async function listPhotoMetaMany(owners, opts){
   var seen={}, jobs=[];
   (owners||[]).forEach(function(o){
     o=String(o||"");
     if(!o||seen[o]) return;
     seen[o]=1;
-    jobs.push(listPhotoMeta(o));
+    jobs.push(listPhotoMeta(o, opts));
   });
   return mergePhotoLists(await Promise.all(jobs));
 }
@@ -6510,6 +6573,7 @@ async function addLink(owner,rec){
     await S.db.doc("photos/"+photoKey(owner,idx)).set(body);
   }
   await bumpPhotoCount(String(owner),1);
+  forgetPhotoMeta(owner);
   return idx;
 }
 function photoRoleFields(rec){
@@ -6546,6 +6610,7 @@ async function addPhoto(vrf,rec){
     throw new Error("This device cannot hold a file that large. Paste a link instead.");
   }
   await bumpPhotoCount(String(vrf),1);
+  forgetPhotoMeta(vrf);
   return idx;
 }
 async function addPhotoToOwners(owners,rec){
@@ -6665,6 +6730,7 @@ async function removePhoto(vrf,id){
     try{ await S.db.doc("photos/"+id).delete(); }catch(e){}
   }
   await bumpPhotoCount(String(vrf),-1);
+  forgetPhotoMeta(vrf);
 }
 function photoCount(vrf){
   var n=S.photoCounts[String(vrf)]||0;
@@ -8152,17 +8218,21 @@ function missingPhotosChip(entry){
   /* The photo index can lag the files. Names only — not the image bytes —
      decide the chip. A false fuelPhotos.gauge does not win over a picture. */
   if(typeof listPhotoMetaMany==="function" && api.gaugePhotoLine){
-    listPhotoMetaMany(photoOwnersForOpenVrf(entry)).then(function(list){
-      if(!node.isConnected) return;
-      var live=api.missingPhotoBadge({
-        fuel:true,
-        photos:list||[],
-        photoCount:(list&&list.length)||counted,
-        fuelPhotos:entry.fuelPhotos||null
-      });
-      if(!live) node.remove();
-      else node.textContent=live;
-    }).catch(function(){});
+    /* A chip that is only used as a yes/no, or a row below the fold, must
+       not start a request. The fuel audit used to do that for every fuel VRF. */
+    whenVisible(node, function(){
+      listPhotoMetaMany(photoOwnersForOpenVrf(entry)).then(function(list){
+        if(!node.isConnected) return;
+        var live=api.missingPhotoBadge({
+          fuel:true,
+          photos:list||[],
+          photoCount:(list&&list.length)||counted,
+          fuelPhotos:entry.fuelPhotos||null
+        });
+        if(!live) node.remove();
+        else node.textContent=live;
+      }).catch(function(){});
+    });
   }
   return node;
 }
@@ -14170,6 +14240,49 @@ function paintGaugeStill(page, x){
     imgs[i].style.display="block";
   }
 }
+/* The print form used to pull every picture's data URL into one JSON body.
+   Three VRF 6148 receipts are about 506 KB of base64 before the phone even
+   decodes them. A fitted JPEG from the photo URL stays in the image cache.
+   Two at a time, and one slow file does not hold the queue past PHOTO_GET_MS. */
+function placePrintRemote(x, page, url){
+  return new Promise(function(resolve){
+    var fig=printFigure(page, x.id);
+    var im=document.createElement("img");
+    im.alt=(x&&x.caption)||"attachment";
+    im.setAttribute("decoding","async");
+    var settled=false;
+    function finish(ok){
+      if(settled) return;
+      settled=true;
+      clearTimeout(timer);
+      fig=printFigure(page, x.id);
+      if(ok){
+        x.data=url;
+        x._failed=false;
+        paintGaugeStill(page, x);
+        if(fig){
+          im.style.display="";
+          setPrintFigureBody(fig, im);
+        }
+      }else{
+        x._failed=true;
+        x.data="";
+        if(fig) markPrintFigureFailed(fig, x, function(){ pullPrintPhoto(x, page, null); });
+      }
+      resolve(!!ok);
+    }
+    var timer=setTimeout(function(){ finish(false); }, PHOTO_GET_MS);
+    im.addEventListener("load",function(){ finish(im.naturalWidth>0); });
+    im.addEventListener("error",function(){ finish(false); });
+    if(fig){
+      var wait=document.createElement("div");
+      wait.className="vwait";
+      wait.textContent="Loading picture…";
+      setPrintFigureBody(fig, wait);
+    }
+    im.src=url;
+  });
+}
 /* One picture, by its id. A miss is marked on that figure only. */
 function pullPrintPhoto(x, page, onDone){
   if(!x||x.kind==="link"||isVideoMeta(x)||isDocAttachment(x)||x.data){
@@ -14178,6 +14291,19 @@ function pullPrintPhoto(x, page, onDone){
     return Promise.resolve(!!(x&&x.data));
   }
   x._failed=false;
+  var remote=S.db&&x.id?photoFileUrl(x.id,"print"):"";
+  if(remote){
+    return runPhotoJob(function(){ return placePrintRemote(x, page, remote); }).then(function(ok){
+      if(onDone) onDone();
+      return ok;
+    },function(){
+      x._failed=true;
+      var fig=printFigure(page, x.id);
+      if(fig) markPrintFigureFailed(fig, x, function(){ pullPrintPhoto(x, page, onDone); });
+      if(onDone) onDone();
+      return false;
+    });
+  }
   var fig=printFigure(page, x.id);
   if(fig){
     var wait=document.createElement("div");
@@ -14395,59 +14521,73 @@ async function openVrfPrintSheet(entry,photos,preview,edition,model){
   document.body.appendChild(m);
   syncBar();
 
-  function loadAll(){
+  /* Picture bytes are not part of this promise. A slow JPEG used to reject
+     the list and the banner said the names had not loaded. */
+  function loadPictures(){
     var files=printPhotoFiles(live);
-    return loadPhotoDocs(files, "print").then(function(){
-      return Promise.all(files.map(function(x){
-        return pullPrintPhoto(x, pageBox.node, syncBar);
-      }));
-    }).then(function(){
-      /* The same picture can sit on the VRF number and the reserve.
-         Once the bytes are here, keep one copy — the same rule as the ledger. */
-      var groups=splitVrfAttachments(live);
-      var merged=mergePhotoLists([groups.request]).concat(mergePhotoLists([groups.liquidation]));
-      if(merged.length!==live.length){
-        live=merged;
-        show(live);
-        printPhotoFiles(live).forEach(function(x){
-          if(!x._failed||x.data) return;
-          var fig=printFigure(pageBox.node, x.id);
-          if(fig) markPrintFigureFailed(fig, x, function(){ pullPrintPhoto(x, pageBox.node, syncBar); });
-        });
-      }
+    return Promise.all(files.map(function(x){
+      return pullPrintPhoto(x, pageBox.node, syncBar);
+    })).then(function(){
+      try{
+        /* The same picture can sit on the VRF number and the reserve.
+           Once the bytes are here, keep one copy — the same rule as the ledger. */
+        var groups=splitVrfAttachments(live);
+        var merged=mergePhotoLists([groups.request]).concat(mergePhotoLists([groups.liquidation]));
+        if(merged.length!==live.length){
+          live=merged;
+          show(live);
+          printPhotoFiles(live).forEach(function(x){
+            if(!x._failed||x.data) return;
+            var fig=printFigure(pageBox.node, x.id);
+            if(fig) markPrintFigureFailed(fig, x, function(){ pullPrintPhoto(x, pageBox.node, syncBar); });
+          });
+        }
+      }catch(e){}
       syncBar();
-    }, syncBar);
+    },function(){ try{ syncBar(); }catch(e2){} });
   }
   function takeList(list){
     if(!m.isConnected) return;
     live=list||[];
     listReady=true;
-    show(live);
+    try{ show(live); }catch(e){}
     syncBar();
-    return loadAll();
+    loadPictures();
+  }
+  function showListFailure(){
+    if(!m.isConnected) return;
+    listReady=true;
+    hint.textContent="The attachment list did not load. Printing now leaves the pictures off the form.";
+    printb.disabled=false; saveb.disabled=false;
+    printb.textContent="Print — pictures not loaded";
   }
   function loadPrintAttachmentList(){
     var owner=liquidationPhotoOwner(entry);
-    return Promise.all([
-      listPhotoMetaMany(photoOwnersForOpenVrf(entry)),
-      owner?listPhotoMetaMany([owner]):Promise.resolve([])
-    ]).then(function(parts){
-      var req=parts[0]||[];
-      var liq=(parts[1]||[]).map(function(x){
-        if(x&&!isLiquidationAttachment(x)) x.role="liquidation";
-        return x;
+    var attempt=0;
+    function once(){
+      attempt++;
+      return Promise.all([
+        listPhotoMetaMany(photoOwnersForOpenVrf(entry), {first:true}),
+        owner?listPhotoMetaMany([owner], {first:true}):Promise.resolve([])
+      ]).then(function(parts){
+        var req=parts[0]||[];
+        var liq=(parts[1]||[]).map(function(x){
+          if(x&&!isLiquidationAttachment(x)) x.role="liquidation";
+          return x;
+        });
+        return req.concat(liq);
       });
-      return req.concat(liq);
+    }
+    return once().catch(function(err){
+      if(attempt>=2) throw err;
+      return once();
     });
   }
   if(!supplied){
     loadPrintAttachmentList().then(takeList).catch(function(){
       if(!m.isConnected) return;
-      listReady=true;
       live=[];
-      hint.textContent="The attachment list did not load. Printing now leaves the pictures off the form.";
-      printb.disabled=false; saveb.disabled=false;
-      printb.textContent="Print — pictures not loaded";
+      showListFailure();
       var retry=el("button","btn sm","Retry pictures");
       retry.addEventListener("click",function(){
         retry.disabled=true;
@@ -14455,19 +14595,16 @@ async function openVrfPrintSheet(entry,photos,preview,edition,model){
         syncBar();
         loadPrintAttachmentList().then(function(list){
           retry.remove();
-          return takeList(list);
+          takeList(list);
         }).catch(function(){
-          listReady=true;
           retry.disabled=false;
-          printb.disabled=false; saveb.disabled=false;
-          printb.textContent="Print — pictures not loaded";
-          hint.textContent="The attachment list did not load. Printing now leaves the pictures off the form.";
+          showListFailure();
         });
       });
       bar.insertBefore(retry, sp);
     });
   }else{
-    loadAll();
+    loadPictures();
   }
 }
 function lightbox(src){

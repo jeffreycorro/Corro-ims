@@ -154,8 +154,8 @@ describe("attachment bytes are a cached GET, not a no-store JSON blob", () => {
 });
 
 describe("galleries no longer download every full file up front", () => {
-  it("is build 2026-11-13 a and keeps the write floor", () => {
-    assert.match(html, /var BUILD = "2026-11-13 a"/);
+  it("is build 2026-11-14 a and keeps the write floor", () => {
+    assert.match(html, /var BUILD = "2026-11-14 a"/);
     assert.match(fs.readFileSync(path.join(__dirname, "../netlify/lib/vrf-issue.js"), "utf8"), /const MIN_WRITE_BUILD = "2026-10-06 a"/);
     assert.match(toml, /\[functions\.photo\]/);
     assert.match(toml, /timeout = 26/);
@@ -200,7 +200,7 @@ describe("galleries no longer download every full file up front", () => {
     assert.match(html, /function placeRemoteThumb/);
     assert.match(html, /PHOTO_GET_MS/);
     assert.match(html, /function isStoredLink/);
-    const meta = sliceBetween(html, "async function listPhotoMeta(owner)", "async function listPhotoMetaMany(");
+    const meta = sliceBetween(html, "async function listPhotoMeta(owner", "async function listPhotoMetaMany(");
     assert.match(meta, /if\(meta\.length\) return applyStoredThumbs\(meta\)/);
     assert.match(meta, /throw e/);
     assert.doesNotMatch(meta, /listPhotos\(/);
