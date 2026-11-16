@@ -941,7 +941,7 @@
       price: price,
       total: total,
       notBought: false,
-      vstatus: "Closed",
+      vstatus: stamp && stamp.variancePending ? "Variance pending" : "Closed",
       liq: stamp || null,
     });
     if (e.supplier != null) next.supplier = e.supplier;
@@ -1537,6 +1537,13 @@
   function canonicalVrfStatus(st, reserve, liq, vrfNo) {
     var ended = spendEndStatus(st) || spendEndStatus(liq && (liq.outcome || liq.status));
     if (ended) return { status: ended, legacy: false };
+    var varianceStillOpen =
+      liq &&
+      liq.variancePending === true &&
+      !(String(liq.varianceApprovedBy || "").trim() && String(liq.varianceApprovedAt || "").trim());
+    if (varianceStillOpen || String(st || "").trim() === "Variance pending") {
+      return { status: "Liquidated \u2013 variance pending approval", legacy: false };
+    }
     if (liq) return { status: "Closed", legacy: false };
     var raw = String(st || "").trim();
     if (/^closed$/i.test(raw) || /^liquidated$/i.test(raw)) return { status: "Closed", legacy: false };
@@ -1600,6 +1607,8 @@
       st === "Rejected" ||
       st === "Not bought" ||
       st === "Cancelled" ||
+      st === "Liquidated \u2013 variance pending approval" ||
+      st === "Variance pending" ||
       /^liquidated$/i.test(st) ||
       /^disapproved$/i.test(st) ||
       spendEndStatus(st)

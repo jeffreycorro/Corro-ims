@@ -606,7 +606,7 @@ function applyLiquidationLine(row, edit, stamp, outcome){
   var total=(qty!=null&&price!=null)?qty*price:(row&&row.total);
   var next=Object.assign({}, row||{}, {
     qty:qty, price:price, total:total,
-    notBought:false, vstatus:"Closed", liq:stamp||null
+    notBought:false, vstatus:(stamp&&stamp.variancePending)?"Variance pending":"Closed", liq:stamp||null
   });
   if(e.supplier!=null) next.supplier=e.supplier;
   if(e.project!=null) next.project=e.project;
@@ -2353,7 +2353,14 @@ async function liquidateVrf(entry,edits,added,by,note,outcome,voucherRaw,proof){
   var setVoucher=voucherRaw!==undefined;
   if(setVoucher) applyVoucherToStamp(stamp, voucherRaw);
   /* Liquidation proof (2026-11-02): the server refuses a bought close without it. */
-  if(proof&&outcome==="bought") stamp.proof=proof;
+  if(proof&&outcome==="bought"){
+    stamp.proof=proof;
+    if(proof.variancePending){
+      stamp.variancePending=true;
+      stamp.varianceExplanation=proof.varianceExplanation||"";
+      stamp.varianceAmount=proof.varianceAmount;
+    }
+  }
   if(outcome==="duplicate"){
     var dupNo=/(\d{3,})/.exec(String(stamp.note||""));
     if(dupNo) stamp.duplicateOf=String(dupNo[1]).replace(/^0+/,"")||dupNo[1];
@@ -2442,7 +2449,7 @@ async function liquidateVrf(entry,edits,added,by,note,outcome,voucherRaw,proof){
         supplier:a2.supplier||"", unit:a2.unit||"pc",
         project:a2.project||base.project||"", liters:parseFloat(a2.liters)||null,
         odo:base.odo||null, reserve:base.reserve||"",
-        vstatus:"Closed", liq:stamp, addedAtLiquidation:true,
+        vstatus:(stamp&&stamp.variancePending)?"Variance pending":"Closed", liq:stamp, addedAtLiquidation:true,
         notes:base.notes||""};
     });
     if(extra.length) await appendLedger(mk0, rowsConfinedToVrf(extra, no));
@@ -2921,7 +2928,10 @@ async function settleReserve(no, outcome, by, note, voucherOpt){
   var pendingVoucher=rememberVoucher?normalizeVoucherNo(voucherOpt.voucherRaw):{voucherNo:""};
   if(rememberVoucher&&pendingVoucher.voucherNo) applyVoucherToReserve(r, voucherOpt.voucherRaw);
   var linked=(r.vrfs||[]).map(vrfByNo).filter(Boolean);
-  if(linked.some(function(v){ return v.status==="Open"||v.status==="Requested"; })){
+  if(linked.some(function(v){
+    return v.status==="Open"||v.status==="Requested"||v.status==="Liquidated \u2013 variance pending approval"||
+      (window.VrfLiquidation&&window.VrfLiquidation.varianceClosePending(v.liq));
+  })){
     if(rememberVoucher&&pendingVoucher.voucherNo) await saveReserves(no);
     return;
   }
@@ -4758,6 +4768,79 @@ function namedApprover(raw){
     return {ok:false, code:"approver_check_unavailable",
       error:"Approver check did not load. Reload the page. Nothing was approved."};
   }
+}
+async function approveSpendVarianceOnVrf(entry, rawName){
+  var api=window.VrfLiquidation;
+  var no=String(entry&&entry.vrf||"").trim();
+  if(!api||!no) throw new Error("This VRF cannot be approved.");
+  var hits=ledgerRowsForVrf(no);
+  if(!hits.length) throw new Error("VRF "+no+" is not on the ledger, so the variance was not approved.");
+  var liq=JSON.parse(JSON.stringify(entry.liq||(hits[0].row&&hits[0].row.liq)||{}));
+  var result=api.approveSpendVariance(liq, rawName, isoAt(), function(name){ return namedApprover(name); });
+  if(!result.ok){
+    var err=new Error(result.error||"That name cannot approve this variance.");
+    err.code=result.code||"approver_not_allowed";
+    throw err;
+  }
+  var byMonth={};
+  hits.forEach(function(hit){
+    var next=Object.assign({}, hit.row);
+    if(String(next.vstatus||"")===api.VARIANCE_PENDING_VSTATUS) next.vstatus="Closed";
+    next.liq=liq;
+    var mk=hit.mk||next.month;
+    (byMonth[mk]=byMonth[mk]||[]).push(next);
+  });
+  var months=Object.keys(byMonth);
+  for(var i=0;i<months.length;i++){
+    await replaceLedgerVrf(months[i], no, rowsConfinedToVrf(byMonth[months[i]], no));
+  }
+  _vrfs=null;
+  if(entry.reserve) await settleReserve(entry.reserve, "bought", result.name, liq.varianceExplanation||"", null);
+  return result;
+}
+function appendSpendVarianceApproval(host, entry){
+  var api=window.VrfLiquidation;
+  if(!host||!entry||!api) return;
+  var liq=entry.liq||{};
+  var proof=liq.proof||{};
+  var card=el("div","card");
+  card.setAttribute("data-spend-variance-approval","1");
+  card.style.marginTop="var(--space-4)";
+  var hd=el("div","hd"); hd.appendChild(el("h3",null,api.VARIANCE_PENDING_STATUS));
+  card.appendChild(hd);
+  var bd=el("div","bd");
+  var lines=api.spendVariancePrintLines({
+    approved: proof.approved, actual: proof.actual, liq: liq
+  });
+  (lines&&lines.lines||[]).forEach(function(text){ bd.appendChild(el("div",null,text)); });
+  bd.appendChild(el("div","hint","This VRF is not closed yet. Jeffrey James M. Corro or Carmel approves the variance. Any other name, or a bare \"api\", is refused."));
+  var name=el("input"); name.placeholder="Jeffrey James M. Corro or Carmel"; name.value=signedInName();
+  name.setAttribute("data-spend-variance-approver","1");
+  var row=el("div","field"); row.style.marginTop="var(--space-3)"; row.style.maxWidth="360px";
+  row.appendChild(el("label",null,"Approved by")); row.appendChild(name);
+  var go=el("button","btn pri","Approve this variance");
+  go.type="button";
+  go.setAttribute("data-spend-variance-approve","1");
+  var msg=el("div","hint"); msg.style.marginTop="var(--space-2)";
+  go.addEventListener("click", async function(){
+    go.disabled=true;
+    try{
+      var result=await approveSpendVarianceOnVrf(entry, name.value);
+      toast("Variance approved by "+result.name+". VRF "+entry.vrf+" is closed.");
+      var sheet=document.getElementById("cfSheet"); if(sheet) sheet.remove();
+      render();
+    }catch(err){
+      go.disabled=false;
+      msg.style.color="var(--danger)";
+      msg.textContent=(err&&err.message)||"Could not approve the variance.";
+      toast(msg.textContent);
+    }
+  });
+  bd.appendChild(row);
+  var acts=el("div","row"); acts.style.marginTop="var(--space-3)"; acts.appendChild(go);
+  bd.appendChild(acts); bd.appendChild(msg);
+  card.appendChild(bd); host.appendChild(card);
+  if(typeof appendLiquidationAttachments==="function") appendLiquidationAttachments(host, entry);
 }
 function appendVarianceApproval(host, reserve, canApprove){
   if(!reserve||!liqApi()) return;
@@ -8803,9 +8886,26 @@ function vrfChip(v){
     var of=duplicateOfNumber(v);
     return el("span","chip mute", of?("Duplicate of "+of):"Duplicate");
   }
+  if(v.status==="Liquidated \u2013 variance pending approval") return el("span","chip warn",v.status);
   if(v.status==="Closed"&&vrfNoReceipt(v)) return el("span","chip crit",VL.NO_RECEIPT_LABEL);
   var x=m[v.status]||["mute",v.status];
   return el("span","chip "+x[0],x[1]);
+}
+function vrfSpendVariance(v){
+  var api=(typeof window!=="undefined"&&window.VrfLiquidation)||null;
+  return !!(api&&api.vrfShowsSpendVariance&&api.vrfShowsSpendVariance(v));
+}
+function varianceChip(){
+  var c=el("span","chip warn","Variance");
+  c.setAttribute("data-variance-chip","1");
+  c.title="Spent amount differs from the approved amount";
+  return c;
+}
+function vrfStatusFilterMatch(v, filter){
+  filter=String(filter||"");
+  if(!filter) return true;
+  if(filter==="variance") return vrfSpendVariance(v);
+  return !!(v&&v.status===filter);
 }
 /* Liquidated before 2026-11-02 with no receipt / after-fueling photo on file.
    Data is not changed; the lists just say so. */
@@ -8814,19 +8914,27 @@ function vrfNoReceipt(v){
   try{ return !!liqStatusOf(v).noReceipt; }catch(e){ return false; }
 }
 function vrfLogStatus(v){
-  if(v&&v.status==="Duplicate") return vrfChip(v);
-  if(pendingCancelFor(v)){
+  var node;
+  if(v&&v.status==="Duplicate") node=vrfChip(v);
+  else if(pendingCancelFor(v)){
     var cw=el("span"); cw.appendChild(vrfChip(v));
     cw.appendChild(document.createTextNode(" "));
     var pq=pendingCancelFor(v);
     var pc=el("span","chip warn","Cancellation requested");
     pc.title="Requested by "+pq.by+" on "+pq.at+" — "+pq.reason;
     cw.appendChild(pc);
-    return cw;
+    node=cw;
+  }else if(v&&vrfAwaitingApproval(v))
+    node=el("span","chip warn","FOR APPROVAL");
+  else node=vrfChip(v);
+  if(v&&vrfSpendVariance(v)){
+    var w=el("span");
+    w.appendChild(node);
+    w.appendChild(document.createTextNode(" "));
+    w.appendChild(varianceChip());
+    return w;
   }
-  if(v&&vrfAwaitingApproval(v))
-    return el("span","chip warn","FOR APPROVAL");
-  return vrfChip(v);
+  return node;
 }
 /* Printed paper must say whether Jeffrey has approved it. Holds and anything
    still waiting use the same VRF Logs wording. Posted / open / closed forms
@@ -9007,6 +9115,15 @@ function entryReserveSettled(entry){
 function canonicalVrfStatus(st, reserve, liq, vrfNo){
   var ended=spendEndStatus(st)||spendEndStatus(liq&&(liq.outcome||liq.status));
   if(ended) return {status:ended, legacy:false};
+  var varianceStillOpen=false;
+  if(window.VrfLiquidation&&typeof window.VrfLiquidation.varianceClosePending==="function"){
+    varianceStillOpen=window.VrfLiquidation.varianceClosePending(liq);
+  }else if(liq&&liq.variancePending===true&&!(String(liq.varianceApprovedBy||"").trim()&&String(liq.varianceApprovedAt||"").trim())){
+    varianceStillOpen=true;
+  }
+  if(varianceStillOpen||String(st||"").trim()==="Variance pending"){
+    return {status:"Liquidated \u2013 variance pending approval", legacy:false};
+  }
   if(liq) return {status:"Closed", legacy:false};
   var raw=String(st||"").trim();
   if(/^closed$/i.test(raw)||/^liquidated$/i.test(raw)) return {status:"Closed", legacy:false};
@@ -9045,6 +9162,7 @@ function vrfCanLiquidate(entry, reserve){
   if(vrfAwaitingApproval(entry, reserve)) return false;
   var st=String(entry.status||"").trim();
   if(st==="Closed"||st==="Rejected"||st==="Not bought"||st==="Cancelled"||
+     st==="Liquidated \u2013 variance pending approval"||st==="Variance pending"||
      /^liquidated$/i.test(st)||/^disapproved$/i.test(st)||spendEndStatus(st)) return false;
   if(entry.liq) return false;
   if(st==="Open"||/^approved$/i.test(st)||/^posted$/i.test(st)||/awaiting liquidation/i.test(st)) return true;
@@ -13279,6 +13397,7 @@ function vrfLogView(){
   var fw=workSelect(S.regWork,"— every job —");
   var fs2=el("select");
   [["","every status"],["Open","open — awaiting liquidation"],["Closed","liquidated"],
+   ["variance","variance — spent differs from approved"],
    ["Not bought","not bought — amount zero"],
    ["Cancelled","cancelled — purchase did not go through"],
    ["Duplicate","duplicate — kept off the open list"],
@@ -13356,7 +13475,7 @@ function vrfLogView(){
       var byVoucher=term && voucherSearchHit(v, term);
       if(!((numberQuery && byNumber) || byVoucher)){
         if(S.regWork&&(v.works||[]).indexOf(S.regWork)<0) return false;
-        if(S.regStatus&&v.status!==S.regStatus) return false;
+        if(!vrfStatusFilterMatch(v, S.regStatus)) return false;
         if(S.logProject&&vrfLogProjects(v,projIdx).indexOf(S.logProject)<0) return false;
         if(!vrfMatchesLogSource(v, S.logSource)) return false;
       }
@@ -13366,7 +13485,7 @@ function vrfLogView(){
     });
     if(!list.length && term){
       var loose=vrfIndex().filter(function(v){
-        if(S.regStatus&&v.status!==S.regStatus) return false;
+        if(!vrfStatusFilterMatch(v, S.regStatus)) return false;
         return vrfSearchHits(v.vrf,term);
       });
       if(loose.length && S.regWork){
@@ -14041,6 +14160,21 @@ function buildVrfDoc(entry,photos,opts){
     vbox.appendChild(el("div",null,"Actual  "+peso(opts.variance.actual)));
     vbox.appendChild(el("div",null,"Variance  "+(liqApi()?liqApi().formatVariancePct(opts.variance.pct):"")));
     if(opts.variance.changeOwed>0) vbox.appendChild(el("div",null,"Change owed / returned "+peso(opts.variance.changeOwed)));
+    var spendApi=(typeof window!=="undefined"&&window.VrfLiquidation)||null;
+    if(spendApi&&spendApi.spendVariancePrintLines){
+      var spendLines=spendApi.spendVariancePrintLines({
+        approved:opts.variance.approved,
+        actual:opts.variance.actual,
+        liq:entry.liq||null
+      });
+      if(spendLines){
+        spendLines.lines.forEach(function(line){
+          var spendRow=el("div",null,line);
+          spendRow.setAttribute("data-spend-variance","1");
+          vbox.appendChild(spendRow);
+        });
+      }
+    }
     if(opts.variance.fuel&&opts.variance.fuel.flag){
       vbox.appendChild(el("div",null,"Approved litres "+nnum(opts.variance.fuel.approvedLiters,2)+" · Actual litres "+nnum(opts.variance.fuel.actualLiters,2)));
       vbox.appendChild(el("div",null,opts.variance.fuel.note));
@@ -16726,6 +16860,7 @@ function openVrf(entry,tab){
   }
   var chips=el("div","row"); chips.style.marginTop="var(--space-2)";
   chips.appendChild(vrfChip(entry));
+  if(vrfSpendVariance(entry)) chips.appendChild(varianceChip());
   if(entry.reserve) chips.appendChild(el("span","chip accent","RSV-"+entry.reserve));
   entry.scopes.forEach(function(sc){
     chips.appendChild(el("span","chip "+(sc.confirmed?"accent":"mute"),
@@ -17076,6 +17211,8 @@ function openVrf(entry,tab){
       var lg=el("div","banner info");
       lg.innerHTML="<b>This VRF came in from the old workbooks.</b> It is history — already spent, already settled — so there is nothing to liquidate here.";
       body.appendChild(lg);
+    }else if(window.VrfLiquidation&&window.VrfLiquidation.varianceClosePending(entry.liq)){
+      appendSpendVarianceApproval(body, entry);
     }else if(entry.status==="Closed"||entry.status==="Not bought"||entry.status==="Cancelled"){
       var cl=el("div","banner info");
       var endedLabel=entry.status==="Not bought"
@@ -17087,6 +17224,8 @@ function openVrf(entry,tab){
       cl.innerHTML="<b>"+esc(endedLabel)+" on "+esc(entry.liq&&entry.liq.at||"—")+
         " by "+esc(entry.liq&&entry.liq.by||"—")+".</b>"+
         (entry.liq&&entry.liq.note?"<br>"+esc(entry.liq.note):"")+
+        (entry.liq&&entry.liq.varianceExplanation?"<br>Variance explanation: "+esc(entry.liq.varianceExplanation):"")+
+        (entry.liq&&entry.liq.varianceApprovedBy?"<br>Variance approved by "+esc(entry.liq.varianceApprovedBy)+" · "+esc(entry.liq.varianceApprovedAt||""):"")+
         (closedVoucher?"<br>Voucher no. "+esc(closedVoucher):"")+
         (closedVoucher?"<div class=\"hint\" data-voucher-match=\"closed\"></div>":"");
       body.appendChild(cl);
@@ -17422,6 +17561,10 @@ function openVrf(entry,tab){
       pbd.appendChild(pr2);
       var oRs=el("textarea"); oRs.rows=2; oRs.placeholder="why it cost more than approved";
       var fOver=pfld("Reason for going over the approved amount",oRs); pbd.appendChild(fOver);
+      var vExp=el("textarea"); vExp.rows=3; vExp.placeholder="why the amount spent is not the approved amount";
+      vExp.setAttribute("data-variance-explanation","1");
+      var fVar=pfld("Why the amount spent differs",vExp,"Required when the receipt total is not the approved amount. A liquidation receipt has to be attached. Jeffrey James M. Corro or Carmel approves the variance before this VRF counts as closed.");
+      fVar.hidden=true; pbd.appendChild(fVar);
       var wSel=null, fW=null;
       var litres=LQ?LQ.fuelLitresOfRows(entry.rows):0;
       /* 2026-11-02: no matching withdrawal row needed; the picker is off. */
@@ -17455,21 +17598,33 @@ function openVrf(entry,tab){
         if(wSel&&wSel.value){ var c=(wSel._c||[]).filter(function(x){ return x.ref===wSel.value; })[0]; if(c) w={ref:c.ref,liters:c.liters,date:c.date,vehicle:c.vehicle}; }
         return {actual:pAct.value, date:pDate.value, by:lby.value,
           change:{amount:cAmt.value, how:cHow.value, date:cDate.value}, overReason:oRs.value,
+          varianceExplanation:vExp.value, liquidationReceipts:pf.liquidationReceipts||0,
           counts:pf.counts||{}, withdrawal:w};
       }
       function proofCtx(){ return {approved:vrfApproved(), fuelReserve:isFuelRes, litres:litres, today:iso().slice(0,10), outcome:nothingBought()?"not-bought":"bought"}; }
       function proofCheck(){
         if(!LQ) return {ok:false, errors:[{field:"proof",msg:"The liquidation rules did not load. Reload the page."}]};
-        var res=LQ.checkLiquidation(proofInput(), proofCtx());
-        var a=Number(pAct.value), ap=vrfApproved();
+        var input=proofInput(), ctx=proofCtx();
+        var res=LQ.checkLiquidation(input, ctx);
+        var gate=LQ.varianceCloseGate?LQ.varianceCloseGate(input, ctx):{variance:false, errors:[]};
+        if(gate.variance){
+          var drop={changeAmount:1, changeHow:1, changeDate:1, overReason:1, receipt:1};
+          res.errors=(res.errors||[]).filter(function(e){ return !drop[e.field]; });
+          (gate.errors||[]).forEach(function(e){ res.errors.push(e); });
+        }
+        var a=Number(pAct.value);
         if(pAct.value.trim() && Math.abs(a-curActual())>0.01) res.errors.push({field:"actual",msg:"Actual "+peso(a)+" does not match the lines above ("+peso(curActual())+")."});
         res.ok=!res.errors.length;
+        res.gate=gate;
         return res;
       }
       function drawProof(res){
         var a=Number(pAct.value)||0, ap=vrfApproved();
         var under=a>0&&ap>0&&a+0.005<ap, over=a>0&&ap>0&&a>ap+0.005;
-        pr2.hidden=!under; fOver.hidden=!over;
+        var gate=res.gate||{variance:false};
+        fVar.hidden=!gate.variance;
+        if(gate.variance){ pr2.hidden=true; fOver.hidden=true; }
+        else { pr2.hidden=!under; fOver.hidden=!over; }
         if(under&&!cAmt.value) cAmt.placeholder=(Math.round((ap-a)*100)/100).toFixed(2);
         var c=pf.counts;
         pRc.textContent=!c?"Checking uploads…":(isFuelRes
@@ -17477,17 +17632,24 @@ function openVrf(entry,tab){
           : (function(n){ return n+" receipt / OR photo"+(n===1?"":"s")+" on file"; })(LQ.receiptCount(c)));
         var by={};
         (res.errors||[]).forEach(function(e){ (by[e.field]=by[e.field]||[]).push(e.msg); });
-        [[fAct,"actual"],[fDate,"date"],[fRc,isFuelRes?"afterFuel":"receipt"],[fCAmt,"changeAmount"],[fCHow,"changeHow"],[fCDate,"changeDate"],[fOver,"overReason"]].concat(fW?[[fW,"withdrawal"]]:[]).forEach(function(p){
-          var m=by[p[1]]; p[0]._err.hidden=!m; p[0]._err.textContent=m?m.join(" "):"";
+        [[fAct,"actual"],[fDate,"date"],[fRc,isFuelRes?"afterFuel":"receipt"],[fCAmt,"changeAmount"],[fCHow,"changeHow"],[fCDate,"changeDate"],[fOver,"overReason"],[fVar,"varianceExplanation"]].concat(fW?[[fW,"withdrawal"]]:[]).forEach(function(p){
+          var m=by[p[1]];
+          if(p[0]===fRc&&by.liquidationReceipt) m=(m||[]).concat(by.liquidationReceipt);
+          p[0]._err.hidden=!m; p[0]._err.textContent=m?m.join(" "):"";
         });
         pErr.innerHTML="";
         (res.errors||[]).forEach(function(e){ pErr.appendChild(el("li",null,e.msg)); });
       }
       async function loadProofCounts(){
         try{
-          var lists=await Promise.all([listPhotoMeta(String(entry.vrf)), listPhotoMeta(LQ.liqOwner(String(entry.vrf)))]);
+          var lists=await Promise.all([
+            listPhotoMeta(String(entry.vrf)),
+            listPhotoMeta(LQ.liqOwner(String(entry.vrf))),
+            listPhotoMeta(liquidationPhotoOwner(entry))
+          ]);
           pf.counts=LQ.proofCounts(lists[0], lists[1]);
-        }catch(e){ pf.counts={receipts:0,afterFuel:0,gauge:0,slips:0,untagged:0}; }
+          pf.liquidationReceipts=LQ.liquidationAttachmentCount?LQ.liquidationAttachmentCount(lists[2]):0;
+        }catch(e){ pf.counts={receipts:0,afterFuel:0,gauge:0,slips:0,untagged:0}; pf.liquidationReceipts=0; }
         syncLiq();
       }
       async function uploadProof(fi, role, btn){
@@ -17508,7 +17670,7 @@ function openVrf(entry,tab){
       }
       pUp.addEventListener("click",function(){ uploadProof(pFi, isFuelRes?LQ.AFTER_FUEL_ROLE:LQ.RECEIPT_ROLE, pUp); });
       if(pSlipUp) pSlipUp.addEventListener("click",function(){ uploadProof(pSlipFi, LQ.SLIP_ROLE, pSlipUp); });
-      [pAct,pDate,cAmt,cDate,oRs].forEach(function(x){ x.addEventListener("input",function(){ syncLiq(); }); });
+      [pAct,pDate,cAmt,cDate,oRs,vExp].forEach(function(x){ x.addEventListener("input",function(){ syncLiq(); }); });
       [cHow].concat(wSel?[wSel]:[]).forEach(function(x){ x.addEventListener("change",function(){ syncLiq(); }); });
       var lrow=el("div","f3"); lrow.style.marginTop="var(--space-4)";
       function lf3(l,n){ var x=el("div","field"); x.appendChild(el("label",null,l)); x.appendChild(n); return x; }
@@ -17638,7 +17800,9 @@ function openVrf(entry,tab){
         var shown=outcome==="not-bought"?0:(done?done.total:null);
         var msg=outcome==="not-bought"
           ? "VRF "+entry.vrf+" closed as not bought at "+peso(0)+"."
-          : "VRF "+entry.vrf+" liquidated and closed"+(shown!=null?" at "+peso(shown):"")+".";
+          : (proof&&proof.variancePending
+            ? "VRF "+entry.vrf+" is Liquidated \u2013 variance pending approval. Jeffrey James M. Corro or Carmel still has to approve the variance before it counts as closed."
+            : "VRF "+entry.vrf+" liquidated and closed"+(shown!=null?" at "+peso(shown):"")+".");
         if(rr2&&rr2.status==="Flagged") msg+=" RSV-"+rr2.no+" is over budget and now needs a justification.";
         toast(msg);
         m.remove(); render();

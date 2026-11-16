@@ -956,6 +956,11 @@ const S = {
        Approved OT request and attached form. OT request rows are not
        rewritten. Set false under Settings to restore the 2026-10-01 gate. */
     otFormGateWaived:true,
+    /* Off by default (Jeffrey, 2026-11-16). On: a payroll period that ends
+       on or after 2026-11-16 counts Morning Report overtime only after that
+       report's signed copy is uploaded. Off keeps otFormGateWaived, including
+       for periods that already ended. Stored hours are not rewritten. */
+    otSignedCopyRequired:false,
     ded:{sss:325,phic:131.25,hdmf:100},
     leaveDays:{SIL:5,VL:0,SL:0,EL:0,BEREV:0},
     caLiquidateDays:15,
@@ -2183,7 +2188,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-11-14a";
+const BUILD = "2026-11-16a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -10755,9 +10760,33 @@ function otPendingApplies(periodEnd){
   const end=String(periodEnd||"").slice(0,10);
   return /^\d{4}-\d{2}-\d{2}$/.test(end) && end>="2026-10-01";
 }
+/* Off unless Settings otSignedCopyRequired is on. A missing key stays off
+   so a settings document from before this flag keeps the waiver. */
+function otSignedCopyRequired(){
+  const st=(typeof S!=="undefined" && S && S.settings)||{};
+  if(!Object.prototype.hasOwnProperty.call(st,"otSignedCopyRequired")) return false;
+  const v=st.otSignedCopyRequired;
+  return v===true || v===1 || v==="1"
+    || String(v).toLowerCase()==="true"
+    || String(v).toLowerCase()==="on"
+    || String(v).toLowerCase()==="yes";
+}
+/* The signed-copy rule is the path forward. It starts with periods that
+   end on or after 2026-11-16. Earlier periods keep the waiver even when
+   the flag is on, and the flag itself defaults off. */
+function otSignedCopyApplies(periodEnd){
+  if(typeof otSignedCopyRequired!=="function" || !otSignedCopyRequired()) return false;
+  const end=String(periodEnd||"").slice(0,10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(end) && end>="2026-11-16";
+}
 function otPaidHours(empId, date, site, ot, periodEnd){
   const h=Number(ot)||0;
   if(!(h>0)) return 0;
+  /* Signed-copy periods do not use the waiver. Past periods fall through. */
+  if(typeof otSignedCopyApplies==="function" && otSignedCopyApplies(periodEnd)){
+    if(typeof hrOtSignedCopyConfirms==="function" && hrOtSignedCopyConfirms(empId, date, site)) return h;
+    return 0;
+  }
   /* Waiver pays the recorded Daily Manpower hours. It does not read old OT requests. */
   if(typeof otFormGateWaived==="function" && otFormGateWaived()) return h;
   if(typeof otPendingApplies!=="function" || !otPendingApplies(periodEnd)) return h;
@@ -10990,10 +11019,14 @@ function otTrack(opts){
       const ot=otLoggedHours(rec, empId, row);
       if(!(ot>0)) return;
       const e=S.employees&&S.employees[empId];
-      const covered=typeof hrOtReportConfirms==="function" && hrOtReportConfirms(empId, d, site);
+      const signedGate=typeof otSignedCopyApplies==="function" && otSignedCopyApplies(to);
+      const reportOk=typeof hrOtReportConfirms==="function" && hrOtReportConfirms(empId, d, site);
+      const signedOk=typeof hrOtSignedCopyConfirms==="function" && hrOtSignedCopyConfirms(empId, d, site);
+      const covered=signedGate ? signedOk : reportOk;
       /* Pending hours stay pending (no form). The waiver only moves them
-         into pay. Request status is not touched. */
-      const waived=typeof otFormGateWaived==="function" && otFormGateWaived();
+         into pay. Request status is not touched. A signed-copy period
+         does not use the waiver. */
+      const waived=!signedGate && typeof otFormGateWaived==="function" && otFormGateWaived();
       const approvedH=covered?ot:0, pendingH=covered?0:ot;
       const payableH=(covered||waived)?ot:0;
       const hourly=otHourlyOf(e)*policy;
@@ -11335,6 +11368,100 @@ function otPlanReportState(plan){
   if(cancel===rows.length) return "Plan cancelled";
   return "Report filed";
 }
+function otSignedCell(doc){
+  const got=typeof hrOtSignedCopyOf==="function" ? hrOtSignedCopyOf(doc) : null;
+  if(!got) return '<span class="pill warn">No signed copy</span>';
+  const when=String(got.at||got.on||"").replace("T"," ").slice(0,16);
+  return '<span class="pill ok">Signed copy received / Confirmed</span>'
+    + '<div class="lbl">'+esc(got.by||"HR")+(when?" · "+esc(when):"")+'</div>'
+    + (got.url?'<div><a class="btn sm" href="'+esc(got.url)+'" target="_blank" rel="noopener noreferrer">Open the signed copy</a></div>':"");
+}
+function otFormDoc(kind, id){
+  const coll=kind==="plan"?"otplans":"otreps";
+  return (S[coll]&&S[coll][id])||null;
+}
+function otPrintBody(doc, kind){
+  if(typeof hrOtFormHtml!=="function") return "";
+  return hrOtFormHtml(doc, kind);
+}
+function otFormFileName(doc, kind){
+  const day=String((doc&&doc.otDate)||"form");
+  return (kind==="plan"?"Afternoon OT ":"Morning OT ")+day;
+}
+function openOtPrint(doc, kind){
+  const body=otPrintBody(doc, kind);
+  if(!body){ toast("There is nothing on this form to print.","err"); return; }
+  const name=otFormFileName(doc, kind);
+  openModal({ title:name, wide:true,
+    body:typeof pfWrap==="function"?pfWrap(body):('<div class="pf">'+body+'</div>'),
+    foot:'<button class="btn" type="button" id="otf-back">Back</button>'
+      + '<button class="btn" type="button" id="otf-pdf">Save as PDF</button>'
+      + '<button class="btn pri" type="button" id="otf-print">Print</button>' });
+  $("#otf-back").onclick=closeModal;
+  $("#otf-print").onclick=()=>printDoc(name, body);
+  $("#otf-pdf").onclick=()=>savePDF(name, body);
+}
+function openOtFormPrint(kind, id){
+  const doc=otFormDoc(kind, id);
+  if(!doc){ toast("That form is not on file.","err"); return; }
+  openOtPrint(doc, kind);
+}
+function saveOtFormPdf(kind, id){
+  const doc=otFormDoc(kind, id);
+  if(!doc){ toast("That form is not on file.","err"); return; }
+  saveOtFormPdfDoc(doc, kind);
+}
+function saveOtFormPdfDoc(doc, kind){
+  const body=otPrintBody(doc, kind);
+  if(!body){ toast("There is nothing on this form to save.","err"); return; }
+  savePDF(otFormFileName(doc, kind), body);
+}
+/* One employee uses the Leave / Cash Advance upload (that person's 201 folder,
+   or the HR inbox). Several employees use the same Drive create_file path,
+   into the OT folder or that same inbox, because the sheet is not one 201 file.
+   The shim stores a file Drive refuses in the hr-uploads bucket. */
+async function storeOtSignedFile(doc, file){
+  const rows=typeof hrOtRowsOf==="function" ? hrOtRowsOf(doc) : [];
+  const ids=rows.map(r=>r&&r.empId).filter(Boolean);
+  const only=ids.length===1 ? ids[0] : "";
+  const emp=only && S.employees && S.employees[only];
+  if(emp && typeof uploadSigned==="function"){
+    const label=(doc&&doc.reportDate) ? "Morning OT Report" : "Afternoon OT Plan";
+    return uploadSigned(emp, (doc&&doc.id)||label, label, file);
+  }
+  return storeOtFile(file);
+}
+function pickOtSigned(kind, id){
+  if(!otFormDoc(kind, id)){ toast("Save the form first, then upload the signed copy.","err"); return; }
+  PENDING={ otSigned:true, kind:kind, recId:id };
+  ensurePicker().click();
+}
+async function handleOtSignedPick(job, file){
+  const kind=job&&job.kind==="plan" ? "plan" : "report";
+  const coll=kind==="plan" ? "otplans" : "otreps";
+  const rec=S[coll]&&S[coll][job.recId];
+  if(!rec){ toast("Save the form first, then upload the signed copy.","err"); return; }
+  const btn=document.querySelector('[data-otupload="'+job.recId+'"]');
+  if(btn){ btn.disabled=true; btn.textContent="Uploading…"; }
+  try{
+    const stored=await storeOtSignedFile(rec, file);
+    if(!stored||!stored.url) throw new Error("The file was stored without a link.");
+    const who=typeof whoEdits==="function" ? whoEdits() : "HR";
+    const next=typeof hrOtWithSignedCopy==="function"
+      ? hrOtWithSignedCopy(rec, {url:stored.url, title:stored.title||file.name, on:TODAY}, who, new Date().toISOString())
+      : rec;
+    if(!next || !next.id) throw new Error("The signed copy could not be recorded.");
+    S[coll][next.id]=next;
+    await put(coll, next.id, next);
+    toast("Signed copy received / Confirmed.","ok");
+    closeModal();
+    render();
+  }catch(e){
+    const m=(e&&e.code&&typeof driveMessage==="function"&&driveMessage(e)) || (e&&e.message) || "The signed copy could not be stored.";
+    if(m) toast(m,"err");
+    if(btn){ btn.disabled=false; btn.textContent="Upload signed copy"; }
+  }
+}
 function viewOtPlans(){
   S.otplans=S.otplans||{};
   const plans=typeof hrOtPlans==="function" ? hrOtPlans().slice() : Object.values(S.otplans);
@@ -11349,12 +11476,13 @@ function viewOtPlans(){
     + 'Search the roster, tick several names, and Add selected. Each person is one row, with employee number, task, reason, and expected hours or a time range. Remove drops that row. A plan saved with one employee still opens as that one row. '
     + 'The department head and HR sign. HR can mark one person, or the whole plan, No OT. '
     + 'Edits are kept as amendments. Planned hours are not overtime by themselves. '
-    + 'Only hours a Morning Report confirms are reported OT. Payroll still pays the Daily Manpower OT number.</div>';
+    + 'Only hours a Morning Report confirms are reported OT. Payroll still pays the Daily Manpower OT number. '
+    + 'Print makes the paper form. Sign it, then Upload signed copy.</div>';
   h+='<div class="card"><div class="card-h"><h3>Plans</h3><span class="lbl">'+plans.length+' on file</span></div><div class="card-b">';
   if(!plans.length){
     h+='<div class="empty">No afternoon plan yet.</div>';
   }else{
-    h+='<div class="tw"><table><thead><tr><th>OT date</th><th>Site</th><th>Department head</th><th>People</th><th>Expected h</th><th>Sign-off</th><th>Morning report</th><th></th></tr></thead><tbody>';
+    h+='<div class="tw"><table><thead><tr><th>OT date</th><th>Site</th><th>Department head</th><th>People</th><th>Expected h</th><th>Sign-off</th><th>Morning report</th><th>Signed copy</th><th></th></tr></thead><tbody>';
     plans.forEach(p=>{
       const names=otFormRows(p).map(r=>{
         const e=S.employees&&S.employees[r.empId];
@@ -11368,7 +11496,11 @@ function viewOtPlans(){
       h+='<tr><td class="mono">'+esc(p.otDate||"")+'</td><td>'+esc(p.site||"—")+'</td><td>'+esc(p.deptHead||"—")+'</td>'
         + '<td>'+esc(names.join(", ")||"—")+'</td><td class="num">'+esc(String(Math.round(hours*100)/100))+'</td>'
         + '<td>'+esc(signs)+'</td><td><span class="pill '+pill+'">'+esc(st)+'</span></td>'
-        + '<td style="white-space:nowrap"><button class="btn sm" type="button" data-otpedit="'+esc(p.id)+'">Edit</button> '
+        + '<td>'+otSignedCell(p)+'</td>'
+        + '<td style="white-space:nowrap"><button class="btn sm" type="button" data-otpprint="'+esc(p.id)+'">Print</button> '
+        + '<button class="btn sm" type="button" data-otppdf="'+esc(p.id)+'">PDF</button> '
+        + '<button class="btn sm" type="button" data-otpupload="'+esc(p.id)+'">Upload signed copy</button> '
+        + '<button class="btn sm" type="button" data-otpedit="'+esc(p.id)+'">Edit</button> '
         + '<button class="btn sm" type="button" data-otpreport="'+esc(p.id)+'">Morning report</button> '
         + '<button class="btn sm danger" type="button" data-otpdel="'+esc(p.id)+'">Delete</button></td></tr>';
     });
@@ -11520,11 +11652,12 @@ function viewOtReports(){
     + 'The OT date and the report date are stored separately. Search and tick several employees, then Add selected. Each row has its own hours or a time range, what happened, and a photo or other proof. Remove drops that row. A report saved with one employee still opens as that one row. '
     + 'Mark one person or the whole plan No OT only with a reason: Weather, Materials/Equipment, or Other (Other needs a note). '
     + 'Someone who was not on the plan can be added only with a reason on that row. '
-    + 'Confirmed hours are the reported OT. A plan’s hours do not count on their own. Payroll still pays Daily Manpower OT.</div>';
+    + 'Confirmed hours are the reported OT. A plan’s hours do not count on their own. Payroll still pays Daily Manpower OT. '
+    + 'Print the form, have it signed, then Upload signed copy. The list shows Signed copy received / Confirmed, with who uploaded it and when.</div>';
   h+='<div class="card"><div class="card-h"><h3>Reports</h3><span class="lbl">'+reps.length+' on file</span></div><div class="card-b">';
   if(!reps.length) h+='<div class="empty">No morning report yet.</div>';
   else{
-    h+='<div class="tw"><table><thead><tr><th>OT date</th><th>Report date</th><th>Plan</th><th>People</th><th>Confirmed h</th><th>No OT</th><th></th></tr></thead><tbody>';
+    h+='<div class="tw"><table><thead><tr><th>OT date</th><th>Report date</th><th>Plan</th><th>People</th><th>Confirmed h</th><th>No OT</th><th>Signed copy</th><th></th></tr></thead><tbody>';
     reps.forEach(rep=>{
       const names=otFormRows(rep).map(r=>{
         const e=S.employees&&S.employees[r.empId];
@@ -11541,7 +11674,11 @@ function viewOtReports(){
         + '<td>'+(rep.noPlan||!rep.planId?'<span class="pill warn">No plan</span>':esc(plan))+'</td>'
         + '<td>'+esc(names.join(", ")||"—")+'</td><td class="num">'+esc(String(Math.round(hours*100)/100))+'</td>'
         + '<td>'+(cancelled?esc(String(cancelled)+" No OT"):"—")+'</td>'
-        + '<td style="white-space:nowrap"><button class="btn sm" type="button" data-otredit="'+esc(rep.id)+'">Edit</button> '
+        + '<td>'+otSignedCell(rep)+'</td>'
+        + '<td style="white-space:nowrap"><button class="btn sm" type="button" data-otrprint="'+esc(rep.id)+'">Print</button> '
+        + '<button class="btn sm" type="button" data-otrpdf="'+esc(rep.id)+'">PDF</button> '
+        + '<button class="btn sm" type="button" data-otrupload="'+esc(rep.id)+'">Upload signed copy</button> '
+        + '<button class="btn sm" type="button" data-otredit="'+esc(rep.id)+'">Edit</button> '
         + '<button class="btn sm danger" type="button" data-otrdel="'+esc(rep.id)+'">Delete</button></td></tr>';
     });
     h+='</tbody></table></div>';
@@ -16832,6 +16969,10 @@ function viewSettings(){
    + '<option value="1"'+((typeof otFormGateWaived==="function" && otFormGateWaived())?" selected":"")+'>Waived — pay Daily Manpower OT. A Morning Report does not block pay</option>'
    + '<option value="0"'+((typeof otFormGateWaived==="function" && otFormGateWaived())?"":" selected")+'>On — withhold OT pay until a Morning Report confirms the hours</option>'
    + '</select><span class="hint">Temporary, no end date (Jeffrey, 2026-11-06). Old OT requests are not used. Turn this off to withhold OT pay until a Morning Report confirms the hours.</span></div>'
+   + '<div class="f"><label>OT signed copy</label><select data-set-flag="otSignedCopyRequired">'
+   + '<option value="0"'+((typeof otSignedCopyRequired==="function" && otSignedCopyRequired())?"":" selected")+'>Off — current waiver. Daily Manpower OT is paid without a signed copy</option>'
+   + '<option value="1"'+((typeof otSignedCopyRequired==="function" && otSignedCopyRequired())?" selected":"")+'>On — from 2026-11-16, Morning Report OT counts only after the signed copy is uploaded</option>'
+   + '</select><span class="hint">Flag <span class="mono">otSignedCopyRequired</span>. Default off. Periods that ended before 2026-11-16 keep the waiver even when this is on. Attendance, OT hours, and Touched fields are not rewritten.</span></div>'
    + '<div class="f"><label>Days to answer an NTE</label><input data-set="explainDays" type="number" value="'+st.explainDays+'"></div>'
    + '<div class="f"><label>Discipline lookback (months)</label><input data-set="lookbackMonths" type="number" value="'+st.lookbackMonths+'"></div>'
    + '<div class="f"><label>Warn before probation ends (days)</label><input data-set="probationWarnDays" type="number" value="'+st.probationWarnDays+'"></div>'
@@ -16842,6 +16983,7 @@ function viewSettings(){
    + '<span class="hint">'+holidayList().length+' date'+(holidayList().length===1?'':'s')+' on the calendar'
    + ' <button class="btn sm" id="set-holcal">Open the holiday calendar</button></span></div>'
    + '</div><div class="note">OT form pay gate starts <b>waived</b>. Recorded Daily Manpower OT is included in OT pay without a Morning Report. Old OT requests stay readable and are not used for pay. There is no end date. Choose <b>On</b> above to withhold OT pay until a Morning Report confirms the hours. '
+   + '<b>otSignedCopyRequired</b> starts <b>off</b>, so that waiver stays as it is. Turn it on when a signed Morning Report should be what confirms OT for payroll periods ending on or after 2026-11-16. Earlier periods are unchanged. '
    + 'Daily Manpower time in and time out stay editable for admin and HR sign-ins. Maria Trina Cassandra A. Moran (201 file e1316, <span class="mono">moranmariatrinacassandra@gmail.com</span>) can edit those two fields when that email signs in, without an admin role. She has no portal Auth user yet. <span class="mono">hrcorcondev@gmail.com</span> is the applications mailbox, not that login. A change to time in or time out is written on that day’s change history.</div></div></div>';
 
   h+='<div class="card"><div class="card-h"><h3>HR-201 FILES in Google Drive</h3>'
@@ -21262,6 +21404,7 @@ function ensurePicker(){
     if(!files.length || !job) return;
     if(job.hrSig){ await handleHrSigFiles(job, files); return; }
     const file=files[0];
+    if(job.otSigned){ await handleOtSignedPick(job, file); return; }
     if(job.signed){ await handleSignedPick(job, file); return; }
     if(job.general){ await handleGeneralPick(job, file); return; }
     const emp=S.employees[job.empId]; if(!emp) return;
@@ -23034,7 +23177,11 @@ function payLine(e, kind, dates, saved, per){
        they were typed — those stored numbers are not used. Paid OT drops
        hours that are still waiting on an approved form, for periods ending
        on or after 2026-10-01, unless Settings otFormGateWaived is on.
-       That waiver pays the recorded hours and does not approve a request. */
+       That waiver pays the recorded hours and does not approve a request.
+       Settings otSignedCopyRequired (default off) is the later gate:
+       periods ending on or after 2026-11-16 then pay only after the
+       Morning Report signed copy is uploaded. Earlier periods keep
+       the waiver. Neither gate rewrites a stored hour or a Touched field. */
     days:  auto.days,
     ot:    (function(){
       if(typeof otPaidHours!=="function") return auto.ot;
@@ -26578,6 +26725,9 @@ function wire(){
   }
   const otpNew=$("#otp-new",v); if(otpNew) otpNew.onclick=()=>openOtPlanEditor(null);
   on("[data-otpedit]","click",e=>openOtPlanEditor({id:e.currentTarget.dataset.otpedit}));
+  on("[data-otpprint]","click",e=>openOtFormPrint("plan", e.currentTarget.dataset.otpprint));
+  on("[data-otppdf]","click",e=>saveOtFormPdf("plan", e.currentTarget.dataset.otppdf));
+  on("[data-otpupload]","click",e=>pickOtSigned("plan", e.currentTarget.dataset.otpupload));
   on("[data-otpreport]","click",e=>{
     const id=e.currentTarget.dataset.otpreport;
     const plan=S.otplans&&S.otplans[id];
@@ -26591,6 +26741,9 @@ function wire(){
   });
   const otrNew=$("#otr-new",v); if(otrNew) otrNew.onclick=()=>openOtReportEditor(null);
   on("[data-otredit]","click",e=>openOtReportEditor({id:e.currentTarget.dataset.otredit}));
+  on("[data-otrprint]","click",e=>openOtFormPrint("report", e.currentTarget.dataset.otrprint));
+  on("[data-otrpdf]","click",e=>saveOtFormPdf("report", e.currentTarget.dataset.otrpdf));
+  on("[data-otrupload]","click",e=>pickOtSigned("report", e.currentTarget.dataset.otrupload));
   on("[data-otrdel]","click",async e=>{
     const id=e.currentTarget.dataset.otrdel;
     if(!await askConfirm("Delete this Morning OT Report? Payroll, attendance, and pay runs are not changed.")) return;

@@ -548,6 +548,10 @@
           exception: ot > 0 && !confirmed ? "OT with no Morning Report" : ""
         });
         if (ot > 0 && !confirmed) ex("ot-no-report", "OT on " + date + " has no Morning Report confirming the hours. Payroll still pays Daily Manpower OT.", date);
+        var signedPeriod = ctx && ctx.per && typeof otSignedCopyApplies === "function" && otSignedCopyApplies(ctx.per.to);
+        if (signedPeriod && rep && rep.needsSignedCopy && (ot > 0 || logged > 0)) {
+          ex("ot-signed-copy", "OT on " + date + " is on a Morning Report. It counts for this payroll period after the signed copy is uploaded.", date);
+        }
       }
       if (row.site && !knownSite(ctx, row.site)) {
         ex("unknown-site", "Site “" + row.site + "” is not on the project list.", date);
