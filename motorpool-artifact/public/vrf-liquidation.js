@@ -278,6 +278,9 @@ function pdfTooLarge(file) {
  * (as a backstop) in the Postgres trigger 20261102000001.
  */
 var NO_RECEIPT_LABEL = "Liquidated – no receipt";
+/* Spend differs from approved. Not Closed until a named approver signs it. */
+var VARIANCE_PENDING_STATUS = "Liquidated \u2013 variance pending approval";
+var VARIANCE_PENDING_VSTATUS = "Variance pending";
 var DEAD_OUTCOMES = /^(cancelled|canceled|not-bought|duplicate)$/i;
 var RETURN_METHODS = ["Cash returned to Finance", "Deposited to company account", "Deducted from next cash advance", "Other"];
 var AFTER_FUEL_ROLE = "fuel-gauge-after";
@@ -439,6 +442,22 @@ function buildProof(input, ctx, now) {
   } else if (approved > 0 && actual > approved + 0.005) {
     p.overReason = String(input.overReason || "").trim().slice(0, 500);
   }
+  /* A variance close stores the explanation on the proof. The change / over
+     fields are filled from that explanation so an older database trigger that
+     still asks for them can accept the later Closed write. Staff do not type
+     those fields; the explanation and the named approver are the gate. */
+  var varianceText = varianceExplanationText(input);
+  if (varianceText && amountsDiffer(approved, actual)) {
+    p.varianceExplanation = varianceText.slice(0, 2000);
+    p.varianceAmount = round2(actual - approved);
+    p.variancePending = true;
+    if (actual + 0.005 < approved) {
+      p.change = { amount: round2(approved - actual), how: varianceText.slice(0, 200), date: p.date };
+    } else if (actual > approved + 0.005) {
+      var overText = varianceText.length >= 5 ? varianceText : (varianceText + " \u2014 variance");
+      p.overReason = overText.slice(0, 500);
+    }
+  }
   if (ctx.fuelReserve) {
     var w = input.withdrawal || {};
     p.fuel = { afterPhotos: c.afterFuel || 0, slips: c.slips || 0, litres: num(ctx.litres),
@@ -492,6 +511,206 @@ function noReceiptFlag(entry, counts, opts) {
   return { flag: true, label: NO_RECEIPT_LABEL, fuel: false };
 }
 
+function amountsDiffer(approved, actual) {
+  approved = round2(approved);
+  actual = round2(actual);
+  if (!(approved > 0) || !(actual > 0)) return false;
+  return Math.abs(actual - approved) > 0.005;
+}
+
+/** Non-link files on the PR #161 owner liq-{vrf}. A pasted link is not a receipt. */
+function liquidationAttachmentCount(items) {
+  var n = 0;
+  (items || []).forEach(function (p) {
+    if (!p || String(p.kind || "") === "link") return;
+    n++;
+  });
+  return n;
+}
+
+function liquidationAttachmentOwner(vrf) {
+  var no = String(vrf || "").trim();
+  return no ? "liq-" + no : "";
+}
+
+function varianceExplanationText(input) {
+  input = input || {};
+  var raw = input.varianceExplanation != null ? input.varianceExplanation : input.explanation;
+  return String(raw == null ? "" : raw).trim();
+}
+
+/**
+ * Variance (spent !== approved) may be liquidated only with a liquidation
+ * receipt and a written explanation. No variance: the caller keeps today's rules.
+ */
+function varianceCloseGate(input, ctx) {
+  input = input || {};
+  ctx = ctx || {};
+  var actual = round2(input.actual);
+  var approved = round2(ctx.approved != null ? ctx.approved : input.approved);
+  if (!amountsDiffer(approved, actual)) {
+    return { variance: false, ok: true, errors: [], approved: approved, actual: actual, diff: 0, explanation: "", receipts: 0 };
+  }
+  var errors = [];
+  var receipts = input.liquidationReceipts != null
+    ? Number(input.liquidationReceipts) || 0
+    : liquidationAttachmentCount(input.liquidationAttachments);
+  if (!(receipts > 0)) {
+    errors.push({
+      field: "liquidationReceipt",
+      msg: "Attach at least one receipt on Liquidation attachments before closing. The amount spent differs from the approved amount.",
+    });
+  }
+  var explanation = varianceExplanationText(input);
+  if (!explanation) {
+    errors.push({
+      field: "varianceExplanation",
+      msg: "Write why the amount spent differs from the approved amount.",
+    });
+  }
+  return {
+    variance: true,
+    ok: errors.length === 0,
+    errors: errors,
+    approved: approved,
+    actual: actual,
+    diff: round2(actual - approved),
+    explanation: explanation,
+    receipts: receipts,
+  };
+}
+
+function varianceApproverPair(liq) {
+  liq = liq || {};
+  var proof = liq.proof || {};
+  return {
+    by: String(liq.varianceApprovedBy || proof.varianceApprovedBy || "").trim(),
+    at: String(liq.varianceApprovedAt || proof.varianceApprovedAt || "").trim(),
+  };
+}
+
+/** True while a variance liquidation is waiting on Jeffrey or Carmel. */
+function varianceClosePending(liq) {
+  if (!liq) return false;
+  var proof = liq.proof || {};
+  var pending = liq.variancePending === true || (proof.variancePending === true && liq.variancePending !== false);
+  if (!pending) return false;
+  var pair = varianceApproverPair(liq);
+  return !(pair.by && pair.at);
+}
+
+function vrfShowsSpendVariance(entry) {
+  if (!entry) return false;
+  if (String(entry.status || "") === VARIANCE_PENDING_STATUS) return true;
+  var liq = entry.liq || null;
+  if (!liq && entry.rows) {
+    for (var i = 0; i < entry.rows.length; i++) {
+      if (entry.rows[i] && entry.rows[i].liq) { liq = entry.rows[i].liq; break; }
+    }
+  }
+  if (!liq) return false;
+  if (liq.variancePending === true || varianceClosePending(liq)) return true;
+  if (varianceExplanationText(liq)) return true;
+  if (String(liq.varianceApprovedBy || "").trim()) return true;
+  var proof = liq.proof || {};
+  if (proof.variancePending === true) return true;
+  if (varianceExplanationText(proof)) return true;
+  if (String(proof.varianceApprovedBy || "").trim()) return true;
+  return false;
+}
+
+/**
+ * Lines the liquidated print adds so the form matches what was spent.
+ * Returns null when approved and actual are the same amount.
+ */
+function spendVariancePrintLines(spec) {
+  spec = spec || {};
+  var liq = spec.liq || {};
+  var proof = spec.proof || liq.proof || {};
+  var approved = round2(spec.approved != null ? spec.approved : proof.approved);
+  var actual = round2(spec.actual != null ? spec.actual : (proof.actual != null ? proof.actual : liq.actual));
+  if (!amountsDiffer(approved, actual)) return null;
+  var explanation = String(
+    spec.explanation != null ? spec.explanation : (liq.varianceExplanation || proof.varianceExplanation || "")
+  ).trim();
+  var approver = String(
+    spec.approver != null ? spec.approver : (liq.varianceApprovedBy || proof.varianceApprovedBy || "")
+  ).trim();
+  var approvedAt = String(
+    spec.approvedAt != null ? spec.approvedAt : (liq.varianceApprovedAt || proof.varianceApprovedAt || "")
+  ).trim();
+  var recorded = explanation || approver || liq.variancePending === true || proof.variancePending === true ||
+    String(liq.varianceExplanation || proof.varianceExplanation || "").trim();
+  if (!recorded) return null;
+  var diff = round2(actual - approved);
+  var approverLine = approver
+    ? ("Variance approved by " + approver + (approvedAt ? " \u00b7 " + approvedAt : ""))
+    : "Variance approved by \u2014";
+  return {
+    actual: actual,
+    approved: approved,
+    varianceAmount: diff,
+    explanation: explanation,
+    approver: approver,
+    approvedAt: approvedAt,
+    lines: [
+      "Actual spent " + fmt(actual),
+      "Variance amount " + fmt(diff),
+      "Variance explanation: " + explanation,
+      approverLine,
+    ],
+  };
+}
+
+/**
+ * Named approver (Jeffrey James M. Corro or Carmel, via resolveApprover).
+ * Stores the canonical name and the time on the liquidation record.
+ * Does not touch the 50% print-variance fields on the reserve.
+ */
+function approveSpendVariance(liq, rawName, at, resolveApprover) {
+  if (!liq || typeof liq !== "object") {
+    return { ok: false, code: "not_pending", error: "This VRF is not waiting on a variance approval." };
+  }
+  if (!varianceClosePending(liq)) {
+    if (varianceApproverPair(liq).by) {
+      return { ok: false, code: "already_approved", error: "This variance is already approved." };
+    }
+    return { ok: false, code: "not_pending", error: "This VRF is not waiting on a variance approval." };
+  }
+  if (typeof resolveApprover !== "function") {
+    return { ok: false, code: "approver_check_unavailable", error: "Approver check did not load. Nothing was approved." };
+  }
+  var who = resolveApprover(rawName);
+  if (!who || who.ok !== true || !String(who.name || "").trim()) {
+    return who && who.ok === false
+      ? who
+      : { ok: false, code: "approver_not_allowed", error: "That name cannot approve this variance." };
+  }
+  var when = String(at || "").trim();
+  if (!when) return { ok: false, code: "approved_at_required", error: "The approval needs a time. Nothing was saved." };
+  liq.varianceApprovedBy = who.name;
+  liq.varianceApprovedAt = when;
+  liq.variancePending = false;
+  if (!liq.varianceExplanation && liq.proof) liq.varianceExplanation = varianceExplanationText(liq.proof);
+  if (liq.proof && typeof liq.proof === "object") {
+    liq.proof.varianceApprovedBy = who.name;
+    liq.proof.varianceApprovedAt = when;
+    liq.proof.variancePending = false;
+  }
+  return { ok: true, name: who.name, at: when };
+}
+
+/** Pending ledger lines become Closed. Other rows are copied through. */
+function promoteVarianceRows(rows) {
+  return (rows || []).map(function (row) {
+    if (!row || String(row.vstatus || "") !== VARIANCE_PENDING_VSTATUS) return row;
+    var next = {};
+    Object.keys(row).forEach(function (k) { next[k] = row[k]; });
+    next.vstatus = "Closed";
+    return next;
+  });
+}
+
 var api = {
   AGE_BUCKETS: AGE_BUCKETS, STATUSES: STATUSES, PROOF_ACCEPT: PROOF_ACCEPT, PDF_MAX_BYTES: PDF_MAX_BYTES,
   ageBucket: ageBucket, approvalDay: approvalDay, buildLiqRecord: buildLiqRecord,
@@ -500,12 +719,25 @@ var api = {
   liqDocId: liqDocId, liqOwner: liqOwner, liquidationOf: liquidationOf, manilaToday: manilaToday,
   monthEnd: monthEnd, normalizeFinanceRef: normalizeFinanceRef, pdfTooLarge: pdfTooLarge,
   proofLabel: proofLabel, totals: totals, unliquidatedRows: unliquidatedRows,
-  NO_RECEIPT_LABEL: NO_RECEIPT_LABEL, REQUIRE_FUEL_WITHDRAWAL_MATCH: REQUIRE_FUEL_WITHDRAWAL_MATCH,
+  NO_RECEIPT_LABEL: NO_RECEIPT_LABEL,
+  VARIANCE_PENDING_STATUS: VARIANCE_PENDING_STATUS,
+  VARIANCE_PENDING_VSTATUS: VARIANCE_PENDING_VSTATUS,
+  REQUIRE_FUEL_WITHDRAWAL_MATCH: REQUIRE_FUEL_WITHDRAWAL_MATCH,
   UNTAGGED_PHOTO_IS_RECEIPT: UNTAGGED_PHOTO_IS_RECEIPT, receiptCount: receiptCount, RETURN_METHODS: RETURN_METHODS, AFTER_FUEL_ROLE: AFTER_FUEL_ROLE,
   RECEIPT_ROLE: RECEIPT_ROLE, SLIP_ROLE: SLIP_ROLE,
   buildProof: buildProof, checkLiquidation: checkLiquidation, fuelLitresOfRows: fuelLitresOfRows,
   noReceiptFlag: noReceiptFlag, photoRoleOf: photoRoleOf, proofCounts: proofCounts,
   stampedProof: stampedProof, withdrawalCandidates: withdrawalCandidates, withdrawalRef: withdrawalRef,
+  amountsDiffer: amountsDiffer,
+  liquidationAttachmentCount: liquidationAttachmentCount,
+  liquidationAttachmentOwner: liquidationAttachmentOwner,
+  varianceExplanationText: varianceExplanationText,
+  varianceCloseGate: varianceCloseGate,
+  varianceClosePending: varianceClosePending,
+  vrfShowsSpendVariance: vrfShowsSpendVariance,
+  spendVariancePrintLines: spendVariancePrintLines,
+  approveSpendVariance: approveSpendVariance,
+  promoteVarianceRows: promoteVarianceRows,
 };
 if (typeof module === "object" && module.exports) module.exports = api;
 if (typeof window !== "undefined") window.VrfLiquidation = api;
