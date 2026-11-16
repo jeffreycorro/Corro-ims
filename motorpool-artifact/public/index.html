@@ -447,7 +447,7 @@ var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
    This label is inside the page function. The shim reads window.BUILD when it
    sends a save. Without that copy every save goes out with an empty build and
    the server answers "Reload the page". */
-var BUILD = "2026-11-16 a";
+var BUILD = "2026-11-16 b";
 try { window.BUILD = BUILD; } catch (e) {}
 var DAY = 86400000, MO = 30.44;
 
@@ -9018,6 +9018,65 @@ function reserveForVrf(entry){
   var hits=(S.reserves||[]).filter(function(r){ return reserveOwnsVrfNo(r, no); });
   return hits.length===1?hits[0]:null;
 }
+/* Live reserve note wins. A blank one falls back to the sealed issued snapshot. */
+function cleanApproverNote(v){
+  return String(v==null?"":v).trim();
+}
+function issuedApproverNote(vrfNo, reserveNo){
+  var no=String(vrfNo==null?"":vrfNo).trim();
+  var nums=S&&S.issued&&S.issued.numbers;
+  if(!no||!nums||typeof nums!=="object") return "";
+  var want=String(reserveNo==null?"":reserveNo).trim();
+  var keys=Object.keys(nums);
+  var i, loose="";
+  for(i=0;i<keys.length;i++){
+    var key=String(keys[i]);
+    var row=nums[keys[i]];
+    var named=String(row&&row.no!=null?row.no:"").trim();
+    var keyNo=key.split("@")[0];
+    if(named!==no && keyNo!==no) continue;
+    var snap=row&&row.snapshot&&row.snapshot.reserve;
+    var note=cleanApproverNote(snap&&snap.decisionNote);
+    if(!note) continue;
+    var snapNo=snap&&snap.no!=null?String(snap.no).trim():"";
+    if(want && snapNo===want) return note;
+    if(!want && key===no) return note;
+    if(!loose && (!want || !snapNo)) loose=note;
+  }
+  return loose;
+}
+function vrfApproverNote(entry){
+  if(!entry) return "";
+  var reserve=null;
+  try{ reserve=reserveForVrf(entry); }catch(e){ reserve=null; }
+  var live=cleanApproverNote(reserve&&reserve.decisionNote);
+  if(live) return live;
+  var reserveNo=reserve&&reserve.no!=null?reserve.no:(entry.reserve!=null?entry.reserve:"");
+  return issuedApproverNote(entry.vrf, reserveNo);
+}
+function approverNoteHtml(note){
+  var text=cleanApproverNote(note);
+  if(!text) return "";
+  return "<b>Approver's note</b> "+esc(text);
+}
+function appendApproverNote(parent, entry){
+  var html=approverNoteHtml(vrfApproverNote(entry));
+  if(!html||!parent) return null;
+  var box=el("div","approver-note");
+  box.innerHTML=html;
+  box.style.marginTop="6px";
+  box.style.fontSize="12px";
+  box.style.fontWeight="500";
+  box.style.whiteSpace="pre-wrap";
+  parent.appendChild(box);
+  return box;
+}
+/* A blank approve box must not wipe a note already on the reserve. */
+function approveBoxDecisionNote(existing, box){
+  var next=cleanApproverNote(box);
+  if(next) return next;
+  return existing;
+}
 function vrfMeter(entry, reserve){
   if(!entry) return null;
   var rows=entry.rows||[];
@@ -12219,7 +12278,7 @@ function openReserve(no,asApprover){
       var madeVrf=null;
       try{
         r.status="Approved"; r.approvedBudget=amt; r.approvedBy=approver.name;
-        r.approvedAt=isoAt(); r.decisionNote=an.value.trim();
+        r.approvedAt=isoAt(); r.decisionNote=approveBoxDecisionNote(r.decisionNote, an.value);
         madeVrf=await postAndSaveReserve(r);
       }catch(err){
         r.status=backup.status; r.approvedBudget=backup.approvedBudget; r.approvedBy=backup.approvedBy;
@@ -14144,6 +14203,7 @@ function buildVrfDoc(entry,photos,opts){
     c.appendChild(line);
     c.appendChild(el("div","nm",x.name));
     c.appendChild(el("div","rl",x.role));
+    if(x.cap==="Approved By") appendApproverNote(c, entry);
     sig.appendChild(c);
   });
   d.appendChild(sig);
@@ -16814,6 +16874,7 @@ function openVrf(entry,tab){
   rgt.appendChild(el("div","hint","grand total"));
   hd.appendChild(rgt);
   b.appendChild(hd);
+  appendApproverNote(b, entry);
   paintLiquidationNotices(b, entry);
   appendVarianceApproval(b, reserveForVrf(entry), !!S.office);
 

@@ -247,6 +247,6 @@ describe("liquidated print shows the variance", () => {
     assert.match(html, /variance — spent differs from approved/);
     assert.match(html, /data-variance-explanation/);
     assert.match(html, /closeBtn\.disabled=!hasName\|\|!pres\.ok/);
-    assert.match(html, /var BUILD = "2026-11-16 a"/);
+    assert.match(html, /var BUILD = "2026-11-16 b"/);
   });
 });
