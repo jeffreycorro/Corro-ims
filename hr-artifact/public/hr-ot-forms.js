@@ -419,13 +419,22 @@ function hrOtReportConfirms(empId, date, site, ctx) {
 function hrOtPaySource(empId, date, site) {
   var id = "", proof = "", hours = hrOtReportedHours(empId, date);
   if (!(hours > 0)) return null;
+  var signed = false;
   hrOtReportRowsFor(empId, date).forEach(function (hit) {
     if (!(hrOtRowConfirmedHours(hit.report, hit.row) > 0)) return;
     if (!id) id = hit.report.id || "";
+    if (hrOtSignedCopyReceived(hit.report)) signed = true;
     var list = (hit.row.proof && hit.row.proof.length) ? hit.row.proof : (hit.report.proofs || []);
     if (!proof && list[0] && list[0].url) proof = list[0].url;
   });
-  return { id: id, confirmed: true, proofUrl: proof, hours: hours };
+  return {
+    id: id,
+    confirmed: true,
+    proofUrl: proof,
+    hours: hours,
+    signedCopy: signed,
+    needsSignedCopy: !signed
+  };
 }
 
 function hrOtDailyRec(date, ctx) {
@@ -866,4 +875,210 @@ function hrOtAddProof(list, file) {
 function hrOtPlansForDate(date, ctx) {
   var d = hrOtDay(date);
   return hrOtPlans(ctx).filter(function (p) { return hrOtDay(p.otDate) === d; });
+}
+
+/* Printable overtime form, and the signed scan that confirms it.
+   Building the sheet does not write the plan or the report.
+   Uploading a scan is a separate step and is the only thing that
+   records "Signed copy received / Confirmed". */
+var HR_OT_SIGNED_STATUS = "Signed copy received / Confirmed";
+
+function hrOtDocKind(doc) {
+  if (!doc || typeof doc !== "object") return "report";
+  if (doc.kind === "plan" || doc.kind === "afternoon") return "plan";
+  if (doc.kind === "report" || doc.kind === "morning") return "report";
+  if (doc.reportDate || doc.planId || doc.noPlan) return "report";
+  return "plan";
+}
+
+function hrOtPreparedBy(doc, ctx) {
+  doc = doc || {};
+  var name = String(doc.preparedBy || doc.filedBy || "").trim();
+  if (!name && doc.deptSign && doc.deptSign.name) name = String(doc.deptSign.name).trim();
+  if (!name) name = String(doc.deptHead || "").trim();
+  if (!name) {
+    var S = hrOtState(ctx);
+    var st = S.settings || {};
+    name = String(st.hrStaff || st.hrHead || "").trim();
+  }
+  return name;
+}
+
+function hrOtFormLines(doc, kind, ctx) {
+  var afternoon = kind === "plan" || kind === "afternoon";
+  return hrOtRowsOf(doc).map(function (r) {
+    var who = hrOtPerson(r.empId, r, ctx);
+    var reason = "";
+    if (afternoon) {
+      reason = [r.task, r.reason].filter(function (x) { return String(x || "").trim(); }).join(" — ");
+    } else if (hrOtRowIsNoOt(doc, r)) {
+      reason = "No OT: " + (hrOtRowReason(doc, r) || "—");
+      var note = hrOtRowNote(doc, r);
+      if (note) reason += " (" + note + ")";
+    } else {
+      reason = [r.reason, r.description, r.task].filter(function (x) { return String(x || "").trim(); })[0] || "";
+    }
+    var hours = afternoon ? hrOtHoursOf(r) : hrOtRowConfirmedHours(doc, r);
+    return {
+      empId: who.empId,
+      empNo: who.empNo,
+      name: who.name,
+      timeFrom: String(r.timeFrom || "").trim(),
+      timeTo: String(r.timeTo || "").trim(),
+      hours: hours,
+      reason: reason
+    };
+  });
+}
+
+function hrOtFormModel(doc, kind, ctx) {
+  doc = doc || {};
+  kind = kind || hrOtDocKind(doc);
+  var afternoon = kind === "plan" || kind === "afternoon";
+  var site = String(doc.site || doc.project || "").trim();
+  if (!site && doc.planId) {
+    var plan = hrOtFindPlan(doc.planId, ctx);
+    if (plan && plan.site) site = String(plan.site).trim();
+  }
+  return {
+    kind: afternoon ? "afternoon" : "morning",
+    title: afternoon ? "AFTERNOON OVERTIME PLAN" : "MORNING OVERTIME REPORT",
+    date: hrOtDay(doc.otDate),
+    reportDate: afternoon ? "" : hrOtDay(doc.reportDate),
+    site: site,
+    project: site,
+    preparedBy: hrOtPreparedBy(doc, ctx),
+    lines: hrOtFormLines(doc, afternoon ? "plan" : "report", ctx),
+    approvedBy: ""
+  };
+}
+
+function hrOtPreparedSig(name, ctx) {
+  if (typeof companySigForChain !== "function") return "";
+  var role = "HR Staff";
+  if (typeof hrStaffName === "function") {
+    var staff = hrStaffName();
+    if (name && staff && typeof namesClose === "function" && !namesClose(name, staff)) role = "";
+  }
+  if (!role) return "";
+  try { return companySigForChain("Prepared by:", name, role) || ""; }
+  catch (e) { return ""; }
+}
+
+/* Company header, the overtime date, the site, every person on the form,
+   start and end, hours and reason, who prepared it, and a blank Approved-by
+   line. The approved line is not stamped: the paper is signed and uploaded. */
+function hrOtFormHtml(doc, kind, ctx) {
+  var m = hrOtFormModel(doc, kind, ctx);
+  var escFn = hrOtEsc;
+  var head = "";
+  if (typeof pfHead === "function") head = pfHead();
+  else {
+    var S = hrOtState(ctx);
+    var co = (S.settings && S.settings.company) || "CORRO CONSTRUCTION DEVELOPMENT AND TRADE CORPORATION";
+    head = '<div class="pf-head">' + escFn(co) + "</div>";
+  }
+  var body = m.lines.map(function (line) {
+    var who = line.name || "";
+    if (line.empNo) who = line.empNo + "  " + who;
+    return "<tr><td>" + escFn(who) + "</td><td>" + escFn(line.timeFrom || "—")
+      + "</td><td>" + escFn(line.timeTo || "—") + "</td><td>" + escFn(String(line.hours))
+      + "</td><td>" + escFn(line.reason || "") + "</td></tr>";
+  }).join("");
+  if (!body) body = '<tr><td colspan="5">&nbsp;</td></tr>';
+  var prep = hrOtPreparedSig(m.preparedBy, ctx);
+  var prepInk = prep
+    ? '<img class="pf-esig" data-ot-prepared-sig="1" src="' + escFn(prep) + '" alt="Prepared by">'
+    : "&nbsp;";
+  return head
+    + '<div class="pf-title">' + escFn(m.title) + "</div>"
+    + '<table class="kvt">'
+    + "<tr><td>Date</td><td>:</td><td>" + escFn(m.date || "") + "</td></tr>"
+    + (m.reportDate ? "<tr><td>Report date</td><td>:</td><td>" + escFn(m.reportDate) + "</td></tr>" : "")
+    + "<tr><td>Site / Project</td><td>:</td><td>" + escFn(m.site || "") + "</td></tr>"
+    + "</table>"
+    + '<table class="pf-t"><thead><tr><th>Employee</th><th>OT start</th><th>OT end</th><th>Hours</th><th>Reason</th></tr></thead><tbody>'
+    + body + "</tbody></table>"
+    + '<table class="pf-sign" data-ot-prepared="1"><tr><td class="who">Prepared by</td></tr><tr><td class="ink">'
+    + prepInk + "</td></tr><tr><td><span class=\"nm\">" + escFn(m.preparedBy || "")
+    + '</span><span class="rl">Prepared by</span></td></tr></table>'
+    + '<table class="pf-sign" data-ot-approved="blank"><tr><td class="who">Approved by</td></tr>'
+    + '<tr><td class="ink">&nbsp;</td></tr>'
+    + '<tr><td><span class="nm">&nbsp;</span><span class="rl">Signature over printed name</span></td></tr>'
+    + '<tr><td style="text-align:left;font-size:10px">Date: ______________</td></tr></table>';
+}
+
+function hrOtSignedCopyOf(doc) {
+  if (!doc || typeof doc !== "object") return null;
+  var pack = doc.signedCopy && typeof doc.signedCopy === "object" ? doc.signedCopy : null;
+  var url = String((pack && pack.url) || doc.signedLink || "").trim();
+  if (!url) return null;
+  return {
+    url: url,
+    title: String((pack && pack.title) || doc.signedTitle || ""),
+    by: String((pack && pack.by) || doc.signedBy || ""),
+    at: String((pack && pack.at) || doc.signedAt || ""),
+    on: String((pack && pack.on) || doc.signedOn || ""),
+    status: HR_OT_SIGNED_STATUS
+  };
+}
+
+function hrOtSignedCopyReceived(doc) {
+  return !!hrOtSignedCopyOf(doc);
+}
+
+/* A new document. The plan or report it was given is not changed,
+   and its rows, hours, and No OT marks are copied as they are. */
+function hrOtWithSignedCopy(doc, file, who, when) {
+  var next = hrOtClone(doc || {});
+  var url = String((file && file.url) || "").trim();
+  if (!url) return next;
+  var at = String(when || (file && file.at) || "");
+  var on = String((file && file.on) || at.slice(0, 10) || "");
+  var by = String(who || (file && file.by) || "");
+  next.signedCopy = {
+    url: url,
+    title: String((file && (file.title || file.name)) || ""),
+    by: by,
+    at: at,
+    on: on,
+    status: HR_OT_SIGNED_STATUS
+  };
+  next.signedLink = url;
+  next.signedTitle = next.signedCopy.title;
+  next.signedBy = by;
+  next.signedAt = at;
+  next.signedOn = on;
+  next.signedStatus = HR_OT_SIGNED_STATUS;
+  return next;
+}
+
+/* Morning Report hours count here only when that report's signed copy is on file.
+   A report with no signed copy does not confirm. Plan hours never confirm. */
+function hrOtSignedCopyConfirms(empId, date, site, ctx) {
+  var d = hrOtDay(date);
+  var ok = false;
+  hrOtReports(ctx).forEach(function (rep) {
+    if (ok || hrOtDay(rep.otDate) !== d || !hrOtSignedCopyReceived(rep)) return;
+    hrOtRowsOf(rep).forEach(function (row) {
+      if (ok || !row || row.empId !== empId) return;
+      if (hrOtRowConfirmedHours(rep, row) > 0) ok = true;
+    });
+  });
+  return ok;
+}
+
+function hrOtFlagOn(v) {
+  return v === true || v === 1 || v === "1"
+    || String(v).toLowerCase() === "true"
+    || String(v).toLowerCase() === "on"
+    || String(v).toLowerCase() === "yes";
+}
+
+/* Default off. A missing key stays off, so a settings document saved
+   before this flag existed keeps the waiver. */
+function hrOtSignedCopyRequired(ctx) {
+  var st = (hrOtState(ctx).settings) || {};
+  if (!Object.prototype.hasOwnProperty.call(st, "otSignedCopyRequired")) return false;
+  return hrOtFlagOn(st.otSignedCopyRequired);
 }
