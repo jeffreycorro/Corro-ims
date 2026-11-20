@@ -2188,7 +2188,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-11-16a";
+const BUILD = "2026-11-20b";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -14777,6 +14777,42 @@ async function savePDF(no, body, preview){
     stage.innerHTML='<div class="pf'+pfTightClass()+(PF_LAND?" land":"")+'" style="width:'+PX+'px;max-width:'+PX+'px;box-shadow:none;margin:0">'+body+'</div>';
     document.body.appendChild(stage);
     await new Promise(r=>setTimeout(r,120));            /* let the logo decode */
+    const reportPages=stage.querySelectorAll(".pay-rpt-page");
+    if(reportPages.length){
+      const pdf=new jsPDF({unit:"mm", format:"a4", orientation:"landscape", compress:true});
+      const M=10, PW=297, PH=210, w=PW-M*2, maxH=PH-M*2;
+      const shots=[];
+      for(let i=0;i<reportPages.length;i++){
+        const shot=await html2canvas(reportPages[i],{
+          scale:2.5, backgroundColor:"#ffffff", useCORS:true, logging:false,
+          windowWidth:PX, width:PX });
+        shots.push(shot);
+        if(i) pdf.addPage("a4","landscape");
+        const h=shot.height*w/shot.width;
+        const drawH=Math.min(h, maxH);
+        const drawW=h>maxH ? w*maxH/h : w;
+        pdf.addImage(shot.toDataURL("image/jpeg",0.94),"JPEG",M,M,drawW,drawH,undefined,"FAST");
+      }
+      const canvas=document.createElement("canvas");
+      const gap=24;
+      canvas.width=Math.max.apply(null, shots.map(s=>s.width));
+      canvas.height=shots.reduce((n,s)=>n+s.height,0)+gap*(shots.length-1);
+      const ctx=canvas.getContext("2d");
+      ctx.fillStyle="#ffffff";
+      ctx.fillRect(0,0,canvas.width,canvas.height);
+      let y=0;
+      shots.forEach(s=>{ ctx.drawImage(s,0,y); y+=s.height+gap; });
+      const blob=pdf.output("blob");
+      const kb=Math.round(blob.size/1024);
+      const pages=reportPages.length;
+      if(preview==="blob") return blob;
+      if(preview===false){
+        downloadBlob(name, blob);
+        toast("Saved "+name,"ok");
+        return true;
+      }
+      return pdfPreview(canvas, {name, blob, pages, kb, no, body});
+    }
     const canvas=await html2canvas(stage.firstChild,{
       scale:2.5, backgroundColor:"#ffffff", useCORS:true, logging:false,
       windowWidth:PX, width:PX });
@@ -24347,6 +24383,44 @@ function viewPayrollRun(){
   return h;
 }
 
+/* What Preview & print / Save as PDF hands to the company sheet. An approved
+   run carries status, approvedAt, and Jeffrey's stored signatory image
+   (signatorySig → hrSigs.signatory, jeffrey.png). A draft passes no image. */
+function payPrintOptions(kind, per, lines, release, savedRun){
+  const st=(typeof S!=="undefined" && S && S.settings)||{};
+  const status=savedRun && savedRun.status || "";
+  const approved=String(status).trim().toLowerCase()==="approved";
+  const src=approved && typeof signatorySig==="function" ? (signatorySig()||"") : "";
+  const savedLines=(savedRun && savedRun.lines) || {};
+  const printed=(lines||[]).map(L=>{
+    const copy=Object.assign({}, L||{});
+    const sv=savedLines[copy.empId]||{};
+    Object.keys(sv).forEach(k=>{
+      if(copy[k]!=null && copy[k]!=="") return;
+      if(!(k==="note" || k==="notes" || k==="govtNotes" || /Note$/.test(k))) return;
+      if(sv[k]==null || !String(sv[k]).trim()) return;
+      copy[k]=sv[k];
+    });
+    return copy;
+  });
+  return {
+    kind:kind,
+    from:per && per.from,
+    to:per && per.to,
+    release:release||"",
+    lines:printed,
+    runId:typeof payRunKey==="function" ? payRunKey(kind, per && per.from, per && per.to) : "",
+    status:status,
+    approvedAt:(savedRun && savedRun.approvedAt) || "",
+    note:(savedRun && (savedRun.note || savedRun.notes)) || "",
+    logo:typeof LOGO==="string" ? LOGO : "",
+    printedAt:new Date().toISOString(),
+    signatorySrc:src,
+    signatoryName:st.signatory||"Jeffrey James M. Corro",
+    signatoryTitle:st.signatoryTitle||"CEO / President"
+  };
+}
+
 /* The sheet as Catherine lays it out: period and release date at the head, a
    line per person with the day rows beneath, then the project summary and the
    two signatures. Landscape, because their own file is. */
@@ -27084,8 +27158,9 @@ function wire(){
     if(!b.lines.length){ toast("Nobody has a day recorded in this period.","err"); return; }
     if(blockCompanyPrint([(S.settings.payrollBy?"evaluated":"dept"),"signatory"])) return;
     const release=payRelease(b.kind, b.per);
+    const savedRun=payRunGet(b.kind, b.per.from, b.per.to);
     const body=(typeof hrPaySheet!=="undefined" && hrPaySheet && typeof hrPaySheet.printHTML==="function")
-      ? hrPaySheet.printHTML({kind:b.kind, from:b.per.from, to:b.per.to, release:release||"", lines:b.lines, runId:payRunKey(b.kind,b.per.from,b.per.to)})
+      ? hrPaySheet.printHTML(payPrintOptions(b.kind, b.per, b.lines, release||"", savedRun))
       : payPaper(b.kind,b.per,b.lines,b.T,b.grouped?b.groups:null);
     const no=(b.kind==="semi"?"ADMIN":"WEEKLY")+" PAYROLL "+payLabel(b.per.from,b.per.to);
     openModal({ title:no, wide:true, body:pfWrap(body,{land:true}),
