@@ -1591,29 +1591,167 @@
     return h;
   }
 
+  function payRunApproved(run) {
+    return String(run && run.status || "").trim().toLowerCase() === "approved";
+  }
+
+  function isPlainApprovalText(text) {
+    var t = String(text || "").trim();
+    return t === "Approved by:" || t === SIGN_APPR || t === SIGN_APPR_ROLE;
+  }
+
+  function cellText(c) {
+    return c && c.v != null && c.v !== "" ? String(c.v) : "";
+  }
+
+  /* approvedAt with a zone is converted to Asia/Manila. A wall clock with no
+     zone is already Manila time — Approve stores nowStamp() that way. */
+  function manilaApprovalWhen(raw) {
+    var s = String(raw || "").trim();
+    if (!s) return null;
+    var zoned = /(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(s);
+    var wall = s.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s](\d{2}):(\d{2})(?::(\d{2}))?)?$/);
+    var y;
+    var mo;
+    var d;
+    var h;
+    var mi;
+    var se;
+    if (wall && !zoned) {
+      y = wall[1];
+      mo = wall[2];
+      d = wall[3];
+      h = wall[4] || "00";
+      mi = wall[5] || "00";
+      se = wall[6] || "00";
+    } else {
+      var t = new Date(s);
+      if (isNaN(t.getTime())) return null;
+      var fmt = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Asia/Manila",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hourCycle: "h23"
+      });
+      var parts = {};
+      fmt.formatToParts(t).forEach(function (p) {
+        if (p.type !== "literal") parts[p.type] = p.value;
+      });
+      if (!parts.year || !parts.month || !parts.day) return null;
+      y = parts.year;
+      mo = parts.month;
+      d = parts.day;
+      h = parts.hour || "00";
+      mi = parts.minute || "00";
+      se = parts.second || "00";
+      if (h === "24") h = "00";
+    }
+    h = pad2(Number(h));
+    mi = pad2(Number(mi));
+    se = pad2(Number(se));
+    var months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    var monthName = months[Number(mo) - 1] || mo;
+    return {
+      iso: y + "-" + mo + "-" + d + "T" + h + ":" + mi + ":" + se + "+08:00",
+      text: d + " " + monthName + " " + y + ", " + h + ":" + mi + ":" + se + " PHT (UTC+8)"
+    };
+  }
+
+  /* Official stamp for an approved pay run. The image is the stored
+     signatory e-signature (hrSigs.signatory / jeffrey.png). A missing image
+     still prints the stamp, the name, and the Manila time. */
+  function approvalStampHtml(run) {
+    if (!payRunApproved(run)) return "";
+    var name = String(run.signatoryName || run.signatory || SIGN_APPR).trim() || SIGN_APPR;
+    var title = String(run.signatoryTitle || "CEO / President").trim() || "CEO / President";
+    var label = name + ", " + title;
+    var src = String(run.signatorySrc || run.signatureSrc || "").trim();
+    var when = manilaApprovalWhen(run.approvedAt);
+    var img = src
+      ? '<img class="pay-approval-sig" src="' + esc(src) + '" alt="E-signature of ' + esc(name) + '" style="max-height:48px;max-width:168px;display:block;margin:6px auto 2px;background:#fff">'
+      : "";
+    return '<div class="pay-approval-stamp" data-pay-approval="approved"'
+      + (when ? ' data-approved-pht="' + esc(when.iso) + '"' : "")
+      + ' style="margin:14px 0 4px;display:inline-block;border:3px double #1b4d2e;color:#1b4d2e;padding:8px 16px 10px;text-align:center;min-width:260px;background:#fff">'
+      + '<div class="pay-approval-mark" style="font-weight:800;letter-spacing:.14em;font-size:12px;line-height:1.3">APPROVED BY JEFFREY JAMES CORRO</div>'
+      + img
+      + '<div class="pay-approval-who" style="font-weight:700;font-size:12px;margin-top:2px">' + esc(label) + "</div>"
+      + (when ? '<div class="pay-approval-when" style="font-size:11px;margin-top:2px">' + esc(when.text) + "</div>" : "")
+      + "</div>";
+  }
+
   function printHTML(run) {
+    run = run || {};
+    var approved = payRunApproved(run);
     var book = workbook(run);
     var h = "<style>.pay-sheet td{font-size:8px;border:1px solid #ccc;padding:1px 3px;white-space:nowrap}.pay-sheet{border-collapse:collapse}</style>";
     book.sheets.forEach(function (sheet) {
       if (sheet.name === "Audit") return;
       h += "<h2 style=\"font-size:13px;margin:8px 0 4px\">" + esc(sheet.name) + "</h2>";
       h += '<table class="pay-sheet pf-t">';
+      var skipPure = 0;
+      var blankCol = -1;
+      var blankLeft = 0;
       (sheet.rows || []).forEach(function (row) {
-        var any = row.some(function (c) { return c && (c.v !== "" && c.v != null || c.f); });
+        var texts = [];
+        var any = false;
+        for (var i = 0; i < row.length; i++) {
+          var c = row[i];
+          var text = cellText(c);
+          texts.push(text);
+          if (text || (c && c.f)) any = true;
+        }
         if (!any) return;
+        if (approved && skipPure > 0) {
+          var meaningful = texts.filter(function (t) { return t; });
+          if (meaningful.length && meaningful.every(isPlainApprovalText)) {
+            skipPure -= 1;
+            return;
+          }
+          skipPure = 0;
+        }
+        var hasApproved = texts.indexOf("Approved by:") >= 0;
+        var hasPrepared = texts.indexOf("Prepared by:") >= 0;
+        if (approved && hasApproved && !hasPrepared) {
+          skipPure = 2;
+          return;
+        }
+        var render = row;
+        if (approved && hasApproved && hasPrepared) {
+          blankCol = texts.indexOf("Approved by:");
+          blankLeft = 2;
+          render = row.map(function (cell, idx) { return idx === blankCol ? null : cell; });
+        } else if (approved && blankLeft > 0 && blankCol >= 0) {
+          if (isPlainApprovalText(texts[blankCol])) {
+            blankLeft -= 1;
+            render = row.map(function (cell, idx) { return idx === blankCol ? null : cell; });
+          } else {
+            blankLeft = 0;
+            blankCol = -1;
+          }
+        }
         h += "<tr>";
-        row.forEach(function (c) {
-          var text = c && c.v != null && c.v !== "" ? c.v : "";
-          h += "<td>" + esc(text) + "</td>";
+        render.forEach(function (cell) {
+          var shown = cell && cell.v != null && cell.v !== "" ? cell.v : "";
+          h += "<td>" + esc(shown) + "</td>";
         });
         h += "</tr>";
       });
       h += "</table>";
     });
     if ((run.kind || "weekly") === "semi") {
-      h += '<p style="margin-top:12px"><b>Prepared by:</b> ' + esc(SIGN_PREP) + ", " + esc(SIGN_PREP_ROLE)
-        + " &nbsp;&nbsp; <b>Approved by:</b> " + esc(SIGN_APPR) + ", " + esc(SIGN_APPR_ROLE) + "</p>";
+      if (approved) {
+        h += '<p style="margin-top:12px"><b>Prepared by:</b> ' + esc(SIGN_PREP) + ", " + esc(SIGN_PREP_ROLE) + "</p>";
+      } else {
+        h += '<p style="margin-top:12px"><b>Prepared by:</b> ' + esc(SIGN_PREP) + ", " + esc(SIGN_PREP_ROLE)
+          + " &nbsp;&nbsp; <b>Approved by:</b> " + esc(SIGN_APPR) + ", " + esc(SIGN_APPR_ROLE) + "</p>";
+      }
     }
+    if (approved) h += approvalStampHtml(run);
     return h;
   }
 
@@ -2080,6 +2218,9 @@
     screenHTML: screenHTML,
     auditHTML: auditHTML,
     printHTML: printHTML,
+    payRunApproved: payRunApproved,
+    manilaApprovalWhen: manilaApprovalWhen,
+    approvalStampHtml: approvalStampHtml,
     periodLabel: periodLabel,
     dayLabel: dayLabel,
     siteOrder: siteOrder

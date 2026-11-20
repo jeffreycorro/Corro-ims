@@ -2188,7 +2188,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-11-16a";
+const BUILD = "2026-11-20a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -24347,6 +24347,29 @@ function viewPayrollRun(){
   return h;
 }
 
+/* What Preview & print / Save as PDF hands to the company sheet. An approved
+   run carries status, approvedAt, and Jeffrey's stored signatory image
+   (signatorySig → hrSigs.signatory, jeffrey.png). A draft passes no image. */
+function payPrintOptions(kind, per, lines, release, savedRun){
+  const st=(typeof S!=="undefined" && S && S.settings)||{};
+  const status=savedRun && savedRun.status || "";
+  const approved=String(status).trim().toLowerCase()==="approved";
+  const src=approved && typeof signatorySig==="function" ? (signatorySig()||"") : "";
+  return {
+    kind:kind,
+    from:per && per.from,
+    to:per && per.to,
+    release:release||"",
+    lines:lines||[],
+    runId:typeof payRunKey==="function" ? payRunKey(kind, per && per.from, per && per.to) : "",
+    status:status,
+    approvedAt:(savedRun && savedRun.approvedAt) || "",
+    signatorySrc:src,
+    signatoryName:st.signatory||"Jeffrey James M. Corro",
+    signatoryTitle:st.signatoryTitle||"CEO / President"
+  };
+}
+
 /* The sheet as Catherine lays it out: period and release date at the head, a
    line per person with the day rows beneath, then the project summary and the
    two signatures. Landscape, because their own file is. */
@@ -27084,8 +27107,9 @@ function wire(){
     if(!b.lines.length){ toast("Nobody has a day recorded in this period.","err"); return; }
     if(blockCompanyPrint([(S.settings.payrollBy?"evaluated":"dept"),"signatory"])) return;
     const release=payRelease(b.kind, b.per);
+    const savedRun=payRunGet(b.kind, b.per.from, b.per.to);
     const body=(typeof hrPaySheet!=="undefined" && hrPaySheet && typeof hrPaySheet.printHTML==="function")
-      ? hrPaySheet.printHTML({kind:b.kind, from:b.per.from, to:b.per.to, release:release||"", lines:b.lines, runId:payRunKey(b.kind,b.per.from,b.per.to)})
+      ? hrPaySheet.printHTML(payPrintOptions(b.kind, b.per, b.lines, release||"", savedRun))
       : payPaper(b.kind,b.per,b.lines,b.T,b.grouped?b.groups:null);
     const no=(b.kind==="semi"?"ADMIN":"WEEKLY")+" PAYROLL "+payLabel(b.per.from,b.per.to);
     openModal({ title:no, wide:true, body:pfWrap(body,{land:true}),
