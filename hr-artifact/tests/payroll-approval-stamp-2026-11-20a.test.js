@@ -67,7 +67,7 @@ function run(kind, extra) {
 }
 
 const APPROVED_AT = "2026-11-19T22:15:30.000Z";
-const MANILA_TEXT = "20 Nov 2026, 06:15:30 PHT (UTC+8)";
+const MANILA_TEXT = "20 Nov 2026, 6:15:30 AM Asia/Manila";
 const MANILA_ISO = "2026-11-20T06:15:30+08:00";
 
 function approved(kind, extra) {
@@ -80,9 +80,9 @@ function approved(kind, extra) {
   }, extra || {}));
 }
 
-describe("2026-11-20a approved payroll print stamp", () => {
-  it("is build 2026-11-20a", () => {
-    assert.match(html, /const BUILD = "2026-11-20a"/);
+describe("2026-11-20b approved payroll print stamp", () => {
+  it("is build 2026-11-20b", () => {
+    assert.match(html, /const BUILD = "2026-11-20b"/);
     assert.match(html, /function payPrintOptions\(/);
     assert.match(html, /signatorySig\(\)/);
     assert.match(html, /hrPaySheet\.printHTML\(payPrintOptions\(/);
@@ -99,7 +99,7 @@ describe("2026-11-20a approved payroll print stamp", () => {
     assert.match(printed, /class="pay-approval-sig"/);
     assert.match(printed, new RegExp('src="' + SIG.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + '"'));
     assert.match(printed, /Jeffrey James M\. Corro, CEO \/ President/);
-    assert.match(printed, /20 Nov 2026, 06:15:30 PHT \(UTC\+8\)/);
+    assert.match(printed, /20 Nov 2026, 6:15:30 AM Asia\/Manila/);
     assert.equal(printed.split("APPROVED BY JEFFREY JAMES CORRO").length - 1, 1);
     assert.doesNotMatch(printed, /Approved by:/);
   });
@@ -112,10 +112,9 @@ describe("2026-11-20a approved payroll print stamp", () => {
     assert.match(printed, /Jeffrey James M\. Corro, CEO \/ President/);
     assert.ok(printed.includes(MANILA_TEXT), printed.slice(printed.indexOf("pay-approval")));
     assert.match(printed, /data-approved-pht="2026-11-20T06:15:30\+08:00"/);
-    assert.match(printed, /<b>Prepared by:<\/b> Catherine A\. Largo, SAFETY OFFICER/);
-    assert.doesNotMatch(printed, /<b>Approved by:<\/b>/);
-    assert.doesNotMatch(printed, />Approved by:</);
-    assert.doesNotMatch(printed, />CEO</);
+    assert.match(printed, /Semi-monthly Payroll Report/);
+    assert.match(printed, /class="pay-approval-sig"/);
+    assert.doesNotMatch(printed, /<b>Approved by:<\/b> Jeffrey James M\. Corro, CEO</);
     assert.equal(printed.split("APPROVED BY JEFFREY JAMES CORRO").length - 1, 1);
   });
 
@@ -135,7 +134,8 @@ describe("2026-11-20a approved payroll print stamp", () => {
   it("reads a zone-less approvedAt as Asia/Manila wall time", () => {
     const when = P.manilaApprovalWhen("2026-11-20 14:05");
     assert.equal(when.iso, "2026-11-20T14:05:00+08:00");
-    assert.equal(when.text, "20 Nov 2026, 14:05:00 PHT (UTC+8)");
+    assert.equal(when.text, "20 Nov 2026, 2:05:00 PM Asia/Manila");
+    assert.equal(when.day, "20 Nov 2026");
     const zoned = P.manilaApprovalWhen(APPROVED_AT);
     assert.equal(zoned.iso, MANILA_ISO);
     assert.equal(zoned.text, MANILA_TEXT);
@@ -150,14 +150,22 @@ describe("2026-11-20a approved payroll print stamp", () => {
     assert.doesNotMatch(printed, /PHT/);
   });
 
-  it("keeps the plain Approved by line on a draft or submitted semi-monthly print", () => {
+  it("keeps the signature and stamp off a draft or submitted semi-monthly print", () => {
     ["draft", "submitted", ""].forEach(function (status) {
-      const printed = P.printHTML(run("semi", { status: status, approvedAt: APPROVED_AT, signatorySrc: SIG }));
-      assert.match(printed, /<b>Approved by:<\/b> Jeffrey James M\. Corro, CEO/);
+      const printed = P.printHTML(run("semi", { status: status, approvedAt: APPROVED_AT, signatorySrc: SIG, printedAt: "2026-11-20T01:00:00.000Z" }));
+      assert.match(printed, /Approved by/);
+      assert.match(printed, /Name and date/);
       assert.doesNotMatch(printed, /APPROVED BY JEFFREY JAMES CORRO/);
       assert.doesNotMatch(printed, /pay-approval-sig/);
       assert.doesNotMatch(printed, /data:image\/png;base64,JEFFREY/);
-      assert.doesNotMatch(printed, /PHT \(UTC\+8\)/);
+      assert.doesNotMatch(printed, /Jeffrey James M\. Corro, CEO/);
+      if (!status || status === "draft") {
+        assert.match(printed, /pay-rpt-watermark/);
+        assert.match(printed, /data-pay-pill="draft"/);
+      } else {
+        assert.doesNotMatch(printed, /class="pay-rpt-watermark"/);
+        assert.match(printed, /data-pay-pill="submitted"/);
+      }
     });
   });
 
@@ -202,6 +210,6 @@ describe("2026-11-20a approved payroll print stamp", () => {
     assert.match(stamped, /APPROVED BY JEFFREY JAMES CORRO/);
     assert.match(stamped, /src="data:image\/png;base64,JEFFREY"/);
     assert.match(stamped, /Jeffrey James M\. Corro, CEO \/ President/);
-    assert.match(stamped, /06:15:30 PHT \(UTC\+8\)/);
+    assert.match(stamped, /6:15:30 AM Asia\/Manila/);
   });
 });

@@ -1655,9 +1655,19 @@
     se = pad2(Number(se));
     var months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     var monthName = months[Number(mo) - 1] || mo;
+    var dayLabel = String(Number(d)) + " " + monthName + " " + y;
+    var hour = Number(h);
+    var ap = hour >= 12 ? "PM" : "AM";
+    var h12 = hour % 12;
+    if (!h12) h12 = 12;
+    var clock = h12 + ":" + mi + ":" + se + " " + ap;
+    var clockShort = h12 + ":" + mi + " " + ap;
     return {
       iso: y + "-" + mo + "-" + d + "T" + h + ":" + mi + ":" + se + "+08:00",
-      text: d + " " + monthName + " " + y + ", " + h + ":" + mi + ":" + se + " PHT (UTC+8)"
+      text: dayLabel + ", " + clock + " Asia/Manila",
+      day: dayLabel,
+      clock: clock,
+      clockShort: clockShort
     };
   }
 
@@ -1684,74 +1694,471 @@
       + "</div>";
   }
 
+  var MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  var MONTHS_LONG = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+  var REPORT_HEADS = ["Name", "Site", "Rate", "Days", "OT hours", "OT pay", "Other earnings", "Gross", "SSS", "PhilHealth", "Pag-IBIG", "Cash advance", "Uniform", "Late / undertime", "Net"];
+  var NOTE_TITLES = {
+    note: "Note",
+    notes: "Note",
+    caNote: "Cash advance",
+    uniformNote: "Uniform",
+    lateNote: "Late / undertime",
+    sssNote: "SSS",
+    phicNote: "PhilHealth",
+    hdmfNote: "Pag-IBIG",
+    govNote: "Government contributions",
+    govtNote: "Government contributions",
+    govtNotes: "Government contributions",
+    allowanceNote: "Allowance",
+    incentiveNote: "Other earnings",
+    otNote: "Overtime",
+    holNote: "Holiday pay",
+    otherNote: "Other earnings"
+  };
+
+  function ymdParts(iso) {
+    var m = String(iso || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (!m) return null;
+    return { y: Number(m[1]), m: Number(m[2]), d: Number(m[3]) };
+  }
+
+  function shortRange(from, to) {
+    var a = ymdParts(from);
+    var b = ymdParts(to);
+    if (!a || !b) return "";
+    var as = MONTHS_SHORT[a.m - 1] || "";
+    var bs = MONTHS_SHORT[b.m - 1] || "";
+    if (a.y === b.y && a.m === b.m) return as + " " + a.d + "–" + b.d + ", " + b.y;
+    if (a.y === b.y) return as + " " + a.d + "–" + bs + " " + b.d + ", " + b.y;
+    return as + " " + a.d + ", " + a.y + "–" + bs + " " + b.d + ", " + b.y;
+  }
+
+  function longRange(from, to) {
+    var a = ymdParts(from);
+    var b = ymdParts(to);
+    if (!a || !b) return "";
+    var al = MONTHS_LONG[a.m - 1] || "";
+    var bl = MONTHS_LONG[b.m - 1] || "";
+    if (a.y === b.y && a.m === b.m) return a.d + "–" + b.d + " " + al + " " + a.y;
+    if (a.y === b.y) return a.d + " " + al + "–" + b.d + " " + bl + " " + a.y;
+    return a.d + " " + al + " " + a.y + "–" + b.d + " " + bl + " " + b.y;
+  }
+
+  function longDay(iso) {
+    var a = ymdParts(iso);
+    if (!a) return "";
+    return a.d + " " + (MONTHS_LONG[a.m - 1] || "") + " " + a.y;
+  }
+
+  function reportStatus(run) {
+    var s = String(run && run.status || "").trim().toLowerCase();
+    if (s === "approved") return "approved";
+    if (s === "submitted" || s === "submitted for approval") return "submitted";
+    return "draft";
+  }
+
+  function reportKindWord(run) {
+    return (run && run.kind) === "semi" ? "semi-monthly" : "weekly";
+  }
+
+  function moneyCents(n) {
+    var x = Number(n);
+    if (!isFinite(x)) x = 0;
+    return Math.round(x * 100);
+  }
+
+  function moneyAmount(cents) {
+    var neg = cents < 0;
+    var s = (Math.abs(cents) / 100).toFixed(2);
+    var parts = s.split(".");
+    parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    return (neg ? "-" : "") + parts[0] + "." + parts[1];
+  }
+
+  function pesoCell(n) {
+    var c = moneyCents(n);
+    if (!c) return "—";
+    return "₱" + moneyAmount(c);
+  }
+
+  function qtyCell(n) {
+    var x = Number(n);
+    if (!isFinite(x) || moneyCents(x) === 0) return "—";
+    var rounded = Math.round(x * 100) / 100;
+    if (Math.abs(rounded - Math.round(rounded)) < 0.001) return String(Math.round(rounded));
+    return String(rounded);
+  }
+
+  function otherEarnings(L) {
+    if (L && L.otherEarnings != null && L.otherEarnings !== "") return Number(L.otherEarnings) || 0;
+    return (Number(L && L.allowance) || 0) + (Number(L && L.incentive) || 0) + (Number(L && L.holPay) || 0) + (Number(L && L.addl) || 0);
+  }
+
+  function shownDeductions(L) {
+    return (Number(L.sss) || 0) + (Number(L.phic) || 0) + (Number(L.hdmf) || 0)
+      + (Number(L.ca) || 0) + (Number(L.uniform) || 0) + (Number(L.late) || 0);
+  }
+
+  function reportName(name) {
+    var s = String(name || "").trim();
+    var p = s.split(",");
+    if (p.length > 1 && p[0].trim() && p[1].trim()) return (p.slice(1).join(",").trim() + " " + p[0].trim()).replace(/\s+/g, " ");
+    return s;
+  }
+
+  function includedLines(run) {
+    return (run.lines || []).filter(function (L) {
+      return moneyCents(L && L.net) !== 0;
+    });
+  }
+
+  function noteTitle(key) {
+    if (NOTE_TITLES[key]) return NOTE_TITLES[key];
+    var raw = String(key || "").replace(/Notes?$/, "").replace(/([a-z])([A-Z])/g, "$1 $2");
+    raw = raw.replace(/[_-]+/g, " ").trim();
+    if (!raw) return "Note";
+    return raw.charAt(0).toUpperCase() + raw.slice(1);
+  }
+
+  function lineNotes(L) {
+    var found = [];
+    var seen = {};
+    function take(key) {
+      if (!key || seen[key] || !L || !Object.prototype.hasOwnProperty.call(L, key)) return;
+      seen[key] = true;
+      var v = L[key];
+      if (v == null) return;
+      if (typeof v !== "string" && typeof v !== "number") return;
+      var text = String(v).trim();
+      if (!text) return;
+      if (typeof v === "number") return;
+      found.push({ key: key, title: noteTitle(key), text: text });
+    }
+    ["caNote", "uniformNote", "lateNote", "sssNote", "phicNote", "hdmfNote", "govNote", "govtNote", "govtNotes", "allowanceNote", "incentiveNote", "otNote", "holNote", "otherNote", "note", "notes"].forEach(take);
+    Object.keys(L || {}).forEach(function (k) {
+      if (/Note$/.test(k) || k === "govtNotes") take(k);
+    });
+    return found;
+  }
+
+  function decisionItems(run, lines) {
+    var items = [];
+    var runNote = String((run && (run.note || run.notes)) || "").trim();
+    if (runNote) items.push({ who: "", title: "Payrun note", text: runNote });
+    (lines || []).forEach(function (L) {
+      var who = reportName(L.name) || "Employee";
+      lineNotes(L).forEach(function (n) {
+        if (n.key === "note" || n.key === "notes") items.push({ who: who, title: who, text: n.text });
+        else items.push({ who: who, title: who + " — " + n.title, text: n.text });
+      });
+    });
+    return items;
+  }
+
+  function paginateReport(rows) {
+    if (rows.length <= 5) return [rows];
+    var pages = [];
+    var i = 0;
+    var first = Math.min(8, rows.length - 1);
+    pages.push(rows.slice(0, first));
+    i = first;
+    while (i < rows.length) {
+      var remain = rows.length - i;
+      if (remain <= 5) {
+        pages.push(rows.slice(i));
+        break;
+      }
+      var take = Math.min(12, remain - 5);
+      if (take < 1) take = remain;
+      pages.push(rows.slice(i, i + take));
+      i += take;
+    }
+    return pages;
+  }
+
+  function reportCss() {
+    return "<style>"
+      + "@page{size:A4 landscape;margin:10mm 12mm 12mm}"
+      + ".pay-rpt,.pay-rpt *{font-family:\"Segoe UI\",Calibri,Arial,sans-serif;box-sizing:border-box}"
+      + ".pay-rpt{color:#1c1c1c}"
+      + ".pay-rpt-page{position:relative;background:#fff;min-height:170mm;page-break-after:always;break-after:page;overflow:hidden}"
+      + ".pay-rpt-page:last-child{page-break-after:auto;break-after:auto}"
+      + ".pay-rpt-watermark{position:absolute;left:12%;top:34%;font-size:78px;font-weight:800;letter-spacing:.18em;color:rgba(196,107,42,.16);transform:rotate(-28deg);pointer-events:none;z-index:0}"
+      + ".pay-rpt-head,.pay-rpt-foot,.pay-rpt-body{position:relative;z-index:1}"
+      + ".pay-rpt-head{display:flex;gap:12px;align-items:flex-start;padding-bottom:6px;border-bottom:2px solid #1f3a5f;margin-bottom:8px}"
+      + ".pay-rpt-logo{height:36px;width:auto;max-width:150px;object-fit:contain;display:block}"
+      + ".pay-rpt-head-main{flex:1;min-width:0}"
+      + ".pay-rpt-title{font-size:16px;font-weight:800;color:#1f3a5f;line-height:1.2}"
+      + ".pay-rpt-sub{font-size:10px;margin-top:2px;color:#243044}"
+      + ".pay-rpt-meta{font-size:9px;color:#6b7280;margin-top:2px}"
+      + ".pay-rpt-pill{display:inline-block;border-radius:999px;padding:5px 10px;font-size:11px;font-weight:700;color:#fff;background:#1e6b4f;white-space:nowrap}"
+      + ".pay-rpt-pill.draft{background:#c46b2a}"
+      + ".pay-rpt-pill.other{background:#6e6a64}"
+      + ".pay-rpt-kpis{display:flex;gap:4px;margin:0 0 8px}"
+      + ".pay-rpt-kpi{flex:1;border:1px solid #d5dbe3;min-width:0;background:#fff}"
+      + ".pay-rpt-kpi-l{background:#1f3a5f;color:#fff;font-size:8px;letter-spacing:.04em;text-transform:uppercase;padding:3px 4px;text-align:center}"
+      + ".pay-rpt-kpi-v{padding:6px 3px;text-align:center;font-size:12px}"
+      + ".pay-rpt-kpi[data-kpi='gross']{background:#e7f2fb}"
+      + ".pay-rpt-kpi[data-kpi='net']{background:#eaf7ef}"
+      + ".pay-rpt-kpi[data-kpi='gross'] .pay-rpt-kpi-v,.pay-rpt-kpi[data-kpi='net'] .pay-rpt-kpi-v{font-weight:800}"
+      + ".pay-rpt-intro{font-size:11px;line-height:1.4;margin:0 0 8px}"
+      + ".pay-rpt-table{width:100%;border-collapse:collapse;font-size:8.5px}"
+      + ".pay-rpt-table th{background:#1f3a5f;color:#fff;font-weight:700;text-align:right;padding:4px 3px;border:1px solid #1f3a5f}"
+      + ".pay-rpt-table th:first-child,.pay-rpt-table td:first-child{text-align:left}"
+      + ".pay-rpt-table td{padding:3px;border:1px solid #e1e6ee;vertical-align:top}"
+      + ".pay-rpt-table tbody tr:nth-child(even) td{background:#f6f8fb}"
+      + ".pay-rpt-table td.pay-rpt-net,.pay-rpt-table tr.pay-rpt-total td.pay-rpt-net{background:#eaf7ef;font-weight:700}"
+      + ".pay-rpt-name{font-weight:700}"
+      + ".pay-rpt-subname{display:block;color:#6b7280;font-weight:400;font-size:8px}"
+      + ".pay-rpt-total td{font-weight:800;background:#eef2f7;border-top:2px solid #1f3a5f}"
+      + ".pay-rpt-row{break-inside:avoid;page-break-inside:avoid}"
+      + ".pay-rpt-decisions{margin-top:10px;background:#eaf7ef;border:1.5px solid #1e6b4f;padding:8px 10px}"
+      + ".pay-rpt-decisions h3{margin:0 0 6px;color:#1e6b4f;font-size:12px}"
+      + ".pay-rpt-decisions ol{margin:0;padding-left:18px}"
+      + ".pay-rpt-decisions li{margin:0 0 6px}"
+      + ".pay-rpt-sign{display:flex;gap:16px;margin-top:12px;align-items:flex-end}"
+      + ".pay-rpt-sign-col{flex:1}"
+      + ".pay-rpt-sign-who{font-weight:700;font-size:11px;margin-bottom:4px}"
+      + ".pay-rpt-sign-line{border-bottom:1px solid #1f3a5f;height:36px;margin-bottom:3px}"
+      + ".pay-rpt-sign-cap{font-size:9px;color:#6b7280}"
+      + ".pay-rpt-paid{font-size:9px;color:#6b7280;margin-top:8px}"
+      + ".pay-rpt-foot{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-top:8px;padding-top:4px;border-top:1px solid #d5dbe3;font-size:9px;color:#6b7280}"
+      + ".pay-rpt-foot-ok{color:#1e6b4f;font-weight:800}"
+      + "</style>";
+  }
+
+  function reportHeader(run, approved, status, when, printed) {
+    var kindWord = reportKindWord(run);
+    var titleKind = kindWord === "semi-monthly" ? "Semi-monthly Payroll Report" : "Weekly Payroll Report";
+    var range = shortRange(run.from, run.to);
+    var period = longRange(run.from, run.to);
+    var release = longDay(run.release);
+    var id = run.runId || ((run.kind || "weekly") + "|" + (run.from || ""));
+    var logo = String(run.logo || "").trim();
+    var statusWord = status.toUpperCase();
+    var meta = "Payrun " + id + " · Status: " + statusWord;
+    if (approved && when) meta += " · Approved " + when.text;
+    if (printed) meta += " · Printed " + printed.day + ", " + printed.clockShort + " Asia/Manila";
+    var pill;
+    if (approved) {
+      pill = '<span class="pay-rpt-pill" data-pay-pill="approved">APPROVED by Jeffrey James Corro'
+        + (when ? ", " + esc(when.day) : "") + "</span>";
+    } else if (status === "draft") {
+      pill = '<span class="pay-rpt-pill draft" data-pay-pill="draft">DRAFT</span>';
+    } else {
+      pill = '<span class="pay-rpt-pill other" data-pay-pill="' + esc(status) + '">' + esc(statusWord) + "</span>";
+    }
+    return '<header class="pay-rpt-head">'
+      + (logo ? '<img class="pay-rpt-logo" src="' + esc(logo) + '" alt="CorConDev">' : '<div class="pay-rpt-logo" aria-hidden="true"></div>')
+      + '<div class="pay-rpt-head-main">'
+      + '<div class="pay-rpt-title">' + esc(titleKind + (range ? ", " + range : "")) + "</div>"
+      + '<div class="pay-rpt-sub">Corcondev · Corro Const. Development and Trade Corporation · Period '
+      + esc(period || "—") + " · Release " + esc(release || "—") + "</div>"
+      + '<div class="pay-rpt-meta">' + esc(meta) + "</div>"
+      + "</div>"
+      + "<div>" + pill + "</div>"
+      + "</header>";
+  }
+
+  function reportFooter(run, approved, status, when, pageNo, pageCount) {
+    var kindWord = reportKindWord(run);
+    var left = (approved ? "Approved " : status === "submitted" ? "Submitted " : "Draft ")
+      + kindWord + " payroll report · Confidential";
+    var mid = approved
+      ? '<span class="pay-rpt-foot-ok">APPROVED by Jeffrey James Corro' + (when ? ", " + esc(when.day) : "") + "</span>"
+      : "<span></span>";
+    return '<footer class="pay-rpt-foot"><span>' + esc(left) + "</span>" + mid
+      + "<span>Page " + pageNo + " of " + pageCount + "</span></footer>";
+  }
+
+  function sumCents(lines, pick) {
+    var c = 0;
+    lines.forEach(function (L) { c += moneyCents(pick(L)); });
+    return c;
+  }
+
+  function kpiStrip(lines) {
+    var people = lines.length;
+    var days = sumCents(lines, function (L) { return L.days; });
+    var ot = sumCents(lines, function (L) { return L.ot; });
+    var otPay = sumCents(lines, function (L) { return L.otPay; });
+    var other = sumCents(lines, otherEarnings);
+    var gross = sumCents(lines, function (L) { return L.gross; });
+    var ded = sumCents(lines, function (L) { return L.sss; })
+      + sumCents(lines, function (L) { return L.phic; })
+      + sumCents(lines, function (L) { return L.hdmf; })
+      + sumCents(lines, function (L) { return L.ca; })
+      + sumCents(lines, function (L) { return L.uniform; })
+      + sumCents(lines, function (L) { return L.late; });
+    var net = sumCents(lines, function (L) { return L.net; });
+    var boxes = [
+      ["people", "People", String(people), String(people)],
+      ["days", "Days", qtyCell(days / 100), moneyAmount(days)],
+      ["ot", "OT hours", qtyCell(ot / 100), moneyAmount(ot)],
+      ["otPay", "OT pay", pesoCell(otPay / 100), moneyAmount(otPay)],
+      ["other", "Other earnings", pesoCell(other / 100), moneyAmount(other)],
+      ["gross", "GROSS", pesoCell(gross / 100), moneyAmount(gross)],
+      ["deductions", "Deductions", pesoCell(ded / 100), moneyAmount(ded)],
+      ["net", "NET", pesoCell(net / 100), moneyAmount(net)]
+    ];
+    return '<div class="pay-rpt-kpis">' + boxes.map(function (b) {
+      return '<div class="pay-rpt-kpi" data-kpi="' + b[0] + '" data-amount="' + esc(b[3]) + '">'
+        + '<div class="pay-rpt-kpi-l">' + esc(b[1]) + "</div>"
+        + '<div class="pay-rpt-kpi-v">' + esc(b[2]) + "</div></div>";
+    }).join("") + "</div>";
+  }
+
+  function introHtml(run, status) {
+    var id = run.runId || ((run.kind || "weekly") + "|" + (run.from || ""));
+    var kindWord = reportKindWord(run);
+    var text = "This is the " + status + " " + kindWord + " payroll report. Figures come from the live HR portal payrun "
+      + id + " (status " + status + ").";
+    var note = String(run.note || run.notes || "").trim();
+    if (note) text += " " + note;
+    return '<p class="pay-rpt-intro">' + esc(text) + "</p>";
+  }
+
+  function tableHead() {
+    return "<thead><tr>" + REPORT_HEADS.map(function (name) {
+      return "<th>" + esc(name) + "</th>";
+    }).join("") + "</tr></thead>";
+  }
+
+  function moneyTd(key, n, net, total) {
+    var amount = moneyAmount(moneyCents(n));
+    var shown = key === "days" || key === "ot" ? qtyCell(n) : pesoCell(n);
+    return '<td class="' + (net ? "pay-rpt-net" : "num") + '"'
+      + (total ? ' data-total="' + key + '" data-amount="' + esc(amount) + '"' : "")
+      + ">" + esc(shown) + "</td>";
+  }
+
+  function rowHtml(L) {
+    var subBits = [];
+    if (L.empNo) subBits.push("#" + L.empNo);
+    if (L.position) subBits.push(L.position);
+    var sub = subBits.join(" · ");
+    var other = otherEarnings(L);
+    return '<tr class="pay-rpt-row">'
+      + "<td><span class=\"pay-rpt-name\">" + esc(reportName(L.name) || "—") + "</span>"
+      + (sub ? '<span class="pay-rpt-subname">' + esc(sub) + "</span>" : "") + "</td>"
+      + "<td>" + esc(L.site || "—") + "</td>"
+      + moneyTd("rate", L.daily)
+      + moneyTd("days", L.days)
+      + moneyTd("ot", L.ot)
+      + moneyTd("otPay", L.otPay)
+      + moneyTd("other", other)
+      + moneyTd("gross", L.gross)
+      + moneyTd("sss", L.sss)
+      + moneyTd("phic", L.phic)
+      + moneyTd("hdmf", L.hdmf)
+      + moneyTd("ca", L.ca)
+      + moneyTd("uniform", L.uniform)
+      + moneyTd("late", L.late)
+      + moneyTd("net", L.net, true, false)
+      + "</tr>";
+  }
+
+  function totalRow(lines) {
+    function sum(pick) {
+      var c = 0;
+      lines.forEach(function (L) { c += moneyCents(pick(L)); });
+      return c / 100;
+    }
+    return '<tr class="pay-rpt-total"><td>TOTAL</td><td></td>'
+      + moneyTd("rate", 0, false, true)
+      + moneyTd("days", sum(function (L) { return L.days; }), false, true)
+      + moneyTd("ot", sum(function (L) { return L.ot; }), false, true)
+      + moneyTd("otPay", sum(function (L) { return L.otPay; }), false, true)
+      + moneyTd("other", sum(otherEarnings), false, true)
+      + moneyTd("gross", sum(function (L) { return L.gross; }), false, true)
+      + moneyTd("sss", sum(function (L) { return L.sss; }), false, true)
+      + moneyTd("phic", sum(function (L) { return L.phic; }), false, true)
+      + moneyTd("hdmf", sum(function (L) { return L.hdmf; }), false, true)
+      + moneyTd("ca", sum(function (L) { return L.ca; }), false, true)
+      + moneyTd("uniform", sum(function (L) { return L.uniform; }), false, true)
+      + moneyTd("late", sum(function (L) { return L.late; }), false, true)
+      + moneyTd("net", sum(function (L) { return L.net; }), true, true)
+      + "</tr>";
+  }
+
+  function decisionsHtml(run, lines, status) {
+    var items = decisionItems(run, lines);
+    if (!items.length) return "";
+    var title = status === "approved" ? "Decisions on this approved run" : "Notes on this draft run";
+    if (status === "submitted") title = "Notes on this submitted run";
+    return '<section class="pay-rpt-decisions"><h3>' + esc(title) + "</h3><ol>"
+      + items.map(function (item) {
+        return "<li><div class=\"pay-rpt-dec-title\"><b>" + esc(item.title) + "</b></div><div>" + esc(item.text) + "</div></li>";
+      }).join("")
+      + "</ol></section>";
+  }
+
+  function signOffHtml(run, approved, when) {
+    var name = String(run.signatoryName || run.signatory || SIGN_APPR).trim() || SIGN_APPR;
+    var title = String(run.signatoryTitle || "CEO / President").trim() || "CEO / President";
+    var label = name + ", " + title;
+    var src = approved ? String(run.signatorySrc || run.signatureSrc || "").trim() : "";
+    var img = src
+      ? '<img class="pay-approval-sig" src="' + esc(src) + '" alt="E-signature of ' + esc(name) + '" style="max-height:48px;max-width:168px;display:block;margin:0 auto 4px;background:#fff">'
+      : "";
+    var approvedCol = '<div class="pay-rpt-sign-col"><div class="pay-rpt-sign-who">Approved by</div>'
+      + img
+      + '<div class="pay-rpt-sign-line"></div>'
+      + (approved
+        ? '<div class="pay-rpt-sign-cap">' + esc(label) + (when ? "<br>" + esc(when.text) : "") + "</div>"
+        : '<div class="pay-rpt-sign-cap">Name and date</div>')
+      + "</div>";
+    var blank = function (who) {
+      return '<div class="pay-rpt-sign-col"><div class="pay-rpt-sign-who">' + esc(who) + "</div>"
+        + '<div class="pay-rpt-sign-line"></div><div class="pay-rpt-sign-cap">Name and date</div></div>';
+    };
+    var stamp = approved ? approvalStampHtml(run) : "";
+    var kindWord = reportKindWord(run);
+    var paid = "";
+    if (approved && when) {
+      paid = '<p class="pay-rpt-paid">This ' + esc(kindWord) + " payroll has been approved by Jeffrey James Corro on "
+        + esc(when.day) + " and may be paid. Amounts were not changed at approval.</p>";
+    }
+    return '<section class="pay-rpt-signoff"><div class="pay-rpt-sign">'
+      + blank("Prepared by") + blank("Checked by") + approvedCol
+      + (stamp ? '<div class="pay-rpt-sign-col">' + stamp + "</div>" : "")
+      + "</div>" + paid + "</section>";
+  }
+
   function printHTML(run) {
     run = run || {};
     var approved = payRunApproved(run);
-    var book = workbook(run);
-    var h = "<style>.pay-sheet td{font-size:8px;border:1px solid #ccc;padding:1px 3px;white-space:nowrap}.pay-sheet{border-collapse:collapse}</style>";
-    book.sheets.forEach(function (sheet) {
-      if (sheet.name === "Audit") return;
-      h += "<h2 style=\"font-size:13px;margin:8px 0 4px\">" + esc(sheet.name) + "</h2>";
-      h += '<table class="pay-sheet pf-t">';
-      var skipPure = 0;
-      var blankCol = -1;
-      var blankLeft = 0;
-      (sheet.rows || []).forEach(function (row) {
-        var texts = [];
-        var any = false;
-        for (var i = 0; i < row.length; i++) {
-          var c = row[i];
-          var text = cellText(c);
-          texts.push(text);
-          if (text || (c && c.f)) any = true;
-        }
-        if (!any) return;
-        if (approved && skipPure > 0) {
-          var meaningful = texts.filter(function (t) { return t; });
-          if (meaningful.length && meaningful.every(isPlainApprovalText)) {
-            skipPure -= 1;
-            return;
-          }
-          skipPure = 0;
-        }
-        var hasApproved = texts.indexOf("Approved by:") >= 0;
-        var hasPrepared = texts.indexOf("Prepared by:") >= 0;
-        if (approved && hasApproved && !hasPrepared) {
-          skipPure = 2;
-          return;
-        }
-        var render = row;
-        if (approved && hasApproved && hasPrepared) {
-          blankCol = texts.indexOf("Approved by:");
-          blankLeft = 2;
-          render = row.map(function (cell, idx) { return idx === blankCol ? null : cell; });
-        } else if (approved && blankLeft > 0 && blankCol >= 0) {
-          if (isPlainApprovalText(texts[blankCol])) {
-            blankLeft -= 1;
-            render = row.map(function (cell, idx) { return idx === blankCol ? null : cell; });
-          } else {
-            blankLeft = 0;
-            blankCol = -1;
-          }
-        }
-        h += "<tr>";
-        render.forEach(function (cell) {
-          var shown = cell && cell.v != null && cell.v !== "" ? cell.v : "";
-          h += "<td>" + esc(shown) + "</td>";
-        });
-        h += "</tr>";
-      });
-      h += "</table>";
-    });
-    if ((run.kind || "weekly") === "semi") {
-      if (approved) {
-        h += '<p style="margin-top:12px"><b>Prepared by:</b> ' + esc(SIGN_PREP) + ", " + esc(SIGN_PREP_ROLE) + "</p>";
-      } else {
-        h += '<p style="margin-top:12px"><b>Prepared by:</b> ' + esc(SIGN_PREP) + ", " + esc(SIGN_PREP_ROLE)
-          + " &nbsp;&nbsp; <b>Approved by:</b> " + esc(SIGN_APPR) + ", " + esc(SIGN_APPR_ROLE) + "</p>";
+    var status = reportStatus(run);
+    var when = approved ? manilaApprovalWhen(run.approvedAt) : null;
+    var printed = manilaApprovalWhen(run.printedAt || new Date().toISOString());
+    var lines = includedLines(run);
+    var pages = paginateReport(lines);
+    if (!pages.length) pages = [[]];
+    var pageCount = pages.length;
+    var h = reportCss() + '<div class="pay-rpt" data-pay-report="1">';
+    pages.forEach(function (chunk, idx) {
+      var last = idx === pageCount - 1;
+      h += '<section class="pay-rpt-page" data-page="' + (idx + 1) + '">';
+      if (status === "draft") h += '<div class="pay-rpt-watermark" aria-hidden="true">DRAFT</div>';
+      h += reportHeader(run, approved, status, when, printed);
+      h += '<div class="pay-rpt-body">';
+      if (idx === 0) {
+        h += kpiStrip(lines);
+        h += introHtml(run, status);
       }
-    }
-    if (approved) h += approvalStampHtml(run);
+      h += '<table class="pay-rpt-table">' + tableHead() + "<tbody>";
+      chunk.forEach(function (L) { h += rowHtml(L); });
+      if (last) h += totalRow(lines);
+      h += "</tbody></table>";
+      if (last) {
+        h += decisionsHtml(run, lines, status);
+        h += signOffHtml(run, approved, when);
+      }
+      h += "</div>";
+      h += reportFooter(run, approved, status, when, idx + 1, pageCount);
+      h += "</section>";
+    });
+    h += "</div>";
     return h;
   }
 
