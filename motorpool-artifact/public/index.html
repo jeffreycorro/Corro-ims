@@ -447,7 +447,7 @@ var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
    This label is inside the page function. The shim reads window.BUILD when it
    sends a save. Without that copy every save goes out with an empty build and
    the server answers "Reload the page". */
-var BUILD = "2026-11-16 b";
+var BUILD = "2026-11-20 a";
 try { window.BUILD = BUILD; } catch (e) {}
 var DAY = 86400000, MO = 30.44;
 
@@ -14089,13 +14089,14 @@ function buildVrfDoc(entry,photos,opts){
       d.appendChild(photoLine);
       if(gaugeText==="Gauge photo attached" && apiPhotos && apiPhotos.firstGaugePhoto){
         var gp=apiPhotos.firstGaugePhoto(photos||[]);
-        if(gp){
+          if(gp){
           var gfig=document.createElement("figure");
           gfig.className="vgauge";
           var gim=document.createElement("img");
           gim.alt=gp.caption||"Gauge photo";
           gim.setAttribute("data-gauge-photo", gp.id?String(gp.id):"");
-          if(gp.data) gim.src=gp.data;
+          var gsrc=inlinePrintPhotoSrc(gp.data);
+          if(gsrc) gim.src=gsrc;
           else gim.style.display="none";
           gfig.appendChild(gim);
           var gcap=document.createElement("figcaption");
@@ -14219,22 +14220,23 @@ function buildVrfDoc(entry,photos,opts){
       files.forEach(function(x,n){
         var f=document.createElement("figure");
         if(x.id) f.setAttribute("data-photo-id", String(x.id));
-        if(isDocAttachment(x)){
+        var slot=printAttachmentKind(x);
+        if(slot==="pdf"){
           var dnote=document.createElement("div");
           dnote.className="vmiss";
           dnote.textContent="PDF attached"+(x.caption?": "+x.caption:"")+" — open it on the VRF. It is not embedded in this print.";
           f.appendChild(dnote);
-        }else if(isVideoMeta(x)){
+        }else if(slot==="video"){
           var vnote=document.createElement("div");
           vnote.className="vmiss";
           vnote.textContent="Video attached"+(x.caption?": "+x.caption:"")+" — play it on the VRF. It is not embedded in this print.";
           f.appendChild(vnote);
-        }else if(x.data){
+        }else if(slot==="image"){
           var im=document.createElement("img");
           im.alt=x.caption||"attachment";
-          im.src=x.data;
+          im.src=inlinePrintPhotoSrc(x.data);
           f.appendChild(im);
-        }else if(x._failed){
+        }else if(slot==="failed"){
           var miss=document.createElement("div");
           miss.className="vmiss";
           miss.textContent="Picture failed to load"+(x.caption?": "+x.caption:"")+". It is not on this print.";
@@ -14334,13 +14336,28 @@ var VRFDOC_CSS = [
 "@media screen{body{background:#eee;padding:14px}.vrfdoc{background:#fff;padding:14mm 12mm;box-shadow:0 2px 12px rgba(0,0,0,.2)}}"
 ].join("\n");
 
+/* The printable file is a separate document. Its pictures are data URLs, and
+   print still waits until each one has finished loading or failed. */
+function printWhenImagesReady(){
+  var imgs=document.getElementsByTagName("img");
+  var n=imgs.length, left=n;
+  function go(){ setTimeout(function(){ window.print(); }, 400); }
+  function one(){ if(--left<=0) go(); }
+  if(!n){ go(); return; }
+  var i;
+  for(i=0;i<n;i++){
+    if(imgs[i].complete){ one(); continue; }
+    imgs[i].addEventListener("load", one);
+    imgs[i].addEventListener("error", one);
+  }
+}
 function vrfDocFile(entry,photos,opts){
   var d=buildVrfDoc(entry,photos,opts||null);
   return "<!doctype html><html><head><meta charset=\"utf-8\">"+
     "<title>VRF "+esc(String(entry.vrf))+"</title>"+
     "<link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600&family=Archivo+Narrow:wght@600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap\">"+
     "<style>"+VRFDOC_CSS+"</style></head><body>"+d.outerHTML+
-    "<script>window.onload=function(){setTimeout(function(){window.print();},400);};<\/script>"+
+    "<script>window.onload=function(){("+printWhenImagesReady+")();};<\/script>"+
     "</body></html>";
 }
 
@@ -14377,7 +14394,7 @@ function printPhotoFiles(list){
 function whenImgReady(im){
   return new Promise(function(resolve){
     if(!im){ resolve(false); return; }
-    if(im.complete&&im.naturalWidth){ resolve(true); return; }
+    if(im.complete){ resolve(!!im.naturalWidth); return; }
     var finish=function(ok){
       im.removeEventListener("load",onLoad);
       im.removeEventListener("error",onErr);
@@ -14422,7 +14439,8 @@ function markPrintFigureFailed(fig, x, retry){
   setPrintFigureBody(fig, wrap);
 }
 function paintGaugeStill(page, x){
-  if(!page||!x||!x.data) return;
+  var src=inlinePrintPhotoSrc(x&&x.data);
+  if(!page||!src) return;
   var id=String(x.id||"");
   var imgs=page.querySelectorAll("img[data-gauge-photo]");
   var i, want;
@@ -14430,60 +14448,102 @@ function paintGaugeStill(page, x){
     want=imgs[i].getAttribute("data-gauge-photo")||"";
     if(id&&want&&want!==id) continue;
     if(!id&&want) continue;
-    imgs[i].src=x.data;
+    imgs[i].src=src;
     imgs[i].style.display="block";
   }
 }
-/* The print form used to pull every picture's data URL into one JSON body.
-   Three VRF 6148 receipts are about 506 KB of base64 before the phone even
-   decodes them. A fitted JPEG from the photo URL stays in the image cache.
-   Two at a time, and one slow file does not hold the queue past PHOTO_GET_MS. */
+/* A printed VRF is its own document: Print builds a fresh copy, and Save
+   printable file opens that HTML in a blank window or from disk. PR #176
+   kept the fitted JPEG behind /.netlify/functions/photo and stored that
+   address on the picture (x.data = url). The portal page can show it. The
+   printed file cannot — the address needs this site and the session cookie,
+   so Finance gets the link and an empty box. Embed the bytes instead.
+   Pictures are still fetched two at a time, and each one still stops at
+   PHOTO_GET_MS. A PDF or a pasted link is not an image. */
+function inlinePrintPhotoSrc(src){
+  var s=String(src==null?"":src).replace(/^\s+/,"");
+  if(/^data:image\/[a-z0-9.+-]+;base64,/i.test(s)) return s;
+  return "";
+}
+function printAttachmentKind(x){
+  if(!x) return "skip";
+  if(x.kind==="link") return "link";
+  if(isDocAttachment(x)) return "pdf";
+  if(isVideoMeta(x)) return "video";
+  if(inlinePrintPhotoSrc(x.data)) return "image";
+  if(x._failed) return "failed";
+  return "wait";
+}
+function blobToPrintDataUrl(blob){
+  return new Promise(function(resolve, reject){
+    if(!blob || String(blob.type||"").indexOf("image/")!==0){ resolve(""); return; }
+    if(typeof FileReader!=="function"){ resolve(""); return; }
+    var fr=new FileReader();
+    fr.onerror=function(){ reject(new Error("could not read the picture")); };
+    fr.onload=function(){ resolve(inlinePrintPhotoSrc(fr.result)); };
+    fr.readAsDataURL(blob);
+  });
+}
 function placePrintRemote(x, page, url){
   return new Promise(function(resolve){
     var fig=printFigure(page, x.id);
-    var im=document.createElement("img");
-    im.alt=(x&&x.caption)||"attachment";
-    im.setAttribute("decoding","async");
     var settled=false;
     function finish(ok){
       if(settled) return;
       settled=true;
       clearTimeout(timer);
       fig=printFigure(page, x.id);
-      if(ok){
-        x.data=url;
+      var embedded=ok?inlinePrintPhotoSrc(x.data):"";
+      if(embedded){
+        x.data=embedded;
         x._failed=false;
         paintGaugeStill(page, x);
         if(fig){
-          im.style.display="";
+          var im=document.createElement("img");
+          im.alt=(x&&x.caption)||"attachment";
+          im.src=embedded;
           setPrintFigureBody(fig, im);
         }
-      }else{
-        x._failed=true;
-        x.data="";
-        if(fig) markPrintFigureFailed(fig, x, function(){ pullPrintPhoto(x, page, null); });
+        resolve(true);
+        return;
       }
-      resolve(!!ok);
+      x._failed=true;
+      x.data="";
+      if(fig) markPrintFigureFailed(fig, x, function(){ pullPrintPhoto(x, page, null); });
+      resolve(false);
     }
     var timer=setTimeout(function(){ finish(false); }, PHOTO_GET_MS);
-    im.addEventListener("load",function(){ finish(im.naturalWidth>0); });
-    im.addEventListener("error",function(){ finish(false); });
     if(fig){
       var wait=document.createElement("div");
       wait.className="vwait";
       wait.textContent="Loading picture…";
       setPrintFigureBody(fig, wait);
     }
-    im.src=url;
+    fetchAttachment(url).then(function(blob){
+      return blobToPrintDataUrl(blob);
+    }).then(function(dataUrl){
+      var embedded=inlinePrintPhotoSrc(dataUrl);
+      if(!embedded || settled){ finish(false); return; }
+      x.data=embedded;
+      finish(true);
+    }).catch(function(){ finish(false); });
   });
 }
 /* One picture, by its id. A miss is marked on that figure only. */
 function pullPrintPhoto(x, page, onDone){
-  if(!x||x.kind==="link"||isVideoMeta(x)||isDocAttachment(x)||x.data){
-    if(x&&x.data&&!isDocAttachment(x)) paintGaugeStill(page, x);
+  if(!x||x.kind==="link"||isVideoMeta(x)||isDocAttachment(x)){
     if(onDone) onDone();
-    return Promise.resolve(!!(x&&x.data));
+    return Promise.resolve(false);
   }
+  var embedded=inlinePrintPhotoSrc(x.data);
+  if(embedded){
+    x.data=embedded;
+    paintGaugeStill(page, x);
+    if(onDone) onDone();
+    return Promise.resolve(true);
+  }
+  /* A photo function URL is not a picture. Drop it and embed the bytes. */
+  if(x.data) x.data="";
   x._failed=false;
   var remote=S.db&&x.id?photoFileUrl(x.id,"print"):"";
   if(remote){
@@ -14507,15 +14567,16 @@ function pullPrintPhoto(x, page, onDone){
   }
   return loadPhotoDoc(x.id,{direct:true}).then(function(doc){
     fig=printFigure(page, x.id);
-    if(doc&&doc.data&&!isVideoAttachment(doc)){
-      x.data=doc.data;
+    var embeddedDoc=doc&&inlinePrintPhotoSrc(doc.data);
+    if(embeddedDoc&&!isVideoAttachment(doc)&&!isDocAttachment(doc)){
+      x.data=embeddedDoc;
       if(doc.mime) x.mime=doc.mime;
       x._failed=false;
       paintGaugeStill(page, x);
       if(fig){
         var im=document.createElement("img");
         im.alt=x.caption||"attachment";
-        im.src=x.data;
+        im.src=embeddedDoc;
         setPrintFigureBody(fig, im);
         return whenImgReady(im).then(function(ok){
           if(!ok){
@@ -14594,8 +14655,8 @@ async function openVrfPrintSheet(entry,photos,preview,edition,model){
   function syncBar(){
     if(!m.isConnected) return;
     var files=printPhotoFiles(live);
-    var ready=files.filter(function(x){ return x.data; }).length;
-    var failed=files.filter(function(x){ return x._failed&&!x.data; }).length;
+    var ready=files.filter(function(x){ return inlinePrintPhotoSrc(x.data); }).length;
+    var failed=files.filter(function(x){ return x._failed&&!inlinePrintPhotoSrc(x.data); }).length;
     var pending=files.length-ready-failed;
     var links=(live||[]).filter(function(x){ return x&&x.kind==="link"; }).length;
     if(!listReady){
@@ -14731,7 +14792,7 @@ async function openVrfPrintSheet(entry,photos,preview,edition,model){
           live=merged;
           show(live);
           printPhotoFiles(live).forEach(function(x){
-            if(!x._failed||x.data) return;
+            if(!x._failed||inlinePrintPhotoSrc(x.data)) return;
             var fig=printFigure(pageBox.node, x.id);
             if(fig) markPrintFigureFailed(fig, x, function(){ pullPrintPhoto(x, pageBox.node, syncBar); });
           });

@@ -70,8 +70,8 @@ describe("print names and pictures are separate", () => {
     assert.match(print, /\{first:true\}/);
   });
 
-  it("is build 2026-11-16 b", () => {
-    assert.match(html, /var BUILD = "2026-11-16 b"/);
+  it("is build 2026-11-20 a", () => {
+    assert.match(html, /var BUILD = "2026-11-20 a"/);
   });
 });
 

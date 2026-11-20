@@ -81,8 +81,8 @@ function sealed(vrf, reserveNo, note) {
 }
 
 describe("VRF approver note", () => {
-  it("is build 2026-11-16 b", () => {
-    assert.match(html, /var BUILD = "2026-11-16 b"/);
+  it("is build 2026-11-20 a", () => {
+    assert.match(html, /var BUILD = "2026-11-20 a"/);
   });
 
   it("shows the linked reserve decisionNote and escapes HTML", () => {
