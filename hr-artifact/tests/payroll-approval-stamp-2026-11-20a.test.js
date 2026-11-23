@@ -80,9 +80,9 @@ function approved(kind, extra) {
   }, extra || {}));
 }
 
-describe("2026-11-20b approved payroll print stamp", () => {
-  it("is build 2026-11-20b", () => {
-    assert.match(html, /const BUILD = "2026-11-20b"/);
+describe("2026-11-23a approved payroll print stamp", () => {
+  it("is build 2026-11-23a", () => {
+    assert.match(html, /const BUILD = "2026-11-23a"/);
     assert.match(html, /function payPrintOptions\(/);
     assert.match(html, /signatorySig\(\)/);
     assert.match(html, /hrPaySheet\.printHTML\(payPrintOptions\(/);

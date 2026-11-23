@@ -824,6 +824,12 @@
     next.approvedOn = opts.on || str(next.approvedAt).slice(0, 10);
     next.approvedBy = opts.by || "Jeffrey James M. Corro";
     next.signatureStamp = sig;
+    /* Leave and cash advance keep the decision figures that were on screen.
+       Contracts do not use that panel. The copy is the snapshot; later
+       attendance does not rewrite an approved form. */
+    if ((kind === "leave" || kind === "ca") && opts.decisionInfo && typeof opts.decisionInfo === "object") {
+      next.decisionInfo = opts.decisionInfo;
+    }
     return { ok: true, record: next };
   }
 
@@ -929,6 +935,22 @@
     return k || "";
   }
 
+  function decisionEmbed(S, row) {
+    var api =
+      (typeof globalThis !== "undefined" && globalThis.hrDecision) ||
+      (typeof window !== "undefined" && window.hrDecision) ||
+      null;
+    if (!api || typeof api.forForm !== "function" || typeof api.renderScreen !== "function") return "";
+    var coll = row.kind === "leave" ? S.leaves : S.advances;
+    var rec = coll && coll[row.id];
+    if (!rec) return "";
+    try {
+      return api.renderScreen(api.forForm(S, { kind: row.kind, record: rec, now: new Date() }));
+    } catch (e) {
+      return "";
+    }
+  }
+
   function approverHtml(host, S) {
     var rows = queueItems(S);
     var filter = (S.ui && S.ui.apprFilter) || "all";
@@ -1025,6 +1047,9 @@
           '" data-hr-appr-id="' +
           esc(r.id) +
           '">Reject</button></td></tr>';
+        if (r.kind === "leave" || r.kind === "ca") {
+          h += '<tr class="di-appr-row"><td colspan="7">' + decisionEmbed(S, r) + "</td></tr>";
+        }
       });
       h += "</tbody></table></div>";
     }
@@ -1167,12 +1192,28 @@
     var found = lookup(S, kind, id);
     if (!found.rec) return;
     var sig = signatureSrc(S);
+    var decisionInfo = null;
+    var decisionApi = (typeof globalThis !== "undefined" && globalThis.hrDecision) || (host && host.hrDecision) || null;
+    if ((kind === "leave" || kind === "ca") && decisionApi && typeof decisionApi.compute === "function") {
+      try {
+        decisionInfo = decisionApi.compute(S, {
+          kind: kind,
+          record: found.rec,
+          empId: found.rec.empId || found.rec.filedEmpId || "",
+          currentId: found.rec.id || id,
+          now: new Date(),
+        });
+      } catch (e) {
+        decisionInfo = null;
+      }
+    }
     var result = approveRecord(found.rec, {
       kind: kind,
       signature: sig,
       by: signatoryName(S),
       at: isoNow(),
       on: typeof host.TODAY === "string" ? host.TODAY : isoDay(),
+      decisionInfo: decisionInfo,
     });
     if (!result.ok) {
       toast(host, result.error, "err");

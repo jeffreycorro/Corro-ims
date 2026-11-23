@@ -88,7 +88,7 @@ const CREW = {
 
 describe("2026-11-16a printable OT form, signed copy, and the payroll flag", () => {
   it("is build 2026-11-16a and keeps the waiver as the default", () => {
-    assert.match(html, /const BUILD = "2026-11-20b"/);
+    assert.match(html, /const BUILD = "2026-11-23a"/);
     assert.match(html, /otFormGateWaived:true/);
     assert.match(html, /otSignedCopyRequired:false/);
     assert.match(html, /data-set-flag="otSignedCopyRequired"/);

@@ -1682,12 +1682,12 @@
     var src = String(run.signatorySrc || run.signatureSrc || "").trim();
     var when = manilaApprovalWhen(run.approvedAt);
     var img = src
-      ? '<img class="pay-approval-sig" src="' + esc(src) + '" alt="E-signature of ' + esc(name) + '" style="max-height:48px;max-width:168px;display:block;margin:6px auto 2px;background:#fff">'
+      ? '<img class="pay-approval-sig" src="' + esc(src) + '" alt="E-signature of ' + esc(name) + '" style="max-height:36px;max-width:140px;display:block;margin:4px auto 2px;background:#fff">'
       : "";
     return '<div class="pay-approval-stamp" data-pay-approval="approved"'
       + (when ? ' data-approved-pht="' + esc(when.iso) + '"' : "")
-      + ' style="margin:14px 0 4px;display:inline-block;border:3px double #1b4d2e;color:#1b4d2e;padding:8px 16px 10px;text-align:center;min-width:260px;background:#fff">'
-      + '<div class="pay-approval-mark" style="font-weight:800;letter-spacing:.14em;font-size:12px;line-height:1.3">APPROVED BY JEFFREY JAMES CORRO</div>'
+      + ' style="margin:0;display:block;width:100%;box-sizing:border-box;border:3px double #1b4d2e;color:#1b4d2e;padding:4px 6px 6px;text-align:center;background:#fff">'
+      + '<div class="pay-approval-mark" style="font-weight:800;letter-spacing:.04em;font-size:9px;line-height:1.25">APPROVED BY JEFFREY JAMES CORRO</div>'
       + img
       + '<div class="pay-approval-who" style="font-weight:700;font-size:12px;margin-top:2px">' + esc(label) + "</div>"
       + (when ? '<div class="pay-approval-when" style="font-size:11px;margin-top:2px">' + esc(when.text) + "</div>" : "")
@@ -1916,11 +1916,12 @@
       + ".pay-rpt-decisions h3{margin:0 0 6px;color:#1e6b4f;font-size:12px}"
       + ".pay-rpt-decisions ol{margin:0;padding-left:18px}"
       + ".pay-rpt-decisions li{margin:0 0 6px}"
-      + ".pay-rpt-sign{display:flex;gap:16px;margin-top:12px;align-items:flex-end}"
-      + ".pay-rpt-sign-col{flex:1}"
+      + ".pay-rpt-sign{display:flex;gap:12px;margin-top:12px;align-items:stretch}"
+      + ".pay-rpt-sign-col{flex:1;min-width:0}"
       + ".pay-rpt-sign-who{font-weight:700;font-size:11px;margin-bottom:4px}"
       + ".pay-rpt-sign-line{border-bottom:1px solid #1f3a5f;height:36px;margin-bottom:3px}"
       + ".pay-rpt-sign-cap{font-size:9px;color:#6b7280}"
+      + ".pay-rpt-stamp-slot{flex:0 1 210px;width:210px;max-width:28%;box-sizing:border-box;border:1.5px solid #1f3a5f;background:#fff;display:flex;align-items:center;justify-content:center;padding:6px;min-height:78px}"
       + ".pay-rpt-paid{font-size:9px;color:#6b7280;margin-top:8px}"
       + ".pay-rpt-foot{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-top:8px;padding-top:4px;border-top:1px solid #d5dbe3;font-size:9px;color:#6b7280}"
       + ".pay-rpt-foot-ok{color:#1e6b4f;font-weight:800}"
@@ -2119,9 +2120,14 @@
       paid = '<p class="pay-rpt-paid">This ' + esc(kindWord) + " payroll has been approved by Jeffrey James Corro on "
         + esc(when.day) + " and may be paid. Amounts were not changed at approval.</p>";
     }
+    /* The slot is the rectangle beside the signature block. The stamp sits
+       inside it. A draft has no slot, so the page does not keep an empty box. */
+    var slot = stamp
+      ? '<div class="pay-rpt-stamp-slot" data-pay-stamp-slot="approved">' + stamp + "</div>"
+      : "";
     return '<section class="pay-rpt-signoff"><div class="pay-rpt-sign">'
       + blank("Prepared by") + blank("Checked by") + approvedCol
-      + (stamp ? '<div class="pay-rpt-sign-col">' + stamp + "</div>" : "")
+      + slot
       + "</div>" + paid + "</section>";
   }
 

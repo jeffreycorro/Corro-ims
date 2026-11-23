@@ -403,6 +403,19 @@ button.pill.drill:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .stack{display:flex;flex-direction:column;gap:13px}
 .note{background:var(--surface2);border-left:2.5px solid var(--brass);padding:9px 12px;border-radius:0 5px 5px 0;font-size:12px;color:var(--ink2);line-height:1.55}
+.di-panel{margin:8px 0;border:1px solid var(--line);border-radius:6px;background:var(--surface2);padding:8px 10px;font-size:12.5px;line-height:1.4}
+.di-panel .di-h{display:flex;flex-wrap:wrap;gap:6px;align-items:baseline;font-weight:700;font-size:12.5px;margin:0 0 6px}
+.di-panel .di-asof{font-weight:500;color:var(--ink3);font-size:11.5px}
+.di-panel .di-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 14px}
+.di-panel .di-k{font-size:10.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--ink3);font-weight:700}
+.di-panel ul{margin:3px 0 0;padding-left:16px}
+.di-panel li{margin:0}
+.di-panel .di-note,.di-panel .di-empty{margin:6px 0 0;font-size:11px;color:var(--ink3)}
+.di-appr-row td{background:var(--surface2);padding:6px 8px}
+@media(max-width:720px){
+  .di-panel .di-grid{grid-template-columns:1fr}
+  .di-panel{font-size:12px}
+}
 .kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:12.5px}
 .kv dt{font-family:var(--f-mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink3);padding-top:2px}
 .kv dd{margin:0}
@@ -478,6 +491,7 @@ td.num .pay-break-btn{display:inline-flex;align-items:center;justify-content:fle
 </div>
 <div id="modal-root"></div>
 <script src="/hr-payroll-sheet.js"></script>
+<script src="/hr-decision-info.js"></script>
 <script src="/hr-project-pay.js"></script>
 <script src="/hr-ot-forms.js"></script>
 <script>
@@ -2188,7 +2202,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-11-20b";
+const BUILD = "2026-11-23a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -19779,6 +19793,16 @@ function projOpts(sel){
     +(sel&&!projectList().some(p=>p.name===sel)?'<option selected>'+esc(sel)+'</option>':"");
 }
 
+/* Read-only context for the person on a leave or cash-advance form.
+   Approved forms keep the snapshot saved at approval. */
+function decisionPanel(kind, rec, mode){
+  try{
+    if(typeof hrDecision==="undefined" || !hrDecision || typeof hrDecision.forForm!=="function") return "";
+    const view=hrDecision.forForm(S, {kind:kind, record:rec||{}, now:new Date()});
+    return mode==="print" ? hrDecision.renderPrint(view) : hrDecision.renderScreen(view);
+  }catch(e){ return ""; }
+}
+
 /* ============ cash advances ============ */
 const CA_STATUS=["Requested","For signature","Approved","Disapproved","Released","Partially liquidated","Liquidated","Recovered from pay","Cancelled"];
 const CA_MODE=["Cash","Check","GCash","Bank transfer"];
@@ -19962,6 +19986,7 @@ function caEditor(id){
         + '</div>'
         + (recovered>0?'<div class="lbl" style="margin-top:8px">Payroll has deducted '+peso(recovered)+' in CA loan from this employee since the release date — reconcile before writing the balance off.</div>':"")
         + '</div></div>'
+        + decisionPanel("ca", a)
         + '<div class="sect-h" style="margin:6px 0 0"><h2 style="font-size:12.5px">Liquidations</h2><span class="rule"></span></div>'
         + ((a.liquidations||[]).length?lq:'<div class="lbl" style="padding:4px 0">Nothing liquidated yet.</div>')
         + '<div class="row" style="align-items:flex-end">'
@@ -20105,6 +20130,7 @@ function printCA(a, opt){
        {who:"Finance",          name:S.settings.financeHead||"", role:S.settings.financeTitle||"Finance Officer",
         missing:"Finance officer name — Settings"},
        {who:"Approved by",      name:S.settings.signatory||"",   role:S.settings.signatoryTitle||"CEO / President"}])
+   + decisionPanel("ca", a, "print")
    + pfFoot("Cash Advance Request Form No.", a.no)
    + pfISO("ca");
   openModal({ title:"Cash advance request form — "+(a.no||""), wide:true,
@@ -20359,6 +20385,7 @@ function lvEditor(id,presetEmp){
         + '<div style="flex:1"><div class="lbl">Balance</div><div class="mono" style="font-size:16px;color:'+(bal!=null&&bal<=0?"var(--crit)":"var(--ok)")+'">'+(bal==null?"—":num(bal,1))+'</div></div>'
         + '</div></div></div>'
         + (over?'<div class="note" style="border-left-color:var(--crit)"><b>This exceeds the balance.</b> '+esc(e?e.name:"The employee")+' has '+num(bal,1)+' day(s) of '+esc(t.k)+' left for '+yr+' and is applying for '+num(l.days,1)+'. Approve it as leave without pay, or reduce the days.</div>':"")
+        + decisionPanel("leave", l)
         + (l.type==="SIL"&&e&&e.dateHired&&daysBetween(e.dateHired,TODAY)<365?'<div class="note">Service Incentive Leave accrues after one year of service. '+esc(e.name)+' was hired '+esc(e.dateHired)+' and has not yet completed a year.</div>':"")
         + '<div class="f"><label>Reason</label><textarea id="l-reason" style="min-height:60px">'+esc(l.reason)+'</textarea></div>'
         + '<div class="grid3">'
@@ -20480,6 +20507,7 @@ function printLeave(l, opt){
        Object.assign({}, leaveCaEvaluators()[0], {src:leaveCaSig("evaluated")}),
        {who:"HR Department",        name:S.settings.hrHead||"", role:"Signature", src:leaveCaSig("dept")},
        {who:"Final Approval (Management)", name:S.settings.signatory||"", role:"Signature"}])
+   + decisionPanel("leave", l, "print")
    + pfFoot("Leave Request Form No.", l.no)
    + pfISO("leave");
   openModal({ title:"Leave request form — "+(l.no||""), wide:true,
