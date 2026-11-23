@@ -189,12 +189,12 @@
     return /^rest\s*day$/i.test(reason);
   }
 
+  /* The manpower day is the doc id (dYYYYMMDD…). `on` is when the row was
+     entered, not the day being counted. */
   function recDate(id, rec) {
-    var d = isoDate(rec && rec.date);
-    if (d) return d;
-    var m = String(id || "").match(/^d(\d{4})(\d{2})(\d{2})$/);
+    var m = String(id || "").match(/^d(\d{4})(\d{2})(\d{2})/);
     if (m) return m[1] + "-" + m[2] + "-" + m[3];
-    return "";
+    return isoDate(rec && rec.date);
   }
 
   function eachDate(from, to) {
@@ -235,70 +235,6 @@
       if (from && date >= from && date <= to) return true;
     }
     return false;
-  }
-
-  function clockMinutes(raw) {
-    if (raw == null || raw === "") return null;
-    var s = String(raw).trim().toLowerCase().replace(/\./g, "");
-    if (!s) return null;
-    var m = s.match(/(\d{1,2}):(\d{2})(?::\d{2})?/);
-    if (!m) return null;
-    var h = Number(m[1]);
-    var mi = Number(m[2]);
-    if (/\bpm\b/.test(s) && h < 12) h += 12;
-    if (/\bam\b/.test(s) && h === 12) h = 0;
-    if (h > 23 || mi > 59) return null;
-    return h * 60 + mi;
-  }
-
-  /* Same minute rules as the payroll sheet, used only when that helper
-     is not loaded. Minutes, not pesos. */
-  function localLate(row) {
-    var out = { minutes: 0, lateMinutes: 0, undertimeMinutes: 0 };
-    var reason = String((row && (row.r || row.reason)) || "").trim();
-    if (reason && !/\(not excused\)/i.test(reason)) return out;
-    var inn = clockMinutes(row.in != null ? row.in : row.timeIn);
-    var tout = clockMinutes(row.out != null ? row.out : row.timeOut);
-    var credit = row.day != null && String(row.day).trim() !== "" ? Number(row.day) : 1;
-    if (!isFinite(credit)) credit = 1;
-    if (inn != null && inn > 8 * 60 + 15 && inn < 12 * 60) {
-      var m = inn - 8 * 60;
-      out.minutes += m;
-      out.lateMinutes += m;
-    }
-    if (inn != null && inn > 13 * 60 + 15) {
-      var pm = inn - 13 * 60;
-      out.minutes += pm;
-      out.lateMinutes += pm;
-    }
-    if (tout != null && credit >= 1 && tout > 12 * 60 && tout < 17 * 60) {
-      var um = 17 * 60 - tout;
-      out.minutes += um;
-      out.undertimeMinutes += um;
-    }
-    return out;
-  }
-
-  function lateParts(row) {
-    var fn = root.hrPaySheet && root.hrPaySheet.lateForRow;
-    var probe = {
-      in: row.in != null ? row.in : row.timeIn,
-      out: row.out != null ? row.out : row.timeOut,
-      day: row.day != null && String(row.day).trim() !== "" ? row.day : 1,
-      r: row.r != null ? row.r : row.reason
-    };
-    if (typeof fn === "function") {
-      var one = fn(probe, 0) || {};
-      var lateM = 0;
-      var utM = 0;
-      (one.parts || []).forEach(function (p) {
-        var mins = Number(p && p.minutes) || 0;
-        if (p && (p.kind === "late" || p.kind === "late-pm")) lateM += mins;
-        else utM += mins;
-      });
-      return { minutes: lateM + utM, lateMinutes: lateM, undertimeMinutes: utM };
-    }
-    return localLate(probe);
   }
 
   function blankCount() {
@@ -404,57 +340,148 @@
     return { days: days, dates: dates };
   }
 
-  function clockField(row, a, b) {
-    if (!row) return "";
-    if (row[a] != null && String(row[a]).trim() !== "") return row[a];
-    if (row[b] != null && String(row[b]).trim() !== "") return row[b];
-    return "";
+  var EXCUSED_RK = {
+    sick: 1, clinic: 1, fit: 1, al: 1, vl: 1, el: 1, bl: 1, ml: 1,
+    ob: 1, assign: 1, weather: 1, calamity: 1, power: 1
+  };
+  var SUNDAY_KEEP = {
+    Absent: 1, "Present/Late": 1, Undertime: 1, "Half Day": 1, Leave: 1, "Leave with Pay": 1
+  };
+
+  /* '8:17', '9', '08:04', '1:25 pm', '16:28', '2:00 PM'. Seconds optional.
+     On a time-out, an hour below 8 with no am/pm is the afternoon. */
+  function parseClock(raw, asOut) {
+    if (raw == null) return null;
+    var s = String(raw).trim().toLowerCase().replace(/\./g, "");
+    if (!s) return null;
+    var m = s.match(/^(\d{1,2})(?::(\d{1,2}))?(?::(\d{1,2}))?\s*(am|pm)?$/);
+    if (!m) return null;
+    var h = Number(m[1]);
+    var mi = m[2] != null ? Number(m[2]) : 0;
+    if (!isFinite(h) || !isFinite(mi) || h > 23 || mi > 59) return null;
+    var ap = m[4] || "";
+    if (ap === "am") {
+      if (h === 12) h = 0;
+    } else if (ap === "pm") {
+      if (h < 12) h += 12;
+    } else if (asOut && h < 8) {
+      h += 12;
+    }
+    if (h > 23) return null;
+    return h * 60 + mi;
   }
 
-  function hasClock(row) {
-    return clockMinutes(clockField(row, "in", "timeIn")) != null || clockMinutes(clockField(row, "out", "timeOut")) != null;
+  function lateMinutesFromIn(raw) {
+    var t = parseClock(raw, false);
+    if (t == null || t < 7 * 60) return null;
+    var mins = t - 480;
+    return mins > 0 ? mins : null;
   }
 
-  function isPresentMark(row) {
-    var st = normStatus(row);
-    return st === "Present" || st === "Present/Late" || st === "Undertime";
+  function undertimeMinutesFromOut(raw) {
+    var t = parseClock(raw, true);
+    if (t == null) return null;
+    var mins = 1020 - t;
+    return mins > 0 ? mins : null;
   }
 
-  function countLates(rows, leaves, empId, from, to) {
-    var count = 0;
-    var minutes = 0;
-    var lateMinutes = 0;
-    var undertimeMinutes = 0;
-    var inWindow = 0;
-    var sawClock = false;
-    var presentWithoutTimes = 0;
+  function inIsAlsoLate(raw) {
+    var t = parseClock(raw, false);
+    if (t == null || t < 7 * 60) return false;
+    return t > 8 * 60 + 15 && t < 12 * 60;
+  }
+
+  function rowIsExcused(row) {
+    if (!row) return false;
+    if (row.ex != null && String(row.ex).trim() !== "") return Number(row.ex) === 1;
+    var rk = String(row.rk || "").trim().toLowerCase();
+    return !!EXCUSED_RK[rk];
+  }
+
+  function weekdayUtc(iso) {
+    return new Date(iso + "T00:00:00Z").getUTCDay();
+  }
+
+  function holidayIndex(settings) {
+    var set = {};
+    var list = (settings && settings.holidays) || [];
+    list.forEach(function (h) {
+      if (h == null || h === "") return;
+      var d = typeof h === "string" ? h : (h.d || h.date || "");
+      d = String(d).slice(0, 10);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(d)) set[d] = 1;
+      else if (/^\d{2}-\d{2}$/.test(d)) set["md:" + d] = 1;
+    });
+    return set;
+  }
+
+  function isHolidayDate(date, index) {
+    if (!date || !index) return false;
+    if (index[date]) return true;
+    return !!index["md:" + date.slice(5)];
+  }
+
+  function skipLateDay(date, status, row, emp, holidays) {
+    if (normStatus(row) === "Rest Day" || status === "Rest Day") return true;
+    if (weekdayUtc(date) === 0 && !SUNDAY_KEEP[status]) return true;
+    if (isHolidayDate(date, holidays)) return true;
+    var hired = isoDate(emp && emp.dateHired);
+    if (hired && date < hired) return true;
+    var sep = isoDate(emp && emp.separatedOn);
+    if (sep && date > sep) return true;
+    return false;
+  }
+
+  function blankLateCount() {
+    return {
+      lates: 0,
+      lateMinutes: 0,
+      lateUnknown: 0,
+      excused: 0,
+      undertime: 0,
+      undertimeMinutes: 0,
+      undertimeUnknown: 0,
+      undertimeExcused: 0,
+      payrollAmount: 0,
+      payrollRuns: 0
+    };
+  }
+
+  function addLate(block, minutes, excused) {
+    if (excused) {
+      block.excused += 1;
+      return;
+    }
+    block.lates += 1;
+    if (minutes > 0) block.lateMinutes += minutes;
+    else block.lateUnknown += 1;
+  }
+
+  function countStatuses(rows, emp, from, to, holidays) {
+    var block = blankLateCount();
     rows.forEach(function (item) {
       if (item.date < from || item.date > to) return;
-      inWindow += 1;
       var row = item.row;
-      var clock = hasClock(row);
-      if (clock) sawClock = true;
-      if (isRestDay(row)) return;
-      var st = normStatus(row);
-      if (isPresentMark(row) && !clock && !leaveCoversDate(leaves, empId, item.date)) presentWithoutTimes += 1;
-      if (st === "Absent" || st === "Leave" || st === "Leave with Pay" || st === "Holiday") return;
-      if (leaveCoversDate(leaves, empId, item.date)) return;
-      if (!clock) return;
-      var part = lateParts(row);
-      if (!(part.minutes > 0)) return;
-      count += 1;
-      minutes += part.minutes;
-      lateMinutes += part.lateMinutes;
-      undertimeMinutes += part.undertimeMinutes;
+      var status = normStatus(row);
+      if (skipLateDay(item.date, status, row, emp, holidays)) return;
+      var excused = rowIsExcused(row);
+      if (status === "Present/Late") {
+        addLate(block, lateMinutesFromIn(row.in != null ? row.in : row.timeIn), excused);
+      }
+      if (status === "Undertime") {
+        var um = undertimeMinutesFromOut(row.out != null ? row.out : row.timeOut);
+        if (excused) block.undertimeExcused += 1;
+        else {
+          block.undertime += 1;
+          if (um > 0) block.undertimeMinutes += um;
+          else block.undertimeUnknown += 1;
+        }
+        if (inIsAlsoLate(row.in != null ? row.in : row.timeIn)) {
+          addLate(block, lateMinutesFromIn(row.in != null ? row.in : row.timeIn), excused);
+        }
+      }
     });
-    return {
-      count: count,
-      minutes: minutes,
-      lateMinutes: lateMinutes,
-      undertimeMinutes: undertimeMinutes,
-      noClocks: inWindow > 0 && !sawClock,
-      presentWithoutTimes: presentWithoutTimes
-    };
+    return block;
   }
 
   function hasAttendance(rows, from, to) {
@@ -510,24 +537,41 @@
     return Math.abs(round2(sum) - round2(amount)) <= 0.02;
   }
 
-  /* lines on a saved pay run are overrides only. A missing late figure is
-       not a stored zero. */
-  function payrollLates(payruns, empId, from, to, wholeRunOnly) {
+  function runIsPayable(run) {
+    var s = String(run && run.status || "").trim().toLowerCase();
+    return s === "approved" || s === "finalized" || s === "final";
+  }
+
+  /* An approved run stores the late/UT override on the line, and sometimes
+     a computed deduction beside it. A missing field is not a zero. */
+  function lineLatePeso(line) {
+    if (!line) return null;
+    var n = null;
+    if (line.late != null && line.late !== "") n = numOrNull(line.late);
+    if (!(n > 0)) {
+      ["lateComputed", "computedLate", "lateDeduction", "lateUt", "lateUT", "undertimeDeduction"].forEach(function (k) {
+        if (n > 0) return;
+        if (line[k] == null || line[k] === "") return;
+        var x = numOrNull(line[k]);
+        if (x > 0) n = x;
+      });
+    }
+    return n > 0 ? n : null;
+  }
+
+  function payrollLates(payruns, empId, from, to) {
     var count = 0;
     var amount = 0;
     if (!payruns) return { count: 0, amount: 0 };
     Object.keys(payruns).forEach(function (k) {
       var run = payruns[k];
-      if (!run) return;
+      if (!run || !runIsPayable(run)) return;
       var end = runEnd(run);
-      var start = runStart(run);
       if (!end || end < from || end > to) return;
-      if (wholeRunOnly && start && start < from) return;
       var found = lineOf(run, empId);
       if (!found.present || !found.line) return;
-      if (found.line.late == null || found.line.late === "") return;
-      var n = numOrNull(found.line.late);
-      if (n == null || !(n > 0.005)) return;
+      var n = lineLatePeso(found.line);
+      if (!(n > 0)) return;
       count += 1;
       amount += n;
     });
@@ -550,44 +594,37 @@
     return hired >= asOf.slice(0, 4) + "-01-01" && hired <= asOf;
   }
 
-  function latesFor(rows, leaves, payruns, empId, yearFrom, asOf, lastFrom, emp) {
+  function attachPayroll(block, pay) {
+    block.payrollAmount = pay.amount || 0;
+    block.payrollRuns = pay.count || 0;
+    return block;
+  }
+
+  function lateSource(block) {
+    var statuses = (block.lates || 0) + (block.excused || 0) + (block.undertime || 0) + (block.undertimeExcused || 0);
+    if (statuses && block.payrollAmount > 0) return "both";
+    if (statuses) return "attendance";
+    if (block.payrollAmount > 0) return "payroll";
+    return "none";
+  }
+
+  function latesFor(rows, payruns, empId, yearFrom, asOf, lastFrom, emp, settings, tombstones) {
     var coverageFrom = coverageDate(rows, yearFrom);
-    var attended = hasAttendance(rows, yearFrom, asOf);
-    if (attended) {
-      var year = countLates(rows, leaves, empId, yearFrom, asOf);
-      var last = countLates(rows, leaves, empId, lastFrom, asOf);
-      return {
-        source: "attendance",
-        coverageFrom: coverageFrom,
-        newHire: false,
-        year: year,
-        last30: last
-      };
-    }
-    var yearPay = payrollLates(payruns, empId, yearFrom, asOf, false);
-    var lastPay = payrollLates(payruns, empId, lastFrom, asOf, true);
-    if (yearPay.amount > 0) {
-      return {
-        source: "payroll",
-        coverageFrom: coverageFrom,
-        newHire: isNewHire(emp, asOf),
-        year: { count: yearPay.count, minutes: null, lateMinutes: null, undertimeMinutes: null, amount: yearPay.amount, noClocks: false },
-        last30: {
-          count: lastPay.amount > 0 ? lastPay.count : 0,
-          minutes: null,
-          lateMinutes: null,
-          undertimeMinutes: null,
-          amount: lastPay.amount > 0 ? lastPay.amount : null,
-          noClocks: false
-        }
-      };
-    }
+    var holidays = holidayIndex(settings);
+    var dead = tombstones && empId && tombstones[empId];
+    var useRows = dead ? [] : rows;
+    var year = countStatuses(useRows, emp, yearFrom, asOf, holidays);
+    var last = countStatuses(useRows, emp, lastFrom, asOf, holidays);
+    attachPayroll(year, dead ? { count: 0, amount: 0 } : payrollLates(payruns, empId, yearFrom, asOf));
+    attachPayroll(last, dead ? { count: 0, amount: 0 } : payrollLates(payruns, empId, lastFrom, asOf));
+    var src = lateSource(year);
+    if (src === "none" && lateSource(last) !== "none") src = lateSource(last);
     return {
-      source: "none",
+      source: src,
       coverageFrom: coverageFrom,
-      newHire: isNewHire(emp, asOf),
-      year: { count: 0, minutes: null, lateMinutes: null, undertimeMinutes: null, amount: null, noClocks: false },
-      last30: { count: 0, minutes: null, lateMinutes: null, undertimeMinutes: null, amount: null, noClocks: false }
+      newHire: isNewHire(emp, asOf) && !hasAttendance(useRows, yearFrom, asOf),
+      year: year,
+      last30: last
     };
   }
 
@@ -842,7 +879,7 @@
         last30: abs30.days,
         coverageFrom: coveredFrom
       },
-      lates: latesFor(attended, leaveRows, store.payruns, empId, yearFrom, day.iso, lastFrom, emp),
+      lates: latesFor(attended, store.payruns, empId, yearFrom, day.iso, lastFrom, emp, store.settings, store.tombstones),
       cashAdvances: cashAdvances(view, empId, kind === "ca" ? currentId : ""),
       tenure: tenureOf(emp, day.iso)
     };
@@ -903,37 +940,34 @@
     return lines;
   }
 
-  function lateLines(block, source) {
-    if (!block) return ["—"];
-    if (source === "attendance") {
-      if (block.noClocks) {
-        var n = block.presentWithoutTimes || 0;
-        return ["No clock-in/out times recorded (" + n + " Present " + (n === 1 ? "day" : "days") + " with no times)."];
-      }
-      var split = "";
-      if ((block.lateMinutes || block.undertimeMinutes) && block.minutes) {
-        split = " (late " + block.lateMinutes + " min, undertime " + block.undertimeMinutes + " min)";
-      }
-      return ["late count " + block.count + " · " + block.count + " times late · " + block.minutes + " min" + split];
+  function lateWindowLines(block) {
+    block = block || blankLateCount();
+    var lines = [];
+    var statuses = (block.lates || 0) + (block.excused || 0) + (block.undertime || 0) + (block.undertimeExcused || 0);
+    if (block.lates || block.excused) {
+      var line = block.lates + " lates (" + (block.lateMinutes || 0) + " min known)";
+      if (block.excused) line += ". " + block.lates + " late, " + block.excused + " excused";
+      lines.push(line);
     }
-    if (source === "payroll") {
-      if (!(block.amount > 0)) return ["No payroll late override in this window."];
-      return [block.count + (block.count === 1 ? " pay run" : " pay runs") + " · " + peso(block.amount) + " late/undertime · minutes not on the pay run"];
+    if (block.lateUnknown) lines.push("minutes not recorded for " + block.lateUnknown);
+    if (block.undertime || block.undertimeExcused) {
+      var u = block.undertime + " undertime (" + (block.undertimeMinutes || 0) + " min known)";
+      if (block.undertimeExcused) u += ", " + block.undertimeExcused + " excused";
+      lines.push(u);
     }
-    return ["No attendance or payroll late data yet"];
+    if (block.payrollAmount > 0) {
+      var p = block.payrollRuns || 0;
+      lines.push("Payroll late/UT deductions: " + peso(block.payrollAmount) + " across " + p + " pay run" + (p === 1 ? "" : "s"));
+    }
+    if (!statuses && !(block.payrollAmount > 0)) lines.push("no late data");
+    return lines;
   }
 
   function lateSection(info) {
     var L = info.lates || {};
-    var src = L.source || "none";
-    var lines;
-    if (src === "none") {
-      lines = ["No attendance or payroll late data yet"];
-      if (L.newHire) lines.push("They have no attendance yet.");
-    } else {
-      lines = ["This year"].concat(lateLines(L.year, src)).concat(["Last 30 days"]).concat(lateLines(L.last30, src));
-    }
+    var lines = ["This year"].concat(lateWindowLines(L.year)).concat(["Last 30 days"]).concat(lateWindowLines(L.last30));
     if (L.coverageFrom) lines.push("Attendance on file from " + pretty(L.coverageFrom));
+    if (L.newHire) lines.push("They have no attendance yet.");
     return lines;
   }
 

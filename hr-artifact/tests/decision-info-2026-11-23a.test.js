@@ -147,19 +147,17 @@ describe("2026-11-23a decision info", () => {
     const info = D.compute(store, { kind: "leave", record: { id: "new", empId: "e1", type: "VL", status: "Filed", from: "2026-11-20", to: "2026-11-20", days: 1 }, now: NOW });
     assert.equal(info.absences.year, 5);
     assert.equal(info.absences.last30, 3);
-    assert.equal(info.lates.source, "attendance");
-    assert.equal(info.lates.year.count, 2);
-    assert.equal(info.lates.year.minutes, 90);
-    assert.equal(info.lates.year.lateMinutes, 30);
-    assert.equal(info.lates.year.undertimeMinutes, 60);
-    assert.equal(info.lates.last30.count, 1);
-    assert.equal(info.lates.last30.minutes, 30);
+    assert.equal(info.lates.year.lates, 1);
+    assert.equal(info.lates.year.lateMinutes, 20);
+    assert.equal(info.lates.year.undertime, 0);
+    assert.equal(info.lates.last30.lates, 1);
+    assert.equal(info.lates.last30.lateMinutes, 20);
     const printed = D.renderPrint(Object.assign({ source: "live" }, info));
     assert.match(printed, /data-decision-info="1"/);
     assert.match(printed, /DECISION INFO/);
     assert.match(printed, /This year 5 days/);
     assert.match(printed, /Last 30 days 3 days/);
-    assert.match(printed, /90 min/);
+    assert.match(printed, /1 lates \(20 min known\)/);
     assert.match(printed, /Hired 15 Jun 2024/);
     assert.match(printed, /2 years, 5 months/);
   });
@@ -168,30 +166,35 @@ describe("2026-11-23a decision info", () => {
     const store = baseStore();
     store.payruns = {
       "weekly|2026-11-05": {
-        kind: "weekly", from: "2026-11-05", to: "2026-11-11",
+        kind: "weekly", from: "2026-11-05", to: "2026-11-11", status: "approved",
         lines: { e1: { ca: 0, late: 40 } }
       },
       "weekly|2026-08-06": {
-        kind: "weekly", from: "2026-08-06", to: "2026-08-12",
-        lines: { e1: { late: 15 } }
+        kind: "weekly", from: "2026-08-06", to: "2026-08-12", status: "finalized",
+        lines: { e1: { computedLate: 15 } }
       },
       "weekly|2026-10-01": {
-        kind: "weekly", from: "2026-10-01", to: "2026-10-07",
+        kind: "weekly", from: "2026-10-01", to: "2026-10-07", status: "approved",
         lines: { e1: { late: 100 } }
+      },
+      draft: {
+        kind: "weekly", from: "2026-11-12", to: "2026-11-18", status: "draft",
+        lines: { e1: { late: 999 } }
       }
     };
     const info = D.compute(store, { kind: "ca", record: { id: "none", empId: "e1" }, now: NOW });
     assert.equal(info.lates.source, "payroll");
-    assert.equal(info.lates.year.count, 3);
-    assert.equal(info.lates.year.minutes, null);
-    assert.equal(info.lates.year.amount, 155);
-    assert.equal(info.lates.last30.count, 1);
-    assert.equal(info.lates.last30.amount, 40);
-    assert.equal(info.lates.last30.minutes, null);
+    assert.equal(info.lates.year.lates, 0);
+    assert.equal(info.lates.year.payrollAmount, 155);
+    assert.equal(info.lates.year.payrollRuns, 3);
+    assert.equal(info.lates.last30.payrollAmount, 40);
+    assert.equal(info.lates.last30.payrollRuns, 1);
     const screen = D.renderScreen(Object.assign({ source: "live" }, info));
-    assert.match(screen, /minutes not on the pay run/);
-    assert.match(screen, /₱155\.00/);
-    assert.doesNotMatch(screen, /155 min/);
+    assert.match(screen, /Payroll late\/UT deductions: ₱155\.00 across 3 pay runs/);
+    assert.match(screen, /Payroll late\/UT deductions: ₱40\.00 across 1 pay run/);
+    assert.match(screen, /Attendance on file from 17 Feb 2026/);
+    assert.doesNotMatch(screen, /₱999/);
+    assert.doesNotMatch(screen, /no late data/);
   });
 
   it("builds each open cash advance from pay-run lines, including catch-up stubs and pending forms", () => {
@@ -314,59 +317,72 @@ describe("2026-11-23a decision info", () => {
     assert.match(D.renderScreen(Object.assign({ source: "live" }, none)), /₱0\.00 known \+ 1 to confirm/);
   });
 
-  it("says when attendance has no clock times, and does not treat a missing pay-run override as zero", () => {
-    const clocks = baseStore();
+  it("counts Present/Late and Undertime the way the manpower status does", () => {
+    const store = baseStore();
+    store.employees.e1.dateHired = "2026-03-01";
+    store.employees.e1.separatedOn = "2026-11-20";
+    store.settings = { holidays: [{ d: "2026-06-12" }] };
     function day(date, row) {
-      clocks.daily["d" + date.replace(/-/g, "")] = { date: date, rows: { e1: row } };
+      store.daily["d" + date.replace(/-/g, "")] = { id: "d" + date.replace(/-/g, ""), on: "2026-12-01", date: "2020-01-01", rows: { e1: row } };
     }
-    day("2026-03-02", { s: "Present" });
-    day("2026-03-03", { s: "Present", in: "", out: "" });
-    day("2026-11-04", { s: "Present/Late" });
-    day("2026-11-05", { s: "Absent" });
-    const info = D.compute(clocks, { kind: "leave", record: { id: "lv", empId: "e1", status: "Filed", from: "2026-11-20", to: "2026-11-20", days: 1 }, now: NOW });
-    assert.equal(info.lates.source, "attendance");
-    assert.equal(info.lates.year.noClocks, true);
-    assert.equal(info.lates.year.presentWithoutTimes, 3);
-    assert.equal(info.lates.last30.noClocks, true);
-    assert.equal(info.lates.last30.presentWithoutTimes, 1);
-    assert.equal(info.absences.coverageFrom, "2026-03-02");
-    const screen = D.renderScreen(Object.assign({ source: "live" }, info));
-    assert.match(screen, /No clock-in\/out times recorded \(3 Present days with no times\)/);
-    assert.match(screen, /No clock-in\/out times recorded \(1 Present day with no times\)/);
-    assert.match(screen, /Attendance on file from 2 Mar 2026/);
-    assert.doesNotMatch(screen, /0 times late/);
-    assert.doesNotMatch(screen, /0 days · 0 min/);
-
-    const timed = baseStore();
-    timed.daily.d1 = { date: "2026-11-11", rows: { e1: { s: "Present", in: "08:30", out: "17:00", day: 1 } } };
-    const timedInfo = D.compute(timed, { kind: "leave", record: { id: "lv", empId: "e1", status: "Filed" }, now: NOW });
-    const timedScreen = D.renderScreen(Object.assign({ source: "live" }, timedInfo));
-    assert.match(timedScreen, /late count 1/);
-    assert.match(timedScreen, /1 times late/);
-    assert.match(timedScreen, /30 min/);
-    assert.doesNotMatch(timedScreen, /1 day · 30 min/);
-
-    const bare = baseStore();
-    bare.payruns = {
-      w: { from: "2026-11-05", to: "2026-11-11", lines: { e1: { ca: 100 } } }
+    day("2026-02-20", { s: "Present/Late", in: "08:30" });
+    day("2026-03-02", { s: "Present/Late", in: "8:17" });
+    day("2026-03-03", { s: "Present/Late", in: "9" });
+    day("2026-03-04", { s: "Present/Late", in: "08:04" });
+    day("2026-03-05", { s: "Present/Late", in: "6:40" });
+    day("2026-03-06", { s: "Present/Late" });
+    day("2026-03-09", { s: "Present/Late", in: "08:20", ex: 1 });
+    day("2026-03-10", { s: "Present/Late", in: "08:40", rk: "sick" });
+    day("2026-03-11", { s: "Present/Late", in: "08:50", rk: "traffic" });
+    day("2026-03-12", { s: "Present/Late", in: "09:00", rk: "sick", ex: 0 });
+    day("2026-04-02", { s: "Undertime", out: "4:00" });
+    day("2026-04-03", { s: "Undertime", out: "16:28", in: "8:20" });
+    day("2026-04-06", { s: "Undertime", out: "1:25 pm" });
+    day("2026-04-07", { s: "Undertime", out: "2:00 PM", rk: "power" });
+    day("2026-11-01", { s: "Present/Late", in: "08:30" });
+    day("2026-11-08", { s: "Present", in: "09:00" });
+    day("2026-06-12", { s: "Present/Late", in: "09:10" });
+    day("2026-11-21", { s: "Present/Late", in: "09:00" });
+    day("2026-11-11", { s: "Present", in: "08:30", out: "16:00" });
+    store.tombstones = { e9: { id: "e9", name: "Gone" } };
+    store.daily.d20261102 = { rows: { e9: { s: "Present/Late", in: "09:00" } } };
+    store.payruns = {
+      ok: { status: "approved", from: "2026-11-05", to: "2026-11-11", lines: { e1: { late: 25 } } }
     };
-    const none = D.compute(bare, { kind: "leave", record: { id: "lv", empId: "e1", status: "Filed" }, now: NOW });
+    const info = D.compute(store, { kind: "leave", record: { id: "lv", empId: "e1", status: "Filed" }, now: NOW });
+    const y = info.lates.year;
+    assert.equal(y.lates, 9);
+    assert.equal(y.lateMinutes, 17 + 60 + 4 + 50 + 60 + 20 + 30);
+    assert.equal(y.lateUnknown, 2);
+    assert.equal(y.excused, 2);
+    assert.equal(y.undertime, 3);
+    assert.equal(y.undertimeMinutes, 60 + 32 + 215);
+    assert.equal(y.undertimeExcused, 1);
+    assert.equal(y.payrollAmount, 25);
+    assert.equal(y.payrollRuns, 1);
+    assert.equal(info.lates.source, "both");
+    const screen = D.renderScreen(Object.assign({ source: "live" }, info));
+    assert.match(screen, /9 lates \(241 min known\)/);
+    assert.match(screen, /9 late, 2 excused/);
+    assert.match(screen, /minutes not recorded for 2/);
+    assert.match(screen, /3 undertime \(307 min known\)/);
+    assert.match(screen, /Payroll late\/UT deductions: ₱25\.00 across 1 pay run/);
+    assert.match(screen, /Attendance on file from 20 Feb 2026/);
+    assert.doesNotMatch(screen, /No clock-in\/out times recorded/);
+
+    const empty = baseStore();
+    const none = D.compute(empty, { kind: "leave", record: { id: "lv", empId: "e1", status: "Filed" }, now: NOW });
     assert.equal(none.lates.source, "none");
     const noneScreen = D.renderScreen(Object.assign({ source: "live" }, none));
-    assert.match(noneScreen, /No attendance or payroll late data yet/);
+    assert.match(noneScreen, /no late data/);
     assert.match(noneScreen, /Attendance on file from 17 Feb 2026/);
-    assert.doesNotMatch(noneScreen, /0 pay runs/);
-    assert.doesNotMatch(noneScreen, /₱0\.00 late\/undertime/);
-    assert.doesNotMatch(noneScreen, /minutes not on the pay run/);
-    assert.doesNotMatch(noneScreen, /They have no attendance yet/);
+    assert.doesNotMatch(noneScreen, /Payroll late\/UT deductions: ₱0\.00/);
 
     const hired = baseStore();
     hired.employees.e1.dateHired = "2026-09-01";
-    hired.payruns = { w: { from: "2026-11-05", to: "2026-11-11", lines: { e1: {} } } };
     const newbie = D.compute(hired, { kind: "leave", record: { id: "lv", empId: "e1", status: "Filed" }, now: NOW });
-    assert.equal(newbie.lates.newHire, true);
     const newbieScreen = D.renderScreen(Object.assign({ source: "live" }, newbie));
-    assert.match(newbieScreen, /No attendance or payroll late data yet/);
+    assert.match(newbieScreen, /no late data/);
     assert.match(newbieScreen, /They have no attendance yet/);
   });
 
