@@ -33,8 +33,14 @@
     Void: 1,
     Liquidated: 1,
     Recovered: 1,
-    "Recovered from pay": 1
+    "Recovered from pay": 1,
+    "Fully deducted": 1,
+    Paid: 1,
+    Settled: 1,
+    Closed: 1
   };
+  /* Daily Manpower on file starts on this date. Earlier days are not in the sheets. */
+  var ATTENDANCE_FIRST = "2026-02-17";
   var APPROVED_CA = { Approved: 1, Released: 1, "Partially liquidated": 1 };
   var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -296,20 +302,31 @@
   }
 
   function blankCount() {
-    return { count: 0, days: 0 };
+    return { count: 0, days: 0, unset: 0 };
+  }
+
+  function leaveUndated(rec) {
+    return !isoDate(rec && rec.from) && !isoDate(rec && rec.to);
   }
 
   function leavesFor(store, empId, currentId, winFrom, winTo, catalog) {
     var byType = {};
     var totalCount = 0;
     var totalDays = 0;
+    var totalUnset = 0;
     var thisRequest = null;
+    var year = String(winFrom || "").slice(0, 4);
     values(store && store.leaves).forEach(function (l) {
       if (!l || l.empId !== empId) return;
       var id = l.id || "";
       var bucket = leaveBucket(l.status);
-      var days = daysInWindow(l, winFrom, winTo);
+      var unset = leaveUndated(l);
+      var days = unset ? 0 : daysInWindow(l, winFrom, winTo);
       var type = leaveTypeOf(l.type, catalog);
+      if (unset) {
+        var filed = isoDate(l.filedOn);
+        if (filed && filed.slice(0, 4) !== year) unset = false;
+      }
       if (currentId && id === currentId) {
         thisRequest = {
           id: id,
@@ -319,12 +336,16 @@
           pay: type.pay,
           status: l.status || "",
           days: days,
+          daysUnset: unset,
           label: "this request"
         };
         return;
       }
       if (bucket === "skip") return;
-      if (!(days > 0)) return;
+      if (unset) {
+        var filedYear = isoDate(l.filedOn);
+        if (filedYear && filedYear.slice(0, 4) !== year) return;
+      } else if (!(days > 0)) return;
       var row = byType[type.k] || {
         type: type.k,
         name: type.n,
@@ -333,17 +354,19 @@
         pending: blankCount()
       };
       row[bucket].count += 1;
-      row[bucket].days = round2(row[bucket].days + days);
+      if (unset) row[bucket].unset += 1;
+      else row[bucket].days = round2(row[bucket].days + days);
       byType[type.k] = row;
       totalCount += 1;
-      totalDays = round2(totalDays + days);
+      if (unset) totalUnset += 1;
+      else totalDays = round2(totalDays + days);
     });
     var types = Object.keys(byType).map(function (k) {
       return byType[k];
     }).sort(function (a, b) {
       return String(a.name).localeCompare(String(b.name));
     });
-    return { count: totalCount, days: round2(totalDays), byType: types, thisRequest: thisRequest };
+    return { count: totalCount, days: round2(totalDays), unset: totalUnset, byType: types, thisRequest: thisRequest };
   }
 
   function attendanceRows(store, empId) {
@@ -381,18 +404,42 @@
     return { days: days, dates: dates };
   }
 
+  function clockField(row, a, b) {
+    if (!row) return "";
+    if (row[a] != null && String(row[a]).trim() !== "") return row[a];
+    if (row[b] != null && String(row[b]).trim() !== "") return row[b];
+    return "";
+  }
+
+  function hasClock(row) {
+    return clockMinutes(clockField(row, "in", "timeIn")) != null || clockMinutes(clockField(row, "out", "timeOut")) != null;
+  }
+
+  function isPresentMark(row) {
+    var st = normStatus(row);
+    return st === "Present" || st === "Present/Late" || st === "Undertime";
+  }
+
   function countLates(rows, leaves, empId, from, to) {
     var count = 0;
     var minutes = 0;
     var lateMinutes = 0;
     var undertimeMinutes = 0;
+    var inWindow = 0;
+    var sawClock = false;
+    var presentWithoutTimes = 0;
     rows.forEach(function (item) {
       if (item.date < from || item.date > to) return;
+      inWindow += 1;
       var row = item.row;
+      var clock = hasClock(row);
+      if (clock) sawClock = true;
       if (isRestDay(row)) return;
       var st = normStatus(row);
+      if (isPresentMark(row) && !clock && !leaveCoversDate(leaves, empId, item.date)) presentWithoutTimes += 1;
       if (st === "Absent" || st === "Leave" || st === "Leave with Pay" || st === "Holiday") return;
       if (leaveCoversDate(leaves, empId, item.date)) return;
+      if (!clock) return;
       var part = lateParts(row);
       if (!(part.minutes > 0)) return;
       count += 1;
@@ -404,7 +451,9 @@
       count: count,
       minutes: minutes,
       lateMinutes: lateMinutes,
-      undertimeMinutes: undertimeMinutes
+      undertimeMinutes: undertimeMinutes,
+      noClocks: inWindow > 0 && !sawClock,
+      presentWithoutTimes: presentWithoutTimes
     };
   }
 
@@ -461,11 +510,12 @@
     return Math.abs(round2(sum) - round2(amount)) <= 0.02;
   }
 
+  /* lines on a saved pay run are overrides only. A missing late figure is
+       not a stored zero. */
   function payrollLates(payruns, empId, from, to, wholeRunOnly) {
-    if (payruns == null) return { known: false, count: 0, amount: null };
     var count = 0;
     var amount = 0;
-    var bad = false;
+    if (!payruns) return { count: 0, amount: 0 };
     Object.keys(payruns).forEach(function (k) {
       var run = payruns[k];
       if (!run) return;
@@ -474,52 +524,70 @@
       if (!end || end < from || end > to) return;
       if (wholeRunOnly && start && start < from) return;
       var found = lineOf(run, empId);
-      if (!found.present) return;
-      var n = found.line ? numOrNull(found.line.late) : 0;
-      if (found.line && found.line.late != null && found.line.late !== "" && n == null) {
-        bad = true;
-        return;
-      }
-      n = n || 0;
-      if (n > 0.005) {
-        count += 1;
-        amount += n;
-      }
+      if (!found.present || !found.line) return;
+      if (found.line.late == null || found.line.late === "") return;
+      var n = numOrNull(found.line.late);
+      if (n == null || !(n > 0.005)) return;
+      count += 1;
+      amount += n;
     });
-    if (bad) return { known: false, count: 0, amount: null };
-    return { known: true, count: count, amount: round2(amount) };
+    return { count: count, amount: round2(amount) };
   }
 
-  function latesFor(rows, leaves, payruns, empId, yearFrom, asOf, lastFrom) {
+  function coverageDate(rows, yearFrom) {
+    var earliest = "";
+    (rows || []).forEach(function (item) {
+      if (item.date && (!earliest || item.date < earliest)) earliest = item.date;
+    });
+    var from = earliest || ATTENDANCE_FIRST;
+    if (from > yearFrom) return from;
+    return "";
+  }
+
+  function isNewHire(emp, asOf) {
+    var hired = isoDate(emp && emp.dateHired);
+    if (!hired || !asOf) return false;
+    return hired >= asOf.slice(0, 4) + "-01-01" && hired <= asOf;
+  }
+
+  function latesFor(rows, leaves, payruns, empId, yearFrom, asOf, lastFrom, emp) {
+    var coverageFrom = coverageDate(rows, yearFrom);
     var attended = hasAttendance(rows, yearFrom, asOf);
     if (attended) {
       var year = countLates(rows, leaves, empId, yearFrom, asOf);
       var last = countLates(rows, leaves, empId, lastFrom, asOf);
       return {
         source: "attendance",
-        year: { count: year.count, minutes: year.minutes, lateMinutes: year.lateMinutes, undertimeMinutes: year.undertimeMinutes, amount: null },
-        last30: { count: last.count, minutes: last.minutes, lateMinutes: last.lateMinutes, undertimeMinutes: last.undertimeMinutes, amount: null }
+        coverageFrom: coverageFrom,
+        newHire: false,
+        year: year,
+        last30: last
       };
     }
     var yearPay = payrollLates(payruns, empId, yearFrom, asOf, false);
     var lastPay = payrollLates(payruns, empId, lastFrom, asOf, true);
-    if (!yearPay.known) {
+    if (yearPay.amount > 0) {
       return {
-        source: "none",
-        year: { count: 0, minutes: null, lateMinutes: null, undertimeMinutes: null, amount: null },
-        last30: { count: 0, minutes: null, lateMinutes: null, undertimeMinutes: null, amount: null }
+        source: "payroll",
+        coverageFrom: coverageFrom,
+        newHire: isNewHire(emp, asOf),
+        year: { count: yearPay.count, minutes: null, lateMinutes: null, undertimeMinutes: null, amount: yearPay.amount, noClocks: false },
+        last30: {
+          count: lastPay.amount > 0 ? lastPay.count : 0,
+          minutes: null,
+          lateMinutes: null,
+          undertimeMinutes: null,
+          amount: lastPay.amount > 0 ? lastPay.amount : null,
+          noClocks: false
+        }
       };
     }
     return {
-      source: yearPay.count || (lastPay.known && lastPay.count) ? "payroll" : "payroll",
-      year: { count: yearPay.count, minutes: null, lateMinutes: null, undertimeMinutes: null, amount: yearPay.amount },
-      last30: {
-        count: lastPay.known ? lastPay.count : 0,
-        minutes: null,
-        lateMinutes: null,
-        undertimeMinutes: null,
-        amount: lastPay.known ? lastPay.amount : null
-      }
+      source: "none",
+      coverageFrom: coverageFrom,
+      newHire: isNewHire(emp, asOf),
+      year: { count: 0, minutes: null, lateMinutes: null, undertimeMinutes: null, amount: null, noClocks: false },
+      last30: { count: 0, minutes: null, lateMinutes: null, undertimeMinutes: null, amount: null, noClocks: false }
     };
   }
 
@@ -534,7 +602,21 @@
   }
 
   function isClosedCa(a) {
-    return !!CLOSED_CA[String((a && a.status) || "")];
+    var s = String((a && a.status) || "").trim();
+    if (!s) return false;
+    if (CLOSED_CA[s]) return true;
+    var low = s.toLowerCase();
+    return low === "fully deducted" || low === "paid" || low === "settled" || low === "closed"
+      || low === "liquidated" || low === "recovered" || low === "recovered from pay"
+      || low === "cancelled" || low === "disapproved" || low === "rejected" || low === "void";
+  }
+
+  function amountUnstated(a) {
+    var blob = ["notes", "note", "particulars", "remarks", "comment", "memo", "balanceNote", "amountNote", "detail"].map(function (k) {
+      return String((a && a[k]) || "");
+    }).join(" \n ");
+    if (a && a.balance != null && typeof a.balance !== "number" && String(a.balance).trim()) blob += " \n " + String(a.balance);
+    return /not known|isn.?t known|\bunknown\b|not on the payroll|payroll files|not on file|can.?t be determin|cannot be determin|to confirm/i.test(blob);
   }
 
   function liquidatedOf(a) {
@@ -597,21 +679,29 @@
   }
 
   function deductedFor(a, pack, soleApprovedId) {
-    if (!pack.known) return { known: false, amount: null };
+    if (!pack.known) return { known: false, amount: null, trusted: false };
     var id = String(a.id || "");
     var no = String(a.no || "");
     var itemized = null;
-    if (id && Object.prototype.hasOwnProperty.call(pack.byId, id)) itemized = pack.byId[id];
-    else if (no && Object.prototype.hasOwnProperty.call(pack.byId, no)) itemized = pack.byId[no];
-    if (isPendingCa(a)) return { known: true, amount: itemized || 0 };
+    var fromItems = false;
+    if (id && Object.prototype.hasOwnProperty.call(pack.byId, id)) {
+      itemized = pack.byId[id];
+      fromItems = true;
+    } else if (no && Object.prototype.hasOwnProperty.call(pack.byId, no)) {
+      itemized = pack.byId[no];
+      fromItems = true;
+    }
+    if (isPendingCa(a)) return { known: true, amount: itemized || 0, trusted: true };
     /* A pay run that does not say which advance it paid cannot be split
        across more than one advance. Showing a partial figure would invent
-       the balance. */
+       the balance. A catch-up stub is not trusted from a missing override:
+       lines store overrides only, so a blank is not zero recovered. */
     if (pack.unallocated > 0.005) {
-      if (soleApprovedId && id === soleApprovedId) return { known: true, amount: round2((itemized || 0) + pack.unallocated) };
-      return { known: false, amount: null };
+      if (soleApprovedId && id === soleApprovedId) return { known: true, amount: round2((itemized || 0) + pack.unallocated), trusted: true };
+      return { known: false, amount: null, trusted: false };
     }
-    return { known: true, amount: itemized || 0 };
+    var trusted = fromItems || !isCatchup(a);
+    return { known: true, amount: itemized || 0, trusted: trusted };
   }
 
   function cashAdvances(store, empId, currentId) {
@@ -625,8 +715,9 @@
        split unknown. */
     var deductible = all.filter(function (a) {
       var s = String(a.status || "");
-      if (PENDING_CA[s] || s === "Cancelled" || s === "Disapproved" || s === "Rejected" || s === "Void") return false;
-      return APPROVED_CA[s] || CLOSED_CA[s] || isCatchup(a);
+      if (isPendingCa(a)) return false;
+      if (/^cancelled$|^disapproved$|^rejected$|^void$/i.test(s.trim())) return false;
+      return !!APPROVED_CA[s] || isClosedCa(a) || isCatchup(a);
     });
     var sole = deductible.length === 1 ? String(deductible[0].id || "") : "";
     var rows = [];
@@ -641,9 +732,12 @@
       var amount = numOrNull(a.amount);
       var liq = liquidatedOf(a);
       var ded = deductedFor(a, pack, sole);
-      var balanceKnown = amount != null && liq.known && ded.known;
+      var unstated = catchup && amountUnstated(a);
+      var confirm = catchup && (unstated || !ded.trusted);
+      var balanceKnown = !confirm && amount != null && liq.known && ded.known;
       var balance = balanceKnown ? round2(amount - liq.amount - ded.amount) : null;
       if (balanceKnown && balance <= 0.005 && !(currentId && a.id === currentId)) return;
+      if (unstated) amount = null;
       rows.push({
         id: a.id || "",
         no: a.no || (catchup ? a.id || "Catch-up" : ""),
@@ -652,11 +746,12 @@
         thisRequest: !!(currentId && a.id === currentId),
         status: a.status || (catchup ? "Catch-up" : ""),
         amount: amount,
-        deducted: ded.known ? ded.amount : null,
-        deductedKnown: ded.known,
+        deducted: !confirm && ded.known ? ded.amount : null,
+        deductedKnown: !confirm && ded.known,
         liquidated: liq.known ? liq.amount : null,
         balance: balanceKnown ? balance : null,
         balanceKnown: balanceKnown,
+        toConfirm: !balanceKnown,
         plan: planText(a)
       });
     });
@@ -664,19 +759,19 @@
       if (a.pending !== b.pending) return a.pending ? 1 : -1;
       return String(a.no).localeCompare(String(b.no));
     });
-    var totalKnown = rows.every(function (r) {
-      return r.balanceKnown;
+    var knownTotal = 0;
+    var confirmCount = 0;
+    rows.forEach(function (r) {
+      if (r.balanceKnown) knownTotal += r.balance;
+      else confirmCount += 1;
     });
-    var total = 0;
-    if (totalKnown) {
-      rows.forEach(function (r) {
-        total += r.balance;
-      });
-      total = round2(total);
-    }
+    knownTotal = round2(knownTotal);
+    var totalKnown = confirmCount === 0;
     return {
       rows: rows,
-      total: totalKnown ? total : null,
+      total: totalKnown ? knownTotal : null,
+      knownTotal: knownTotal,
+      confirmCount: confirmCount,
       totalKnown: totalKnown,
       payrollDeducted: pack.known ? pack.total : null,
       payrollKnown: pack.known
@@ -733,6 +828,7 @@
     var attended = attendanceRows(view, empId);
     var absYear = countAbsences(attended, leaveRows, empId, yearFrom, day.iso);
     var abs30 = countAbsences(attended, leaveRows, empId, lastFrom, day.iso);
+    var coveredFrom = coverageDate(attended, yearFrom);
     return {
       asOf: day.iso,
       asOfLabel: day.label + ", Asia/Manila",
@@ -743,9 +839,10 @@
       leaves: leavesFor(view, empId, kind === "leave" ? currentId : "", yearFrom, day.iso, opts.leaveTypes),
       absences: {
         year: absYear.days,
-        last30: abs30.days
+        last30: abs30.days,
+        coverageFrom: coveredFrom
       },
-      lates: latesFor(attended, leaveRows, store.payruns, empId, yearFrom, day.iso, lastFrom),
+      lates: latesFor(attended, leaveRows, store.payruns, empId, yearFrom, day.iso, lastFrom, emp),
       cashAdvances: cashAdvances(view, empId, kind === "ca" ? currentId : ""),
       tenure: tenureOf(emp, day.iso)
     };
@@ -774,20 +871,34 @@
     return "";
   }
 
+  function bucketPhrase(label, bucket) {
+    if (!bucket || !bucket.count) return "";
+    var dated = bucket.count - (bucket.unset || 0);
+    var bits = [];
+    if (dated) bits.push(dated + " · " + dayPhrase(bucket.days || 0));
+    if (bucket.unset) bits.push(bucket.unset + " · days not set");
+    return label + " " + bits.join(", ");
+  }
+
   function leaveLines(info) {
-    var L = info.leaves || { count: 0, days: 0, byType: [], thisRequest: null };
-    var lines = [(L.count || 0) + " " + ((L.count === 1) ? "form" : "forms") + " · " + dayPhrase(L.days || 0)];
+    var L = info.leaves || { count: 0, days: 0, unset: 0, byType: [], thisRequest: null };
+    var head = (L.count || 0) + " " + ((L.count === 1) ? "form" : "forms") + " · " + dayPhrase(L.days || 0);
+    if (L.unset) head += " · " + L.unset + " with days not set";
+    var lines = [head];
     (L.byType || []).forEach(function (t) {
       var pay = payWord(t.pay);
       var bits = [];
-      if (t.approved && t.approved.count) bits.push("approved " + t.approved.count + " · " + dayPhrase(t.approved.days));
-      if (t.pending && t.pending.count) bits.push("pending " + t.pending.count + " · " + dayPhrase(t.pending.days));
-      lines.push((t.name || t.type) + (pay ? " (" + pay + ")" : "") + " — " + bits.join("; "));
+      var approved = bucketPhrase("approved", t.approved);
+      var pending = bucketPhrase("pending", t.pending);
+      if (approved) bits.push(approved);
+      if (pending) bits.push(pending);
+      lines.push((t.name || t.type || "Type not set") + (pay ? " (" + pay + ")" : "") + " — " + bits.join("; "));
     });
     if (!L.byType || !L.byType.length) lines.push("No other leave in this calendar year.");
     if (L.thisRequest) {
       var tr = L.thisRequest;
-      lines.push("This request: " + (tr.name || "Leave") + " · " + dayPhrase(tr.days || 0) + " · " + (tr.status || "draft") + " — this request");
+      var days = tr.daysUnset ? "days not set" : dayPhrase(tr.days || 0);
+      lines.push("This request: " + (tr.name || "Leave") + " · " + days + " · " + (tr.status || "draft") + " — this request");
     }
     return lines;
   }
@@ -795,21 +906,50 @@
   function lateLines(block, source) {
     if (!block) return ["—"];
     if (source === "attendance") {
+      if (block.noClocks) {
+        var n = block.presentWithoutTimes || 0;
+        return ["No clock-in/out times recorded (" + n + " Present " + (n === 1 ? "day" : "days") + " with no times)."];
+      }
       var split = "";
       if ((block.lateMinutes || block.undertimeMinutes) && block.minutes) {
         split = " (late " + block.lateMinutes + " min, undertime " + block.undertimeMinutes + " min)";
       }
-      return [block.count + (block.count === 1 ? " day" : " days") + " · " + block.minutes + " min" + split];
+      return ["late count " + block.count + " · " + block.count + " times late · " + block.minutes + " min" + split];
     }
     if (source === "payroll") {
-      if (block.amount == null) return ["No pay-run late figure in this window."];
+      if (!(block.amount > 0)) return ["No payroll late override in this window."];
       return [block.count + (block.count === 1 ? " pay run" : " pay runs") + " · " + peso(block.amount) + " late/undertime · minutes not on the pay run"];
     }
-    return ["No Daily Manpower time and no pay-run late figure."];
+    return ["No attendance or payroll late data yet"];
+  }
+
+  function lateSection(info) {
+    var L = info.lates || {};
+    var src = L.source || "none";
+    var lines;
+    if (src === "none") {
+      lines = ["No attendance or payroll late data yet"];
+      if (L.newHire) lines.push("They have no attendance yet.");
+    } else {
+      lines = ["This year"].concat(lateLines(L.year, src)).concat(["Last 30 days"]).concat(lateLines(L.last30, src));
+    }
+    if (L.coverageFrom) lines.push("Attendance on file from " + pretty(L.coverageFrom));
+    return lines;
+  }
+
+  function absenceLines(info) {
+    var a = info.absences || {};
+    var lines = [
+      "This year " + dayPhrase(a.year),
+      "Last 30 days " + dayPhrase(a.last30),
+      "Absent days only. Rest days and approved-leave days are not counted."
+    ];
+    if (a.coverageFrom) lines.push("Attendance on file from " + pretty(a.coverageFrom));
+    return lines;
   }
 
   function caLines(info) {
-    var pack = info.cashAdvances || { rows: [], totalKnown: true, total: 0 };
+    var pack = info.cashAdvances || { rows: [], totalKnown: true, total: 0, knownTotal: 0, confirmCount: 0 };
     var lines = [];
     if (!pack.rows || !pack.rows.length) lines.push("No open cash advance.");
     (pack.rows || []).forEach(function (r) {
@@ -819,12 +959,12 @@
       if (r.catchup) tags.push("catch-up");
       var head = (r.no || "Cash advance") + (tags.length ? " (" + tags.join(", ") + ")" : "");
       var ded = r.deductedKnown ? peso(r.deducted) + " deducted" : "deducted so far not determined";
-      var bal = r.balanceKnown ? peso(r.balance) + " balance" : "balance unknown";
+      var bal = r.balanceKnown ? peso(r.balance) + " balance" : "balance to confirm";
       var amt = r.amount == null ? "amount unknown" : peso(r.amount);
       lines.push(head + " — " + amt + " · " + ded + " · " + bal + ". " + (r.plan || ""));
     });
-    if (pack.totalKnown) lines.push("Total outstanding " + peso(pack.total || 0) + ".");
-    else lines.push("Total outstanding balance unknown.");
+    if (pack.confirmCount) lines.push(peso(pack.knownTotal || 0) + " known + " + pack.confirmCount + " to confirm");
+    else if (pack.totalKnown) lines.push("Total outstanding " + peso(pack.total || 0) + ".");
     return lines;
   }
 
@@ -850,7 +990,6 @@
         }).join("")
         + "</ul></div>";
     }
-    var lateSrc = (info.lates && info.lates.source) || "none";
     return '<section class="di-panel" data-decision-info="1" data-decision-readonly="1" data-decision-source="' + esc(src) + '">'
       + '<div class="di-h">Decision info'
       + (asOf ? ' <span class="di-asof">as of ' + esc(info.asOfLabel || info.asOf) + "</span>" : "")
@@ -858,13 +997,8 @@
       + "</div>"
       + '<div class="di-grid">'
       + block("Leaves this calendar year", leaveLines(info))
-      + block("Absences", [
-        "This year " + dayPhrase(info.absences && info.absences.year),
-        "Last 30 days " + dayPhrase(info.absences && info.absences.last30),
-        "Absent days only. Rest days and approved-leave days are not counted."
-      ])
-      + block("Lates and undertime", ["This year"].concat(lateLines(info.lates && info.lates.year, lateSrc))
-        .concat(["Last 30 days"]).concat(lateLines(info.lates && info.lates.last30, lateSrc)))
+      + block("Absences", absenceLines(info))
+      + block("Lates and undertime", lateSection(info))
       + block("Open cash advances", caLines(info))
       + block("Tenure", [
         info.tenure && info.tenure.dateHired ? "Date hired " + pretty(info.tenure.dateHired) : "Date hired is not on the 201 file.",
@@ -884,7 +1018,6 @@
     if (!info.empId && src !== "snapshot") {
       return '<div class="di-print" data-decision-info="1" data-decision-readonly="1" data-decision-source="live" style="border:1.4px solid #000;padding:4px 6px;font-size:8.5px;margin-top:6px"><b>DECISION INFO</b> — employee not chosen.</div>';
     }
-    var lateSrc = (info.lates && info.lates.source) || "none";
     function cell(title, lines) {
       return '<td style="border:1px solid #000;padding:3px 5px;vertical-align:top;width:20%"><div style="font-weight:700;font-size:8px;letter-spacing:.03em;text-transform:uppercase">'
         + esc(title) + "</div><div>" + lines.map(esc).join("<br>") + "</div></td>";
@@ -894,11 +1027,8 @@
       + ' <span style="font-weight:400">as of ' + esc(info.asOfLabel || info.asOf || "") + (src === "snapshot" ? " · saved at approval" : "") + "</span></div>"
       + '<table style="width:100%;border-collapse:collapse;table-layout:fixed"><tr>'
       + cell("Leaves this year", leaveLines(info))
-      + cell("Absences", [
-        "This year " + dayPhrase(info.absences && info.absences.year),
-        "Last 30 days " + dayPhrase(info.absences && info.absences.last30)
-      ])
-      + cell("Lates and undertime", ["This year"].concat(lateLines(info.lates && info.lates.year, lateSrc)).concat(["Last 30 days"]).concat(lateLines(info.lates && info.lates.last30, lateSrc)))
+      + cell("Absences", absenceLines(info))
+      + cell("Lates and undertime", lateSection(info))
       + cell("Open cash advances", caLines(info))
       + cell("Tenure", [
         info.tenure && info.tenure.dateHired ? "Hired " + pretty(info.tenure.dateHired) : "Date hired is not on the 201 file.",

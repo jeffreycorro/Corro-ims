@@ -297,10 +297,11 @@ describe("2026-11-23a decision info", () => {
     assert.equal(unknown.cashAdvances.totalKnown, false);
     assert.equal(unknown.cashAdvances.total, null);
     const screen = D.renderScreen(Object.assign({ source: "live" }, unknown));
-    assert.match(screen, /balance unknown/);
-    assert.match(screen, /Total outstanding balance unknown/);
+    assert.match(screen, /balance to confirm/);
+    assert.match(screen, /₱0\.00 known \+ 2 to confirm/);
     assert.doesNotMatch(screen, /₱6,800\.00 balance/);
     assert.doesNotMatch(screen, /₱1,800\.00 balance/);
+    assert.doesNotMatch(screen, /0 pay runs/);
 
     const missing = baseStore();
     missing.payruns = null;
@@ -309,7 +310,142 @@ describe("2026-11-23a decision info", () => {
     };
     const none = D.compute(missing, { kind: "ca", record: missing.advances.a, now: NOW });
     assert.equal(none.cashAdvances.rows[0].balanceKnown, false);
-    assert.match(D.renderScreen(Object.assign({ source: "live" }, none)), /balance unknown/);
+    assert.match(D.renderScreen(Object.assign({ source: "live" }, none)), /balance to confirm/);
+    assert.match(D.renderScreen(Object.assign({ source: "live" }, none)), /₱0\.00 known \+ 1 to confirm/);
+  });
+
+  it("says when attendance has no clock times, and does not treat a missing pay-run override as zero", () => {
+    const clocks = baseStore();
+    function day(date, row) {
+      clocks.daily["d" + date.replace(/-/g, "")] = { date: date, rows: { e1: row } };
+    }
+    day("2026-03-02", { s: "Present" });
+    day("2026-03-03", { s: "Present", in: "", out: "" });
+    day("2026-11-04", { s: "Present/Late" });
+    day("2026-11-05", { s: "Absent" });
+    const info = D.compute(clocks, { kind: "leave", record: { id: "lv", empId: "e1", status: "Filed", from: "2026-11-20", to: "2026-11-20", days: 1 }, now: NOW });
+    assert.equal(info.lates.source, "attendance");
+    assert.equal(info.lates.year.noClocks, true);
+    assert.equal(info.lates.year.presentWithoutTimes, 3);
+    assert.equal(info.lates.last30.noClocks, true);
+    assert.equal(info.lates.last30.presentWithoutTimes, 1);
+    assert.equal(info.absences.coverageFrom, "2026-03-02");
+    const screen = D.renderScreen(Object.assign({ source: "live" }, info));
+    assert.match(screen, /No clock-in\/out times recorded \(3 Present days with no times\)/);
+    assert.match(screen, /No clock-in\/out times recorded \(1 Present day with no times\)/);
+    assert.match(screen, /Attendance on file from 2 Mar 2026/);
+    assert.doesNotMatch(screen, /0 times late/);
+    assert.doesNotMatch(screen, /0 days · 0 min/);
+
+    const timed = baseStore();
+    timed.daily.d1 = { date: "2026-11-11", rows: { e1: { s: "Present", in: "08:30", out: "17:00", day: 1 } } };
+    const timedInfo = D.compute(timed, { kind: "leave", record: { id: "lv", empId: "e1", status: "Filed" }, now: NOW });
+    const timedScreen = D.renderScreen(Object.assign({ source: "live" }, timedInfo));
+    assert.match(timedScreen, /late count 1/);
+    assert.match(timedScreen, /1 times late/);
+    assert.match(timedScreen, /30 min/);
+    assert.doesNotMatch(timedScreen, /1 day · 30 min/);
+
+    const bare = baseStore();
+    bare.payruns = {
+      w: { from: "2026-11-05", to: "2026-11-11", lines: { e1: { ca: 100 } } }
+    };
+    const none = D.compute(bare, { kind: "leave", record: { id: "lv", empId: "e1", status: "Filed" }, now: NOW });
+    assert.equal(none.lates.source, "none");
+    const noneScreen = D.renderScreen(Object.assign({ source: "live" }, none));
+    assert.match(noneScreen, /No attendance or payroll late data yet/);
+    assert.match(noneScreen, /Attendance on file from 17 Feb 2026/);
+    assert.doesNotMatch(noneScreen, /0 pay runs/);
+    assert.doesNotMatch(noneScreen, /₱0\.00 late\/undertime/);
+    assert.doesNotMatch(noneScreen, /minutes not on the pay run/);
+    assert.doesNotMatch(noneScreen, /They have no attendance yet/);
+
+    const hired = baseStore();
+    hired.employees.e1.dateHired = "2026-09-01";
+    hired.payruns = { w: { from: "2026-11-05", to: "2026-11-11", lines: { e1: {} } } };
+    const newbie = D.compute(hired, { kind: "leave", record: { id: "lv", empId: "e1", status: "Filed" }, now: NOW });
+    assert.equal(newbie.lates.newHire, true);
+    const newbieScreen = D.renderScreen(Object.assign({ source: "live" }, newbie));
+    assert.match(newbieScreen, /No attendance or payroll late data yet/);
+    assert.match(newbieScreen, /They have no attendance yet/);
+  });
+
+  it("counts a leave with no dates, drops closed catch-up stubs, and does not invent an unknown balance", () => {
+    const store = baseStore();
+    store.leaves = {
+      sl: { id: "sl", empId: "e1", type: "SL", status: "Approved", from: "", to: "", days: 0 },
+      blank: { id: "blank", empId: "e1", type: "", status: "Filed", days: 0 },
+      dated: { id: "dated", empId: "e1", type: "VL", status: "Approved", from: "2026-03-02", to: "2026-03-02", days: 1 },
+      old: { id: "old", empId: "e1", type: "SL", status: "Approved", filedOn: "2025-06-01", days: 0 }
+    };
+    const info = D.compute(store, { kind: "leave", record: { id: "cur", empId: "e1", type: "EL", status: "Filed", from: "2026-11-20", to: "2026-11-20", days: 1 }, now: NOW });
+    assert.equal(info.leaves.count, 3);
+    assert.equal(info.leaves.days, 1);
+    assert.equal(info.leaves.unset, 2);
+    const sick = info.leaves.byType.find(function (t) { return t.type === "SL"; });
+    const unsetType = info.leaves.byType.find(function (t) { return t.name === "Type not set"; });
+    assert.equal(sick.approved.count, 1);
+    assert.equal(sick.approved.unset, 1);
+    assert.equal(sick.approved.days, 0);
+    assert.equal(unsetType.pending.count, 1);
+    assert.equal(unsetType.pending.unset, 1);
+    const screen = D.renderScreen(Object.assign({ source: "live" }, info));
+    assert.match(screen, /Sick Leave \(with pay\) — approved 1 · days not set/);
+    assert.match(screen, /Type not set — pending 1 · days not set/);
+    assert.match(screen, /2 with days not set/);
+    assert.doesNotMatch(screen, /2025/);
+
+    store.advances = {
+      open: { id: "open", empId: "e1", no: "CAF2026-060", status: "Approved", amount: 4000, deductPerPeriod: 500, planEvery: "Weekly" },
+      paid: { id: "ca_catchup_paid", empId: "e1", no: "CAF-OLD", status: "Fully deducted", amount: 9000 },
+      lower: { id: "ca_catchup_lower", empId: "e1", status: "paid", amount: 1000 },
+      settled: { id: "ca_catchup_settled", empId: "e1", status: "Settled", amount: 500 },
+      closed: { id: "caf-closed", empId: "e1", no: "CAF2026-061", status: "Closed", amount: 700 },
+      mystery: {
+        id: "ca_catchup_mystery",
+        empId: "e1",
+        status: "Approved",
+        amount: 2500,
+        notes: "The real amount is not known. It is not on the payroll files."
+      },
+      nodata: { id: "ca_catchup_nodata", empId: "e1", status: "Approved", amount: 1800, notes: "Brought forward." }
+    };
+    store.payruns = {
+      w: {
+        from: "2026-11-05",
+        to: "2026-11-11",
+        lines: { e1: { ca: 1000, caItems: [{ id: "open", amount: 1000 }] } }
+      }
+    };
+    const ca = D.compute(store, { kind: "leave", record: { id: "cur", empId: "e1", status: "Filed", from: "2026-11-20", to: "2026-11-20", days: 1 }, now: NOW });
+    const ids = ca.cashAdvances.rows.map(function (r) { return r.id; });
+    assert.ok(ids.indexOf("open") >= 0);
+    assert.ok(ids.indexOf("ca_catchup_paid") < 0);
+    assert.ok(ids.indexOf("ca_catchup_lower") < 0);
+    assert.ok(ids.indexOf("ca_catchup_settled") < 0);
+    assert.ok(ids.indexOf("caf-closed") < 0);
+    const mystery = ca.cashAdvances.rows.find(function (r) { return r.id === "ca_catchup_mystery"; });
+    const nodata = ca.cashAdvances.rows.find(function (r) { return r.id === "ca_catchup_nodata"; });
+    const open = ca.cashAdvances.rows.find(function (r) { return r.id === "open"; });
+    assert.equal(open.balance, 3000);
+    assert.equal(open.balanceKnown, true);
+    assert.equal(mystery.balanceKnown, false);
+    assert.equal(mystery.balance, null);
+    assert.equal(mystery.amount, null);
+    assert.equal(nodata.balanceKnown, false);
+    assert.equal(nodata.balance, null);
+    assert.equal(ca.cashAdvances.knownTotal, 3000);
+    assert.equal(ca.cashAdvances.confirmCount, 2);
+    assert.equal(ca.cashAdvances.total, null);
+    const shown = D.renderScreen(Object.assign({ source: "live" }, ca));
+    assert.match(shown, /balance to confirm/);
+    assert.match(shown, /₱3,000\.00 known \+ 2 to confirm/);
+    assert.doesNotMatch(shown, /₱2,500\.00 balance/);
+    assert.doesNotMatch(shown, /₱1,800\.00 balance/);
+    assert.doesNotMatch(shown, /CAF-OLD/);
+    assert.doesNotMatch(shown, /CAF2026-061/);
+    assert.equal(store.advances.mystery.amount, 2500);
+    assert.equal(store.advances.mystery.notes, "The real amount is not known. It is not on the payroll files.");
   });
 
   it("snapshots decision info on approve and approved forms keep that snapshot", async () => {
