@@ -1,4 +1,4 @@
-<!doctype html><html><head><script src="/claude-shim.js"></script><link rel="manifest" href="/manifest.json"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/favicon.svg"><link rel="stylesheet" href="/pwa.css"><script src="/pwa.js"></script><script src="/vrf-report.js"></script><script src="/fuel-audit.js"></script><script src="/stock-fifo.js"></script><script src="/voucher-no.js"></script><script src="/vrf-save-guard.js"></script><script src="/vrf-cancel.js"></script><script src="/vrf-liquidation.js"></script><script src="/photo-batch.js"></script><script src="/approvers.js"></script><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1"><title>Corcondev Motorpool</title>
+<!doctype html><html><head><script src="/claude-shim.js"></script><link rel="manifest" href="/manifest.json"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/favicon.svg"><link rel="stylesheet" href="/pwa.css"><script src="/pwa.js"></script><script src="/vrf-report.js"></script><script src="/fuel-audit.js"></script><script src="/stock-fifo.js"></script><script src="/voucher-no.js"></script><script src="/vrf-save-guard.js"></script><script src="/vrf-cancel.js"></script><script src="/vrf-liquidation.js"></script><script src="/requesters.js"></script><script src="/photo-batch.js"></script><script src="/approvers.js"></script><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1"><title>Corcondev Motorpool</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600&family=Archivo+Narrow:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
@@ -447,7 +447,7 @@ var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
    This label is inside the page function. The shim reads window.BUILD when it
    sends a save. Without that copy every save goes out with an empty build and
    the server answers "Reload the page". */
-var BUILD = "2026-11-20 a";
+var BUILD = "2026-11-24 a";
 try { window.BUILD = BUILD; } catch (e) {}
 var DAY = 86400000, MO = 30.44;
 
@@ -477,6 +477,7 @@ var S = {
   purchases:[], withdrawals:[], ledger:{}, breakdowns:[], mechanic:[], tasks:[], papers:[],
   cfg:{nextVrf:5793, pass:null, varianceTol:0.10, nextReserve:1}, sample:null, chat:[], askFiles:[], askPhase:"", asking:false, voiceOut:true, voiceLang:"en-PH", hearing:false, speaking:false, micBlocked:false, ttsReady:false,
   voiceName:"", voices:[], photoCounts:{}, reserves:[], rsvYears:[], issued:{numbers:{}}, lens:"job", selUnit:"", selCat:"", selWork:"", regWork:"", regUnit:"", regSrc:"", regStatus:"", logQ:"", logSource:"",
+  requesters:{names:[], aliases:{}},
   view:"yard", office:false, db:null, ready:false, sel:null, draft:null, stale:false,
   hist:[], showArchivedProjects:false, logProject:"", esigs:{}
 };
@@ -1321,6 +1322,192 @@ function signedInName(){
   }catch(e){}
   return "";
 }
+function requesterApi(){
+  return (typeof window!=="undefined" && window.Requesters) || null;
+}
+function rosterDoc(){
+  return (S&&S.requesters)||{names:[], aliases:{}};
+}
+function canon(raw){
+  var api=requesterApi();
+  if(api&&api.canon) return api.canon(raw, rosterDoc());
+  return String(raw==null?"":raw).replace(/\s+/g," ").trim();
+}
+function shownRequester(raw){
+  return canon(raw)||"";
+}
+function empNoValue(v){
+  var api=requesterApi();
+  if(api&&api.empNoValue) return api.empNoValue(v);
+  if(v==null) return null;
+  var s=String(v).trim();
+  return s?s:null;
+}
+function publishRoster(){
+  try{ window.__mpRequesters=S.requesters; }catch(e){}
+}
+function isRosterAdmin(){
+  try{
+    var a=(typeof window!=="undefined"&&window.__mpAuth)||{};
+    return String(a.role||"").toLowerCase()==="admin";
+  }catch(e){ return false; }
+}
+function defaultRequestedBy(){
+  var api=requesterApi();
+  if(!api||!api.matchSignedIn) return {requestedBy:"", requestedByEmpNo:null};
+  var person=api.matchSignedIn(signedInName(), rosterDoc());
+  if(!person) return {requestedBy:"", requestedByEmpNo:null};
+  return {requestedBy:person.name, requestedByEmpNo:person.empNo==null?null:person.empNo};
+}
+/* One stored requester. A name already on the draft that is not on the roster
+   stays that single name — the select cannot type a new one. */
+function commitRequester(value, previous){
+  var api=requesterApi();
+  var prevName=previous&&previous.requestedBy;
+  var prevEmp=empNoValue(previous&&previous.requestedByEmpNo);
+  if(!api||!api.storeOne){
+    var text=String(value==null?"":value);
+    if(/[;|\n]/.test(text) && text.split(/[;|\n]/).filter(function(s){ return String(s).trim(); }).length>1){
+      return {requestedBy:"", requestedByEmpNo:null, error:{code:"one_requester", message:"Pick exactly one requester."}};
+    }
+    var raw=text.replace(/\s+/g," ").trim();
+    return {requestedBy:raw, requestedByEmpNo:prevEmp};
+  }
+  try{
+    var stored=api.storeOne(value, rosterDoc(), prevName?{allow:[prevName]}:{});
+    if(stored.requestedByEmpNo==null && prevEmp && canon(prevName)===stored.requestedBy) stored.requestedByEmpNo=prevEmp;
+    return stored;
+  }catch(err){
+    if(err&&err.code==="one_requester") return {requestedBy:"", requestedByEmpNo:null, error:err};
+    if(err&&err.code==="not_on_roster"){
+      var one=String(value==null?"":value).replace(/\s+/g," ").trim();
+      if(one && !/[;|\n]/.test(one)) return {requestedBy:canon(one)||one, requestedByEmpNo:prevEmp};
+    }
+    return {requestedBy:"", requestedByEmpNo:null, error:err};
+  }
+}
+function fillRequesterSelect(sel, current, opts){
+  opts=opts||{};
+  var api=requesterApi();
+  var people=api&&api.choices?api.choices(rosterDoc(),{keep:opts.keep!=null?opts.keep:current}):[];
+  sel.innerHTML="";
+  sel.multiple=false;
+  sel.appendChild(new Option("— pick one person —",""));
+  people.forEach(function(p){
+    sel.appendChild(new Option(api.label(p), p.name));
+  });
+  var want=canon(current||"");
+  if(!want && opts.preferSignedIn) want=defaultRequestedBy().requestedBy;
+  var ok=false, i;
+  for(i=0;i<sel.options.length;i++) if(sel.options[i].value===want){ ok=true; break; }
+  sel.value=ok?want:"";
+  sel._reqOpts=opts;
+}
+function requesterSelect(current, opts){
+  var sel=el("select");
+  sel.multiple=false;
+  sel.setAttribute("aria-label","Requested by");
+  fillRequesterSelect(sel, current, opts||{});
+  return sel;
+}
+function attachAddName(field, sel){
+  if(!isRosterAdmin()||!field||!sel) return;
+  var add=el("button","btn sm","Add name…");
+  add.type="button";
+  add.style.marginTop="6px";
+  add.addEventListener("click",function(ev){
+    ev.preventDefault();
+    askAddRequester(function(stored){
+      var opts=Object.assign({}, sel._reqOpts||{}, {keep:stored.requestedBy});
+      fillRequesterSelect(sel, stored.requestedBy, opts);
+      sel.value=stored.requestedBy;
+      try{ sel.dispatchEvent(new Event("change")); }catch(e){}
+    });
+  });
+  field.appendChild(add);
+}
+function askAddRequester(after){
+  if(!isRosterAdmin()){ toast("Only an admin can add a name."); return; }
+  var ex=document.getElementById("addReqSheet"); if(ex) ex.remove();
+  var m=el("div","modal"); m.id="addReqSheet";
+  var sheet=el("div","sheet"); sheet.style.maxWidth="480px";
+  var b=el("div"); b.style.padding="var(--space-5) var(--space-6)";
+  b.appendChild(el("h3",null,"Add name"));
+  b.appendChild(el("div","hint","One person on the requester roster. Staff pick this name. They cannot type a different one."));
+  function fld(l,n){ var x=el("div","field"); x.style.marginTop="var(--space-3)"; x.appendChild(el("label",null,l)); x.appendChild(n); return x; }
+  var nameIn=el("input"); nameIn.placeholder="Surname, Given M.";
+  var empIn=el("input"); empIn.placeholder="optional";
+  var st=el("select");
+  ["Active","Separated","External"].forEach(function(s){ st.appendChild(new Option(s,s)); });
+  b.appendChild(fld("Name", nameIn));
+  b.appendChild(fld("Employee no.", empIn));
+  b.appendChild(fld("Status", st));
+  var msg=el("div","hint"); msg.style.marginTop="var(--space-2)";
+  b.appendChild(msg);
+  var acts=el("div"); acts.style.cssText="display:flex;gap:var(--space-2);justify-content:flex-end;margin-top:var(--space-4)";
+  var back=el("button","btn","Cancel");
+  back.addEventListener("click",function(){ m.remove(); });
+  var go=el("button","btn pri","Add name");
+  go.addEventListener("click",async function(){
+    var api=requesterApi();
+    if(!api){ msg.textContent="The roster did not load."; msg.style.color="var(--danger)"; return; }
+    var next;
+    try{ next=api.appendName(rosterDoc(),{name:nameIn.value, empNo:empIn.value, status:st.value}); }
+    catch(err){ msg.textContent=(err&&err.message)||"Could not add that name."; msg.style.color="var(--danger)"; return; }
+    go.disabled=true;
+    S.requesters=next;
+    publishRoster();
+    try{ await writeDoc(PATHS.requesters,{names:next.names, aliases:next.aliases||{}}); }
+    catch(err){ go.disabled=false; msg.textContent="Saved on this device only."; msg.style.color="var(--danger)"; }
+    var stored=commitRequester(canon(nameIn.value));
+    m.remove();
+    toast(stored.requestedBy+" added to the roster.");
+    if(after) after(stored);
+  });
+  acts.appendChild(back); acts.appendChild(go);
+  b.appendChild(acts);
+  sheet.appendChild(b); m.appendChild(sheet);
+  m.addEventListener("click",function(e){ if(e.target===m) m.remove(); });
+  document.body.appendChild(m);
+  try{ nameIn.focus(); }catch(e){}
+}
+function requesterRosterCard(){
+  if(!isRosterAdmin()) return null;
+  var api=requesterApi();
+  var all=(rosterDoc().names)||[];
+  var card=el("div","card");
+  var hd=el("div","hd");
+  hd.appendChild(el("h3",null,"Requesters"));
+  hd.appendChild(el("span","note", all.length+" on the roster"));
+  card.appendChild(hd);
+  var bd=el("div","bd");
+  bd.appendChild(el("div","hint","Settings for Requested by. The list is config/requesters. Separated people stay off new VRFs and still show on old ones. Staff get a single choice — no typed name."));
+  if(!all.length) bd.appendChild(el("div","hint","No names yet."));
+  else{
+    all.forEach(function(p){
+      var line=api&&api.label?api.label(p):p.name;
+      bd.appendChild(el("div",null, line+" · "+(p.status||"Active")));
+    });
+  }
+  var add=el("button","btn","Add name…");
+  add.type="button";
+  add.style.marginTop="var(--space-3)";
+  add.addEventListener("click",function(){ askAddRequester(function(){ render(); }); });
+  bd.appendChild(add);
+  card.appendChild(bd);
+  return card;
+}
+function requesterFilterNames(list){
+  var api=requesterApi();
+  if(api&&api.dedupeNames) return api.dedupeNames(list, rosterDoc());
+  var seen={}, out=[];
+  (list||[]).forEach(function(v){
+    v=canon(v);
+    if(v&&!seen[v]){ seen[v]=1; out.push(v); }
+  });
+  out.sort(function(a,b){ return String(a).localeCompare(String(b),"en",{sensitivity:"base"}); });
+  return out;
+}
 function vrfRequestedBy(entry){
   function clean(v){
     var s=String(v==null?"":v).trim();
@@ -1328,28 +1515,37 @@ function vrfRequestedBy(entry){
     return s;
   }
   var who=clean(entry&&entry.requestedBy);
-  if(who) return who;
   var rows=(entry&&entry.rows)||[];
   var i;
-  for(i=0;i<rows.length;i++){
-    who=clean(rows[i]&&rows[i].requestedBy);
-    if(who) return who;
+  if(!who){
+    for(i=0;i<rows.length;i++){
+      who=clean(rows[i]&&rows[i].requestedBy);
+      if(who) break;
+    }
   }
   var no=String((entry&&entry.vrf)||"");
   var reserveNo=String((entry&&entry.reserve)||"");
-  var list=(typeof S!=="undefined"&&S.reserves)||[];
-  for(i=0;i<list.length;i++){
-    var r=list[i]; if(!r) continue;
-    var hit=false;
-    if(reserveNo&&String(r.no)===reserveNo) hit=true;
-    if(no&&String(r.vrfNo||"")===no) hit=true;
-    if(no&&(r.vrfs||[]).some(function(x){ return String(x)===no; })) hit=true;
-    if(hit){
-      who=clean(r.requestedBy);
-      if(who) return who;
+  if(!who){
+    /* reserves/YYYY, including reserves/2026, still stores the raw spelling. */
+    var list=(typeof S!=="undefined"&&S.reserves)||[];
+    for(i=0;i<list.length;i++){
+      var r=list[i]; if(!r) continue;
+      var hit=false;
+      if(reserveNo&&String(r.no)===reserveNo) hit=true;
+      if(no&&String(r.vrfNo||"")===no) hit=true;
+      if(no&&(r.vrfs||[]).some(function(x){ return String(x)===no; })) hit=true;
+      if(hit){
+        who=clean(r.requestedBy);
+        if(who) break;
+      }
     }
   }
-  return signedInName();
+  if(!who){
+    var api=requesterApi();
+    if(api&&api.nameFromIssued&&typeof S!=="undefined") who=clean(api.nameFromIssued(S.issued, no, reserveNo));
+  }
+  if(!who) who=clean(signedInName());
+  return canon(who);
 }
 function vrfSearchHits(vrf,term){
   var v=String(vrf==null?"":vrf).toLowerCase();
@@ -1652,12 +1848,13 @@ function buildIndex(){
     /* Every movement is a VRF, and a VRF has a life: raised → liquidated → closed.
        Rows carried in from the old workbooks have no status at all; they are
        history, not a backlog, so they are marked legacy and never chased. */
-    var st=null, liq=null, reserve="", who="";
+    var st=null, liq=null, reserve="", who="", empNo=null;
     rows.forEach(function(r){
       if(!st&&r.vstatus) st=r.vstatus;
       if(!liq&&r.liq) liq=r.liq;
       if(!reserve&&r.reserve) reserve=String(r.reserve);
       if(!who&&r.requestedBy) who=String(r.requestedBy);
+      if(empNo==null && r && r.requestedByEmpNo!=null && String(r.requestedByEmpNo).trim()!=="") empNo=String(r.requestedByEmpNo).trim();
     });
     var canon=canonicalVrfStatus(st, reserve?reserveBy(reserve):null, liq, k);
     var rsvRow=reserve?reserveBy(reserve):null;
@@ -1697,7 +1894,8 @@ function buildIndex(){
       reserveStatus:rsvRow?String(rsvRow.status||""):"",
       approvedBy:(rsvRow&&rsvRow.approvedBy)||"",
       approvedAt:(rsvRow&&rsvRow.approvedAt)||"",
-      requestedBy:who};
+      requestedBy:shownRequester(who==="MOTORPOOL DEPT."?"":who),
+      requestedByEmpNo:empNo};
   });
   addHeldReserveVrfs();
   _vrfs.forEach(function(v){
@@ -1927,7 +2125,7 @@ function heldVrfShell(no, r){
     encoderChecklist:(r&&r.encoderChecklist)||null,
     odoOverride:(r&&r.odoOverride)||null,
     receipt:(r&&(r.receipt||r.receiptNo))||"",
-    src:"reserve-hold", requestedBy:(r&&r.requestedBy)||"", held:true,
+    src:"reserve-hold", requestedBy:canon((r&&r.requestedBy)||""), requestedByEmpNo:empNoValue(r&&r.requestedByEmpNo), held:true,
     source:canonVrfSource(r&&r.source), sourceNo:vrfSourceNoText(r&&r.sourceNo),
     approvedBy:(r&&r.approvedBy)||"", approvedAt:(r&&r.approvedAt)||"",
     approvedVia:(r&&r.approvedVia)||""};
@@ -1967,7 +2165,7 @@ function addHeldReserveVrfs(){
       return {date:r.date, month:monthKey(r.date), vrf:no, veh:r.veh,
         cat:l.cat, item:l.item, supplier:l.supplier, qty:qty, price:price,
         total:amt, work:l.work||r.work||"", project:r.project||"",
-        notes:r.draftPurpose||r.scope||"", requestedBy:r.requestedBy||"",
+        notes:r.draftPurpose||r.scope||"", requestedBy:canon(r.requestedBy||""), requestedByEmpNo:empNoValue(r.requestedByEmpNo),
         odo:meter, liters:l.liters, reserve:String(r.no), notBought:deadHold||!!l.notBought,
         unit:(function(){ var u=String(l.unit==null?"":l.unit).trim(); if(u) return u; return isFuel(l.cat)?"liters":""; })(),
         vstatus:heldVrfStatus(r,"Open"),
@@ -1979,7 +2177,7 @@ function addHeldReserveVrfs(){
         item:(r.scope||"").slice(0,80), supplier:r.supplier||"", qty:0, price:0,
         total:fallback,
         work:r.work||"", project:r.project||"", notes:r.scope||"",
-        requestedBy:r.requestedBy||"", odo:meter, reserve:String(r.no),
+        requestedBy:canon(r.requestedBy||""), requestedByEmpNo:empNoValue(r.requestedByEmpNo), odo:meter, reserve:String(r.no),
         notBought:deadHold,
         vstatus:heldVrfStatus(r,"Open"),
         src:"reserve-hold"}];
@@ -2014,7 +2212,7 @@ function addHeldReserveVrfs(){
       receipt:r.receipt||r.receiptNo||"",
       odo:meter, preparedSig:r.preparedSig||"", preparedSigName:r.preparedSigName||"",
       approvedBy:r.approvedBy||"", approvedAt:r.approvedAt||"", approvedVia:r.approvedVia||"",
-      src:"reserve-hold", requestedBy:r.requestedBy||"", held:true,
+      src:"reserve-hold", requestedBy:canon(r.requestedBy||""), requestedByEmpNo:empNoValue(r.requestedByEmpNo), held:true,
       source:canonVrfSource(r.source), sourceNo:vrfSourceNoText(r.sourceNo),
       paperNote:r.renumberNote||"", printedAs:r.printedAs||"", unnumbered:!!unnumbered});
     have[slot]=1;
@@ -2124,7 +2322,8 @@ function ledgerLineFromHoldRow(entry, row){
     odo:row.odo!=null?row.odo:(entry.odo!=null?entry.odo:null),
     reserve:String(entry.reserve||row.reserve||""),
     vstatus:"Open",
-    requestedBy:entry.requestedBy||row.requestedBy||"",
+    requestedBy:canon(entry.requestedBy||row.requestedBy||""),
+    requestedByEmpNo:empNoValue(entry.requestedByEmpNo!=null?entry.requestedByEmpNo:row.requestedByEmpNo),
     notes:row.notes||entry.notes||""
   };
   copyVrfSourceFields(line, {source:entry.source||row.source, sourceNo:entry.sourceNo||row.sourceNo});
@@ -2657,7 +2856,8 @@ async function prepareReservePost(r){
       liters:parseFloat(l.liters)||null,
       odo:reserveMeter(r),
       reserve:String(r.no), vstatus:"Open",
-      requestedBy:r.requestedBy||"",
+      requestedBy:canon(r.requestedBy||""),
+      requestedByEmpNo:empNoValue(r.requestedByEmpNo),
       override:(r.bypass||r.fuelOverride)?(r.fuelOverride||null):null,
       bypass:!!r.bypass,
       notes:note};
@@ -2689,7 +2889,7 @@ function openRowsFromHold(r){
   var holds=ledgerRowsMatching(no).filter(staleHoldLedgerRow);
   if(!holds.length) return null;
   var entry={vrf:no, date:r.date, veh:r.veh, reserve:String(r.no), project:r.project,
-    requestedBy:r.requestedBy, notes:r.draftPurpose||r.scope||"",
+    requestedBy:canon(r.requestedBy||""), requestedByEmpNo:empNoValue(r.requestedByEmpNo), notes:r.draftPurpose||r.scope||"",
     source:r.source, sourceNo:r.sourceNo, odo:reserveMeter(r)};
   var rows=holds.map(function(row){ return ledgerLineFromHoldRow(entry, row); });
   var mk=(rows[0]&&rows[0].month)||monthKey(r.date)||iso().slice(0,7);
@@ -3038,6 +3238,7 @@ var PATHS = {
   vehicles:"master/vehicles", parts:"master/parts", suppliers:"master/suppliers",
   projects:"master/projects", drivers:"master/drivers", worktypes:"master/worktypes",
   items:"master/items",
+  requesters:"config/requesters",
   purchases:"fuel/purchases", withdrawals:"fuel/withdrawals",
   breakdowns:"ops/breakdowns", mechanic:"ops/mechanic", tasks:"ops/tasks",
   photoIdx:"ops/photoindex", papers:"ops/papers", cfg:"config/app"
@@ -3180,6 +3381,9 @@ async function loadAll(){
   }
   var issuedDoc = await readDoc("config/issued");
   S.issued=(issuedDoc&&issuedDoc.numbers)?issuedDoc:{numbers:{}};
+  var reqDoc = await readDoc(PATHS.requesters);
+  S.requesters=(requesterApi()&&requesterApi().normalize)?requesterApi().normalize(reqDoc):{names:[], aliases:{}};
+  publishRoster();
   var cfg = await readDoc(PATHS.cfg);
   if(cfg) S.cfg = {nextVrf: cfg.nextVrf||5793, pass: cfg.pass||null, fuel: cfg.fuel||null,
     varianceTol: (typeof cfg.varianceTol==="number")?cfg.varianceTol:VARIANCE_TOL_DEFAULT,
@@ -4261,7 +4465,7 @@ function sealSnapshot(reserve, rows, reason){
   if(!no) return null;
   var snapReserve={no:reserve.no, vrfNo:no, vrfs:(reserve.vrfs||[]).slice(), date:reserve.date,
     status:reserve.status, veh:reserve.veh, project:reserve.project, work:reserve.work,
-    requestedBy:reserve.requestedBy, approvedBy:reserve.approvedBy, approvedAt:reserve.approvedAt,
+    requestedBy:canon(reserve.requestedBy)||reserve.requestedBy||"", requestedByEmpNo:empNoValue(reserve.requestedByEmpNo), approvedBy:reserve.approvedBy, approvedAt:reserve.approvedAt,
     printedAt:reserve.printedAt||"", draftPurpose:reserve.draftPurpose||reserve.scope||"",
     draftLines:reserve.draftLines||[], draftOdo:reserve.draftOdo||"",
     budget:reserve.budget, approvedBudget:reserve.approvedBudget,
@@ -9415,7 +9619,7 @@ function reminders(){
     }
     out.push({sev:(d!=null&&d>2)?"crit":"warn",kind:"VRF waiting for approval",unit:r.veh,
       what:"VRF "+(r.vrfNo||"—")+" — "+(r.work?workName(r.work):"job")+" for "+peso(r.budget)+
-        ", raised by "+(r.requestedBy||"—"),
+        ", raised by "+(shownRequester(r.requestedBy)||"—"),
       since:r.date,ago:d,go:"rsv"});
   });
   flaggedReserves().forEach(function(r){
@@ -10031,7 +10235,7 @@ function vrfReportView(){
     {h:"VRF no", get:function(r){ return r.vrf; }},
     {h:"Date", get:function(r){ return r.date; }},
     {h:"Unit", get:function(r){ return r.unit; }},
-    {h:"Requested by", get:function(r){ return r.requestedBy; }},
+    {h:"Requested by", get:function(r){ return shownRequester(r.requestedBy); }},
     {h:"Job type", get:function(r){ return rptJob(r.jobType); }},
     {h:"Description", get:function(r){ return r.description; }},
     {h:"Approved amount", num:true, get:function(r){ return rptApproved(r); }},
@@ -10048,7 +10252,7 @@ function vrfReportView(){
     {h:"Date", get:function(r){ return r.date; }},
     {h:"Unit", get:function(r){ return r.unit; }},
     {h:"Days open", num:true, get:function(r){ return String(r.ageDays); }},
-    {h:"Requested by", get:function(r){ return r.requestedBy; }},
+    {h:"Requested by", get:function(r){ return shownRequester(r.requestedBy); }},
     {h:"Approved", num:true, get:function(r){ return rptApproved(r); }}
   ], ex.openOlderThan7Days||[], "None."));
   exBody.appendChild(el("h4",null,"Uncancelled repeats"));
@@ -10095,7 +10299,7 @@ function vrfReportView(){
     {h:"Date", get:function(r){ return r.date; }},
     {h:"Unit", get:function(r){ return r.unit; }},
     {h:"Duplicate of", get:function(r){ return r.duplicateOf; }},
-    {h:"Requested by", get:function(r){ return r.requestedBy; }}
+    {h:"Requested by", get:function(r){ return shownRequester(r.requestedBy); }}
   ], ex.duplicatesCancelled||[], "None."));
   exBody.appendChild(el("h4",null,"Odometer"));
   exBody.appendChild(rptTable([
@@ -10144,7 +10348,13 @@ function liqEntryOf(entry){
     if(rv.actual!=null) x.actual=rv.actual;
     x.kind=rv.kind||x.kind; x.liquidatedAt=rv.liquidatedAt||"";
     if(!x.approvedAt) x.approvedAt=rv.approvedAt||"";
-    if(!x.requestedBy) x.requestedBy=rv.requestedBy||"";
+    if(!x.requestedBy) x.requestedBy=(rv&&rv.requestedBy)||"";
+    if(!x.requestedBy){
+      var reqApi=requesterApi();
+      if(reqApi&&reqApi.nameFromIssued) x.requestedBy=reqApi.nameFromIssued(S.issued, entry&&entry.vrf, (rv&&rv.no)||(entry&&entry.reserve)||"");
+    }
+    x.requestedBy=canon(x.requestedBy||"");
+    if(x.requestedByEmpNo==null) x.requestedByEmpNo=empNoValue(rv&&rv.requestedByEmpNo);
     if(rv.fuelPhotos) x.fuelPhotos=rv.fuelPhotos;
   }
   /* "Liquidated – no receipt" flag: LIQ-<vrf> uploads count as receipts; the
@@ -10363,7 +10573,7 @@ function unliqView(){
     var today=VL.manilaToday();
     var rows=VL.unliquidatedRows(vrfIndex().map(liqEntryOf), S.liqRecords||{},
       (function(){ var o={}; vrfIndex().forEach(function(e){ o[String(e.vrf)]=liqProofCount(e.vrf); }); return o; })(),
-      {today:today});
+      {today:today, canon:function(raw){ return canon(raw); }});
     function opts(list){ var seen={}, out=[]; list.forEach(function(v){ if(v&&!seen[v]){ seen[v]=1; out.push(v);} }); return out.sort(); }
     var f=el("div","f3"); f.style.marginBottom="var(--space-4)";
     function sel(label,key,values,labels){
@@ -10374,7 +10584,7 @@ function unliqView(){
       var x=el("div","field"); x.appendChild(el("label",null,label)); x.appendChild(s); f.appendChild(x);
     }
     sel("Age since approval","age",VL.AGE_BUCKETS.map(function(b){return b.id;}),VL.AGE_BUCKETS.map(function(b){return b.label;}));
-    sel("Custodian / requester","requester",opts(rows.map(function(r){return r.requester;})));
+    sel("Custodian / requester","requester",requesterFilterNames(rows.map(function(r){return r.requester;})));
     sel("Unit","unit",opts(rows.map(function(r){return r.unit;})));
     sel("Month approved","month",opts(rows.map(function(r){return r.month;})).reverse());
     sel("Status","status",["Unliquidated","Partially liquidated"]);
@@ -11699,7 +11909,7 @@ function openReserve(no,asApprover){
   lf.appendChild(el("h3",null, r.vrfNo ? ("VRF "+r.vrfNo) : ("RSV-"+r.no)));
   if(r.vrfNo) lf.appendChild(el("div","hint","Reserve RSV-"+r.no+" — this number is held for the form and used when it is posted."));
   lf.appendChild(el("div","hint",r.date+"  ·  "+r.veh+(v?" · "+v.desc:"")+
-    (r.project?"  ·  "+r.project:"")+"  ·  raised by "+(r.requestedBy||"—")));
+    (r.project?"  ·  "+r.project:"")+"  ·  raised by "+(shownRequester(r.requestedBy)||"—")));
   var reserveSource=vrfSourceLabel(r);
   if(reserveSource){
     var reserveSourceEl=el("div",null,reserveSource);
@@ -11944,7 +12154,7 @@ function openReserve(no,asApprover){
 
   /* trail */
   var tl=el("div"); tl.style.margin="var(--space-4) 0";
-  var steps=[["Requested",r.date+" by "+(r.requestedBy||"—")]];
+  var steps=[["Requested",r.date+" by "+(shownRequester(r.requestedBy)||"—")]];
   if(r.approvedAt) steps.push([r.status==="Rejected"?"Rejected":"Approved",
     r.approvedAt+" by "+(r.approvedBy||"—")+(r.decisionNote?" — "+r.decisionNote:"")]);
   if((r.vrfs||[]).length) steps.push(["VRF attached",(r.vrfs||[]).join(", ")]);
@@ -12483,6 +12693,8 @@ function approveView(){
   drow.appendChild(asig);
   tb2.appendChild(drow);
   tol.appendChild(tb2); g.appendChild(tol);
+  var rosterCard=requesterRosterCard();
+  if(rosterCard) g.appendChild(rosterCard);
 
   function atable(list,flagged){
     return table([
@@ -12505,7 +12717,7 @@ function approveView(){
         d.appendChild(t);
         d.appendChild(el("div","hint",(r.scope||"").slice(0,90)));
         return d; }},
-      {h:"Requested by",get:function(r){return r.requestedBy||"—";}},
+      {h:"Requested by",get:function(r){return shownRequester(r.requestedBy)||"—";}},
       {h:flagged?"Approved":"Asked for",num:true,get:function(r){
         return peso(r.approvedBudget!=null?r.approvedBudget:r.budget); }},
       {h:flagged?"Actual":"Needed by",num:!!flagged,get:function(r){
@@ -15103,9 +15315,11 @@ function askCancelVrf(entry, after, opts){
   });
   var row=el("div","f3"); row.style.marginTop="var(--space-4)";
   function fld(l,n){ var x=el("div","field"); x.appendChild(el("label",null,l)); x.appendChild(n); return x; }
-  var who=el("input"); who.placeholder="your name"; who.value=signedInName();
+  var who=requesterSelect(signedInName(),{preferSignedIn:true,keep:signedInName()});
   var why=el("input"); why.placeholder="required — why it should be cancelled";
-  row.appendChild(fld("Requested by",who));
+  var whoField=fld("Requested by",who);
+  attachAddName(whoField, who);
+  row.appendChild(whoField);
   row.appendChild(fld("Reason (required)",why));
   b.appendChild(row);
   var att=el("input"); att.type="file"; att.multiple=true; att.accept=MEDIA_ACCEPT;
@@ -15133,11 +15347,13 @@ function askCancelVrf(entry, after, opts){
     msg.textContent=err;
     msg.style.color=err?"var(--danger)":"";
   }
-  who.addEventListener("input",sync); why.addEventListener("input",sync);
+  who.addEventListener("change",sync); why.addEventListener("input",sync);
   go.addEventListener("click",async function(){
     sync(); if(go.disabled) return;
+    var pickedBy=commitRequester(who.value);
+    if(!pickedBy.requestedBy){ msg.textContent="Pick who requested this."; msg.style.color="var(--danger)"; return; }
     go.disabled=true; go.textContent="Sending request…";
-    try{ await requestVrfCancel(entry, picked(), who.value.trim(), why.value.trim(),
+    try{ await requestVrfCancel(entry, picked(), pickedBy.requestedBy, why.value.trim(),
       {files:Array.prototype.slice.call(att.files||[]), warnings:cancelRiskWarnings(entry, rsv, picked())}); }
     catch(err){
       go.disabled=false; go.textContent="Request cancellation";
@@ -16701,6 +16917,7 @@ function vrfHeaderSnapshot(entry){
     date:entry.date||"",
     odo:odo==null?"":String(odo),
     requestedBy:vrfRequestedBy(entry)||"",
+    requestedByEmpNo:empNoValue(entry&&entry.requestedByEmpNo!=null?entry.requestedByEmpNo:(rsv&&rsv.requestedByEmpNo)),
     purpose:entry.notes||(rsv&&(rsv.draftPurpose||rsv.scope))||"",
     work:work||"",
     source:src.source,
@@ -16775,7 +16992,12 @@ async function saveVrfHeader(entry, patch, by){
       var mk=monthKey(patch.date)||copy.month||monthKey(entry.date)||iso().slice(0,7);
       copy.month=mk;
       copy.odo=parseOdo(patch.odo);
-      copy.requestedBy=patch.requestedBy;
+      copy.requestedBy=canon(patch.requestedBy)||patch.requestedBy||"";
+      if(patch&&Object.prototype.hasOwnProperty.call(patch,"requestedByEmpNo")){
+        var lineEmp=empNoValue(patch.requestedByEmpNo);
+        if(lineEmp) copy.requestedByEmpNo=lineEmp;
+        else delete copy.requestedByEmpNo;
+      }
       copy.notes=patch.purpose;
       if(patch.work) copy.work=patch.work;
       applyVrfSourceFields(copy, patch.source, patch.sourceNo);
@@ -16796,7 +17018,12 @@ async function saveVrfHeader(entry, patch, by){
     if(patch.date) rsv.date=patch.date;
     rsv.draftOdo=patch.odo==null?"":String(patch.odo);
     rsv.odoAtRequest=parseOdo(patch.odo);
-    rsv.requestedBy=patch.requestedBy;
+    rsv.requestedBy=canon(patch.requestedBy)||patch.requestedBy||"";
+    if(patch&&Object.prototype.hasOwnProperty.call(patch,"requestedByEmpNo")){
+      var rsvEmp=empNoValue(patch.requestedByEmpNo);
+      if(rsvEmp) rsv.requestedByEmpNo=rsvEmp;
+      else delete rsv.requestedByEmpNo;
+    }
     rsv.draftPurpose=patch.purpose;
     if(patch.work) rsv.work=patch.work;
     applyVrfSourceFields(rsv, patch.source, patch.sourceNo);
@@ -16831,10 +17058,12 @@ function openVrfEdit(entry, after){
   b.appendChild(grid);
   var grid2=el("div","f3"); grid2.style.marginTop="var(--space-3)";
   var oIn=el("input"); oIn.className="mono"; oIn.inputMode="numeric"; oIn.value=snap.odo||"";
-  var who=el("input"); who.value=snap.requestedBy||"";
+  var who=requesterSelect(snap.requestedBy,{keep:snap.requestedBy});
   var job=workSelect(snap.work, "— job type —");
   grid2.appendChild(fld("Odometer", oIn));
-  grid2.appendChild(fld("Requested by", who));
+  var whoField=fld("Requested by", who);
+  attachAddName(whoField, who);
+  grid2.appendChild(whoField);
   grid2.appendChild(fld("Job type", job));
   b.appendChild(grid2);
   var pur=el("div","field"); pur.style.marginTop="var(--space-3)";
@@ -16873,8 +17102,13 @@ function openVrfEdit(entry, after){
     if(!byIn.value.trim()){ msg.textContent="Put your name on the correction."; msg.style.color="var(--danger)"; return; }
     if(!vehCode){ msg.textContent="Pick the vehicle."; msg.style.color="var(--danger)"; return; }
     go.disabled=true; go.textContent="Saving…";
+    var pickedBy=commitRequester(who.value,{requestedBy:snap.requestedBy,requestedByEmpNo:snap.requestedByEmpNo});
+    if(!pickedBy.requestedBy && String(snap.requestedBy||"").trim()){
+      go.disabled=false; go.textContent="Save correction";
+      msg.textContent="Pick who requested this VRF."; msg.style.color="var(--danger)"; return;
+    }
     var patch={veh:vehCode, project:pSel.getCode?pSel.getCode():snap.project, date:dIn.value||snap.date,
-      odo:oIn.value, requestedBy:who.value.trim(), purpose:pIn.value, work:job.value||snap.work,
+      odo:oIn.value, requestedBy:pickedBy.requestedBy, requestedByEmpNo:pickedBy.requestedByEmpNo, purpose:pIn.value, work:job.value||snap.work,
       source:srcSel.value, sourceNo:srcNoIn.value};
     try{ await saveVrfHeader(entry, patch, byIn.value.trim()); }
     catch(err){
@@ -17978,10 +18212,11 @@ function openVrf(entry,tab){
 /* ---- new VRF ---- */
 function blankLine(){ return {cat:"",item:"",supplier:"",qty:"",unit:"pc",price:"",liters:"",work:"",remarks:""}; }
 function blankVrfDraft(){
+  var def=defaultRequestedBy();
   return {date:iso(),veh:"",project:"",projectOverridden:false,vehicleSiteDefault:"",
     purpose:"",odo:"",work:"",driver:"",gauge:"",receipt:"",odoOverrideReason:"",
     source:"",sourceNo:"",
-    requestedBy:signedInName(),lines:[blankLine(),blankLine(),blankLine()],
+    requestedBy:def.requestedBy,requestedByEmpNo:def.requestedByEmpNo,lines:[blankLine(),blankLine(),blankLine()],
     photos:[],gateOverride:null,reserve:"",jo:"",vrfNo:"",submissionId:newSubmissionId()};
 }
 /* A work-type picker, grouped by family so the list stays readable at 39 entries. */
@@ -18010,7 +18245,11 @@ function vrfView(){
   w.appendChild(headRow);
   if(!S.draft) S.draft=blankVrfDraft();
   if(!S.draft.photos) S.draft.photos=[];
-  if(!(S.draft.requestedBy||"").trim()) S.draft.requestedBy=signedInName();
+  if(!(S.draft.requestedBy||"").trim()){
+    var defReq=defaultRequestedBy();
+    S.draft.requestedBy=defReq.requestedBy;
+    S.draft.requestedByEmpNo=defReq.requestedByEmpNo;
+  }
   var d=S.draft;
   var g=el("div","grid"); g.style.gap="var(--space-4)";
   var path=el("div","banner info");
@@ -18179,10 +18418,19 @@ function vrfView(){
     oHint.textContent = "Last reading "+nnum(prev)+
       (isFinite(now)&&now>prev ? " · +"+nnum(now-prev)+" km since" : "");
   }
-  var rIn=el("input"); rIn.value=d.requestedBy; rIn.placeholder="your name";
-  rIn.addEventListener("input",function(){
-    d.requestedBy=rIn.value; rIn.style.borderColor=""; });
-  hb2.appendChild(fld("Requested by",rIn));
+  var rIn=requesterSelect(d.requestedBy,{preferSignedIn:true,keep:d.requestedBy});
+  function syncRequester(){
+    var picked=commitRequester(rIn.value,{requestedBy:d.requestedBy,requestedByEmpNo:d.requestedByEmpNo});
+    d.requestedBy=picked.requestedBy;
+    d.requestedByEmpNo=picked.requestedByEmpNo;
+    if(picked.requestedBy) rIn.style.borderColor="";
+  }
+  rIn.addEventListener("change",syncRequester);
+  if(rIn.value) syncRequester();
+  var rField=fld("Requested by",rIn);
+  attachAddName(rField, rIn);
+  rField.appendChild(el("div","hint", isRosterAdmin()?"One person. Add name… puts them on the roster.":"One person from the roster."));
+  hb2.appendChild(rField);
   var drvIn=el("input"); drvIn.value=d.driver||""; drvIn.placeholder="driver on this fuel VRF";
   drvIn.setAttribute("list","drv-list");
   var drvList=document.createElement("datalist"); drvList.id="drv-list";
@@ -18629,9 +18877,12 @@ function vrfView(){
   var send=el("button","btn pri","Send for approval");
   send.addEventListener("click",function(){
     d.odo=oIn.value;
-    var who=(d.requestedBy||"").trim();
+    var pickedTop=commitRequester(d.requestedBy,d);
+    var who=pickedTop.requestedBy;
+    d.requestedBy=who;
+    d.requestedByEmpNo=pickedTop.requestedByEmpNo;
     if(!who||who==="MOTORPOOL DEPT."){
-      toast("Put your name in “Requested by” at the top — the request has to carry one.");
+      toast("Pick who requested this VRF.");
       rIn.style.borderColor="var(--danger)";
       rIn.focus();
       try{ rIn.scrollIntoView({block:"center",behavior:"smooth"}); }catch(e){ rIn.scrollIntoView(); }
@@ -18796,9 +19047,16 @@ async function sendForApproval(d,btn,opts){
   /* No window.prompt here: this page runs in a sandboxed frame that blocks
      modals outright, and a blocked prompt returns null — which silently killed
      every request. The name comes from the form field instead. */
-  var who=(d.requestedBy||"").trim();
+  var pickedReq=commitRequester(d.requestedBy,d);
+  if(pickedReq.error&&pickedReq.error.code==="one_requester"){
+    toast("Pick exactly one requester.");
+    return false;
+  }
+  var who=pickedReq.requestedBy;
+  d.requestedBy=who;
+  d.requestedByEmpNo=pickedReq.requestedByEmpNo;
   if(!who||who==="MOTORPOOL DEPT."){
-    toast("Put your name in “Requested by” at the top — the request has to carry one.");
+    toast("Pick who requested this VRF.");
     return false;
   }
   var fuelRows=rows.filter(function(l){ return l&&isFuel(l.cat); });
@@ -18862,7 +19120,7 @@ async function sendForApproval(d,btn,opts){
       litres:fuelish?litres:null,
       project:d.project,budget:total,needBy:"",
       scope:(d.purpose?d.purpose+" — ":"")+summary,
-      requestedBy:who,status:"Requested",
+      requestedBy:who,requestedByEmpNo:pickedReq.requestedByEmpNo,status:"Requested",
       approvedBudget:null,approvedBy:"",approvedAt:"",decisionNote:"",
       vrfs:[],jo:"",actual:null,liquidatedAt:"",
       draftLines:rows.map(function(l){ return {cat:l.cat,item:l.item,supplier:l.supplier,
@@ -18973,7 +19231,7 @@ function previewVrf(d){
   var meta=el("div"); meta.style.cssText="display:grid;grid-template-columns:1fr 1fr;gap:6px 20px;margin:18px 0;font-size:13px";
   [["Date",d.date],["Type of job",workName(d.work)],["Project",d.project||"—"],
    ["Vehicle",d.veh+(v?" · "+v.desc:"")],["Plate",v?(v.plate||"—"):"—"],
-   ["Odometer",d.odo?nnum(parseFloat(String(d.odo).replace(/,/g,""))):"—"],["Requested by",d.requestedBy||"—"]
+   ["Odometer",d.odo?nnum(parseFloat(String(d.odo).replace(/,/g,""))):"—"],["Requested by",shownRequester(d.requestedBy)||"—"]
   ].forEach(function(p){
     var r=el("div"); r.innerHTML='<span style="color:var(--ink-3)">'+esc(p[0])+'</span> &nbsp;<b>'+esc(p[1])+'</b>';
     meta.appendChild(r);

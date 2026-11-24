@@ -121,6 +121,15 @@
     return out;
   }
 
+  function exportRequester(raw) {
+    try {
+      var root = typeof window !== "undefined" ? window : null;
+      if (root && root.Requesters && typeof root.Requesters.canon === "function") {
+        return root.Requesters.canon(raw, root.__mpRequesters || { names: [], aliases: {} });
+      }
+    } catch (e) {}
+    return raw == null ? "" : raw;
+  }
   function csvCell(v) {
     var s = v == null ? "" : String(v);
     return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
@@ -132,7 +141,7 @@
     var lines = [head.join(",")];
     (entries || []).forEach(function (q) {
       lines.push([q.vrf, q.reserveNo, describeLines(q), q.unit || (q.lineUnits || []).join(" / "),
-        money(q.amount).toFixed(2), q.by, q.at, q.reason,
+        money(q.amount).toFixed(2), exportRequester(q.by), q.at, q.reason,
         q.status === "Requested" ? "Pending" : q.status, q.decidedBy || "", q.decidedAt || "", q.decisionNote || "",
         q.prevStatus || "", (q.warnings || []).map(function (w) { return w && (w.msg || w); }).join(" | "),
         (q.attachments || []).map(function (a) { return a && (a.id || a); }).join(" ")].map(csvCell).join(","));

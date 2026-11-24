@@ -139,6 +139,22 @@ function liquidationOf(entry, record, proofCount) {
   });
 }
 
+function rawRequester(e) {
+  return String(e.requestedBy || (e.rows && e.rows[0] && e.rows[0].requestedBy) || "").trim();
+}
+/** opts.canon maps old spellings (reserves, issued snapshots) onto one name. */
+function canonicalRequester(e, opts) {
+  var raw = rawRequester(e);
+  var fn = opts && opts.canon;
+  if (typeof fn !== "function") return raw;
+  try {
+    var name = fn(raw);
+    return String(name == null ? "" : name).trim();
+  } catch (err) {
+    return raw;
+  }
+}
+
 function approvalDay(entry) {
   return dayOnly(entry && (entry.approvedAt || entry.date)) || "";
 }
@@ -162,7 +178,7 @@ function unliquidatedRows(entries, records, proofCounts, opts) {
     out.push({
       vrf: no, entry: e, liq: L, status: L.status,
       approvedOn: ap, month: month, age: age,
-      requester: String(e.requestedBy || (e.rows && e.rows[0] && e.rows[0].requestedBy) || "").trim(),
+      requester: canonicalRequester(e, opts),
       unit: String(e.veh || (e.units && e.units[0]) || "").trim(),
       due: due,
       overdue: !!(month && month < curMonth),

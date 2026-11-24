@@ -1752,6 +1752,16 @@
     return true;
   }
 
+  var requesterCanon = function (raw) {
+    return String(raw == null ? "" : raw).replace(/\s+/g, " ").trim();
+  };
+  try {
+    var RequestersLib = require("../../public/requesters");
+    requesterCanon = function (raw) {
+      return RequestersLib.canon(raw, { names: [], aliases: {} });
+    };
+  } catch (eCanon) {}
+
   function vrfRequestedBy(entry, signedIn, reserves) {
     function clean(v) {
       var s = String(v == null ? "" : v).trim();
@@ -1759,12 +1769,12 @@
       return s;
     }
     var who = clean(entry && entry.requestedBy);
-    if (who) return who;
+    if (who) return requesterCanon(who);
     var rows = (entry && entry.rows) || [];
     var i;
     for (i = 0; i < rows.length; i++) {
       who = clean(rows[i] && rows[i].requestedBy);
-      if (who) return who;
+      if (who) return requesterCanon(who);
     }
     var no = String((entry && entry.vrf) || "");
     var reserveNo = String((entry && entry.reserve) || "");
@@ -1785,10 +1795,10 @@
       }
       if (hit) {
         who = clean(r.requestedBy);
-        if (who) return who;
+        if (who) return requesterCanon(who);
       }
     }
-    return clean(signedIn);
+    return requesterCanon(clean(signedIn));
   }
 
   function blankVrfDraft(now, signedIn) {
