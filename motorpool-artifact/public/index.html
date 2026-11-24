@@ -447,7 +447,7 @@ var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
    This label is inside the page function. The shim reads window.BUILD when it
    sends a save. Without that copy every save goes out with an empty build and
    the server answers "Reload the page". */
-var BUILD = "2026-11-24 a";
+var BUILD = "2026-11-24 b";
 try { window.BUILD = BUILD; } catch (e) {}
 var DAY = 86400000, MO = 30.44;
 
@@ -9091,7 +9091,16 @@ function vrfChip(v){
     return el("span","chip mute", of?("Duplicate of "+of):"Duplicate");
   }
   if(v.status==="Liquidated \u2013 variance pending approval") return el("span","chip warn",v.status);
-  if(v.status==="Closed"&&vrfNoReceipt(v)) return el("span","chip crit",VL.NO_RECEIPT_LABEL);
+  if(v.status==="Closed"){
+    var liqView=null;
+    try{ if(typeof liqStatusOf==="function") liqView=liqStatusOf(v); }catch(eLiq){ liqView=null; }
+    if(liqView&&liqView.noReceipt) return el("span","chip crit",VL.NO_RECEIPT_LABEL);
+    if(liqView&&liqView.underApproved&&liqView.label){
+      var uc=el("span","chip ok",liqView.label);
+      uc.title=liqView.title||liqView.label;
+      return uc;
+    }
+  }
   var x=m[v.status]||["mute",v.status];
   return el("span","chip "+x[0],x[1]);
 }
@@ -10372,7 +10381,10 @@ function liqStatusOf(entry){
 function liqChip(L){
   if(L&&L.noReceipt) return el("span","chip crit",VL.NO_RECEIPT_LABEL);
   var cls={"Liquidated":"ok","Partially liquidated":"warn","Unliquidated":"crit","Excluded":"mute"}[L.status]||"mute";
-  return el("span","chip "+cls,L.status==="Excluded"?"Not counted":(L.status+(L.legacy?" (paper)":"")));
+  var text=L.status==="Excluded"?"Not counted":((L.underApproved&&L.label?L.label:L.status)+(L.legacy?" (paper)":""));
+  var node=el("span","chip "+cls,text);
+  if(L&&L.underApproved&&L.label) node.title=L.title||L.label;
+  return node;
 }
 async function saveLiqRecord(no, input){
   var prev=liqRecordFor(no)||{};
@@ -17510,11 +17522,16 @@ function openVrf(entry,tab){
       appendSpendVarianceApproval(body, entry);
     }else if(entry.status==="Closed"||entry.status==="Not bought"||entry.status==="Cancelled"){
       var cl=el("div","banner info");
+      var closedLiq=null;
+      if(entry.status==="Closed"){
+        try{ closedLiq=liqStatusOf(entry); }catch(eClosed){ closedLiq=null; }
+      }
       var endedLabel=entry.status==="Not bought"
         ?"Not bought — the amount is zero"
         :(entry.status==="Cancelled"
           ?"Cancelled — the purchase did not go through, so the amount is zero"
-          :"Liquidated");
+          :(closedLiq&&closedLiq.underApproved&&closedLiq.label?closedLiq.label:"Liquidated"));
+      if(closedLiq&&closedLiq.underApproved&&closedLiq.label) cl.title=closedLiq.title||closedLiq.label;
       var closedVoucher=voucherNoOfEntry(entry);
       cl.innerHTML="<b>"+esc(endedLabel)+" on "+esc(entry.liq&&entry.liq.at||"—")+
         " by "+esc(entry.liq&&entry.liq.by||"—")+".</b>"+
