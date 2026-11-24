@@ -4,6 +4,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs");
 const path = require("path");
+const vm = require("node:vm");
 const L = require("../public/vrf-liquidation");
 const { financeLiquidationForVrf } = require("../netlify/lib/finance-link");
 
@@ -158,6 +159,140 @@ describe("Finance link", () => {
   });
 });
 
+describe("approved under-variance", () => {
+  const { mayPrint } = require("../public/fuel-audit");
+  const { variancePrintBlocked, VARIANCE_PRINT_MAX } = require("../public/liquidation-print");
+  const approvedBy = "Jeffrey James M. Corro";
+  function row(liq) {
+    return { total: 3000, work: "PMS", liq: liq };
+  }
+  function liq(extra) {
+    return Object.assign({
+      at: "2026-10-20T08:00:00",
+      by: "Casey Santos",
+      outcome: "bought",
+      variancePending: false,
+      varianceApprovedBy: approvedBy,
+      varianceApprovedAt: "2026-10-21T09:00:00",
+    }, extra || {});
+  }
+  function entry(rows, extra) {
+    return Object.assign({
+      vrf: "9001",
+      status: "Closed",
+      total: 3000,
+      approvedBudget: 5000,
+      approvedAt: "2026-10-05",
+      requestedBy: "Casey Santos",
+      veh: "DT-06",
+      rows: rows,
+    }, extra || {});
+  }
+  const record = { amount: 3000, date: "2026-10-20", by: "Casey Santos" };
+
+  it("is Liquidated when the under-variance is approved and a receipt is on file", () => {
+    const s = L.liquidationOf(entry([row(liq())]), record, 1);
+    assert.equal(s.status, "Liquidated");
+    assert.equal(s.approved, 5000);
+    assert.equal(s.liquidated, 3000);
+    assert.equal(s.outstanding, 2000);
+    assert.equal(s.needs, "");
+    assert.equal(s.underApproved, true);
+    assert.equal(s.label, "Liquidated (₱3,000.00, under approved by ₱2,000.00, approved by Jeffrey James M. Corro)");
+    assert.equal(s.title, s.label);
+    const alias = L.liquidationOf(entry([row(liq({ varianceApprovedBy: "Jeffrey" }))]), record, 1);
+    assert.equal(alias.status, "Liquidated");
+    assert.match(alias.label, /approved by Jeffrey James M\. Corro\)/);
+    const carmel = L.liquidationOf(entry([row(liq({ varianceApprovedBy: "Carmel" }))]), record, 1);
+    assert.equal(carmel.status, "Liquidated");
+    assert.match(carmel.label, /approved by Carmel\)/);
+    const stamped = liq({
+      proof: { v: 1, actual: 3000, approved: 5000, date: "2026-10-20", by: "Casey Santos" },
+    });
+    assert.equal(L.liquidationOf(entry([row(stamped)]), null, 0).status, "Liquidated");
+    const flagged = entry([row(liq())], { fuelPhotos: { receipt: true } });
+    assert.equal(L.liquidationOf(flagged, record, 0).status, "Liquidated");
+    const both = L.liquidationOf(entry([
+      { total: 1000, liq: liq() },
+      { total: 2000, liq: liq({ varianceApprovedBy: "Carmel" }) },
+    ]), record, 1);
+    assert.equal(both.status, "Liquidated");
+    assert.match(both.label, /approved by Jeffrey James M\. Corro, Carmel\)/);
+    const listed = L.unliquidatedRows(
+      [entry([row(liq())])],
+      { "9001": record },
+      { "9001": 1 },
+      { today: "2026-11-01" }
+    );
+    assert.deepEqual(listed.map((r) => r.vrf), []);
+    const printed = L.spendVariancePrintLines({
+      approved: 5000,
+      actual: 3000,
+      liq: liq({ varianceExplanation: "The supplier priced it lower." }),
+    });
+    assert.equal(printed.approved, 5000);
+    assert.equal(printed.actual, 3000);
+    assert.match(printed.lines[0], /Actual spent ₱3,000\.00/);
+  });
+
+  it("stays Partially liquidated when the under-variance is not approved", () => {
+    const pending = L.liquidationOf(
+      entry([row(liq({ variancePending: true, varianceApprovedBy: "" }))]),
+      record,
+      2
+    );
+    assert.equal(pending.status, "Partially liquidated");
+    assert.equal(pending.underApproved, false);
+    assert.equal(pending.label, "");
+    assert.match(pending.needs, /below approved/);
+    assert.equal(pending.approved, 5000);
+    const oneShort = L.liquidationOf(entry([
+      { total: 1000, liq: liq() },
+      { total: 2000, liq: { at: "2026-10-20", by: "Casey Santos", outcome: "bought", variancePending: true } },
+    ]), record, 1);
+    assert.equal(oneShort.status, "Partially liquidated");
+    assert.match(oneShort.needs, /below approved/);
+  });
+
+  it("stays Partially liquidated when the approver is a bare api", () => {
+    const api = L.liquidationOf(entry([row(liq({ varianceApprovedBy: "api" }))]), record, 1);
+    assert.equal(api.status, "Partially liquidated");
+    assert.equal(api.underApproved, false);
+    assert.match(api.needs, /below approved/);
+    const blank = L.liquidationOf(entry([row(liq({ varianceApprovedBy: "  " }))]), record, 1);
+    assert.equal(blank.status, "Partially liquidated");
+    assert.match(blank.needs, /below approved/);
+  });
+
+  it("stays Partially liquidated when the under-variance is approved but no receipt is on file", () => {
+    const s = L.liquidationOf(entry([row(liq())]), record, 0);
+    assert.equal(s.status, "Partially liquidated");
+    assert.equal(s.underApproved, false);
+    assert.equal(s.label, "");
+    assert.match(s.needs, /no receipt/);
+    assert.equal(s.approved, 5000);
+    assert.equal(s.liquidated, 3000);
+  });
+
+  it("does not change over-variance liquidation or the print gates", () => {
+    const over = L.liquidationOf(
+      entry(
+        [{ total: 5600, liq: { at: "2026-10-20", by: "Casey Santos", outcome: "bought", variancePending: true } }],
+        { total: 5600 }
+      ),
+      { amount: 5600, date: "2026-10-20", by: "Casey Santos" },
+      1
+    );
+    assert.equal(over.status, "Liquidated");
+    assert.equal(over.underApproved, false);
+    assert.equal(over.label, "");
+    assert.equal(over.approved, 5000);
+    assert.equal(VARIANCE_PRINT_MAX, 0.5);
+    assert.equal(variancePrintBlocked(1000, 1600), true);
+    assert.deepEqual(mayPrint({ vrf: "1", status: "Requested" }), { ok: false, message: "Not approved — cannot print" });
+  });
+});
+
 describe("portal wiring", () => {
   it("adds the proof tab, Unliquidated view, script and db op", () => {
     assert.match(html, /<script src="\/vrf-liquidation.js"><\/script>/);
@@ -172,5 +307,79 @@ describe("portal wiring", () => {
   });
   it("does not change the existing Liquidate tab", () => {
     assert.match(html, /tabDefs\.push\(\["liq","Liquidate"\+\(vrfCanLiquidate\(entry\)\?" ●":""\)\]\)/);
+  });
+  it("shows an approved under-variance on the status label", () => {
+    assert.match(html, /liqView\.underApproved&&liqView\.label/);
+    assert.match(html, /L\.underApproved&&L\.label/);
+    assert.match(html, /closedLiq\.underApproved&&closedLiq\.label/);
+    assert.match(html, /uc\.title=liqView\.title\|\|liqView\.label/);
+  });
+  it("paints that label and tooltip on the status chip", () => {
+    function extractFunction(src, name) {
+      const needle = "function " + name + "(";
+      const start = src.indexOf(needle);
+      if (start < 0) throw new Error("missing " + name);
+      let i = src.indexOf("{", start);
+      let depth = 0;
+      for (; i < src.length; i += 1) {
+        if (src[i] === "{") depth += 1;
+        else if (src[i] === "}") {
+          depth -= 1;
+          if (depth === 0) return src.slice(start, i + 1);
+        }
+      }
+      throw new Error("unclosed " + name);
+    }
+    const approved = {
+      vrf: "9001",
+      status: "Closed",
+      approvedBudget: 5000,
+      total: 3000,
+      proofCount: 1,
+      rows: [{
+        total: 3000,
+        liq: {
+          at: "2026-10-20",
+          by: "Casey Santos",
+          outcome: "bought",
+          variancePending: false,
+          varianceApprovedBy: "Jeffrey James M. Corro",
+        },
+      }],
+    };
+    const ctx = {
+      VL: L,
+      duplicateOfNumber() { return ""; },
+      liqStatusOf(entry) {
+        return L.liquidationOf(entry, { amount: entry.total, date: "2026-10-20", by: "Casey Santos" }, entry.proofCount || 0);
+      },
+      el(tag, className, text) {
+        return { tag: tag, className: className || "", textContent: text == null ? "" : String(text), title: "" };
+      },
+    };
+    vm.runInNewContext(
+      extractFunction(html, "liqChip") + "\n" + extractFunction(html, "vrfChip") + "\nthis.liqChip=liqChip; this.vrfChip=vrfChip;",
+      ctx
+    );
+    const view = ctx.liqStatusOf(approved);
+    const chip = ctx.liqChip(view);
+    assert.equal(chip.textContent, "Liquidated (₱3,000.00, under approved by ₱2,000.00, approved by Jeffrey James M. Corro)");
+    assert.equal(chip.title, chip.textContent);
+    assert.match(chip.className, /\bok\b/);
+    const log = ctx.vrfChip(approved);
+    assert.equal(log.textContent, chip.textContent);
+    assert.equal(log.title, chip.textContent);
+    const full = {
+      status: "Closed",
+      approvedBudget: 5000,
+      total: 5000,
+      proofCount: 1,
+      rows: [{ total: 5000, liq: { at: "2026-10-20", by: "Casey Santos", outcome: "bought" } }],
+    };
+    const plain = ctx.vrfChip(full);
+    assert.equal(plain.textContent, "Liquidated");
+    assert.equal(plain.title, "");
+    const missing = Object.assign({}, approved, { proofCount: 0 });
+    assert.equal(ctx.vrfChip(missing).textContent, L.NO_RECEIPT_LABEL);
   });
 });

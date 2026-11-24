@@ -184,7 +184,7 @@ describe("artifact wires the roster select", () => {
     assert.match(html, /Add name…/);
     assert.match(html, /requestedByEmpNo/);
     assert.match(html, /canon:function\(raw\)\{ return canon\(raw\); \}/);
-    assert.match(html, /var BUILD = "2026-11-24 a"/);
+    assert.match(html, /var BUILD = "2026-11-24 b"/);
     assert.match(cancel, /Requesters\.canon/);
   });
 });

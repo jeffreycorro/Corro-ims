@@ -15,9 +15,15 @@
  *   Unliquidated          nothing liquidated yet
  *   Partially liquidated  some amount, but below the approved amount,
  *                         or the full amount without any proof attached
- *   Liquidated            liquidated amount >= approved amount AND proof
+ *   Liquidated            liquidated amount >= approved amount AND proof,
+ *                         or an under-variance (liquidated < approved) when
+ *                         every ledger row is approved by a named approver
+ *                         and the same proof is on file
  * A legacy ledger VRF (blank vstatus, from the old workbooks) is Liquidated
  * on paper and is flagged legacy:true. Its proof is the paper file.
+ *
+ * An approved under-variance does not change the approved amount. The status
+ * label names the actual liquidated amount and who approved the difference.
  */
 
 var MANILA_TZ = "Asia/Manila";
@@ -84,10 +90,60 @@ function ledgerTotal(rows) {
 }
 
 /**
+ * Named approver for an under-variance: Jeffrey James M. Corro or Carmel.
+ * Same check as the page's namedApprover helper, which calls
+ * MotorpoolApprovers.resolveApprover. A bare "api" or a blank name is rejected.
+ */
+function varianceApproverResolve() {
+  var root = typeof globalThis !== "undefined" ? globalThis : (typeof window !== "undefined" ? window : {});
+  if (root && root.MotorpoolApprovers && typeof root.MotorpoolApprovers.resolveApprover === "function") {
+    return root.MotorpoolApprovers.resolveApprover;
+  }
+  if (typeof require === "function") {
+    try {
+      var api = require("./approvers");
+      if (api && typeof api.resolveApprover === "function") {
+        return function (raw) { return api.resolveApprover(raw); };
+      }
+    } catch (err) { /* approver list missing: fail closed */ }
+  }
+  return null;
+}
+function canonicalVarianceApprover(raw) {
+  var resolve = varianceApproverResolve();
+  if (typeof resolve !== "function") return "";
+  var who;
+  try { who = resolve(raw); } catch (err) { return ""; }
+  if (!who || who.ok !== true) return "";
+  return String(who.name || "").trim();
+}
+/**
+ * Every ledger row's liq must have variancePending false and a named
+ * varianceApprovedBy. One unsigned row keeps the VRF partially liquidated.
+ * Returns {by} with the canonical names, or null.
+ */
+function approvedUnderVariance(entry) {
+  var rows = (entry && entry.rows) || [];
+  if (!rows.length) return null;
+  var names = [];
+  var seen = {};
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    if (!row) return null;
+    var liq = row.liq;
+    if (!liq || liq.variancePending !== false) return null;
+    var name = canonicalVarianceApprover(liq.varianceApprovedBy);
+    if (!name) return null;
+    if (!seen[name]) { seen[name] = 1; names.push(name); }
+  }
+  return names.length ? { by: names.join(", ") } : null;
+}
+
+/**
  * entry: {vrf, status, legacy, rows, total, approvedBudget, approvedAt, date,
  *         liq, actual, fuelPhotos, kind}
  * record: ops/liq-<vrf> {amount, date, by, financeRefs, ...} or null
- * proofCount: number of uploads under LIQ-<vrf>
+ * proofCount: number of uploads under LIQ-<vrf> (photos vrf-LIQ-<vrf>__n)
  */
 function liquidationOf(entry, record, proofCount) {
   entry = entry || {};
@@ -117,14 +173,25 @@ function liquidationOf(entry, record, proofCount) {
     date = dayOnly((entry.liq && entry.liq.at) || entry.liquidatedAt || "");
     source = legacy && !closedByFlow ? "legacy" : "liquidate-button";
   }
+  /* Receipt rule unchanged: a liquidation-slot upload (vrf-LIQ-<vrf>__n,
+     counted in proofCount, role receipt or the slot's other proof), a
+     receipt flag, or a stamped liq.proof. */
   var hasProof = (proofCount || 0) > 0 || !!(entry.fuelPhotos && entry.fuelPhotos.receipt) || !!stampedProof(entry);
   var nrCounts = entry.proofCounts || ((proofCount || 0) > 0 ? { receipts: proofCount } : null);
   var nr = closedByFlow ? noReceiptFlag(entry, nrCounts) : { flag: false };
+  var short = amount + 0.005 < approved;
+  var under = short && amount > 0;
+  var underApproval = under ? approvedUnderVariance(entry) : null;
   var status;
   if (amount <= 0 && !closedByFlow && !legacy) status = "Unliquidated";
   else if (legacy && !closedByFlow && source !== "record") status = "Liquidated";
-  else if (amount + 0.005 >= approved && hasProof) status = "Liquidated";
+  else if (!short && hasProof) status = "Liquidated";
+  else if (under && underApproval && hasProof) status = "Liquidated";
   else status = "Partially liquidated";
+  var underLabel = "";
+  if (status === "Liquidated" && under && underApproval) {
+    underLabel = "Liquidated (" + fmt(amount) + ", under approved by " + fmt(round2(approved - amount)) + ", approved by " + underApproval.by + ")";
+  }
   return Object.assign(base, {
     status: status,
     legacy: legacy && source === "legacy",
@@ -134,8 +201,11 @@ function liquidationOf(entry, record, proofCount) {
     noReceipt: !!nr.flag,
     by: by, date: date, source: source,
     needs: status === "Partially liquidated"
-      ? (amount + 0.005 < approved ? "amount below approved" : "no " + proofLabel(entry) + " uploaded")
+      ? ((short && !underApproval) ? "amount below approved" : "no " + proofLabel(entry) + " uploaded")
       : "",
+    underApproved: !!underLabel,
+    label: underLabel,
+    title: underLabel,
   });
 }
 
