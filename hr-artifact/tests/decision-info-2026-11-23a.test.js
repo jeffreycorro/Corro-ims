@@ -60,7 +60,7 @@ function baseStore() {
 
 describe("2026-11-23a decision info", () => {
   it("is build 2026-11-23a and the panel is on the filing, evaluation, approver, and print views", () => {
-    assert.match(html, /const BUILD = "2026-11-23a"/);
+    assert.match(html, /const BUILD = "2026-11-24a"/);
     assert.match(html, /function decisionPanel\(/);
     assert.match(html, /decisionPanel\("leave", l\)/);
     assert.match(html, /decisionPanel\("ca", a\)/);
