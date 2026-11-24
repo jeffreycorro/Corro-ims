@@ -236,7 +236,7 @@ describe("payroll breakdown", () => {
   });
 
   it("is on the draft review and the approval screen, and not on the payslip", () => {
-    assert.match(html, /const BUILD = "2026-11-23a"/);
+    assert.match(html, /const BUILD = "2026-11-24a"/);
     assert.match(html, /function openPayBreakdown/);
     assert.match(html, /payBreakRemember\(lines\)/);
     assert.match(html, /payBreakPanels\(empId,\{dedOpen:true,earnOpen:false\}\)/);

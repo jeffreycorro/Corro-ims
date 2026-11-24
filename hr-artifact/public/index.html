@@ -356,9 +356,43 @@ input[data-cf]:focus{border-color:var(--accent);outline:2px solid var(--accent);
 .pf-doc table.kvt td:first-child{width:120px;font-weight:700}
 .pf-doc table.kvt td:nth-child(2){width:14px}
 .pf-pg{border-top:1px dashed #999;margin:20px 0 0;padding-top:16px}
+/* Leave Request Form. The reason used to reserve a 62px box and the sheet
+   ran onto a second A4 page. Every field, stamp and the letterhead stay.
+   A long reason wraps and steps down in size instead of spilling. Body type
+   stays at 9pt; only an overlong details block goes smaller. */
+.pf-leave-sheet{font-size:9pt;line-height:1.18}
+.pf-leave-sheet .pf-head{padding:3px 8px}
+.pf-leave-sheet .pf-head img{max-width:300px}
+.pf-leave-sheet .pf-head .addr{font-size:8px;line-height:1.2;padding-left:8px}
+.pf-leave-sheet .pf-title{font-size:14px;letter-spacing:.04em;padding:2px 6px}
+.pf-leave-sheet .pf-sub{font-size:9pt;padding:2px 6px}
+.pf-leave-sheet .pf-band{font-size:10px;padding:2px 7px}
+.pf-leave-sheet .pf-t td{padding:1px 5px;line-height:1.2}
+.pf-leave-sheet .pf-box{width:10px;height:10px;margin-right:5px;line-height:8px;font-size:9px}
+.pf-leave-sheet .pf-note{padding:3px 6px;font-size:9pt;line-height:1.2}
+.pf-leave-sheet .pf-sign td{padding:2px 4px;font-size:9pt}
+.pf-leave-sheet .pf-sign .ink{height:30px}
+.pf-leave-sheet .pf-sign .nm{font-size:9pt;margin:0 4px;padding-top:1px}
+.pf-leave-sheet .pf-sign .rl{font-size:8pt}
+.pf-leave-sheet .pf-sign img{max-height:28px!important;max-width:132px!important;margin:0 auto 1px!important}
+.pf-leave-sheet .pf-foot td{padding:2px 6px;font-size:9pt}
+.pf-leave-sheet .pf-iso td{padding:1px 6px}
+.pf-leave-sheet .pf-iso .v{font-size:9pt}
+.pf-leave-sheet .pf-details{display:block;white-space:normal;overflow-wrap:anywhere;word-break:break-word;font-size:9pt;line-height:1.15;height:auto}
+.pf-leave-sheet .pf-details-md{font-size:8.5pt;line-height:1.12}
+.pf-leave-sheet .pf-details-sm{font-size:8pt;line-height:1.08}
+.pf-leave-sheet .pf-details-xs{font-size:7pt;line-height:1.05}
+.pf-leave-sheet .di-print{margin-top:2px!important;line-height:1.15!important}
+.pf-leave-sheet .di-print td{padding:1px 3px!important}
 @media print{
   @page{size:A4;margin:11mm}
+  @page leave-request{size:A4 portrait;margin:10mm 12mm 10mm}
   .pf{max-height:none;overflow:visible;border:0;padding:0;font-size:11pt}
+  .pf-leave-sheet,.pf.pf-leave{page:leave-request;font-size:9pt;break-inside:avoid;page-break-inside:avoid}
+  .pf-leave-sheet .pf-head,.pf-leave-sheet .pf-title,.pf-leave-sheet .pf-sub,
+  .pf-leave-sheet .pf-band,.pf-leave-sheet .pf-t,.pf-leave-sheet .pf-note,
+  .pf-leave-sheet .pf-sign,.pf-leave-sheet .pf-foot,.pf-leave-sheet .pf-iso,
+  .pf-leave-sheet .di-print,.pf-leave-sheet .pf-details{break-inside:avoid;page-break-inside:avoid}
   .pf-pg{page-break-before:always;border-top:0;padding-top:0;margin-top:0}
 }
 /*PF-END*/
@@ -383,12 +417,18 @@ input[data-cf]:focus{border-color:var(--accent);outline:2px solid var(--accent);
 #print-layer{display:none}
 @media print{
   @page{size:A4 portrait;margin:12mm 12mm 10mm}
+  @page leave-request{size:A4 portrait;margin:10mm 12mm 10mm}
   html.printing body>*{display:none!important}
   html.printing #print-layer{display:block!important;position:static}
   html.printing #print-layer .pf{width:auto;max-width:none;box-shadow:none;border:0;margin:0}
   html.printing{background:#fff}
   .pf-head,.pf-title,.pf-sub,.pf-band,.pf-iso,.pf-rev,.pf-foot,
   .pf-sign,.pf-t,.kvt,#print-layer table{break-inside:avoid;page-break-inside:avoid}
+  .pf-leave-sheet,.pf.pf-leave{page:leave-request;break-inside:avoid;page-break-inside:avoid}
+  .pf-leave-sheet .pf-head,.pf-leave-sheet .pf-title,.pf-leave-sheet .pf-sub,
+  .pf-leave-sheet .pf-band,.pf-leave-sheet .pf-t,.pf-leave-sheet .pf-note,
+  .pf-leave-sheet .pf-sign,.pf-leave-sheet .pf-foot,.pf-leave-sheet .pf-iso,
+  .pf-leave-sheet .di-print,.pf-leave-sheet .pf-details{break-inside:avoid;page-break-inside:avoid}
   .pf-doc p{orphans:3;widows:3}
 }
 
@@ -2202,7 +2242,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-11-23a";
+const BUILD = "2026-11-24a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -3305,6 +3345,13 @@ function pfPrintCSS(){
    + '.pf-sign,.pf-t,.kvt,table{break-inside:avoid;page-break-inside:avoid}'
    + '.pf-doc p{orphans:3;widows:3}'
    + '.pf-doc h2,.pf-doc h3{break-after:avoid;page-break-after:avoid}'
+   /* Leave request: one A4 portrait page, 10mm top and bottom, 12mm sides. */
+   + '@page leave-request{size:A4 portrait;margin:10mm 12mm 10mm}'
+   + '.pf-leave-sheet,.pf.pf-leave{page:leave-request;font-size:9pt;break-inside:avoid;page-break-inside:avoid}'
+   + '.pf-leave-sheet .pf-head,.pf-leave-sheet .pf-title,.pf-leave-sheet .pf-sub,'
+   + '.pf-leave-sheet .pf-band,.pf-leave-sheet .pf-t,.pf-leave-sheet .pf-note,'
+   + '.pf-leave-sheet .pf-sign,.pf-leave-sheet .pf-foot,.pf-leave-sheet .pf-iso,'
+   + '.pf-leave-sheet .di-print,.pf-leave-sheet .pf-details{break-inside:avoid;page-break-inside:avoid}'
    /* the control block belongs at the foot of the sheet, not floating mid-page */
    + '.pf-iso{margin-top:auto}'
    + '@media print{.pf{width:auto;max-width:none}'
@@ -14832,13 +14879,17 @@ async function savePDF(no, body, preview){
       windowWidth:PX, width:PX });
     const pdf=new jsPDF({unit:"mm", format:"a4",
       orientation: PF_LAND ? "landscape" : "portrait", compress:true});
+    /* Leave request uses the named A4 page: 10mm top and bottom, 12mm sides.
+       Other sheets keep the 12mm / 10mm box. */
+    const leaveOne=!PF_LAND && /pf-leave-sheet/.test(String(body||""));
     const M=12, PW=PF_LAND?297:210, PH=PF_LAND?210:297;
+    const ox=M, oy=leaveOne?10:M, ob=leaveOne?10:10;
     const w=PW-M*2;                                     /* 186mm */
     const h=canvas.height*w/canvas.width;
-    const usable=PH-M-10;
+    const usable=PH-oy-ob;
     let pages=1;
     if(h<=usable){
-      pdf.addImage(canvas.toDataURL("image/jpeg",0.94),"JPEG",M,M,w,h,undefined,"FAST");
+      pdf.addImage(canvas.toDataURL("image/jpeg",0.94),"JPEG",ox,oy,w,h,undefined,"FAST");
     }else{
       const pxPerMm=canvas.width/w;
       const stripPx=Math.floor(usable*pxPerMm);
@@ -14849,7 +14900,7 @@ async function savePDF(no, body, preview){
         c2.width=canvas.width; c2.height=hPx;
         c2.getContext("2d").drawImage(canvas,0,y,canvas.width,hPx,0,0,canvas.width,hPx);
         if(page) pdf.addPage();
-        pdf.addImage(c2.toDataURL("image/jpeg",0.94),"JPEG",M,M,w,hPx/pxPerMm,undefined,"FAST");
+        pdf.addImage(c2.toDataURL("image/jpeg",0.94),"JPEG",ox,oy,w,hPx/pxPerMm,undefined,"FAST");
         y+=hPx; page++;
       }
       pages=page;
@@ -14928,9 +14979,13 @@ function printDoc(no, body, kind){
   }
   /* @page cannot be conditioned on a class, so the rule is injected with the
      sheet and taken away with it. */
+  const leaveOne=!PF_LAND && /pf-leave-sheet/.test(String(body||""));
   layer.innerHTML=(PF_LAND
-      ? '<style id="pf-page-rule">@page{size:A4 landscape;margin:12mm 12mm 10mm}</style>' : "")
-    + '<div class="pf'+pfTightClass()+(PF_LAND?" land":"")+'">'+body+'</div>';
+      ? '<style id="pf-page-rule">@page{size:A4 landscape;margin:12mm 12mm 10mm}</style>'
+      : leaveOne
+        ? '<style id="pf-page-rule">@page{size:A4 portrait;margin:10mm 12mm 10mm}</style>'
+        : "")
+    + '<div class="pf'+pfTightClass()+(PF_LAND?" land":"")+(leaveOne?" pf-leave":"")+'">'+body+'</div>';
   document.documentElement.classList.add("printing");
   const done=()=>{
     document.documentElement.classList.remove("printing");
@@ -20463,6 +20518,15 @@ const PF_LEAVE_BOX = ["Vacation","Sick","Personal","Emergency","Paternity /Mater
 const PF_LEAVE_MAP = {VL:"Vacation", SL:"Sick", EL:"Emergency", ML:"Paternity /Maternity",
   PL:"Paternity /Maternity", BEREV:"Bereavement"};
 function pfLeaveBox(k){ return k ? (PF_LEAVE_MAP[k] || "Others, pls specify") : ""; }
+/* A short reason stays at body size. A long one steps down so the sheet
+   still holds the whole text on one A4 page instead of overflowing. */
+function pfLeaveDetailClass(text){
+  const n=String(text||"").length;
+  if(n>900) return "pf-details pf-details-xs";
+  if(n>400) return "pf-details pf-details-sm";
+  if(n>180) return "pf-details pf-details-md";
+  return "pf-details";
+}
 
 function printLeave(l, opt){
   const miss=leaveCaPrintBlocked(); if(miss){ toast(miss,"err"); return; }
@@ -20479,7 +20543,9 @@ function printLeave(l, opt){
   });
   boxes+='</table>';
 
-  const body = pfHead()
+  const reason=l.reason||"";
+  const body = '<div class="pf-leave-sheet">'
+   + pfHead()
    + pfTitle("LEAVE REQUEST FORM",
              "Please complete this form and submit it to your immediate supervisor or HR for approval")
    + pfControl(l.no, (opt&&opt.draft?"Preview — ":"Filed ")+longDate(l.filedOn||TODAY), opt&&opt.draft)
@@ -20494,7 +20560,7 @@ function printLeave(l, opt){
    + pfRows([
        ["Inclusive Dates",  esc(longDate(l.from)+(l.to&&l.to!==l.from?" to "+longDate(l.to):""))],
        ["No. of Working Days", esc((l.days%1?num(l.days,1):String(l.days||0))+(l.half?"  (half day)":""))],
-       ["Reason for Leave", esc(l.reason||""), "height:62px"],
+       ["Reason for Leave", '<span class="'+pfLeaveDetailClass(reason)+'">'+(reason?esc(reason):"&nbsp;")+'</span>'],
        ["Contact Information while on Leave", esc(l.contact||(e?e.mobile:"")||"")]])
    + pfNote("I certify that the above information is true and correct. I understand that falsification of "
      + "this document may result in disciplinary action.")
@@ -20509,7 +20575,8 @@ function printLeave(l, opt){
        {who:"Final Approval (Management)", name:S.settings.signatory||"", role:"Signature"}])
    + decisionPanel("leave", l, "print")
    + pfFoot("Leave Request Form No.", l.no)
-   + pfISO("leave");
+   + pfISO("leave")
+   + '</div>';
   openModal({ title:"Leave request form — "+(l.no||""), wide:true,
     body:pfWrap(body),
     foot:'<button class="btn" id="lp-back">Back</button>'
