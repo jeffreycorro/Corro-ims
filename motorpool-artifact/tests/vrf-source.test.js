@@ -18,7 +18,7 @@ const {
 } = require("./lib/rules");
 
 const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
-const BUILD = "2026-11-20 a";
+const BUILD = "2026-11-24 a";
 
 function extractFunction(src, name) {
   const needle = "function " + name + "(";
@@ -64,9 +64,9 @@ function hold(extra) {
 }
 
 describe("VRF source", () => {
-  it("is build 2026-11-20 a", () => {
-    assert.match(html, /var BUILD = "2026-11-20 a"/);
-    assert.equal(BUILD, "2026-11-20 a");
+  it("is build 2026-11-24 a", () => {
+    assert.match(html, /var BUILD = "2026-11-24 a"/);
+    assert.equal(BUILD, "2026-11-24 a");
   });
 
   it("labels LRF · LRF-0010 and stays blank when nothing was set", () => {
@@ -294,7 +294,7 @@ describe("VRF source — page", () => {
     assert.match(html, /source:canonVrfSource\(d\.source\), sourceNo:vrfSourceNoText\(d\.sourceNo\)/);
 
     const send = extractFunction(html, "sendForApproval");
-    assert.match(send, /Put your name in/);
+    assert.match(send, /Pick who requested this VRF/);
     assert.match(send, /copyVrfSourceFields\(hold/);
     assert.doesNotMatch(send, /Source is required|Pick a source|sourceNo is required/);
 

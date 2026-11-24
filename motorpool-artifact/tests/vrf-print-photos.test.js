@@ -64,8 +64,8 @@ function loadPrintFns() {
 describe("printed VRF photos are embedded images", () => {
   const api = loadPrintFns();
 
-  it("is build 2026-11-20 a", () => {
-    assert.match(html, /var BUILD = "2026-11-20 a"/);
+  it("is build 2026-11-24 a", () => {
+    assert.match(html, /var BUILD = "2026-11-24 a"/);
   });
 
   it("treats a photo function URL as not printable and a data URL as the picture", () => {

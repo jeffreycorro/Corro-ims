@@ -32,7 +32,7 @@ function assertCollection(name) {
  *   reserves/<YYYY> | reserves/index
  *   fuel/purchases | fuel/withdrawals
  *   photos/<key>
- *   config/app | config/counter | config/rsvcounter
+ *   config/app | config/counter | config/rsvcounter | config/requesters
  *   builds/<BUILD>   {build, seq}
  */
 function parsePath(path, maybeId) {
