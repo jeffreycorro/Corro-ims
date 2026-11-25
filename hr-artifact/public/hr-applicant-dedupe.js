@@ -560,7 +560,26 @@
       })
     );
     var pickedInterview = pickInitialInterview(rows);
-    if (pickedInterview) merged.initialInterview = pickedInterview;
+    if (pickedInterview) {
+      var carried = [];
+      var seenMove = Object.create(null);
+      rows.forEach(function (row) {
+        var list = row && row.initialInterview && row.initialInterview.reschedules;
+        if (!Array.isArray(list)) return;
+        list.forEach(function (move) {
+          if (!move || typeof move !== "object") return;
+          var key = [move.from, move.to, move.at, move.by, move.reason].join("|");
+          if (seenMove[key]) return;
+          seenMove[key] = true;
+          carried.push(move);
+        });
+      });
+      if (carried.length) {
+        pickedInterview.reschedules = carried;
+        if (!pickedInterview.originalAt && carried[0] && carried[0].from) pickedInterview.originalAt = carried[0].from;
+      }
+      merged.initialInterview = pickedInterview;
+    }
     var extraIds = extras
       .map(function (a) {
         return asString(a.id);

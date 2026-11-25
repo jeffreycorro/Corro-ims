@@ -957,6 +957,24 @@ function daysBetween(a,b){ if(!a||!b) return null; return Math.round((new Date(b
 const daysFromToday = d => daysBetween(TODAY,d);
 function longDate(d){ if(!d) return ""; const t=new Date(d+"T00:00:00");
   return t.toLocaleDateString("en-PH",{year:"numeric",month:"long",day:"numeric"}); }
+function scheduleMark(row){
+  if(!row || !row.reschedules || !row.reschedules.length) return "";
+  return ' <span class="pill warn" data-rescheduled="1">Rescheduled</span>';
+}
+function applicantScheduleRows(a){
+  const out=[];
+  const api=typeof window!=="undefined" && window.hrRecruit;
+  function line(label, iv){
+    if(!iv || !iv.at) return;
+    const when=api && typeof api.formatWhen==="function"
+      ? api.formatWhen(api.effectiveInterviewAt ? api.effectiveInterviewAt(iv) : iv.at)
+      : String(iv.at);
+    out.push([label, when+((iv.reschedules&&iv.reschedules.length)?" · Rescheduled":"")]);
+  }
+  line("Initial interview", a && a.initialInterview);
+  line("Final interview", a && a.finalInterview);
+  return out;
+}
 function shortDate(d){ return d||"—"; }
 /* Art. 296 — probationary period runs six months from the date of engagement. */
 const probationEnd = h => h ? addDays(addMonths(h,6),-1) : "";
@@ -2242,7 +2260,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-11-24a";
+const BUILD = "2026-11-25a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -6440,7 +6458,7 @@ function printInterview(g, a){
    + pfRows([
        ["Name of Applicant",  esc(a.name||"")],
        ["Position Applied for", esc(a.position||g.title.replace(/ — .*$/,""))],
-       ["Date of Interview",  esc(a.date?longDate(a.date):longDate(TODAY))],
+       ["Date of Interview",  esc((a.date?longDate(a.date):longDate(TODAY))+((a.reschedules&&a.reschedules.length)?" · Rescheduled":""))],
        ["Name of Interviewer",esc(a.interviewer||S.settings.hrHead||"")]])
    + pfBand("PART 1: INTERVIEW QUESTIONS")
    + '<table class="pf-t"><tr>'
@@ -17531,7 +17549,7 @@ function hiringPackHTML(a, e){
     const max=r.max||r.maxScore||examMax(x)||x.maxScore||0;
     const pass=x.items?examPass(x):(x.passing||r.passing||0);
     const title=r.title||x.title||"Examination";
-    const when=r.takenOn||r.on||"";
+    const when=(r.takenOn||r.on||"")+((r.reschedules&&r.reschedules.length)?" · Rescheduled":"");
     const mark=max? (r.score+" / "+max) : String(r.score??"—");
     const result=pass? ((Number(r.score)>=pass)?"Passed":"Below the mark") : (r.notes||"");
     return [ title+(r.form?" (Form "+r.form+")":""), when, mark, result ];
@@ -17542,7 +17560,7 @@ function hiringPackHTML(a, e){
              ["Position",e.position||a.position||""],["Department",e.dept||a.dept||""],
              ["Applied on",longDate(a.appliedOn||"")],["Source",a.source||""],
              ["Date engaged",longDate(e.dateHired||TODAY)],
-             ["Employment status",e.status||""]]);
+             ["Employment status",e.status||""]].concat(applicantScheduleRows(a)));
   if(role){
     body += pfBand("THE ROLE APPLIED FOR")
      + '<div class="pf-doc"><p>'+esc(role.purpose||"")+'</p></div>';
@@ -17559,7 +17577,7 @@ function hiringPackHTML(a, e){
   }
   (a.interviews||[]).forEach(n=>{
     body += pfBand("INTERVIEW — "+String(n.type||"").toUpperCase()
-              +" · "+longDate(n.date||"")+" · "+(n.interviewer||""))
+              +" · "+longDate(n.date||"")+((n.reschedules&&n.reschedules.length)?" · Rescheduled":"")+" · "+(n.interviewer||""))
      + '<div class="pf-doc">'
      + (n.answers||[]).filter(x=>x.a&&x.a.trim()).map(x=>
          '<p style="margin-bottom:7px"><b>'+esc(x.q)+'</b><br>'
@@ -18579,7 +18597,7 @@ function gatePanel(a){
         return '<tr><td class="nm">'+esc(x.title)+'</td>'
          + '<td>'+(rs?sevPill(ok?"ok":"crit",ok?"Passed":"Below"):'<span class="pill warn">Not taken</span>')+'</td>'
          + '<td class="mono">'+(rs?(rs.score+" / "+(rs.max||examMax(x))):"—")+'</td>'
-         + '<td class="mono">'+(rs?esc(rs.on||""):"—")+'</td></tr>'; }).join("")
+         + '<td class="mono">'+(rs?esc(rs.on||"")+scheduleMark(rs):"—")+'</td></tr>'; }).join("")
      + '</tbody></table></div>';
   }
   h+='<div class="row">'
@@ -19192,7 +19210,10 @@ function interviewRunner(appId, guideId, existingIdx){
         + '</div></div>',
       foot:'<button class="btn" id="iv-cancel">Cancel</button><button class="btn pri" id="iv-save">Save the interview</button>'});
     const grab=()=>{
-      iv.type=$("#iv-type").value; iv.interviewer=$("#iv-by").value; iv.date=$("#iv-date").value;
+      iv.type=$("#iv-type").value; iv.interviewer=$("#iv-by").value;
+      const nextIvDate=$("#iv-date").value;
+      if(nextIvDate && window.hrRecruit && typeof window.hrRecruit.noteInterviewDate==="function") window.hrRecruit.noteInterviewDate(iv, nextIvDate, {});
+      else iv.date=nextIvDate;
       iv.overall=$("#iv-overall").value; iv.notes=$("#iv-notes").value;
       $$("[data-ia]").forEach(t=>{ iv.answers[+t.dataset.ia].a=t.value; });
       $$("[data-ir]").forEach(t=>{ iv.answers[+t.dataset.ir].r=t.value; });
@@ -19320,7 +19341,7 @@ function viewRecruit(){
       results.sort((a,b)=>(b.r.takenOn||"").localeCompare(a.r.takenOn||"")).forEach(({a,r,v})=>{
         const ro=S.roles[a.roleId];
         h+='<tr><td class="nm">'+esc(a.name)+'</td><td>'+esc(ro?ro.title:a.position||"—")+'</td><td>'+esc(v.x.title)+'</td>'
-         + '<td class="mono">'+esc(r.takenOn||"—")+'</td><td class="num">'+num(r.score,0)+" / "+v.x.maxScore+'</td>'
+         + '<td class="mono">'+esc(r.takenOn||"—")+scheduleMark(r)+'</td><td class="num">'+num(r.score,0)+" / "+v.x.maxScore+'</td>'
          + '<td class="num">'+v.pct+'%</td><td>'+sevPill(v.pass?"ok":"crit",v.pass?"Passed":"Failed")+'</td>'
          + '<td><button class="btn sm" data-open-app="'+a.id+'">Open</button></td></tr>';
       });
@@ -19427,7 +19448,7 @@ async function appEditor(id){
       const max=r.max||r.maxScore||(v.x&&v.x.maxScore)||"";
       const when=r.takenOn||r.on||"no date";
       ex+='<div class="chk'+(v.x&&!v.pass?" miss":"")+'" data-exam-row="'+i+'"><span class="idx">'+String(i+1).padStart(2,"0")+'</span>'
-       + '<span class="n"><b>'+esc(title)+'</b><span>'+esc(when)+(r.notes?" · "+esc(r.notes):"")+'</span></span>'
+       + '<span class="n"><b>'+esc(title)+'</b><span>'+esc(when)+scheduleMark(r)+(r.notes?" · "+esc(r.notes):"")+'</span></span>'
        + '<span class="mono" style="font-size:12px">'+esc(String(r.score??"—")+(max?" / "+max:""))+'</span>'
        + (v.x&&max?'<span class="pill '+(v.pass?"ok":"crit")+'">'+(v.pct?v.pct+"% ":"")+(v.pass?"pass":"fail")+'</span>':"")
        + '<button class="btn sm" data-edex="'+i+'">Edit</button>'
@@ -19439,7 +19460,7 @@ async function appEditor(id){
       const answered=(n.answers||[]).filter(x=>x.a&&x.a.trim()).length;
       iv+='<div class="chk"><span class="idx">'+String(i+1).padStart(2,"0")+'</span>'
        + '<span class="n"><b>'+esc(n.type||"Interview")+' — '+esc(n.interviewer||"unnamed")+'</b>'
-       + '<span>'+esc(n.date||"no date")+' · '+(n.answers?answered+" of "+n.answers.length+" questions answered":"free notes")+'</span></span>'
+       + '<span>'+esc(n.date||"no date")+scheduleMark(n)+' · '+(n.answers?answered+" of "+n.answers.length+" questions answered":"free notes")+'</span></span>'
        + '<span class="pill '+(parseFloat(n.overall)>=4?"ok":parseFloat(n.overall)<=2?"crit":"warn")+'">'+esc(n.overall||"—")+'/5</span>'
        + (n.answers?'<button class="btn sm" data-openiv="'+i+'">Open</button>':"")
        + '<button class="btn sm danger" data-rmiv="'+i+'">Remove</button></div>';
@@ -19562,6 +19583,10 @@ async function appEditor(id){
       if(isNaN(sv)){ toast("Enter the score.","err"); return; }
       const catalog=examList().find(x=>String(x.title||"").trim().toLowerCase()===title.toLowerCase());
       const maxV=parseFloat($("#ax-max")&&$("#ax-max").value);
+      const nextExamDate=$("#ax-date").value;
+      if(editing && nextExamDate && window.hrRecruit && typeof window.hrRecruit.noteExamDate==="function"){
+        window.hrRecruit.noteExamDate(editing, nextExamDate, {});
+      }
       const rec={
         id:(editing&&editing.id)||uid("es"),
         examId:catalog?catalog.id:(editing&&editing.examId)||"",
@@ -19697,7 +19722,7 @@ async function appEditor(id){
         + pfTitle("HIRING RECOMMENDATION","Two independent reads set side by side. Neither is the decision.")
         + pfRows([["Applicant",a.name||""],["Position applied for",a.position||""],
                   ["Department",a.dept||""],["Applied",longDate(a.appliedOn||"")],
-                  ["Source",a.source||""],["Stage",a.stage||""]])
+                  ["Source",a.source||""],["Stage",a.stage||""]].concat(applicantScheduleRows(a)))
         + ((a.exams||[]).length
             ? pfBand("TEST RESULTS")
               + '<table class="pf-t" style="margin:6px 0 10px">'
@@ -19705,7 +19730,7 @@ async function appEditor(id){
                   const v=examVerdict(r);
                   const title=r.title||(v.x&&v.x.title)||"Exam";
                   const max=r.max||r.maxScore||(v.x&&v.x.maxScore)||"";
-                  const when=r.takenOn||r.on||"";
+                  const when=(r.takenOn||r.on||"")+((r.reschedules&&r.reschedules.length)?" · Rescheduled":"");
                   return '<tr><td>'+esc(title)+'</td><td>'+esc(when)+'</td><td>'
                     +esc(String(r.score??"—")+(max?" / "+max:""))+'</td><td>'
                     +esc(r.notes||"")+'</td></tr>';

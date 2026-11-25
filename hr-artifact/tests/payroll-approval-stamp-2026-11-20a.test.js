@@ -82,7 +82,7 @@ function approved(kind, extra) {
 
 describe("2026-11-23a approved payroll print stamp", () => {
   it("is build 2026-11-23a", () => {
-    assert.match(html, /const BUILD = "2026-11-24a"/);
+    assert.match(html, /const BUILD = "2026-11-25a"/);
     assert.match(html, /function payPrintOptions\(/);
     assert.match(html, /signatorySig\(\)/);
     assert.match(html, /hrPaySheet\.printHTML\(payPrintOptions\(/);

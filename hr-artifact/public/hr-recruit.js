@@ -16,6 +16,7 @@
  * the mobile already stored on the applicant, so HR can call from the list.
  * Open roles, re-applicants, and per-position metrics read the same
  * applicant and role records. A manpower request is stored on the role.
+ * Reschedule keeps the earlier interview or exam date and shows the new one.
  */
 (function (root) {
   "use strict";
@@ -194,6 +195,15 @@
     if (raw.byCat) rec.byCat = raw.byCat;
     if (raw.passing != null) rec.passing = raw.passing;
     if (raw.on && !raw.takenOn) rec.on = raw.on;
+    var history = normalizeRescheduleList(raw.reschedules, false);
+    if (history.length) {
+      rec.reschedules = history;
+      rec.originalOn = dateOnly(raw.originalOn || "") || history[0].from;
+      rec.on = dateOnly(rec.takenOn) || rec.on;
+    } else {
+      var originalOn = dateOnly(raw.originalOn || "");
+      if (originalOn && originalOn !== dateOnly(rec.takenOn)) rec.originalOn = originalOn;
+    }
     return rec;
   }
 
@@ -248,6 +258,14 @@
     var i;
     for (i = 0; i < list.length; i += 1) {
       if (String(list[i].id) === String(id)) {
+        var prevDate = examDateOf(list[i]);
+        var nextDate = dateOnly((fields && (fields.takenOn || fields.on)) || "");
+        if (nextDate && prevDate && nextDate !== prevDate) {
+          noteExamDate(list[i], nextDate, {
+            reason: fields && fields.reason,
+            by: fields && fields.rescheduledBy != null ? fields.rescheduledBy : fields && fields.by,
+          });
+        }
         var next = normalizeExamScore(Object.assign({}, list[i], fields || {}, { id: list[i].id }));
         if (!next) return null;
         list[i] = Object.assign({}, list[i], next);
@@ -284,6 +302,7 @@
       (n.score == null || n.score === "" ? "—" : String(n.score)) +
       (max != null && max !== "" ? " / " + max : "") +
       (n.takenOn ? " (" + n.takenOn + ")" : "") +
+      (hasReschedule(n) ? " · Rescheduled" : "") +
       (n.notes ? " — " + n.notes : "")
     );
   }
@@ -304,7 +323,8 @@
             '</span><span class="n"><b>' +
             esc(n.title || "Exam") +
             "</b><span>" +
-            esc(n.takenOn || "") +
+            esc(examDateOf(n) || n.takenOn || "") +
+            rescheduledMarkHtml(n) +
             (n.notes ? " · " + esc(n.notes) : "") +
             '</span></span><span class="mono">' +
             esc(n.score == null || n.score === "" ? "—" : String(n.score)) +
@@ -1722,8 +1742,12 @@
             obj.exams = mergeExamScores(api.draftExamScores);
           }
           if (api.draftExamScores && api.draftExamScores.length) api.draftExamScores = [];
+          if (Array.isArray(obj.exams)) obj.exams = preserveExamReschedules(cur && cur.exams, obj.exams);
+          if (Array.isArray(obj.interviews)) obj.interviews = preserveInterviewReschedules(cur && cur.interviews, obj.interviews);
           var mergedIv = mergeInitialInterview(cur && cur.initialInterview, obj.initialInterview);
           if (mergedIv) obj.initialInterview = mergedIv;
+          var mergedFinal = mergeInitialInterview(cur && cur.finalInterview, obj.finalInterview);
+          if (mergedFinal) obj.finalInterview = mergedFinal;
         } catch (e) {}
       }
       return orig.apply(this, arguments);
@@ -1770,18 +1794,310 @@
     return "Scheduled";
   }
 
+  function dateOnly(value) {
+    var m = String(value == null ? "" : value).trim().match(/^(\d{4}-\d{2}-\d{2})/);
+    if (!m || !isIsoDate(m[1])) return "";
+    return m[1];
+  }
+
+  function normalizeRescheduleEntry(raw, withTime) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+    var from = withTime ? normalizeWhen(raw.from) : dateOnly(raw.from);
+    var to = withTime ? normalizeWhen(raw.to) : dateOnly(raw.to);
+    if (!from || !to || from === to) return null;
+    return {
+      from: from,
+      to: to,
+      reason: String(raw.reason || "").trim(),
+      by: String(raw.by || "").trim(),
+      at: String(raw.at || "").trim(),
+    };
+  }
+
+  function normalizeRescheduleList(list, withTime) {
+    var out = [];
+    var seen = Object.create(null);
+    (list || []).forEach(function (raw) {
+      var n = normalizeRescheduleEntry(raw, withTime);
+      if (!n) return;
+      var key = n.from + ">" + n.to + "|" + n.at + "|" + n.by + "|" + n.reason;
+      if (seen[key]) return;
+      seen[key] = true;
+      out.push(n);
+    });
+    return out;
+  }
+
+  function hasReschedule(row) {
+    return !!(row && Array.isArray(row.reschedules) && row.reschedules.length);
+  }
+
+  function rescheduledMarkHtml(row) {
+    if (!hasReschedule(row)) return "";
+    return ' <span class="pill warn" data-rescheduled="1">Rescheduled</span>';
+  }
+
+  function formatRecordedAt(iso) {
+    var raw = String(iso || "").trim();
+    if (!raw) return "";
+    var d = new Date(raw);
+    if (isNaN(d.getTime())) return raw;
+    try {
+      return new Intl.DateTimeFormat("en-GB", {
+        timeZone: "Asia/Manila",
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+        hour12: true,
+      }).format(d);
+    } catch (e) {
+      return raw;
+    }
+  }
+
+  function rescheduleWasHtml(row, withTime) {
+    if (!hasReschedule(row)) return "";
+    var last = row.reschedules[row.reschedules.length - 1];
+    var from = withTime ? formatWhen(last.from) : formatDayLabel(last.from);
+    if (!from || from === "—") return "";
+    return '<div style="font-size:11px;color:var(--ink3);font-weight:400">was ' + esc(from) + "</div>";
+  }
+
+  function rescheduleHistoryHtml(list, withTime) {
+    if (!list || !list.length) return "";
+    return (
+      '<div class="lbl" style="text-transform:none;letter-spacing:0;font-weight:400;line-height:1.45">' +
+      list
+        .map(function (h) {
+          var from = withTime ? formatWhen(h.from) : formatDayLabel(h.from);
+          var to = withTime ? formatWhen(h.to) : formatDayLabel(h.to);
+          var bits = esc(from) + " → " + esc(to);
+          if (h.reason) bits += " · " + esc(h.reason);
+          if (h.by) bits += " · " + esc(h.by);
+          if (h.at) bits += " · " + esc(formatRecordedAt(h.at));
+          return bits;
+        })
+        .join("<br>") +
+      "</div>"
+    );
+  }
+
+  function examDateOf(row) {
+    return dateOnly(row && (row.takenOn || row.on));
+  }
+
+  function noteExamDate(row, to, meta) {
+    if (!row || typeof row !== "object") return null;
+    var dest = dateOnly(to);
+    if (!dest) return null;
+    var from = examDateOf(row);
+    if (!from) {
+      row.takenOn = dest;
+      if (row.on) row.on = dest;
+      return row;
+    }
+    if (from === dest) return row;
+    meta = meta || {};
+    var history = normalizeRescheduleList(row.reschedules, false);
+    history.push({
+      from: from,
+      to: dest,
+      reason: String(meta.reason || "").trim(),
+      by: meta.by != null ? String(meta.by).trim() : currentAuthor(),
+      at: String(meta.at || stampNow()),
+    });
+    row.reschedules = history;
+    if (!row.originalOn) row.originalOn = from;
+    row.takenOn = dest;
+    row.on = dest;
+    return row;
+  }
+
+  function noteInterviewDate(row, to, meta) {
+    if (!row || typeof row !== "object") return null;
+    var dest = dateOnly(to);
+    if (!dest) return null;
+    var from = dateOnly(row.date);
+    if (!from) {
+      row.date = dest;
+      return row;
+    }
+    if (from === dest) return row;
+    meta = meta || {};
+    var history = normalizeRescheduleList(row.reschedules, false);
+    history.push({
+      from: from,
+      to: dest,
+      reason: String(meta.reason || "").trim(),
+      by: meta.by != null ? String(meta.by).trim() : currentAuthor(),
+      at: String(meta.at || stampNow()),
+    });
+    row.reschedules = history;
+    if (!row.originalDate) row.originalDate = from;
+    row.date = dest;
+    return row;
+  }
+
+  function applyDatedReschedule(prev, next, readDate, writeDate) {
+    var copy = Object.assign({}, next);
+    var prevDate = readDate(prev);
+    var nextDate = readDate(next);
+    var prevHist = normalizeRescheduleList(prev && prev.reschedules, false);
+    var nextHist = normalizeRescheduleList(next && next.reschedules, false);
+    if (prevHist.length && nextHist.length < prevHist.length && nextDate && prevDate && nextDate !== prevDate) {
+      writeDate(copy, prevDate);
+      copy.reschedules = prevHist;
+      if (prev.originalOn) copy.originalOn = prev.originalOn;
+      if (prev.originalDate) copy.originalDate = prev.originalDate;
+      return copy;
+    }
+    var history = normalizeRescheduleList(prevHist.concat(nextHist), false);
+    if (prevDate && nextDate && prevDate !== nextDate) {
+      var seen = history.some(function (h) {
+        return h.from === prevDate && h.to === nextDate;
+      });
+      if (!seen) {
+        history.push({
+          from: prevDate,
+          to: nextDate,
+          reason: String((next && next.rescheduleReason) || "").trim(),
+          by: next && next.rescheduledBy != null ? String(next.rescheduledBy).trim() : currentAuthor(),
+          at: stampNow(),
+        });
+      }
+    }
+    if (!history.length) return copy;
+    copy.reschedules = history;
+    writeDate(copy, nextDate || prevDate);
+    return copy;
+  }
+
+  function preserveExamReschedules(prevList, nextList) {
+    if (!Array.isArray(nextList)) return nextList;
+    var prevs = Array.isArray(prevList) ? prevList : [];
+    return nextList.map(function (row, i) {
+      if (!row || typeof row !== "object") return row;
+      var prev = null;
+      var j;
+      if (row.id) {
+        for (j = 0; j < prevs.length; j += 1) {
+          if (prevs[j] && String(prevs[j].id) === String(row.id)) {
+            prev = prevs[j];
+            break;
+          }
+        }
+      }
+      if (!prev && prevs[i]) prev = prevs[i];
+      if (!prev) return row;
+      var merged = applyDatedReschedule(prev, row, examDateOf, function (target, day) {
+        target.takenOn = day;
+        if (target.on || prev.on) target.on = day;
+      });
+      if (hasReschedule(merged) && !merged.originalOn) merged.originalOn = (prev.originalOn || (merged.reschedules[0] && merged.reschedules[0].from) || "");
+      return merged;
+    });
+  }
+
+  function sameInterviewSlot(a, b) {
+    if (!a || !b) return false;
+    if (a.id && b.id && String(a.id) === String(b.id)) return true;
+    if (a.guideId && b.guideId && String(a.guideId) === String(b.guideId) && String(a.type || "") === String(b.type || "")) return true;
+    return String(a.type || "") === String(b.type || "") && String(a.interviewer || "") === String(b.interviewer || "");
+  }
+
+  function preserveInterviewReschedules(prevList, nextList) {
+    if (!Array.isArray(nextList)) return nextList;
+    var prevs = Array.isArray(prevList) ? prevList : [];
+    return nextList.map(function (row, i) {
+      if (!row || typeof row !== "object") return row;
+      var prev = prevs[i] && sameInterviewSlot(prevs[i], row) ? prevs[i] : null;
+      if (!prev) {
+        var j;
+        for (j = 0; j < prevs.length; j += 1) {
+          if (sameInterviewSlot(prevs[j], row)) {
+            prev = prevs[j];
+            break;
+          }
+        }
+      }
+      if (!prev) return row;
+      var merged = applyDatedReschedule(
+        prev,
+        row,
+        function (item) {
+          return dateOnly(item && item.date);
+        },
+        function (target, day) {
+          target.date = day;
+        }
+      );
+      if (hasReschedule(merged) && !merged.originalDate) {
+        merged.originalDate = prev.originalDate || (merged.reschedules[0] && merged.reschedules[0].from) || "";
+      }
+      return merged;
+    });
+  }
+
   function normalizeInitialInterview(raw) {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
     var at = normalizeWhen(raw.at || raw.when || "");
     if (!at && raw.date) at = normalizeWhen(String(raw.date) + "T" + (raw.time || "00:00"));
     if (!at) return null;
-    return {
+    var history = normalizeRescheduleList(raw.reschedules, true);
+    var originalAt = normalizeWhen(raw.originalAt || "");
+    if (!originalAt && history.length) originalAt = history[0].from;
+    var out = {
       at: at,
       interviewer: String(raw.interviewer || "").trim(),
       notes: String(raw.notes || "").trim(),
       status: normalizeStatus(raw.status),
       updatedAt: String(raw.updatedAt || "").trim(),
     };
+    if (history.length) {
+      out.reschedules = history;
+      if (originalAt && originalAt !== at) out.originalAt = originalAt;
+    } else if (originalAt && originalAt !== at) {
+      out.originalAt = originalAt;
+    }
+    return out;
+  }
+
+  function effectiveInterviewAt(raw) {
+    var iv = normalizeInitialInterview(raw);
+    if (!iv) return "";
+    return String(iv.at || "");
+  }
+
+  function unionInterviewHistory(winner, loser, adoptMove) {
+    var history = normalizeRescheduleList([].concat((loser && loser.reschedules) || [], (winner && winner.reschedules) || []), true);
+    if (adoptMove && loser && winner && loser.at && winner.at && loser.at !== winner.at) {
+      var seen = history.some(function (h) {
+        return h.from === loser.at && h.to === winner.at;
+      });
+      if (!seen) {
+        history.push({
+          from: loser.at,
+          to: winner.at,
+          reason: "",
+          by: "",
+          at: String(winner.updatedAt || ""),
+        });
+      }
+    }
+    if (!history.length) return winner;
+    var out = {
+      at: winner.at,
+      interviewer: winner.interviewer,
+      notes: winner.notes,
+      status: winner.status,
+      updatedAt: winner.updatedAt,
+      reschedules: history,
+    };
+    var original = (loser && loser.originalAt) || (winner && winner.originalAt) || history[0].from;
+    if (original && original !== out.at) out.originalAt = original;
+    return out;
   }
 
   function mergeInitialInterview(current, incoming) {
@@ -1791,9 +2107,9 @@
     if (!b) return a;
     var as = String((current && current.updatedAt) || "");
     var bs = String((incoming && incoming.updatedAt) || "");
-    if (bs > as) return b;
-    if (bs < as) return a;
-    return b;
+    if (bs > as) return unionInterviewHistory(b, a, true);
+    if (bs < as) return unionInterviewHistory(a, b, false);
+    return unionInterviewHistory(b, a, true);
   }
 
   function stageAfterSchedule(stage) {
@@ -1816,12 +2132,37 @@
     return new Date().toISOString();
   }
 
-  function scheduleInitialInterview(applicant, fields) {
+  function moveDatedInterview(applicant, key, fields) {
     if (!applicant || typeof applicant !== "object") return null;
+    var prev = normalizeInitialInterview(applicant[key]);
     var iv = normalizeInitialInterview(fields || {});
     if (!iv) return null;
     iv.updatedAt = stampNow();
-    applicant.initialInterview = iv;
+    if (prev && prev.reschedules && prev.reschedules.length) {
+      iv.reschedules = prev.reschedules.map(function (h) {
+        return Object.assign({}, h);
+      });
+      if (prev.originalAt) iv.originalAt = prev.originalAt;
+    }
+    if (prev && prev.at !== iv.at) {
+      var history = iv.reschedules ? iv.reschedules.slice() : [];
+      history.push({
+        from: prev.at,
+        to: iv.at,
+        reason: String((fields && fields.reason) || "").trim(),
+        by: fields && fields.rescheduledBy != null ? String(fields.rescheduledBy).trim() : currentAuthor(),
+        at: stampNow(),
+      });
+      iv.reschedules = history;
+      if (!iv.originalAt) iv.originalAt = prev.originalAt || prev.at;
+    }
+    iv.at = effectiveInterviewAt(iv);
+    applicant[key] = iv;
+    return iv;
+  }
+
+  function scheduleInitialInterview(applicant, fields) {
+    if (!moveDatedInterview(applicant, "initialInterview", fields || {})) return null;
     applicant.stage = stageAfterSchedule(applicant.stage);
     return applicant;
   }
@@ -1831,9 +2172,220 @@
     var iv = normalizeInitialInterview(applicant.initialInterview);
     if (!iv) return null;
     iv.status = normalizeStatus(status);
+    iv.at = effectiveInterviewAt(iv);
     iv.updatedAt = stampNow();
     applicant.initialInterview = iv;
     return applicant;
+  }
+
+  function rescheduleError(kind) {
+    if (kind === "when") return "Enter the new date and time.";
+    if (kind === "date") return "Enter the new date.";
+    if (kind === "same") return "That is already the scheduled date.";
+    if (kind === "none") return "Nothing is scheduled to move yet.";
+    if (kind === "missing") return "Save the applicant first.";
+    return "Could not save that reschedule.";
+  }
+
+  function findExamRow(applicant, key) {
+    var list = (applicant && applicant.exams) || [];
+    var i;
+    var id = String(key || "");
+    if (/^i\d+$/.test(id)) {
+      var at = Number(id.slice(1));
+      return list[at] ? { row: list[at], index: at } : null;
+    }
+    for (i = 0; i < list.length; i += 1) {
+      if (list[i] && String(list[i].id) === id) return { row: list[i], index: i };
+    }
+    return null;
+  }
+
+  async function rescheduleInitialInterview(applicantId, fields) {
+    var a = findApplicant(applicantId);
+    if (!a) return { ok: false, error: "missing" };
+    var prev = normalizeInitialInterview(a.initialInterview);
+    if (!prev) return { ok: false, error: "none" };
+    var at = normalizeWhen(fields && fields.at);
+    if (!at) return { ok: false, error: "when" };
+    if (at === effectiveInterviewAt(prev)) return { ok: false, error: "same" };
+    if (!scheduleInitialInterview(a, {
+      at: at,
+      interviewer: prev.interviewer,
+      notes: prev.notes,
+      status: "Rescheduled",
+      reason: fields && fields.reason,
+      rescheduledBy: fields && fields.by != null ? fields.by : currentAuthor(),
+    })) return { ok: false, error: "when" };
+    await persistApplicant(a);
+    return { ok: true, applicant: a };
+  }
+
+  async function rescheduleFinalInterview(applicantId, fields) {
+    var a = findApplicant(applicantId);
+    if (!a) return { ok: false, error: "missing" };
+    var prev = normalizeInitialInterview(a.finalInterview);
+    if (!prev) return { ok: false, error: "none" };
+    var at = normalizeWhen(fields && fields.at);
+    if (!at) return { ok: false, error: "when" };
+    if (at === effectiveInterviewAt(prev)) return { ok: false, error: "same" };
+    if (!moveDatedInterview(a, "finalInterview", {
+      at: at,
+      interviewer: prev.interviewer,
+      notes: prev.notes,
+      status: "Rescheduled",
+      reason: fields && fields.reason,
+      rescheduledBy: fields && fields.by != null ? fields.by : currentAuthor(),
+    })) return { ok: false, error: "when" };
+    await persistApplicant(a);
+    return { ok: true, applicant: a };
+  }
+
+  async function rescheduleExam(applicantId, key, fields) {
+    var a = findApplicant(applicantId);
+    if (!a) return { ok: false, error: "missing" };
+    var hit = findExamRow(a, key);
+    if (!hit) return { ok: false, error: "none" };
+    var dest = dateOnly(fields && (fields.at || fields.date));
+    if (!dest) return { ok: false, error: "date" };
+    if (dest === examDateOf(hit.row)) return { ok: false, error: "same" };
+    if (!examDateOf(hit.row)) return { ok: false, error: "none" };
+    noteExamDate(hit.row, dest, {
+      reason: fields && fields.reason,
+      by: fields && fields.by != null ? fields.by : currentAuthor(),
+    });
+    await persistApplicant(a);
+    return { ok: true, applicant: a, exam: hit.row };
+  }
+
+  async function rescheduleInterviewRecord(applicantId, index, fields) {
+    var a = findApplicant(applicantId);
+    if (!a) return { ok: false, error: "missing" };
+    var list = a.interviews || [];
+    var row = list[Number(index)];
+    if (!row) return { ok: false, error: "none" };
+    var dest = dateOnly(fields && (fields.at || fields.date));
+    if (!dest) return { ok: false, error: "date" };
+    if (!dateOnly(row.date)) return { ok: false, error: "none" };
+    if (dest === dateOnly(row.date)) return { ok: false, error: "same" };
+    noteInterviewDate(row, dest, {
+      reason: fields && fields.reason,
+      by: fields && fields.by != null ? fields.by : currentAuthor(),
+    });
+    await persistApplicant(a);
+    return { ok: true, applicant: a, interview: row };
+  }
+
+  function refreshSchedulePanel(applicant) {
+    if (typeof document === "undefined" || !document.getElementById) return;
+    var panel = document.getElementById("hr-recruit-iv-panel");
+    if (!panel || !panel.parentNode) return;
+    var holder = document.createElement("div");
+    holder.innerHTML = schedulePanelHtml(applicant || {});
+    if (holder.firstChild) panel.parentNode.replaceChild(holder.firstChild, panel);
+  }
+
+  async function saveReschedule(kind, applicantId) {
+    var a = applicantId ? findApplicant(applicantId) : applicantFromEditor();
+    if (!a) {
+      toast(rescheduleError("missing"), "err");
+      return { ok: false, error: "missing" };
+    }
+    var prefix = "hr-rs-initial";
+    var result;
+    if (kind === "initial") {
+      result = await rescheduleInitialInterview(a.id, {
+        at: fieldValue("hr-rs-initial-at"),
+        reason: fieldValue("hr-rs-initial-reason"),
+        by: fieldValue("hr-rs-initial-by"),
+      });
+    } else if (kind === "final") {
+      prefix = "hr-rs-final";
+      result = await rescheduleFinalInterview(a.id, {
+        at: fieldValue("hr-rs-final-at"),
+        reason: fieldValue("hr-rs-final-reason"),
+        by: fieldValue("hr-rs-final-by"),
+      });
+    } else if (String(kind).indexOf("exam:") === 0) {
+      var examKey = String(kind).slice(5);
+      prefix = "hr-rs-exam-" + examKey;
+      result = await rescheduleExam(a.id, examKey, {
+        at: fieldValue(prefix + "-at"),
+        reason: fieldValue(prefix + "-reason"),
+        by: fieldValue(prefix + "-by"),
+      });
+    } else if (String(kind).indexOf("interview:") === 0) {
+      var ivIndex = String(kind).slice(10);
+      prefix = "hr-rs-iv-" + ivIndex;
+      result = await rescheduleInterviewRecord(a.id, ivIndex, {
+        at: fieldValue(prefix + "-at"),
+        reason: fieldValue(prefix + "-reason"),
+        by: fieldValue(prefix + "-by"),
+      });
+    } else {
+      result = { ok: false, error: "none" };
+    }
+    var st = typeof document !== "undefined" && document.getElementById("hr-rs-status");
+    if (!result.ok) {
+      var msg = rescheduleError(result.error);
+      if (st) st.textContent = msg;
+      toast(msg, "err");
+      return result;
+    }
+    if (st) st.textContent = "Rescheduled date saved.";
+    toast("Rescheduled date saved.", "ok");
+    refreshSchedulePanel(result.applicant);
+    return result;
+  }
+
+  function openRescheduleModal(appId) {
+    var a = findApplicant(appId);
+    if (!a) {
+      toast(rescheduleError("missing"), "err");
+      return null;
+    }
+    var iv = normalizeInitialInterview(a.initialInterview);
+    if (!iv) {
+      toast(rescheduleError("none"), "err");
+      return null;
+    }
+    if (typeof root.openModal !== "function") return null;
+    root.openModal({
+      title: "Reschedule — " + (a.name || "applicant"),
+      body:
+        '<div id="hr-rs-modal" data-hr-rs-for="' +
+        esc(a.id) +
+        '"><div class="note">' +
+        esc(a.name || "") +
+        " · initial interview is " +
+        esc(formatWhen(effectiveInterviewAt(iv))) +
+        ". Philippines time. The earlier date stays in the history.</div>" +
+        rescheduleHistoryHtml(iv.reschedules, true) +
+        rescheduleFieldsHtml("hr-rs-modal", true, currentAuthor()) +
+        "</div>",
+      foot:
+        '<button class="btn" id="hr-rs-modal-cancel" type="button">Cancel</button>' +
+        '<button class="btn pri" id="hr-rs-modal-save" type="button">Save rescheduled date</button>',
+    });
+    return a;
+  }
+
+  async function saveModalReschedule() {
+    if (typeof document === "undefined" || !document.getElementById) return;
+    var host = document.getElementById("hr-rs-modal");
+    var id = host && host.getAttribute ? host.getAttribute("data-hr-rs-for") : "";
+    var result = await rescheduleInitialInterview(id, {
+      at: fieldValue("hr-rs-modal-at"),
+      reason: fieldValue("hr-rs-modal-reason"),
+      by: fieldValue("hr-rs-modal-by"),
+    });
+    if (!result.ok) {
+      toast(rescheduleError(result.error), "err");
+      return;
+    }
+    toast("Rescheduled date saved.", "ok");
+    if (typeof root.closeModal === "function") root.closeModal();
+    if (typeof root.render === "function") root.render();
   }
 
   function formatWhen(at) {
@@ -1901,10 +2453,10 @@
     var groups = groupApplicantsByPosition(scheduled, roles);
     groups.forEach(function (g) {
       g.rows.sort(function (a, b) {
-        var av = normalizeInitialInterview(a.initialInterview);
-        var bv = normalizeInitialInterview(b.initialInterview);
+        var av = effectiveInterviewAt(a.initialInterview);
+        var bv = effectiveInterviewAt(b.initialInterview);
         return (
-          String(av.at).localeCompare(String(bv.at)) ||
+          String(av).localeCompare(String(bv)) ||
           String(a.name || "").localeCompare(String(b.name || ""))
         );
       });
@@ -2298,7 +2850,7 @@
         var iv = normalizeInitialInterview(a.initialInterview);
         var contact = applicantContact(a);
         var suffix = contact ? " · " + contact : "";
-        if (iv) suffix += " · " + formatWhen(iv.at);
+        if (iv) suffix += " · " + formatWhen(effectiveInterviewAt(iv)) + (hasReschedule(iv) ? " · Rescheduled" : "");
         html +=
           '<option value="' +
           esc(a.id) +
@@ -2331,11 +2883,12 @@
     iv = iv || {};
     ids = ids || PAGE_FIELDS;
     var status = iv.status || "Scheduled";
+    var shownAt = effectiveInterviewAt(iv) || iv.at || "";
     return (
       '<div class="f"><label>Date and time</label><input id="' +
       ids.at +
       '" type="datetime-local" value="' +
-      esc(iv.at || "") +
+      esc(shownAt) +
       '"></div>' +
       '<div class="f"><label>Interviewer</label><input id="' +
       ids.by +
@@ -2471,9 +3024,9 @@
   }
 
   function interviewDay(applicant) {
-    var iv = normalizeInitialInterview(applicant && applicant.initialInterview);
-    if (!iv) return "";
-    return String(iv.at).slice(0, 10);
+    var at = effectiveInterviewAt(applicant && applicant.initialInterview);
+    if (!at) return "";
+    return String(at).slice(0, 10);
   }
 
   function readStoredDay(key) {
@@ -3061,7 +3614,8 @@
         "<th></th></tr></thead><tbody>";
       g.rows.forEach(function (a) {
         var iv = normalizeInitialInterview(a.initialInterview);
-        var day = iv ? String(iv.at).slice(0, 10) : "";
+        var whenAt = iv ? effectiveInterviewAt(iv) : "";
+        var day = whenAt ? String(whenAt).slice(0, 10) : "";
         if (mode === "none" || !iv) {
           h +=
             '<tr data-hr-iv-day=""><td class="nm">' +
@@ -3088,7 +3642,9 @@
           "</td>" +
           contactCellHtml(a) +
           '<td class="mono">' +
-          esc(formatWhen(iv.at)) +
+          esc(formatWhen(whenAt)) +
+          rescheduledMarkHtml(iv) +
+          rescheduleWasHtml(iv, true) +
           "</td><td>" +
           esc(iv.interviewer || "—") +
           '</td><td><span class="pill ' +
@@ -3105,6 +3661,9 @@
           esc(stageText(a.stage)) +
           "</td><td>" +
           openCellHtml(a) +
+          ' <button class="btn sm" type="button" data-hr-rs-open="' +
+          esc(a.id) +
+          '">Reschedule</button>' +
           "</td></tr>";
       });
       h += "</tbody></table></div></div>";
@@ -3236,11 +3795,118 @@
     return h;
   }
 
+  function rescheduleFieldsHtml(prefix, withTime, byName) {
+    return (
+      '<div class="grid3">' +
+      '<div class="f"><label>Rescheduled date' +
+      (withTime ? " and time" : "") +
+      '</label><input id="' +
+      prefix +
+      '-at" type="' +
+      (withTime ? "datetime-local" : "date") +
+      '"></div>' +
+      '<div class="f"><label>Reason</label><input id="' +
+      prefix +
+      '-reason" placeholder="Optional"></div>' +
+      '<div class="f"><label>Recorded by</label><input id="' +
+      prefix +
+      '-by" value="' +
+      esc(byName || "") +
+      '"></div></div>'
+    );
+  }
+
+  function rescheduleBlockHtml(prefix, title, current, withTime, history, key) {
+    var byName = currentAuthor();
+    return (
+      '<div class="card" style="margin-top:8px" data-hr-rs-block="' +
+      esc(prefix) +
+      '"><div class="card-b stack" style="gap:8px">' +
+      '<div class="row" style="justify-content:space-between"><b>' +
+      esc(title) +
+      "</b><span>" +
+      esc(current) +
+      rescheduledMarkHtml(history && history.length ? { reschedules: history } : null) +
+      "</span></div>" +
+      rescheduleHistoryHtml(history, withTime) +
+      rescheduleFieldsHtml(prefix, withTime, byName) +
+      '<div class="row"><button class="btn pri" type="button" data-hr-rs-save="' +
+      esc(key || prefix) +
+      '">Reschedule</button></div></div></div>'
+    );
+  }
+
+  function rescheduleSectionHtml(a) {
+    a = a || {};
+    var byName = currentAuthor();
+    var blocks = "";
+    var iv = normalizeInitialInterview(a.initialInterview);
+    if (iv) {
+      blocks += rescheduleBlockHtml(
+        "hr-rs-initial",
+        "Initial interview",
+        formatWhen(effectiveInterviewAt(iv)),
+        true,
+        iv.reschedules,
+        "initial"
+      );
+    }
+    var fv = normalizeInitialInterview(a.finalInterview);
+    if (fv) {
+      blocks += rescheduleBlockHtml(
+        "hr-rs-final",
+        "Final interview",
+        formatWhen(effectiveInterviewAt(fv)),
+        true,
+        fv.reschedules,
+        "final"
+      );
+    }
+    (a.exams || []).forEach(function (row, i) {
+      var day = examDateOf(row);
+      if (!day) return;
+      var key = row && row.id ? String(row.id) : "i" + i;
+      blocks += rescheduleBlockHtml(
+        "hr-rs-exam-" + key,
+        "Exam · " + String((row && (row.title || row.examId)) || "Exam"),
+        formatDayLabel(day),
+        false,
+        normalizeRescheduleList(row.reschedules, false),
+        "exam:" + key
+      );
+    });
+    (a.interviews || []).forEach(function (row, i) {
+      var day = dateOnly(row && row.date);
+      if (!day) return;
+      blocks += rescheduleBlockHtml(
+        "hr-rs-iv-" + i,
+        "Interview record · " + String((row && row.type) || "Interview"),
+        formatDayLabel(day),
+        false,
+        normalizeRescheduleList(row.reschedules, false),
+        "interview:" + i
+      );
+    });
+    if (!blocks) {
+      blocks =
+        '<div class="lbl" id="hr-rs-empty">Nothing is scheduled yet. Set the initial interview above, or add an exam date. When that date moves, put the new one here.</div>';
+    }
+    return (
+      '<div id="hr-rs-section">' +
+      '<div class="sect-h" style="margin:12px 0 0"><h2 style="font-size:12.5px">Rescheduled date</h2><span class="rule"></span></div>' +
+      '<div class="note">Philippines time. The date already on the schedule stays in the history. The new date is the one the lists, the day view, and the print use. Reason is optional. Recorded by is whoever is entering it.</div>' +
+      blocks +
+      '<span class="lbl" id="hr-rs-status" data-hr-rs-by="' +
+      esc(byName) +
+      '"></span></div>'
+    );
+  }
+
   function schedulePanelHtml(a) {
     a = a || {};
     var iv = normalizeInitialInterview(a.initialInterview);
     var summary = iv
-      ? formatWhen(iv.at) + " · " + iv.status + (iv.interviewer ? " · " + iv.interviewer : "")
+      ? formatWhen(effectiveInterviewAt(iv)) + " · " + iv.status + (iv.interviewer ? " · " + iv.interviewer : "")
       : "Not scheduled yet.";
     var formIv = iv || { at: "", interviewer: defaultInterviewer(), notes: "", status: "Scheduled" };
     return (
@@ -3248,13 +3914,16 @@
       '<div class="sect-h" style="margin:10px 0 0"><h2 style="font-size:12.5px">Initial interview</h2><span class="rule"></span>' +
       '<span class="lbl">' +
       esc(summary) +
+      rescheduledMarkHtml(iv) +
       "</span></div>" +
-      '<div class="note">Philippines time. Saving moves Applied, Screening, Shortlisted, On Hold, and Written Exam to Interview. Later stages stay as they are.</div>' +
+      '<div class="note">Philippines time. Saving moves Applied, Screening, Shortlisted, On Hold, and Written Exam to Interview. Later stages stay as they are. Changing the date keeps the earlier one in the reschedule history.</div>' +
       '<div class="grid3">' +
       scheduleFieldsHtml(formIv, EDIT_FIELDS) +
       "</div>" +
       '<div class="row"><button class="btn pri" id="hr-iv-edit-save" type="button">Save initial interview</button>' +
-      '<span class="lbl" id="hr-iv-edit-status"></span></div></div>'
+      '<span class="lbl" id="hr-iv-edit-status"></span></div>' +
+      rescheduleSectionHtml(a) +
+      "</div>"
     );
   }
 
@@ -3513,7 +4182,7 @@
     var by = document.getElementById("hr-iv-by");
     var notes = document.getElementById("hr-iv-notes");
     var status = document.getElementById("hr-iv-status");
-    if (at) at.value = iv ? iv.at : "";
+    if (at) at.value = iv ? effectiveInterviewAt(iv) : "";
     if (by) by.value = iv ? iv.interviewer : defaultInterviewer();
     if (notes) notes.value = iv ? iv.notes : "";
     if (status) status.value = iv ? iv.status : "Scheduled";
@@ -3546,9 +4215,21 @@
             t.id === "hr-pipe-iv-none" ||
             t.id === "hr-pipe-iv-prev" ||
             t.id === "hr-pipe-iv-next" ||
-            t.id === "hr-pipe-iv-limit"
+            t.id === "hr-pipe-iv-limit" ||
+            t.id === "hr-rs-modal-save" ||
+            t.id === "hr-rs-modal-cancel"
           ) {
             id = t.id;
+            break;
+          }
+          if (t.getAttribute && t.getAttribute("data-hr-rs-save")) {
+            id = "rs-save";
+            pick = t.getAttribute("data-hr-rs-save");
+            break;
+          }
+          if (t.getAttribute && t.getAttribute("data-hr-rs-open")) {
+            id = "rs-open";
+            pick = t.getAttribute("data-hr-rs-open");
             break;
           }
           if (t.getAttribute && t.getAttribute("data-hr-iv-open")) {
@@ -3587,6 +4268,11 @@
         else if (id === "hr-pipe-iv-next") stepPipelineScheduleDay(1);
         else if (id === "pipe-pick") setPipelineScheduleDay(pipePick);
         else if (id === "hr-pipe-iv-limit") setPipelineInterviewLimit(!pipelineInterviewLimitOn());
+        else if (id === "hr-rs-modal-save") saveModalReschedule();
+        else if (id === "hr-rs-modal-cancel") {
+          if (typeof root.closeModal === "function") root.closeModal();
+        } else if (id === "rs-save") saveReschedule(pick, "");
+        else if (id === "rs-open") openRescheduleModal(pick);
         else if (t && t.getAttribute) {
           if (ev.stopPropagation) ev.stopPropagation();
           openScheduleModal(t.getAttribute("data-hr-iv-open"));
@@ -3679,9 +4365,19 @@
           }
           openBtn.parentNode.appendChild(when);
         }
-        if (when) when.textContent = "Initial " + formatWhen(iv.at);
+        if (when) when.textContent = "Initial " + formatWhen(effectiveInterviewAt(iv)) + (hasReschedule(iv) ? " · Rescheduled" : "");
       } else if (when && when.parentNode && when.parentNode.removeChild) {
         when.parentNode.removeChild(when);
+      }
+      if (iv && !inDayCard && document.createElement && openBtn.parentNode.querySelector && !openBtn.parentNode.querySelector('[data-hr-rs-open="' + id + '"]')) {
+        var rs = document.createElement("button");
+        rs.type = "button";
+        rs.className = "btn sm";
+        rs.setAttribute("data-hr-rs-open", id);
+        rs.title = "Enter a rescheduled date";
+        rs.textContent = "Reschedule";
+        if (rs.style) rs.style.marginLeft = "6px";
+        openBtn.parentNode.appendChild(rs);
       }
       if (openBtn.parentNode.querySelector && openBtn.parentNode.querySelector('[data-hr-iv-open="' + id + '"]')) return;
       var btn = document.createElement("button");
@@ -3882,9 +4578,9 @@
       out.push(d);
     }
     var iv = initialOf(a);
-    if (iv && SHOWED_STATUS[iv.status]) add(iv.at);
+    if (iv && SHOWED_STATUS[iv.status]) add(effectiveInterviewAt(iv));
     var fv = finalOf(a);
-    if (fv && SHOWED_STATUS[fv.status]) add(fv.at);
+    if (fv && SHOWED_STATUS[fv.status]) add(effectiveInterviewAt(fv));
     (a && a.interviews ? a.interviews : []).forEach(function (n) {
       if (isFinalType(n)) add(n.date);
     });
@@ -5253,6 +5949,17 @@
   api.setInitialInterviewStatus = setInitialInterviewStatus;
   api.commitInitialInterview = commitInitialInterview;
   api.commitInitialStatus = commitInitialStatus;
+  api.rescheduleInitialInterview = rescheduleInitialInterview;
+  api.rescheduleFinalInterview = rescheduleFinalInterview;
+  api.rescheduleExam = rescheduleExam;
+  api.rescheduleInterviewRecord = rescheduleInterviewRecord;
+  api.noteExamDate = noteExamDate;
+  api.noteInterviewDate = noteInterviewDate;
+  api.effectiveInterviewAt = effectiveInterviewAt;
+  api.examDateOf = examDateOf;
+  api.hasReschedule = hasReschedule;
+  api.rescheduleSectionHtml = rescheduleSectionHtml;
+  api.openRescheduleModal = openRescheduleModal;
   api.formatWhen = formatWhen;
   api.manilaToday = manilaToday;
   api.shiftIsoDate = shiftIsoDate;
