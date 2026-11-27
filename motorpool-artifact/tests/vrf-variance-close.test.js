@@ -247,6 +247,94 @@ describe("liquidated print shows the variance", () => {
     assert.match(html, /variance — spent differs from approved/);
     assert.match(html, /data-variance-explanation/);
     assert.match(html, /closeBtn\.disabled=!hasName\|\|!pres\.ok/);
-    assert.match(html, /var BUILD = "2026-11-24 b"/);
+    assert.match(html, /var BUILD = "2026-11-27 a"/);
+  });
+});
+
+describe("over-spend liquidation (VRF 6449)", () => {
+  const shim = fs.readFileSync(path.join(__dirname, "../public/claude-shim.js"), "utf8");
+  const db = fs.readFileSync(path.join(__dirname, "../netlify/functions/db.js"), "utf8");
+
+  function fuelLine(total) {
+    return {
+      vrf: "6449",
+      vstatus: V.VARIANCE_PENDING_VSTATUS,
+      qty: total === 196.02 ? 3 : 1,
+      price: total === 196.02 ? 65.34 : total,
+      total: total,
+      liters: total === 196.02 ? 3 : null,
+      unit: "liters",
+      work: "FUEL-STN",
+      cat: "Fuel — Gasoline",
+      reserve: "435",
+      notBought: false,
+    };
+  }
+  function write(rows, proof) {
+    const liq = {
+      at: "2026-11-27T01:40:00Z",
+      by: "brinneshiel",
+      outcome: "bought",
+      proof: proof,
+      variancePending: true,
+      varianceExplanation: proof.varianceExplanation,
+      varianceAmount: proof.varianceAmount,
+    };
+    return {
+      id: "ledger:6449",
+      kind: "ledger",
+      vrf_no: "6449",
+      reserve_no: "435",
+      data: { rows: rows.map((row) => Object.assign({}, row, { liq: liq })) },
+    };
+  }
+  const io6449 = io({
+    records: { "reserve:435": { data: { vrfs: ["6449"], approvedBudget: 196.02, budget: 196.02 } } },
+    photos: {
+      "6449": [{ kind: "photo", caption: "request.jpg" }],
+      "LIQ-6449": [{ kind: "photo", role: "receipt", caption: "Receipt — a.jpg" }, { kind: "photo", role: "receipt" }],
+      "liq-6449": [{ kind: "photo", role: "liquidation", caption: "receipt.jpg" }],
+    },
+  });
+
+  it("does not treat an over-spend as change returned", () => {
+    const proof = V.buildProof(
+      {
+        actual: "200.03",
+        date: TODAY,
+        by: "brinneshiel",
+        change: { amount: "176.02", how: "", date: TODAY },
+        overReason: "",
+        varianceExplanation: "two separate fuels",
+        counts: { receipts: 4 },
+      },
+      { approved: 196.02 }
+    );
+    assert.equal(proof.actual, 200.03);
+    assert.equal(proof.varianceAmount, 4.01);
+    assert.equal(proof.variancePending, true);
+    assert.equal(proof.overReason, "two separate fuels");
+    assert.equal(proof.change, undefined);
+    assert.match(html, /\[hidden\]\{display:none !important\}/);
+    assert.match(html, /else cAmt\.placeholder=""/);
+    assert.match(html, /function addedLiquidationLines/);
+    assert.match(shim, /json\.errorMessage/);
+    assert.match(db, /return await cancelGuard\.runWithContext\(cancelCtx/);
+  });
+
+  it("refuses a proof total that omits the second fuel line, and accepts both lines as pending", async () => {
+    const proof = V.buildProof(
+      { actual: 200.03, date: TODAY, by: "brinneshiel", varianceExplanation: "two separate fuels", counts: { receipts: 2 } },
+      { approved: 196.02 }
+    );
+    await assert.rejects(
+      () => G.guardRecordWrite(write([fuelLine(196.02)], proof), io6449),
+      /does not match the closed lines/
+    );
+    const both = write([fuelLine(196.02), fuelLine(4.01)], proof);
+    await G.guardRecordWrite(both, io6449);
+    assert.equal(both.data.rows[0].vstatus, "Variance pending");
+    assert.equal(V.approveSpendVariance(both.data.rows[0].liq, "api", TODAY, resolve).ok, false);
+    assert.equal(both.data.rows[0].liq.variancePending, true);
   });
 });
