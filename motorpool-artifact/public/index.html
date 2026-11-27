@@ -239,6 +239,9 @@ svg text{font-family:var(--font-body)}
 .split{display:grid;grid-template-columns:1fr 1fr;gap:var(--space-4)}
 .f3{display:grid;grid-template-columns:repeat(3,1fr);gap:var(--space-3)}
 .f2{display:grid;grid-template-columns:repeat(2,1fr);gap:var(--space-3)}
+/* Author display rules (.f3, .field) beat the browser's [hidden] style.
+   A hidden change-returned or over-reason row was still on screen. */
+[hidden]{display:none !important}
 
 @media(max-width:900px){
   #app{grid-template-columns:1fr}
@@ -447,7 +450,7 @@ var CONTAINER_L = 20, REORDER_L = 200, CRITICAL_L = 80;
    This label is inside the page function. The shim reads window.BUILD when it
    sends a save. Without that copy every save goes out with an empty build and
    the server answers "Reload the page". */
-var BUILD = "2026-11-24 b";
+var BUILD = "2026-11-27 a";
 try { window.BUILD = BUILD; } catch (e) {}
 var DAY = 86400000, MO = 30.44;
 
@@ -2525,6 +2528,32 @@ function financeVoucherLookup(raw){
     });
   }).catch(function(){ return null; });
 }
+/* Lines typed under "Add a line that was actually bought". They belong in
+   the same ledger write as the original lines. A later append never runs
+   if the first write is refused, and the proof total (original + added)
+   would not match the lines that were sent. */
+function addedLiquidationLines(entry, added, stamp){
+  var no=String(entry&&entry.vrf||"").trim();
+  var base=(entry&&entry.rows&&entry.rows[0])||{};
+  var mk0=base.month||monthKey(entry&&entry.date)||iso().slice(0,7);
+  var v=vehicle(entry&&entry.veh);
+  return (added||[]).filter(function(a2){ return a2&&a2.cat; }).map(function(a2){
+    if(isFuel(a2.cat)) normalizeFuelLine(a2);
+    var sp=partSpec(a2.cat);
+    var qty=parseFloat(a2.qty)||0, price=parseFloat(a2.price)||0;
+    return {month:mk0, date:entry.date, vrf:no, veh:entry.veh,
+      name:v?v.desc:(base.name||""),
+      cat:a2.cat, sub:sp?sp.sub:(isFuel(a2.cat)?"Fuel":""),
+      grp:isFuel(a2.cat)?"Fuel":"Maintenance",
+      work:a2.work||base.work||"", item:a2.item||"",
+      qty:qty, price:price, total:qty*price,
+      supplier:a2.supplier||"", unit:a2.unit||"pc",
+      project:a2.project||base.project||"", liters:parseFloat(a2.liters)||null,
+      odo:base.odo||null, reserve:base.reserve||entry.reserve||"",
+      vstatus:(stamp&&stamp.variancePending)?"Variance pending":"Closed", liq:stamp, addedAtLiquidation:true,
+      notes:base.notes||""};
+  });
+}
 function rowsConfinedToVrf(rows, vrfNo){
   var no=String(vrfNo||"").trim();
   (rows||[]).forEach(function(row){
@@ -2596,10 +2625,12 @@ async function liquidateVrf(entry,edits,added,by,note,outcome,voucherRaw,proof){
   }else{
     var reserveForPlan=reserveForVrf(entry);
     var plan=planLiquidationLedgerWrite(entry, reserveForPlan, ledgerRowsForVrf(no).length);
+    var extras=addedLiquidationLines(entry, added, stamp);
     if(plan==="seed"){
       /* Keep this VRF number. Do not remint, and do not require a part
-         category — the lines on the form are what staff are closing. */
-      var seeded=rowsConfinedToVrf(closedLedgerLinesFromHold(entry, edits, stamp), no);
+         category — the lines on the form are what staff are closing.
+         Added lines ride in this same write so the proof total matches. */
+      var seeded=rowsConfinedToVrf(closedLedgerLinesFromHold(entry, edits, stamp).concat(extras), no);
       var byMk={};
       seeded.forEach(function(row){
         var mk=row.month||iso().slice(0,7);
@@ -2623,6 +2654,12 @@ async function liquidateVrf(entry,edits,added,by,note,outcome,voucherRaw,proof){
         next.vrf=no;
         (byUp[mk]=byUp[mk]||[]).push(next);
       });
+      extras.forEach(function(row){
+        var mk=row.month||iso().slice(0,7);
+        row.month=mk;
+        row.vrf=no;
+        (byUp[mk]=byUp[mk]||[]).push(row);
+      });
       stampRecloseAudit(byUp, entry.rows, reserveForReclose(entry),
         liquidationNewTotal(entry, edits, added, outcome), by, stamp.at);
       var upMonths=Object.keys(byUp);
@@ -2630,28 +2667,6 @@ async function liquidateVrf(entry,edits,added,by,note,outcome,voucherRaw,proof){
         await replaceLedgerVrf(upMonths[ui], no, rowsConfinedToVrf(byUp[upMonths[ui]], no));
       }
     }
-  }
-  if(!dead && added&&added.length){
-    var base=entry.rows[0]||{};
-    var mk0=base.month||monthKey(entry.date)||iso().slice(0,7);
-    var v=vehicle(entry.veh);
-    var extra=added.filter(function(a2){ return a2.cat; }).map(function(a2){
-      if(isFuel(a2.cat)) normalizeFuelLine(a2);
-      var sp=partSpec(a2.cat);
-      var qty=parseFloat(a2.qty)||0, price=parseFloat(a2.price)||0;
-      return {month:mk0, date:entry.date, vrf:no, veh:entry.veh,
-        name:v?v.desc:(base.name||""),
-        cat:a2.cat, sub:sp?sp.sub:(isFuel(a2.cat)?"Fuel":""),
-        grp:isFuel(a2.cat)?"Fuel":"Maintenance",
-        work:a2.work||base.work||"", item:a2.item||"",
-        qty:qty, price:price, total:qty*price,
-        supplier:a2.supplier||"", unit:a2.unit||"pc",
-        project:a2.project||base.project||"", liters:parseFloat(a2.liters)||null,
-        odo:base.odo||null, reserve:base.reserve||"",
-        vstatus:(stamp&&stamp.variancePending)?"Variance pending":"Closed", liq:stamp, addedAtLiquidation:true,
-        notes:base.notes||""};
-    });
-    if(extra.length) await appendLedger(mk0, rowsConfinedToVrf(extra, no));
   }
   _vrfs=null; _lw=null; _cons=null; _inv=null;
   var rsvNo=entry.reserve||(reserveForVrf(entry)&&reserveForVrf(entry).no);
@@ -17937,7 +17952,11 @@ function openVrf(entry,tab){
         fVar.hidden=!gate.variance;
         if(gate.variance){ pr2.hidden=true; fOver.hidden=true; }
         else { pr2.hidden=!under; fOver.hidden=!over; }
+        /* Change returned is only an under-spend. A half-typed "20" on the way
+           to 200.03 used to leave the grey placeholder 176.02 (approved − 20)
+           on an over-spend, because the placeholder was never cleared. */
         if(under&&!cAmt.value) cAmt.placeholder=(Math.round((ap-a)*100)/100).toFixed(2);
+        else cAmt.placeholder="";
         var c=pf.counts;
         pRc.textContent=!c?"Checking uploads…":(isFuelRes
           ? (c.afterFuel+" after-fueling photo"+(c.afterFuel===1?"":"s")+(c.slips?" · "+c.slips+" slip":""))

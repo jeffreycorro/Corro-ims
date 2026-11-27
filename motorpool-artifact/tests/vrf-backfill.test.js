@@ -347,8 +347,8 @@ function ledgerFuel(over) {
 }
 
 describe("reserve litres skip a backfill", () => {
-  it("is build 2026-11-24 b", () => {
-    assert.match(html, /var BUILD = "2026-11-24 b"/);
+  it("is build 2026-11-27 a", () => {
+    assert.match(html, /var BUILD = "2026-11-27 a"/);
     assert.match(html, /if\(r\.backfill===true\) return;/);
   });
 

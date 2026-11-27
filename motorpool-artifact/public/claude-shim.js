@@ -58,7 +58,11 @@
           }
         }
         if (!res.ok) {
-          var err = new Error(json.error || json.message || fn + " failed (" + res.status + ")");
+          var raw = json.error || json.message || json.errorMessage || "";
+          var msg = String(raw).replace(/\s+/g, " ").trim();
+          if (!msg || msg.charAt(0) === "<") msg = fn + " failed (" + res.status + ")";
+          else if (msg.length > 500) msg = msg.slice(0, 500);
+          var err = new Error(msg);
           err.status = res.status;
           err.body = json;
           err.code = json.code;

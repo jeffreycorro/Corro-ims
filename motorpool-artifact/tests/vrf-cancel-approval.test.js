@@ -170,7 +170,7 @@ test("spec 4: writeRecord runs the guard; db.js strips approverPass", () => {
   assert.match(sb, /async function writeRecord\(row, exists, expectUpdatedAt\) \{\n  await require\("\.\/cancel-guard"\)\.guardCancelWrite\(row, \{ readRecord \}\);/);
   const db = fs.readFileSync(path.join(__dirname, "../netlify/functions/db.js"), "utf8");
   assert.match(db, /delete spec\.approverPass;/);
-  assert.match(db, /cancelGuard\.runWithContext\(cancelCtx/);
+  assert.match(db, /return await cancelGuard\.runWithContext\(cancelCtx/);
 });
 
 test("spec 4: migration has the trigger, the bypass setting and a rollback header", () => {

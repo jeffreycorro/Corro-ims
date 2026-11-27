@@ -129,7 +129,10 @@ exports.handler = async (event) => {
         approver: cancelGuard.isApprover(session, { pass: approverPass, cfgPass }),
         by: session.name || session.full_name || session.email || "",
       };
-      return cancelGuard.runWithContext(cancelCtx, async () => {
+      /* await: a throw inside this callback (liquidation proof, stale save)
+         must be caught below. Returning the promise lets it escape the try,
+         and Netlify then answers 502 with no error field. */
+      return await cancelGuard.runWithContext(cancelCtx, async () => {
       if (!spec.user) {
         spec.user = session.name || session.full_name || session.email || session.sub || "";
       }
