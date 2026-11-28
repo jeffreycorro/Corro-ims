@@ -35,6 +35,17 @@
 [functions.applicants-email]
   timeout = 20
 
+[functions.hr-approve]
+  timeout = 60
+  included_files = [
+    "public/index.html",
+    "public/hr-payroll-sheet.js",
+    "public/hr-project-pay.js",
+    "public/hr-ot-forms.js",
+    "public/hr-decision-info.js",
+    "public/separated-roster.json",
+  ]
+
 # Skip PR / branch preview deploys from this config when Netlify honors ignore.
 # Also turn Deploy Previews off in the Netlify UI (required):
 # Project configuration → Build & deploy → Continuous Deployment →
