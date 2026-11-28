@@ -70,7 +70,7 @@ function amount(html, attr, key) {
 
 describe("2026-11-23a payroll report layout", () => {
   it("is build 2026-11-23a and prints landscape from the same sheet", () => {
-    assert.match(html, /const BUILD = "2026-11-28a"/);
+    assert.match(html, /const BUILD = "2026-11-28b"/);
     assert.match(extractFunction(html, "savePDF"), /pay-rpt-page/);
     assert.match(extractFunction(html, "savePDF"), /orientation:"landscape"/);
     assert.match(html, /pfWrap\(body,\{land:true\}\)/);

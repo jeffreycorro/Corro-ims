@@ -165,6 +165,38 @@ async function putObject(path, bytes, contentType) {
   return { path: clean, size: body.length };
 }
 
+async function readObject(path) {
+  const clean = String(path || "").replace(/^\/+/, "");
+  if (!clean || clean.length > 512 || clean.includes("..") || clean.includes("\\") || !/^[A-Za-z0-9._/-]+$/.test(clean)) {
+    throw codedError("bad_request", "That file path is not allowed.");
+  }
+  const { url, key } = requireStorage();
+  let res;
+  try {
+    res = await fetch(`${url}/storage/v1/object/${BUCKET}/${encodeObjectPath(clean)}`, {
+      method: "GET",
+      headers: { apikey: key, authorization: `Bearer ${key}` },
+    });
+  } catch {
+    throw codedError("server_unavailable", "Supabase Storage did not answer.");
+  }
+  if (!res.ok) {
+    const text = await res.text();
+    let json = null;
+    if (text) {
+      try { json = JSON.parse(text); } catch { json = { raw: text }; }
+    }
+    throw codedError("upstream_error", storageMessage(json, res.status));
+  }
+  const buf = Buffer.from(await res.arrayBuffer());
+  const header = (res.headers.get("content-type") || "").split(";")[0].trim();
+  let mime = header;
+  if (buf.length > 3 && buf[0] === 0xff && buf[1] === 0xd8) mime = "image/jpeg";
+  else if (buf.length > 4 && buf[0] === 0x89 && buf[1] === 0x50) mime = "image/png";
+  else if (buf.length > 4 && buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46) mime = "application/pdf";
+  return { bytes: new Uint8Array(buf), mime: mime || "application/octet-stream" };
+}
+
 module.exports = {
   BUCKET,
   FILE_SIZE_LIMIT,
@@ -172,6 +204,7 @@ module.exports = {
   alreadyExists,
   ensureBucket,
   putObject,
+  readObject,
   signDownload,
   signUpload,
 };

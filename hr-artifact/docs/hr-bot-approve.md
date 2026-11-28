@@ -56,7 +56,7 @@ Anything without that header, or with the wrong secret, is **401**. A portal ses
 
 `kind` is `payrun` or `leave`. A payrun id is `weekly|YYYY-MM-DD` or `semi|YYYY-MM-DD` (the saved run id). A leave id is the LRF number or the document id.
 
-`dryRun: true` reports the new status and does not write the payrun, the leave, or the PDF. The call is still audited.
+`dryRun: true` does not write the payrun, the leave, or the PDF. For a leave it still fetches the signed scan and Jeffrey's e-signature and stamps them in memory, so a missing file fails the dry run. The call is still audited. `approvedPdfUrl` is null on a dry run. A real leave approve returns the stored PDF URL.
 
 ## What a payrun call does
 
@@ -77,7 +77,8 @@ A run with nobody on the clock is refused, same as Submit.
 - status becomes `Approved`
 - `approvedBy` is Jeffrey James M. Corro
 - Jeffrey's e-signature from Settings → HR e-signatures is stamped onto the employee-signed scan
-- the stamped PDF is stored (Google Drive when that upload works, otherwise the same private bucket) and `Open the approved form` uses that link
+- a scan stored as `/.netlify/functions/files?path=...` is read from the private Supabase bucket with the service role. The browser opens that path with a session cookie; the bot does not
+- the stamped PDF is stored (Google Drive when that upload works, otherwise the same private bucket) and `Open the approved form` uses that link. The response `approvedPdfUrl` is that link
 
 A leave that is not `For approval` is refused. One that is already approved is returned as it is.
 
