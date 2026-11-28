@@ -70,7 +70,7 @@ function person() {
 
 describe("2026-11-14a payslip restored, breakdown on the payroll row", () => {
   it("is build 2026-11-14a", () => {
-    assert.match(html, /const BUILD = "2026-11-28b"/);
+    assert.match(html, /const BUILD = "2026-11-28c"/);
   });
 
   it("keeps the payslip preview, print, and PDF free of the breakdown table", () => {

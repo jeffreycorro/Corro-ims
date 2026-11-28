@@ -332,15 +332,18 @@ describe("HR bot approval", function () {
 });
 
 describe("payrun path under Node", function () {
-  it("dry-runs weekly|2026-11-19 with the real payroll engine, including nameLastFirst", async function () {
-    const { loadEngine } = require("../netlify/lib/payroll-engine");
+  it("dry-runs a full weekly payrun in Node with every referenced helper loaded", async function () {
+    const { loadEngine, printHtmlFor } = require("../netlify/lib/payroll-engine");
     const engine = loadEngine();
-    assert.equal(typeof engine.nameLastFirst, "function");
+    assert.deepEqual(engine._unresolved, []);
+    assert.ok(engine._bindings.includes("nameLastFirst"));
+    assert.ok(engine._bindings.includes("LRF_FULL"));
+    assert.ok(engine._bindings.includes("cmpEmpAlpha"));
     const day = {
       id: "d20261119",
       date: "2026-11-19",
       rows: {
-        e1: { s: "Present", day: 1, ot: 0, site: "TAWASON", in: "08:00", out: "17:00" },
+        e1: { s: "Present", day: 1, ot: 1, site: "TAWASON", in: "08:10", out: "18:00", r: "Approved Leave (LRF2026 - 0207)" },
         e2: { s: "Present", day: 1, ot: 0, site: "TAWASON", in: "08:00", out: "17:00" },
       },
     };
@@ -398,7 +401,9 @@ describe("payrun path under Node", function () {
         },
         otplans: {},
         otreps: {},
-        leaves: {},
+        leaves: {
+          l1: { id: "l1", empId: "e1", no: "LRF2026-0207", status: "Approved", type: "SIL", from: "2026-11-19", to: "2026-11-19", pay: 1 },
+        },
         ui: {},
       },
     });
@@ -414,6 +419,21 @@ describe("payrun path under Node", function () {
     const parsed = engine.nameLastFirst("Santos, Ben");
     assert.equal(parsed.last, "Santos");
     assert.equal(parsed.first, "Ben");
+    const printed = printHtmlFor(engine.S, "weekly", { from: "2026-11-19", to: "2026-11-25" }, engine.payRunLines(
+      "weekly",
+      { from: "2026-11-19", to: "2026-11-25" },
+      engine.payDates("2026-11-19", "2026-11-25"),
+      engine.S.payruns["weekly|2026-11-19"]
+    ).filter(engine.payHasTime), {
+      id: "weekly|2026-11-19",
+      kind: "weekly",
+      from: "2026-11-19",
+      to: "2026-11-25",
+      status: "approved",
+      approvedAt: "2026-11-28 09:15",
+      approvedBy: "Jeffrey James M. Corro",
+    }, "2026-11-28");
+    assert.match(printed, /APPROVED BY JEFFREY JAMES CORRO/);
   });
 });
 
@@ -484,10 +504,10 @@ describe("payroll engine print", function () {
 });
 
 describe("build stamp", function () {
-  it("is build 2026-11-28b", function () {
+  it("is build 2026-11-28c", function () {
     const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
     const approver = fs.readFileSync(path.join(__dirname, "../public/hr-approver.js"), "utf8");
-    assert.match(html, /const BUILD = "2026-11-28b"/);
+    assert.match(html, /const BUILD = "2026-11-28c"/);
     assert.match(html, /hrBotApprove\.submitStep/);
     assert.match(html, /hrBotApprove\.approveStep/);
     assert.match(html, /hrBotApprove\.acknowledgeStep/);
