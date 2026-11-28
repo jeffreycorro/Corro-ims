@@ -7,6 +7,7 @@ const { json } = require("./session");
 const { createLimiter } = require("./rate-limit");
 const hrBotApprove = require("../../public/hr-bot-approve");
 const hrApprover = require("../../public/hr-approver");
+const PDFLib = require("pdf-lib");
 
 const APPROVER = hrBotApprove.APPROVER_NAME;
 const VIA = hrBotApprove.VIA;
@@ -75,6 +76,88 @@ function safeSegment(value) {
     .replace(/-+/g, "-")
     .replace(/^[-.]+|[-.]+$/g, "")
     .slice(0, 80) || "item";
+}
+
+function ensurePdfLib() {
+  if (!globalThis.PDFLib || !globalThis.PDFLib.PDFDocument) globalThis.PDFLib = PDFLib;
+}
+
+function filesFunctionPath(url) {
+  const raw = String(url || "").trim();
+  if (!raw) return "";
+  let search = "";
+  if (raw.charAt(0) === "/") {
+    const q = raw.indexOf("?");
+    const pathname = q < 0 ? raw : raw.slice(0, q);
+    if (pathname !== "/.netlify/functions/files") return "";
+    search = q < 0 ? "" : raw.slice(q + 1);
+  } else {
+    let parsed;
+    try { parsed = new URL(raw); } catch (e) { return ""; }
+    if (!parsed.pathname.endsWith("/.netlify/functions/files")) return "";
+    search = parsed.search.replace(/^\?/, "");
+  }
+  return new URLSearchParams(search).get("path") || "";
+}
+
+function dataUrl(bytes, mime) {
+  const body = Buffer.from(bytes || []).toString("base64");
+  return "data:" + (mime || "application/octet-stream") + ";base64," + body;
+}
+
+function isDataUrl(url) {
+  return /^data:/i.test(String(url || "").trim());
+}
+
+function makeFetchUploadBytes(deps) {
+  return async function fetchUploadBytes(url) {
+    const raw = String(url || "").trim();
+    if (isDataUrl(raw)) {
+      const comma = raw.indexOf(",");
+      const meta = raw.slice(5, comma);
+      if (!/;base64/i.test(meta)) throw new Error("The uploaded file could not be read.");
+      const bytes = Buffer.from(raw.slice(comma + 1).replace(/\s/g, ""), "base64");
+      if (!bytes.length) throw new Error("The uploaded file is empty.");
+      return { bytes: new Uint8Array(bytes), mime: (meta.split(";")[0] || "").trim() };
+    }
+    const stored = filesFunctionPath(raw);
+    if (stored) {
+      if (typeof deps.readObject !== "function") {
+        throw new Error("The signed file is in portal storage. The bot could not read it, so approval was not saved.");
+      }
+      return deps.readObject(stored);
+    }
+    if (/drive\.google\.com/i.test(raw)) {
+      const match = raw.match(/\/file\/d\/([^/?#]+)/i) || raw.match(/[?&]id=([^&#]+)/i);
+      if (!match || typeof deps.downloadFile !== "function") {
+        throw new Error("The signed file is on Google Drive. The portal could not read it, so approval was not saved.");
+      }
+      const out = await deps.downloadFile({ fileId: decodeURIComponent(match[1]) });
+      const payload = (out && out.payload) || {};
+      const b64 = payload.base64Content || payload.base64 || "";
+      if (!b64) throw new Error("Drive did not return the signed file.");
+      return {
+        bytes: new Uint8Array(Buffer.from(String(b64).replace(/\s/g, ""), "base64")),
+        mime: payload.mimeType || "",
+      };
+    }
+    if (!/^https?:\/\//i.test(raw)) throw new Error("Could not download the signed file.");
+    const res = await fetch(raw);
+    if (!res || !res.ok) {
+      throw new Error("Could not download the signed file" + (res && res.status ? " (" + res.status + ")." : "."));
+    }
+    const buf = new Uint8Array(await res.arrayBuffer());
+    const mime = (res.headers && res.headers.get && res.headers.get("content-type")) || "";
+    return { bytes: buf, mime: String(mime).split(";")[0].trim() };
+  };
+}
+
+async function signatureDataUrl(sig, fetchUploadBytes) {
+  const raw = String(sig || "").trim();
+  if (!raw) return "";
+  if (isDataUrl(raw)) return raw;
+  const file = await fetchUploadBytes(raw);
+  return dataUrl(file.bytes, file.mime || "image/png");
 }
 
 function responseBody(extra) {
@@ -431,10 +514,23 @@ async function approveLeave(body, deps, dryRun) {
   if (decision === undefined && deps.loadDecision !== false) {
     try { decision = require("./payroll-engine").loadEngine().hrDecision; } catch (e) { decision = null; }
   }
-  const sig = hrApprover.signatureSrc(store);
+  const fetchUploadBytes = makeFetchUploadBytes(deps);
+  let sig = hrApprover.signatureSrc(store);
   if (!sig) {
     throw fail(409, "Attach Jeffrey's e-signature in Settings → HR e-signatures (filename jeffrey, corro, ceo, or signatory) before approving.", "missing_signature");
   }
+  ensurePdfLib();
+  try {
+    sig = await signatureDataUrl(sig, fetchUploadBytes);
+  } catch (err) {
+    throw fail(409, (err && err.message) || "Jeffrey's e-signature could not be read.", "missing_signature");
+  }
+  if (store.settings) {
+    store.settings.hrSigs = Object.assign({}, store.settings.hrSigs);
+    const prev = store.settings.hrSigs.signatory || {};
+    store.settings.hrSigs.signatory = Object.assign({}, prev, { data: sig });
+  }
+  const uploadUrl = hrApprover.employeeUploadUrl(rec, "leave");
   if (dryRun) {
     const preview = hrApprover.approveRecord(rec, {
       kind: "leave",
@@ -444,6 +540,20 @@ async function approveLeave(body, deps, dryRun) {
       on: deps.today || formatManilaDate(),
     });
     if (!preview.ok) throw fail(409, preview.error || "The leave was not approved.", "not_approved");
+    if (uploadUrl) {
+      try {
+        const stamped = await hrApprover.stampBytes({ fetchUploadBytes: fetchUploadBytes }, {
+          url: uploadUrl,
+          kind: "leave",
+          signature: sig,
+          dateText: preview.record.approvedOn || "",
+          rec: rec,
+        });
+        if (!stamped || !stamped.length) throw new Error("The signed upload could not be stamped.");
+      } catch (err) {
+        throw fail(409, (err && err.message) || "The signed upload could not be stamped.", "not_approved");
+      }
+    }
     return responseBody({
       item: rec.no || found.id,
       kind: "leave",
@@ -451,15 +561,19 @@ async function approveLeave(body, deps, dryRun) {
       approvedAt: preview.record.approvedAt,
       approvedPdfUrl: null,
       dryRun: true,
-      steps: ["approve"],
+      steps: uploadUrl ? ["fetch", "stamp", "approve"] : ["approve"],
       already: false,
     });
   }
+  let stampError = "";
   const host = {
     S: store,
     TODAY: deps.today || formatManilaDate(),
     hrDecision: decision || null,
-    toast: function () {},
+    fetchUploadBytes: fetchUploadBytes,
+    toast: function (msg, kind) {
+      if (kind === "err" && msg) stampError = String(msg);
+    },
     put: async function (coll, docId, next) {
       await deps.setDoc(coll, docId, next);
       store[coll][docId] = next;
@@ -472,7 +586,7 @@ async function approveLeave(body, deps, dryRun) {
   await hrApprover.approveItem(host, "leave", found.id);
   const saved = store.leaves[found.id];
   if (!saved || saved.status !== "Approved" || !saved.pdfIncludesSignature) {
-    throw fail(409, "The leave was not approved. The signed upload could not be stamped.", "not_approved");
+    throw fail(409, stampError || "The leave was not approved. The signed upload could not be stamped.", "not_approved");
   }
   saved.approvedBy = APPROVER;
   let pdfUrl = saved.approvedPdfLink || saved.signedLink || null;
@@ -576,6 +690,7 @@ function createHandler(overrides) {
     deleteDoc: supabase.deleteDoc,
     listCollection: supabase.listCollection,
     putObject: storage.putObject,
+    readObject: storage.readObject,
     signDownload: storage.signDownload,
     renderPrintPdf: require("./print-pdf").renderPrintPdf,
     today: null,

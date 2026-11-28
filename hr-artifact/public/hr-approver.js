@@ -729,10 +729,15 @@
     return { url: "data:application/pdf;base64," + b64, title: title, inline: true };
   }
 
-  async function stampEmployeeUpload(host, opts) {
+  async function stampBytes(host, opts) {
     opts = opts || {};
     var fetched = await fetchUploadBytes(host, opts.url);
-    var bytes = await drawApproverStamp(fetched, opts);
+    return drawApproverStamp(fetched, opts);
+  }
+
+  async function stampEmployeeUpload(host, opts) {
+    opts = opts || {};
+    var bytes = await stampBytes(host, opts);
     var title = opts.title;
     if (!title) {
       var caApi =
@@ -1624,6 +1629,7 @@
     employeeUploadUrl: employeeUploadUrl,
     applyOfficialFile: applyOfficialFile,
     stampEmployeeUpload: stampEmployeeUpload,
+    stampBytes: stampBytes,
     approveItem: approveItem,
     officialUrl: officialUrl,
     isEmploymentContract: isEmploymentContract,

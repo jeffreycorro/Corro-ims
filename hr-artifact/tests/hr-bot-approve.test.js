@@ -14,6 +14,10 @@ const hrBotApprove = require("../public/hr-bot-approve");
 const SECRET = "test-bot-secret-do-not-use-in-production-0123456789";
 const HASH = sha256(SECRET);
 const PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+const JPEG = Uint8Array.from(Buffer.from(
+  "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAn/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCwAA//2Q==",
+  "base64"
+));
 
 function loadSheetAndPay() {
   const ctx = { console, TextEncoder, Intl, Date, Math, JSON, Number, String, Object, Array };
@@ -199,16 +203,23 @@ describe("HR bot approval", function () {
     assert.equal(writes.length, 0);
   });
 
-  it("dry-runs a leave that is For approval without writing", async function () {
+  it("dry-runs a leave by fetching the scan and the signature without writing", async function () {
     const rec = {
       id: "l1",
       no: "LRF-TEST-0001",
       status: "For approval",
       empId: "e1",
-      signedLink: "https://drive.google.com/file/d/abc/view",
+      signedLink: "/.netlify/functions/files?path=misc/2026-11/scan.jpg",
+      signedTitle: "LRF-TEST-0001 SIGNED.jpg",
     };
-    const { handler, writes } = harness({
+    let reads = 0;
+    const { handler, writes, uploads } = harness({
       leave: { id: "l1", data: rec },
+      readObject: async function (objectPath) {
+        reads += 1;
+        assert.equal(objectPath, "misc/2026-11/scan.jpg");
+        return { bytes: JPEG, mime: "image/jpeg" };
+      },
       store: {
         leaves: { l1: rec },
         employees: { e1: { id: "e1", name: "Santos, Ben" } },
@@ -224,10 +235,13 @@ describe("HR bot approval", function () {
     assert.equal(body.item, "LRF-TEST-0001");
     assert.equal(body.newStatus, "Approved");
     assert.equal(body.approvedPdfUrl, null);
+    assert.deepEqual(body.steps, ["fetch", "stamp", "approve"]);
+    assert.equal(reads, 1);
     assert.equal(writes.length, 0);
+    assert.equal(uploads.length, 0);
   });
 
-  it("stamps the signed leave and stores the approved PDF the Approver tab would", async function () {
+  it("returns approvedPdfUrl after a real leave approve stamps the signed scan", async function () {
     const pdf = await PDFDocument.create();
     pdf.addPage([595, 842]);
     const bytes = await pdf.save();
@@ -317,6 +331,92 @@ describe("HR bot approval", function () {
   });
 });
 
+describe("payrun path under Node", function () {
+  it("dry-runs weekly|2026-11-19 with the real payroll engine, including nameLastFirst", async function () {
+    const { loadEngine } = require("../netlify/lib/payroll-engine");
+    const engine = loadEngine();
+    assert.equal(typeof engine.nameLastFirst, "function");
+    const day = {
+      id: "d20261119",
+      date: "2026-11-19",
+      rows: {
+        e1: { s: "Present", day: 1, ot: 0, site: "TAWASON", in: "08:00", out: "17:00" },
+        e2: { s: "Present", day: 1, ot: 0, site: "TAWASON", in: "08:00", out: "17:00" },
+      },
+    };
+    const person = function (id, name, empNo) {
+      return {
+        id: id,
+        empNo: empNo,
+        name: name,
+        position: "Laborer",
+        project: "TAWASON",
+        rateType: "daily",
+        dailyRate: 500,
+        status: "Project-based",
+        dateHired: "2020-01-01",
+      };
+    };
+    const { handler, writes, uploads } = harness({
+      engine: null,
+      lines: null,
+      printBlocked: null,
+      printHtml: null,
+      renderPrintPdf: async function (html) {
+        assert.match(html, /APPROVED BY JEFFREY JAMES CORRO/);
+        return Buffer.from("%PDF-1.4 node-payrun");
+      },
+      store: {
+        employees: {
+          e1: person("e1", "Santos, Ben", "10"),
+          e2: person("e2", "Reyes, Ana", "11"),
+        },
+        daily: { d20261119: day },
+        settings: {
+          signatory: "Jeffrey James M. Corro",
+          signatoryTitle: "CEO / President",
+          payrollBy: "Catherine A. Largo",
+          otPolicy: 1,
+          otFormGateWaived: true,
+          ded: { sss: 0, phic: 0, hdmf: 0 },
+          hrSigs: {
+            signatory: { data: PNG, title: "jeffrey.png" },
+            evaluated: { data: PNG, title: "catherine.png" },
+          },
+        },
+        advances: {},
+        projects: {},
+        payruns: {
+          "weekly|2026-11-19": {
+            id: "weekly|2026-11-19",
+            kind: "weekly",
+            from: "2026-11-19",
+            to: "2026-11-25",
+            status: "draft",
+            lines: {},
+          },
+        },
+        otplans: {},
+        otreps: {},
+        leaves: {},
+        ui: {},
+      },
+    });
+    const res = await handler(post({ kind: "payrun", id: "weekly|2026-11-19", dryRun: true }, SECRET));
+    assert.equal(res.statusCode, 200, res.body);
+    const body = JSON.parse(res.body);
+    assert.equal(body.item, "weekly|2026-11-19");
+    assert.equal(body.newStatus, "approved");
+    assert.equal(body.approvedPdfUrl, null);
+    assert.deepEqual(body.steps, ["submit", "acknowledge", "approve"]);
+    assert.equal(writes.length, 0);
+    assert.equal(uploads.length, 0);
+    const parsed = engine.nameLastFirst("Santos, Ben");
+    assert.equal(parsed.last, "Santos");
+    assert.equal(parsed.first, "Ben");
+  });
+});
+
 describe("payroll engine print", function () {
   it("builds the approved print HTML from the same payPrintOptions path", function () {
     const { loadEngine, linesFor, printHtmlFor } = require("../netlify/lib/payroll-engine");
@@ -384,10 +484,10 @@ describe("payroll engine print", function () {
 });
 
 describe("build stamp", function () {
-  it("is build 2026-11-28a", function () {
+  it("is build 2026-11-28b", function () {
     const html = fs.readFileSync(path.join(__dirname, "../public/index.html"), "utf8");
     const approver = fs.readFileSync(path.join(__dirname, "../public/hr-approver.js"), "utf8");
-    assert.match(html, /const BUILD = "2026-11-28a"/);
+    assert.match(html, /const BUILD = "2026-11-28b"/);
     assert.match(html, /hrBotApprove\.submitStep/);
     assert.match(html, /hrBotApprove\.approveStep/);
     assert.match(html, /hrBotApprove\.acknowledgeStep/);

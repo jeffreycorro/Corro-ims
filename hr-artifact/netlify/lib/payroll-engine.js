@@ -104,6 +104,14 @@ function extractConst(src, name) {
   return "";
 }
 
+function bareCalls(code) {
+  const out = [];
+  const re = /(^|[^.\w$])([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/g;
+  let match;
+  while ((match = re.exec(code))) out.push(match[2]);
+  return out;
+}
+
 function closureSource(html) {
   const functions = new Set();
   const re = /function ([A-Za-z0-9_]+)\(/g;
@@ -121,12 +129,44 @@ function closureSource(html) {
       continue;
     }
     const code = extractFunction(html, name);
-    if (!code || code.length > 60000) continue;
+    if (!code || code.length > 60000) {
+      skipped.add(name);
+      continue;
+    }
     haveFn.add(name);
     fnParts.push(code);
-    const words = code.match(/[A-Za-z_$][A-Za-z0-9_$]*/g) || [];
-    words.forEach(function (id) {
+    bareCalls(code).forEach(function (id) {
       if (functions.has(id) && !haveFn.has(id) && !skipped.has(id)) queue.push(id);
+    });
+  }
+  /* Helpers the allow-list skipped, such as nameLastFirst, still run when
+     payroll sorts or prices a line. Pull the small ones the loaded
+     functions call, and the small ones those call, and stop there. */
+  let grew = true;
+  while (grew) {
+    grew = false;
+    const called = new Set();
+    fnParts.forEach(function (code) {
+      bareCalls(code).forEach(function (id) { called.add(id); });
+    });
+    called.forEach(function (id) {
+      if (haveFn.has(id) || !functions.has(id)) return;
+      const code = extractFunction(html, id);
+      if (!code || code.length > 8000) return;
+      haveFn.add(id);
+      fnParts.push(code);
+      grew = true;
+    });
+    fnParts.forEach(function (code) {
+      const words = code.match(/[A-Za-z_$][A-Za-z0-9_$]*/g) || [];
+      words.forEach(function (id) {
+        if (haveFn.has(id) || !functions.has(id)) return;
+        const extra = extractFunction(html, id);
+        if (!extra || extra.length > 8000) return;
+        haveFn.add(id);
+        fnParts.push(extra);
+        grew = true;
+      });
     });
   }
   const body = fnParts.join("\n");
