@@ -77,7 +77,7 @@ function legacyInterview() {
 
 describe("applicant reschedule 2026-11-25a", () => {
   it("is build 2026-11-25a and puts the rescheduled date on the applicant", () => {
-    assert.match(html, /const BUILD = "2026-11-25a"/);
+    assert.match(html, /const BUILD = "2026-11-28a"/);
     assert.match(html, /function scheduleMark\(row\)/);
     assert.match(html, /function applicantScheduleRows\(a\)/);
     assert.match(html, /noteInterviewDate/);

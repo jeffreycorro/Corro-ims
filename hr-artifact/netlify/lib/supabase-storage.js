@@ -128,12 +128,50 @@ async function signDownload(path, expiresIn) {
   return { signedUrl, path: clean, expiresIn: seconds };
 }
 
+async function putObject(path, bytes, contentType) {
+  const clean = String(path || "").replace(/^\/+/, "");
+  if (!clean) throw codedError("bad_request", "A file path is required.");
+  const body = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes || []);
+  if (body.length > FILE_SIZE_LIMIT) throw codedError("bad_request", "That file is over 50 MB.");
+  await ensureBucket();
+  const { url, key } = requireStorage();
+  let res;
+  try {
+    res = await fetch(`${url}/storage/v1/object/${BUCKET}/${encodeObjectPath(clean)}`, {
+      method: "POST",
+      headers: {
+        apikey: key,
+        authorization: `Bearer ${key}`,
+        "content-type": contentType || "application/octet-stream",
+        "x-upsert": "true",
+      },
+      body,
+    });
+  } catch {
+    throw codedError("server_unavailable", "Supabase Storage did not answer.");
+  }
+  if (!res.ok) {
+    const text = await res.text();
+    let json = null;
+    if (text) {
+      try {
+        json = JSON.parse(text);
+      } catch {
+        json = { raw: text };
+      }
+    }
+    throw codedError("upstream_error", storageMessage(json, res.status));
+  }
+  return { path: clean, size: body.length };
+}
+
 module.exports = {
   BUCKET,
   FILE_SIZE_LIMIT,
   absoluteStorageUrl,
   alreadyExists,
   ensureBucket,
+  putObject,
   signDownload,
   signUpload,
 };

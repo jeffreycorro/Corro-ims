@@ -534,6 +534,7 @@ td.num .pay-break-btn{display:inline-flex;align-items:center;justify-content:fle
 <script src="/hr-decision-info.js"></script>
 <script src="/hr-project-pay.js"></script>
 <script src="/hr-ot-forms.js"></script>
+<script src="/hr-bot-approve.js"></script>
 <script>
 "use strict";
 
@@ -2260,7 +2261,7 @@ async function importRoster(){
   return {added,enriched};
 }
 
-const BUILD = "2026-11-25a";
+const BUILD = "2026-11-28a";
 const SEED_VERSION = 22;   /* 1 = April payroll roster; 2 = HR MASTERLIST.xlsx;
                              3 = merged with the Contractor Foreman directory */
 
@@ -27333,6 +27334,12 @@ function wire(){
   const payActorNow=()=>typeof hrActor==="function"?hrActor():null;
   const payUnlockedNow=()=>typeof hrApprover!=="undefined" && hrApprover && typeof hrApprover.isApproverUnlocked==="function" && hrApprover.isApproverUnlocked();
   const payProjectNow=(lines)=>{
+    if(typeof hrBotApprove!=="undefined" && hrBotApprove.projectSummary){
+      return hrBotApprove.projectSummary(lines, {
+        settings:S.settings||{},
+        extraProjects: typeof projectList==="function" ? projectList().map(p=>p&&p.name).filter(Boolean) : []
+      });
+    }
     if(typeof payProjectSummary!=="function") return null;
     return payProjectSummary(lines, {
       confirmed: typeof payAliasConfirmedMap==="function" ? payAliasConfirmedMap(S.settings||{}) : {},
@@ -27347,7 +27354,9 @@ function wire(){
     const key=payRunKey(b.kind, b.per.from, b.per.to);
     const savedRun=payRunGet(b.kind, b.per.from, b.per.to);
     const run=clone(savedRun || {id:key, kind:b.kind, from:b.per.from, to:b.per.to, lines:{}});
-    const result=payTransition(run, "submit", { actor:payActorNow(), approverUnlocked:payUnlockedNow(), now:nowStamp(), who:whoEdits() });
+    const result=(typeof hrBotApprove!=="undefined" && hrBotApprove.submitStep)
+      ? hrBotApprove.submitStep(run, { actor:payActorNow(), approverUnlocked:payUnlockedNow(), now:nowStamp(), who:whoEdits() })
+      : payTransition(run, "submit", { actor:payActorNow(), approverUnlocked:payUnlockedNow(), now:nowStamp(), who:whoEdits() });
     if(!result.ok){ toast(result.error,"err"); return; }
     S.payruns=S.payruns||{};
     S.payruns[key]=result.run;
@@ -27359,19 +27368,21 @@ function wire(){
     const b=payBuild();
     if(!b.lines.length){ toast("Nobody has a day recorded in this period.","err"); return; }
     const savedRun=payRunGet(b.kind, b.per.from, b.per.to);
-    const ack=(savedRun&&savedRun.exceptionsAck)||{};
-    const open=(typeof hrPaySheet!=="undefined" && hrPaySheet) ? hrPaySheet.openExceptions(b.lines, ack) : [];
-    if(open.length){
-      toast(open.length+" exception"+(open.length===1?"":"s")+" still open. Acknowledge them before approval.","err");
-      return;
-    }
     const key=payRunKey(b.kind, b.per.from, b.per.to);
     const run=clone(savedRun || {id:key, kind:b.kind, from:b.per.from, to:b.per.to, lines:{}});
     const summary=payProjectNow(b.lines);
-    const result=payTransition(run, "approve", {
+    const approveCtx={
       actor:payActorNow(), approverUnlocked:payUnlockedNow(), now:nowStamp(), who:whoEdits(),
       snapshot: summary ? { totals: summary.totals, sites: summary.sites } : null
-    });
+    };
+    const result=(typeof hrBotApprove!=="undefined" && hrBotApprove.approveStep)
+      ? hrBotApprove.approveStep(run, b.lines, approveCtx)
+      : (function(){
+          const ack=(savedRun&&savedRun.exceptionsAck)||{};
+          const open=(typeof hrPaySheet!=="undefined" && hrPaySheet) ? hrPaySheet.openExceptions(b.lines, ack) : [];
+          if(open.length) return { ok:false, error:open.length+" exception"+(open.length===1?"":"s")+" still open. Acknowledge them before approval." };
+          return payTransition(run, "approve", approveCtx);
+        })();
     if(!result.ok){ toast(result.error,"err"); return; }
     S.payruns=S.payruns||{};
     S.payruns[key]=result.run;
@@ -27426,12 +27437,18 @@ function wire(){
     const key=payRunKey(b.kind, b.per.from, b.per.to);
     const savedRun=payRunGet(b.kind, b.per.from, b.per.to);
     const run=clone(savedRun || {id:key, kind:b.kind, from:b.per.from, to:b.per.to, lines:{}});
-    const open=(typeof hrPaySheet!=="undefined" && hrPaySheet) ? hrPaySheet.openExceptions(b.lines, {}) : [];
-    run.exceptionsAck=run.exceptionsAck||{};
-    open.forEach(ex=>{ run.exceptionsAck[ex.id]=TODAY; });
+    const acked=(typeof hrBotApprove!=="undefined" && hrBotApprove.acknowledgeStep)
+      ? hrBotApprove.acknowledgeStep(run, b.lines, TODAY)
+      : (function(){
+          const open=(typeof hrPaySheet!=="undefined" && hrPaySheet) ? hrPaySheet.openExceptions(b.lines, {}) : [];
+          run.exceptionsAck=run.exceptionsAck||{};
+          open.forEach(ex=>{ run.exceptionsAck[ex.id]=TODAY; });
+          return { ok:true, run:run };
+        })();
+    if(!acked.ok){ toast(acked.error,"err"); return; }
     S.payruns=S.payruns||{};
-    S.payruns[key]=run;
-    await put("payruns", key, run);
+    S.payruns[key]=acked.run;
+    await put("payruns", key, acked.run);
     toast("Exceptions acknowledged. Finalize is available.","ok");
     render();
   };
