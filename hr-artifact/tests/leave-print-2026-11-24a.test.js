@@ -27,7 +27,7 @@ function extractFunction(src, name) {
 
 describe("2026-11-24a leave request prints on one A4 page", () => {
   it("is build 2026-11-24a and the print CSS keeps the leave sheet on one A4 portrait page", () => {
-    assert.match(html, /const BUILD = "2026-11-28b"/);
+    assert.match(html, /const BUILD = "2026-11-28c"/);
     assert.match(html, /@page leave-request\{size:A4 portrait;margin:10mm 12mm 10mm\}/);
     assert.match(html, /@page\{size:A4 portrait;margin:10mm 12mm 10mm\}/);
     assert.match(html, /\.pf-leave-sheet\{font-size:9pt;line-height:1\.18\}/);
